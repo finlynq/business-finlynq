@@ -9,7 +9,7 @@ Target hostname: `business.finlynq.com`.
 - Data directory: `/var/lib/business-finlynq`; uploads are never served directly.
 - Loopback listener: `127.0.0.1:3100`; Caddy/Nginx terminates TLS for the exact host.
 - PostgreSQL database: `business_finlynq` with a database owner used only by bootstrap/migrations and a non-owner, non-`BYPASSRLS` runtime role. The current Compose slice does not yet create worker or backup roles.
-- Host-only secure cookie named `business_finlynq_session`; do not use a `.finlynq.com` domain cookie.
+- Host-only secure cookie named `__Host-business_finlynq_session`; do not use a `.finlynq.com` domain cookie.
 - Root wrapping key mounted as a read-only Docker secret file; it is never placed in the application environment.
 
 ## Release sequence
@@ -19,7 +19,7 @@ Target hostname: `business.finlynq.com`.
 3. Back up the database and confirm off-VPS backup/key availability.
 4. Run migrations in the one-shot `migrate` container using the database owner; never grant migration privileges to the runtime role.
 5. Install the immutable release directory and restart only this service.
-6. Verify health, exact origin/security headers, tenant RLS, audit insertion, and a read-only smoke query.
+6. Verify `/api/health`, exact origin/security headers, tenant RLS, audit insertion, and a read-only smoke query. Readiness fails closed if PostgreSQL or either mounted encryption secret is unavailable.
 7. Roll back the application artifact if needed; database rollback uses an explicit forward repair migration.
 
 ## P0 demo deployment and rollback
@@ -61,10 +61,11 @@ The `edge` service uses [deploy/Caddyfile.container](../../deploy/Caddyfile.cont
 
 Before the first run:
 
-1. Create a root-controlled Compose environment file containing independent `POSTGRES_PASSWORD` and `APP_DATABASE_PASSWORD` values. Set `BUSINESS_FINLYNQ_HOSTNAME` to the exact public hostname. Do not put the wrapping key in this file.
-2. Create `/etc/business-finlynq/secrets/organization-root-kek` containing exactly one base64-encoded 32-byte key. Make it root-owned, mode `0440`, with a dedicated numeric group recorded as `BUSINESS_FINLYNQ_SECRET_GID` in the Compose environment file. The app container receives that supplementary group and reads the mounted file at `/run/secrets/business_finlynq_root_kek`.
-3. Set `ORGANIZATION_ROOT_KEK_FILE=/etc/business-finlynq/secrets/organization-root-kek`. Compose exposes only this host path during interpolation, not the secret value.
-4. Keep `BUSINESS_WRITES_ENABLED=false`. The current artifact is suitable for the demo surface only; enabling real accounting mutations is prohibited until the recovery, encryption, authentication, and source-workflow launch gates are complete.
+1. Create a root-controlled Compose environment file containing independent `POSTGRES_PASSWORD` and `APP_DATABASE_PASSWORD` values. Set `BUSINESS_FINLYNQ_HOSTNAME` to the exact public hostname, `SESSION_COOKIE_NAME=__Host-business_finlynq_session`, and explicitly choose `DEMO_LOGIN_ENABLED=true` or `false`. Keep `ACCOUNT_LOGIN_ENABLED=false` for the hosted preview. Do not put encryption keys in this file.
+2. Create `/etc/business-finlynq/secrets/organization-root-kek` containing exactly one base64-encoded 32-byte key and `/etc/business-finlynq/secrets/identity-secret` containing one base64-encoded 64-byte secret. The first wraps organization DEKs. The second is independently split for identity-field encryption and blind indexes.
+3. Make both files root-owned, mode `0440`, with a dedicated numeric group recorded as `BUSINESS_FINLYNQ_SECRET_GID`. Set `ORGANIZATION_ROOT_KEK_FILE` and `IDENTITY_SECRET_FILE` to those host paths. The app receives them as read-only Compose secrets.
+4. Configure `RESEND_API_KEY` and `AUTH_EMAIL_FROM`, then exercise a one-use reset link before onboarding real users. Reset tokens are carried in URL fragments and posted to the server so Caddy request logs never receive them.
+5. Keep both `ACCOUNT_LOGIN_ENABLED=false` and `BUSINESS_WRITES_ENABLED=false`. The current artifact is suitable for the protected demo surface only; enabling real identities or accounting mutations is prohibited until tenant-scoped persistence, recovery delivery, backup/key restore, authorization, and source-workflow launch gates are complete.
 
 For a dedicated, single-administrator demo host without a privileged provisioning path, `deploy/bootstrap-demo-secrets.sh` creates the ignored Compose environment and a separate user-private key file without printing either secret. It refuses to overwrite existing material. This is a bootstrap convenience only: before accepting real accounting data, move the key to the root-controlled location described above and establish separate off-server key escrow.
 
@@ -96,6 +97,7 @@ The named volumes are `business_finlynq_pgdata`, `business_finlynq_caddy_data`, 
 - A dedicated least-privilege backup role before automated production backups are enabled.
 - TLS renewal, disk, service, database, audit, backup-age, and failed-recovery alerts.
 - Rate-limited email recovery with generic responses and step-up controls.
+- A partition/archive and retention policy for real account sessions and immutable authentication security events.
 - Encrypted party/address persistence using the active organization DEK, plus key provision, rotation, recovery, and restore drills.
 - Authenticated session-to-membership resolution at every business write boundary; never construct tenant context from request body fields.
 - Secure, host-only session cookies, CSRF/origin enforcement, content security policy, private/no-store caching for authenticated responses, and rate limits for sensitive operations.

@@ -1,11 +1,11 @@
 import Link from "next/link";
 import {
-  demoCurrentActor,
   demoDashboard,
   demoSearchIndex,
   demoWriteState,
 } from "@/modules/demo/dashboard-data";
-import { AccountMenu } from "./account-menu.client";
+import type { SessionPrincipal } from "@/modules/identity/session";
+import { AccountMenu, type AccountMenuPrincipal } from "./account-menu.client";
 import { GlobalSearch, type SearchEntry } from "./global-search.client";
 import {
   DesktopNavigation,
@@ -14,17 +14,17 @@ import {
 } from "./navigation.client";
 
 const workspaceItems: readonly NavigationItem[] = [
-  { abbreviation: "OV", label: "Overview", href: "/" },
-  { abbreviation: "GL", label: "General ledger", href: "/journals" },
-  { abbreviation: "AR", label: "Receivables", href: "/receivables/invoices" },
-  { abbreviation: "AP", label: "Payables", href: "/payables/bills" },
-  { abbreviation: "TX", label: "Tax", href: "/tax" },
-  { abbreviation: "RP", label: "Reports", href: "/reports/trial-balance" },
-  { abbreviation: "CT", label: "Controls", href: "/controls/period-close", badge: "2" },
+  { abbreviation: "OV", label: "Overview", href: "/app" },
+  { abbreviation: "GL", label: "General ledger", href: "/app/journals" },
+  { abbreviation: "AR", label: "Receivables", href: "/app/receivables/invoices" },
+  { abbreviation: "AP", label: "Payables", href: "/app/payables/bills" },
+  { abbreviation: "TX", label: "Tax", href: "/app/tax" },
+  { abbreviation: "RP", label: "Reports", href: "/app/reports/trial-balance" },
+  { abbreviation: "CT", label: "Controls", href: "/app/controls/period-close", badge: "2" },
 ];
 
 const connectionItems: readonly NavigationItem[] = [
-  { abbreviation: "AI", label: "AI & MCP", href: "/automation" },
+  { abbreviation: "AI", label: "AI & MCP", href: "/app/automation" },
 ];
 
 function createSearchIndex(): readonly SearchEntry[] {
@@ -37,21 +37,27 @@ function createSearchIndex(): readonly SearchEntry[] {
   const records: SearchEntry[] = demoSearchIndex.map((entry) => ({
       label: entry.title,
       detail: entry.subtitle,
-      href: entry.href,
+      href: `/app${entry.href}`,
       keywords: `${entry.kind} ${entry.keywords.join(" ")} ${entry.entityCode ?? ""}`,
     }));
   return [...routes, ...records];
 }
 
-export function WorkspaceShell({ children }: { children: React.ReactNode }) {
-  const organization = demoDashboard.organization;
+export function WorkspaceShell({ children, principal, readOnly }: { children: React.ReactNode; principal: SessionPrincipal; readOnly: boolean }) {
+  const organization = { ...demoDashboard.organization, name: principal.organizationName };
   const searchIndex = createSearchIndex();
+  const accountPrincipal: AccountMenuPrincipal = {
+    displayName: principal.displayName,
+    organizationName: principal.organizationName,
+    roleLabel: principal.roleLabel,
+    sessionMode: principal.sessionMode,
+  };
 
   return (
     <div className="app-frame">
       <a className="skip-link" href="#main-content">Skip to main content</a>
       <aside className="sidebar" aria-label="Primary navigation">
-        <Link href="/" className="brand-lockup" aria-label="Business Finlynq overview">
+        <Link href="/app" className="brand-lockup" aria-label="Business Finlynq overview">
           <span className="brand-mark" aria-hidden="true">F</span>
           <span className="brand-copy"><strong>Finlynq</strong><span>Business</span></span>
         </Link>
@@ -62,9 +68,9 @@ export function WorkspaceShell({ children }: { children: React.ReactNode }) {
         </div>
         <DesktopNavigation workspaceItems={workspaceItems} connectionItems={connectionItems} />
         <div className="sidebar-footer">
-          <div className="avatar" aria-hidden="true">{demoCurrentActor.initials}</div>
-          <div><strong>{demoCurrentActor.displayName}</strong><span>{demoCurrentActor.roleLabel} · writes disabled</span></div>
-          <AccountMenu />
+          <div className="avatar" aria-hidden="true">{principal.initials}</div>
+          <div><strong>{principal.displayName}</strong><span>{principal.roleLabel}{readOnly ? " · read only" : ""}</span></div>
+          <AccountMenu principal={accountPrincipal} />
         </div>
       </aside>
 
@@ -74,23 +80,23 @@ export function WorkspaceShell({ children }: { children: React.ReactNode }) {
           workspaceItems={workspaceItems}
           connectionItems={connectionItems}
         />
-        <Link href="/" className="mobile-brand"><span className="brand-mark" aria-hidden="true">F</span><strong>Business Finlynq</strong></Link>
-        <div className="mobile-utilities"><AccountMenu /></div>
+        <Link href="/app" className="mobile-brand"><span className="brand-mark" aria-hidden="true">F</span><strong>Business Finlynq</strong></Link>
+        <div className="mobile-utilities"><AccountMenu principal={accountPrincipal} /></div>
       </div>
 
       <div className="main-shell">
         <div className="utility-bar">
           <div>
             <span className="read-only-dot" aria-hidden="true" />
-            <strong>Read-only demo</strong>
-            <span>{demoWriteState.message}</span>
+            <strong>{principal.sessionMode === "demo" ? "Public demo" : "Accounting workspace"}</strong>
+            <span>{principal.sessionMode === "demo" ? "Synthetic records · changes are not saved" : readOnly ? demoWriteState.message : "Posting follows your assigned roles"}</span>
           </div>
           <GlobalSearch entries={searchIndex} />
         </div>
         <main id="main-content">{children}</main>
         <footer className="app-footer">
           <span>Business Finlynq foundation · AGPL-3.0-or-later</span>
-          <span>Demo data · not financial advice</span>
+          <span>{principal.sessionMode === "demo" ? "Synthetic demo data · do not enter real information" : "Encrypted organization workspace"}</span>
         </footer>
       </div>
     </div>

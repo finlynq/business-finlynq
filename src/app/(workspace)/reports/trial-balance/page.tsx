@@ -7,7 +7,7 @@ export default function TrialBalancePage() {
   const reports = demoEntityDetails.map((entity) => ({ entity, report: getDemoTrialBalance(entity.code) }));
   return (
     <div className="page-content">
-      <PageHeader eyebrow="Reports" title="Trial balance" description="Functional-currency entity summaries for the August 2026 sample period. No cross-currency total is calculated." actions={<Link className="primary-button" href="/reports/trial-balance.csv">Download demo CSV</Link>} />
+      <PageHeader eyebrow="Reports" title="Trial balance" description="Functional-currency entity summaries for the August 2026 sample period. No cross-currency total is calculated." actions={<Link className="primary-button" href="/app/reports/trial-balance.csv">Download demo CSV</Link>} />
       <DemoNotice>Every row is fictional demo data. Each entity balances independently in its functional currency; CAD and USD are never added together.</DemoNotice>
       {reports.map(({ entity, report }) => (
         <section className="panel" aria-labelledby={`trial-balance-${entity.code}`} key={entity.code}>

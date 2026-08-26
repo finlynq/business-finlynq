@@ -8,7 +8,7 @@ const blockers = demoClosePackages.flatMap((closePackage) => closePackage.blocke
 export default function PeriodClosePage() {
   return (
     <div className="page-content">
-      <PageHeader eyebrow="Controls · August 2026" title="Period-close package" description="Review readiness evidence and preview the hard-close request requirements. No period state can change in this demo." actions={<Link className="secondary-button" href="/tax?status=review">Review tax blockers</Link>} />
+      <PageHeader eyebrow="Controls · August 2026" title="Period-close package" description="Review readiness evidence and preview the hard-close request requirements. No period state can change in this demo." actions={<Link className="secondary-button" href="/app/tax?status=review">Review tax blockers</Link>} />
       <DemoNotice>Hard close requires permission, a reason, step-up authentication, one locked transaction, and an append-only audit event. None is bypassed by this preview.</DemoNotice>
       <div className="close-layout">
         <div className="close-packages">{demoClosePackages.map((closePackage) => <section className="panel" aria-labelledby={`close-readiness-${closePackage.entityCode}`} key={closePackage.id}>

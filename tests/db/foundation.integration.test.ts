@@ -71,6 +71,13 @@ runDatabaseTests("PostgreSQL accounting controls", () => {
          END
          $role$`,
       );
+      await admin.query(
+        `DO $grant$
+         BEGIN
+           EXECUTE format('GRANT CONNECT ON DATABASE %I TO business_finlynq_test_runtime', current_database());
+         END
+         $grant$`,
+      );
       await admin.query("GRANT USAGE ON SCHEMA public, app TO business_finlynq_test_runtime");
       await admin.query("GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO business_finlynq_test_runtime");
       await admin.query("GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA app TO business_finlynq_test_runtime");
@@ -87,6 +94,9 @@ runDatabaseTests("PostgreSQL accounting controls", () => {
          FROM business_finlynq_test_runtime`,
       );
       await admin.query("REVOKE ALL ON users FROM business_finlynq_test_runtime");
+      await admin.query(
+        "REVOKE ALL ON auth_sessions, auth_one_time_tokens, auth_rate_limits, auth_security_events FROM business_finlynq_test_runtime",
+      );
       await admin.query(
         `REVOKE INSERT, UPDATE, DELETE ON organizations, organization_memberships,
            roles, membership_roles, role_permissions FROM business_finlynq_test_runtime`,
@@ -335,6 +345,10 @@ runDatabaseTests("PostgreSQL accounting controls", () => {
           [ids.orgA],
         ),
       ),
+    ).rejects.toThrow(/permission denied/);
+
+    await expect(
+      asTenant((client) => client.query("SELECT token_hash FROM auth_sessions LIMIT 1")),
     ).rejects.toThrow(/permission denied/);
   });
 

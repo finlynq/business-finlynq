@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { demoDashboard } from "@/modules/demo/dashboard-data";
-import { PageHeader, StatusPill } from "../_components/ui";
+import { PageHeader, StatusPill } from "../../_components/ui";
 
 export default function OverviewPage() {
   return (
@@ -11,8 +11,8 @@ export default function OverviewPage() {
         description={`Sample position as of ${demoDashboard.organization.currentDate}. Currencies remain separate and no transactions can be saved.`}
         actions={(
           <>
-            <Link className="secondary-button" href="/reports/trial-balance.csv">Export trial balance</Link>
-            <Link className="primary-button" href="/journals/new">＋ New journal</Link>
+            <Link className="secondary-button" href="/app/reports/trial-balance.csv">Export trial balance</Link>
+            <Link className="primary-button" href="/app/journals/new">＋ New journal</Link>
           </>
         )}
       />
@@ -23,7 +23,7 @@ export default function OverviewPage() {
           <strong id="attention-title">Two tax decisions need review before close</strong>
           <p>Unknown treatment never defaults to zero. Review the demo exceptions before considering period close.</p>
         </div>
-        <Link href="/tax?status=review">Review exceptions <span aria-hidden="true">→</span></Link>
+        <Link href="/app/tax?status=review">Review exceptions <span aria-hidden="true">→</span></Link>
       </section>
 
       <section aria-labelledby="position-title">
@@ -46,7 +46,7 @@ export default function OverviewPage() {
       <section aria-labelledby="entities-title">
         <div className="section-heading">
           <div><p className="eyebrow">Legal entities</p><h2 id="entities-title">Primary ledgers</h2></div>
-          <Link className="text-link" href="/entities">Manage entities</Link>
+          <Link className="text-link" href="/app/entities">Manage entities</Link>
         </div>
         <div className="entity-grid">
           {demoDashboard.entities.map((entity) => (
@@ -71,7 +71,7 @@ export default function OverviewPage() {
 
       <div className="dashboard-columns">
         <section className="panel" aria-labelledby="journals-title">
-          <div className="panel-heading"><div><p className="eyebrow">Immutable ledger</p><h2 id="journals-title">Recent journals</h2></div><Link className="text-link" href="/journals">View all</Link></div>
+          <div className="panel-heading"><div><p className="eyebrow">Immutable ledger</p><h2 id="journals-title">Recent journals</h2></div><Link className="text-link" href="/app/journals">View all</Link></div>
           <div className="table-scroll" tabIndex={0} aria-label="Recent journal table; scroll horizontally if needed">
             <table>
               <caption className="sr-only">Recent journal activity</caption>
@@ -105,8 +105,8 @@ export default function OverviewPage() {
             <li key={item.label}><span className={item.done ? "check-done" : "check-open"} aria-hidden="true">{item.done ? "✓" : "·"}</span><div><strong>{item.label}</strong><small>{item.detail}</small></div></li>
           ))}</ul>
           <div className="panel-actions">
-            <Link className="secondary-button" href="/controls/period-close">View close package</Link>
-            <Link className="primary-button" href="/controls/period-close#request">Request hard close</Link>
+            <Link className="secondary-button" href="/app/controls/period-close">View close package</Link>
+            <Link className="primary-button" href="/app/controls/period-close#request">Request hard close</Link>
           </div>
         </section>
       </div>
@@ -120,13 +120,13 @@ export default function OverviewPage() {
 
       <div className="dashboard-columns equal-columns">
         <section className="panel" aria-labelledby="parties-title">
-          <div className="panel-heading"><div><p className="eyebrow">Unified address book</p><h2 id="parties-title">Parties & roles</h2></div><Link className="text-link" href="/parties">Open address book</Link></div>
+          <div className="panel-heading"><div><p className="eyebrow">Unified address book</p><h2 id="parties-title">Parties & roles</h2></div><Link className="text-link" href="/app/parties">Open address book</Link></div>
           <ul className="party-list">{demoDashboard.parties.map((party) => (
             <li key={party.party}><span className="party-avatar" aria-hidden="true">{party.name.slice(0, 2).toUpperCase()}</span><div><strong>{party.name}</strong><small>{party.party} · {party.entity}</small></div><span>{party.roles.join(" · ")}</span><strong>{party.balance}</strong></li>
           ))}</ul>
         </section>
         <section className="panel" aria-labelledby="tax-title">
-          <div className="panel-heading"><div><p className="eyebrow">Versioned decisions</p><h2 id="tax-title">Tax packs</h2></div><Link className="text-link" href="/tax">View tax</Link></div>
+          <div className="panel-heading"><div><p className="eyebrow">Versioned decisions</p><h2 id="tax-title">Tax packs</h2></div><Link className="text-link" href="/app/tax">View tax</Link></div>
           <div className="tax-card-grid">{demoDashboard.taxDecisions.map((tax) => (
             <article key={tax.jurisdiction}><div><strong>{tax.jurisdiction}</strong><small>{tax.pack}</small></div><dl><div><dt>Rate</dt><dd>{tax.rate}</dd></div><div><dt>On 100.00</dt><dd>{tax.result}</dd></div></dl><p>{tax.note}</p><StatusPill status={tax.status} /></article>
           ))}</div>

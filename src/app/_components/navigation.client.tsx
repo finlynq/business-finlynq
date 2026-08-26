@@ -12,7 +12,7 @@ export type NavigationItem = Readonly<{
 }>;
 
 function isCurrentRoute(pathname: string, href: string): boolean {
-  return href === "/" ? pathname === "/" : pathname === href || pathname.startsWith(`${href}/`);
+  return href === "/app" ? pathname === "/app" : pathname === href || pathname.startsWith(`${href}/`);
 }
 
 function NavigationLinks({

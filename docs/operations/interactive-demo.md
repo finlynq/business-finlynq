@@ -1,6 +1,6 @@
-# P0 interactive demo acceptance
+# Interactive demo acceptance
 
-P0 is a public, browser-functional preview over bundled synthetic data. Routes, navigation, search, export, dialogs, and validation previews work; persistence and accounting state changes do not. `BUSINESS_WRITES_ENABLED` remains `false` on every P0 deployment.
+The public demo uses a short-lived, server-side session over bundled synthetic data. Routes, navigation, search, export, dialogs, and validation previews work; persistence and accounting state changes do not. `BUSINESS_WRITES_ENABLED` remains `false` on every demo deployment.
 
 ## Browser acceptance checklist
 
@@ -13,15 +13,17 @@ P0 is a public, browser-functional preview over bundled synthetic data. Routes, 
 - Posting, void/reversal, approval, hard close, reopen, seal, payment, role, recovery, and MCP write previews explicitly say that no state changed.
 - Refreshing restores the canonical demo dataset; no preview writes to PostgreSQL, a cookie, local storage, or another durable store.
 - Keyboard order, visible focus, dialog focus containment, labels, status announcements, mobile layout, and zoom are usable.
-- Authenticated or sensitive data is never shown, sensitive paths return not found, and the browser receives no secrets or decrypted personal data.
+- The fixed demo identity cannot select another user or organization, has no write permissions, and receives no secrets or decrypted personal data.
+- Anonymous workspace requests redirect to login, sign-out revokes the server-side session, and the demo link ignores speculative browser prefetches.
 
 Run the checklist against a production build and again at `https://business.finlynq.com` after deployment.
 
 ## Production launch gates
 
-P0 must not accept real identity, party, banking, tax, or accounting data until all of these gates pass:
+The demo must not accept real party, banking, tax, or accounting data until all of these gates pass:
 
-- Signed server-side session resolution, membership authorization, MFA step-up, revocation, secure cookies, CSRF/origin checks, and rate limits.
+- MFA step-up and recovery-factor approval for privileged actions, building on the existing database-backed session resolution, revocation, secure cookies, origin checks, and durable rate limits.
+- Tenant-scoped loaders for every workspace screen; until then `ACCOUNT_LOGIN_ENABLED` stays `false` and only the fixed demo identity can enter the workspace.
 - Generic, single-use, expiring email recovery with security notifications, co-owner/recovery-factor approval, and delayed sole-owner controls.
 - Organization DEK provision, encrypted master-data persistence, blind-index search, rotation/rewrap, and recovery from a separately escrowed root key.
 - Complete GL, AR, AP, tax, multi-currency, void/reversal, approval, auto-post, and period-close application services that share one audited posting boundary.

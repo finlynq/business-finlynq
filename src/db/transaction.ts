@@ -1,4 +1,4 @@
-import { Pool, type PoolClient } from "pg";
+import { Pool, type PoolClient, type QueryResult, type QueryResultRow } from "pg";
 import { z } from "zod";
 
 const tenantContextSchema = z.object({
@@ -43,6 +43,13 @@ function getPool(): Pool {
   });
 
   return pool;
+}
+
+export async function queryDatabase<Row extends QueryResultRow = QueryResultRow>(
+  text: string,
+  values: readonly unknown[] = [],
+): Promise<QueryResult<Row>> {
+  return getPool().query<Row>(text, [...values]);
 }
 
 export async function withTenantTransaction<T>(

@@ -1,0 +1,26 @@
+.page { min-height: 100vh; color: #17243a; background: #f7f9f9; }
+.skipLink { position: fixed; top: -80px; left: 18px; z-index: 300; padding: 12px 17px; border-radius: 8px; color: #fff; background: #142237; font-weight: 800; }
+.skipLink:focus { top: 16px; }
+.page > header, .page > footer { width: min(1040px, calc(100% - 40px)); display: flex; align-items: center; justify-content: space-between; gap: 25px; margin: 0 auto; }
+.page > header { min-height: 82px; border-bottom: 1px solid #dce4e7; }
+.page > header nav, .page > footer div { display: flex; gap: 22px; }
+.page > header nav a, .page > footer a { min-height: 44px; display: inline-flex; align-items: center; color: #52657a; font-size: 12px; font-weight: 720; }
+.page main { width: min(900px, calc(100% - 40px)); margin: 0 auto; padding: 90px 0 110px; }
+.intro { padding-bottom: 55px; border-bottom: 1px solid #d7e0e3; }
+.intro > p { margin: 0 0 16px; color: #167c72; font-size: 10px; font-weight: 850; letter-spacing: .15em; text-transform: uppercase; }
+.intro h1 { max-width: 760px; margin: 0; color: #142237; font-family: Georgia, serif; font-size: clamp(45px, 7vw, 72px); font-weight: 500; letter-spacing: -.045em; line-height: 1; }
+.intro span { max-width: 750px; display: block; margin-top: 25px; color: #5a6b7f; font-size: 17px; line-height: 1.7; }
+.page article { display: grid; gap: 0; }
+.page article section { display: grid; grid-template-columns: .48fr 1fr; gap: 50px; padding: 40px 0; border-bottom: 1px solid #dce4e7; }
+.page article h2 { margin: 0; color: #172a42; font-family: Georgia, serif; font-size: 23px; }
+.page article p { margin: 0; color: #56687c; font-size: 14px; line-height: 1.8; }
+.page article a { color: #116d66; font-weight: 750; text-decoration: underline; text-underline-offset: 3px; }
+.page > footer { padding: 25px 0 35px; border-top: 1px solid #dce4e7; color: #718194; font-size: 10px; }
+
+@media (max-width: 650px) {
+  .page > header nav a:first-child { display: none; }
+  .page main { padding-block: 65px; }
+  .page article section { grid-template-columns: 1fr; gap: 15px; padding: 31px 0; }
+  .page > footer { align-items: flex-start; flex-direction: column; }
+  .page > footer div { flex-wrap: wrap; }
+}

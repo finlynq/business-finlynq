@@ -2,7 +2,7 @@ business.finlynq.com {
   encode zstd gzip
 
   reverse_proxy 127.0.0.1:3100 {
-    health_uri /
+    health_uri /api/health
     health_interval 30s
     health_timeout 5s
   }

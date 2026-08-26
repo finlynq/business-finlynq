@@ -60,11 +60,17 @@ services:
       BUSINESS_FINLYNQ_DB_USER: business_finlynq_app
       BUSINESS_FINLYNQ_DB_PASSWORD: ${APP_DATABASE_PASSWORD:?set APP_DATABASE_PASSWORD}
       APP_ORIGIN: https://${BUSINESS_FINLYNQ_HOSTNAME:-business.finlynq.com}
-      SESSION_COOKIE_NAME: business_finlynq_session
+      SESSION_COOKIE_NAME: __Host-business_finlynq_session
+      DEMO_LOGIN_ENABLED: ${DEMO_LOGIN_ENABLED:-false}
+      ACCOUNT_LOGIN_ENABLED: ${ACCOUNT_LOGIN_ENABLED:-false}
+      RESEND_API_KEY: ${RESEND_API_KEY:-}
+      AUTH_EMAIL_FROM: ${AUTH_EMAIL_FROM:-}
       BUSINESS_WRITES_ENABLED: ${BUSINESS_WRITES_ENABLED:-false}
       ORGANIZATION_ROOT_KEK_FILE: /run/secrets/business_finlynq_root_kek
+      IDENTITY_SECRET_FILE: /run/secrets/business_finlynq_identity_secret
     secrets:
       - business_finlynq_root_kek
+      - business_finlynq_identity_secret
     group_add:
       - ${BUSINESS_FINLYNQ_SECRET_GID:?set BUSINESS_FINLYNQ_SECRET_GID}
     ports:
@@ -141,6 +147,8 @@ volumes:
 secrets:
   business_finlynq_root_kek:
     file: ${ORGANIZATION_ROOT_KEK_FILE:?set ORGANIZATION_ROOT_KEK_FILE}
+  business_finlynq_identity_secret:
+    file: ${IDENTITY_SECRET_FILE:?set IDENTITY_SECRET_FILE}
 
 networks:
   business_finlynq_private:

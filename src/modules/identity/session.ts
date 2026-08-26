@@ -1,0 +1,100 @@
+import { createHash, randomBytes } from "node:crypto";
+import { cookies, headers } from "next/headers";
+import type { NextRequest, NextResponse } from "next/server";
+import { decryptIdentityField, identityLookupHash } from "@/security/identity-secret";
+import { resolveStoredSession, type StoredPrincipal } from "./auth-store";
+
+export type SessionPrincipal = Readonly<{
+  sessionId: string;
+  userId: string;
+  organizationId: string;
+  membershipId: string;
+  organizationName: string;
+  roleLabel: string;
+  displayName: string;
+  initials: string;
+  sessionMode: "real" | "demo";
+  authMethod: "PASSWORD" | "DEMO_LINK" | "PASSWORD_RESET";
+  expiresAt: Date;
+}>;
+
+export function sessionCookieName(): string {
+  return process.env.SESSION_COOKIE_NAME?.trim() ||
+    (process.env.NODE_ENV === "production" ? "__Host-business_finlynq_session" : "business_finlynq_session");
+}
+
+export function createOpaqueToken(): { raw: string; hash: string } {
+  const raw = randomBytes(32).toString("base64url");
+  return { raw, hash: hashOpaqueToken(raw) };
+}
+
+export function hashOpaqueToken(raw: string): string {
+  return createHash("sha256").update(raw, "utf8").digest("hex");
+}
+
+function principalFromStored(stored: StoredPrincipal): SessionPrincipal {
+  if (stored.session_mode === "DEMO") {
+    return {
+      sessionId: stored.session_id, userId: stored.user_id, organizationId: stored.organization_id,
+      membershipId: stored.membership_id, organizationName: stored.organization_name,
+      roleLabel: stored.role_label, displayName: "Demo viewer", initials: "DV", sessionMode: "demo",
+      authMethod: stored.auth_method, expiresAt: new Date(stored.expires_at),
+    };
+  }
+
+  let email = "";
+  let displayName = "Business user";
+  try {
+    email = decryptIdentityField(stored.email_ciphertext, "email", stored.user_id);
+    if (stored.display_name_ciphertext) displayName = decryptIdentityField(stored.display_name_ciphertext, "display-name", stored.user_id);
+    else displayName = email.split("@")[0] || displayName;
+  } catch {
+    // Identity display failure must not expose ciphertext or weaken session validity.
+  }
+  const initials = displayName.split(/\s+/).filter(Boolean).slice(0, 2).map((part) => part[0]?.toUpperCase()).join("") || "BU";
+  return {
+    sessionId: stored.session_id, userId: stored.user_id, organizationId: stored.organization_id,
+    membershipId: stored.membership_id, organizationName: stored.organization_name,
+    roleLabel: stored.role_label, displayName, initials, sessionMode: "real",
+    authMethod: stored.auth_method, expiresAt: new Date(stored.expires_at),
+  };
+}
+
+export async function resolveSession(rawToken: string | undefined, userAgent: string | null): Promise<SessionPrincipal | null> {
+  if (!rawToken || rawToken.length < 32 || rawToken.length > 200) return null;
+  const userAgentHash = userAgent ? identityLookupHash(`user-agent|${userAgent.slice(0, 1000)}`) : null;
+  const stored = await resolveStoredSession(hashOpaqueToken(rawToken), userAgentHash);
+  if (stored?.session_mode === "REAL" && process.env.ACCOUNT_LOGIN_ENABLED !== "true") return null;
+  return stored ? principalFromStored(stored) : null;
+}
+
+export async function currentPrincipal(): Promise<SessionPrincipal | null> {
+  const [cookieStore, headerStore] = await Promise.all([cookies(), headers()]);
+  return resolveSession(cookieStore.get(sessionCookieName())?.value, headerStore.get("user-agent"));
+}
+
+export async function requestPrincipal(request: NextRequest): Promise<SessionPrincipal | null> {
+  return resolveSession(request.cookies.get(sessionCookieName())?.value, request.headers.get("user-agent"));
+}
+
+export function setSessionCookie(response: NextResponse, rawToken: string, maxAgeSeconds: number): void {
+  response.cookies.set(sessionCookieName(), rawToken, {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === "production",
+    sameSite: "lax",
+    path: "/",
+    maxAge: maxAgeSeconds,
+    priority: "high",
+  });
+}
+
+export function clearSessionCookie(response: NextResponse): void {
+  response.cookies.set(sessionCookieName(), "", {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === "production",
+    sameSite: "lax",
+    path: "/",
+    maxAge: 0,
+    priority: "high",
+  });
+}

@@ -36,6 +36,13 @@
       "when": 1787754000000,
       "tag": "0004_security_hardening",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1787755000000,
+      "tag": "0005_identity_sessions_recovery",
+      "breakpoints": true
     }
   ]
 }

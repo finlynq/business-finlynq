@@ -6,11 +6,11 @@ This repository is intentionally separate from personal Finlynq. It reuses prove
 
 > Foundation status: the repository contains the approved domain contracts, PostgreSQL schema, accounting controls, tax-pack examples, tests, and a demo dashboard. It is not yet production-ready accounting software.
 
-The demo is deliberately read-only by default. `BUSINESS_WRITES_ENABLED=false` is a release gate, not a convenience flag: do not enable it until authenticated session resolution, encrypted party persistence, email recovery, and the source workflows have passed their acceptance tests. See [docs/roadmap.md](docs/roadmap.md).
+The hosted demo is deliberately read-only. Public access now exchanges `/try-demo` for a short-lived, revocable PostgreSQL session tied to one fixed synthetic organization. Both `ACCOUNT_LOGIN_ENABLED=false` and `BUSINESS_WRITES_ENABLED=false` remain release gates: do not enable real identities or writes until tenant-scoped loaders, encrypted party persistence, configured recovery delivery, off-server restore drills, and source workflows have passed their acceptance tests. See [docs/roadmap.md](docs/roadmap.md).
 
 ## P0 interactive demo
 
-The public P0 release is a complete interactive product preview over bundled synthetic data. All visible routes and controls are wired: navigation, global search, report export, dialogs, and form-validation previews work in the browser. They do not persist records or change accounting state.
+The public P0 release is a focused interactive product preview over bundled synthetic data. All visible routes and controls are wired: navigation, global search, report export, dialogs, and form-validation previews work in the browser. They do not persist records or change accounting state.
 
 Posting, void/reversal, approval, period close/reopen/seal, role changes, recovery, tax overrides, payments, and MCP writes remain disabled. A preview must say that it is a demo and must never imply that a journal, document, or setting was saved. Reloading returns to the canonical demo dataset.
 
@@ -70,7 +70,7 @@ Sensitive party data and connector credentials are selectively envelope-encrypte
 
 The wrapping root is loaded from a mounted secret file in production, and the runtime database role cannot mutate or delete wrapped organization keys. The current milestone provides the cryptographic primitives and deployment boundary; the key-provisioning/recovery workflow and encrypted party write service remain launch gates.
 
-Production uses a separate OS service user, database and database roles, wrapping root, cookies, secrets, storage, port, and off-server backup set from personal Finlynq.
+Production uses a separate OS service user, database, wrapping root, identity encryption secret, host-only cookies, storage, port, and off-server backup set from personal Finlynq. Session tokens are opaque and revocable; only their digest is stored. Password reset changes the user credential and revokes sessions without touching organization encryption keys or accounting rows.
 
 ## License
 

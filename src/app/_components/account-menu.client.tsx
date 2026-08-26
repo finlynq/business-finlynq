@@ -1,11 +1,20 @@
 "use client";
 
 import { useEffect, useId, useRef, useState } from "react";
+import Link from "next/link";
 
-export function AccountMenu() {
+export type AccountMenuPrincipal = Readonly<{
+  displayName: string;
+  organizationName: string;
+  roleLabel: string;
+  sessionMode: "real" | "demo";
+}>;
+
+export function AccountMenu({ principal }: { principal: AccountMenuPrincipal }) {
   const panelId = useId();
   const [open, setOpen] = useState(false);
   const wrapperRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
     if (!open) return;
@@ -13,7 +22,10 @@ export function AccountMenu() {
       if (!wrapperRef.current?.contains(event.target as Node)) setOpen(false);
     };
     const escape = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setOpen(false);
+      if (event.key === "Escape") {
+        setOpen(false);
+        triggerRef.current?.focus();
+      }
     };
     window.addEventListener("mousedown", dismiss);
     window.addEventListener("keydown", escape);
@@ -26,6 +38,7 @@ export function AccountMenu() {
   return (
     <div className="account-menu" ref={wrapperRef}>
       <button
+        ref={triggerRef}
         type="button"
         className="icon-button account-trigger"
         aria-label="Open account menu"
@@ -36,11 +49,14 @@ export function AccountMenu() {
         •••
       </button>
       {open && (
-        <div id={panelId} className="account-panel-popover" role="dialog" aria-label="Demo account">
-          <strong>Demo viewer</strong>
-          <span>Read-only sample workspace</span>
-          <p>No signed-in user session is active. Posting, role changes, recovery, and key administration remain unavailable.</p>
-          <button type="button" className="secondary-button compact-button" onClick={() => setOpen(false)}>Close</button>
+        <div id={panelId} className="account-panel-popover" role="region" aria-label="Account details">
+          <strong>{principal.displayName}</strong>
+          <span>{principal.organizationName} · {principal.roleLabel}</span>
+          <p>{principal.sessionMode === "demo" ? "Public synthetic demo. Posting, close, recovery, bank connections, and security administration are disabled." : "Your session is checked against active organization membership and roles."}</p>
+          <div className="account-popover-actions">
+            <Link className="secondary-button compact-button" href="/" onClick={() => setOpen(false)}>Website</Link>
+            <form action="/api/auth/logout" method="post"><button type="submit" className="primary-button compact-button">Sign out</button></form>
+          </div>
         </div>
       )}
     </div>
