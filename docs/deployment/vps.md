@@ -24,7 +24,11 @@ Target hostname: `business.finlynq.com`.
 
 ## Initial container deployment
 
-The included Compose stack binds the application to loopback port `3100`; the existing VPS reverse proxy owns public TLS. Run it as a distinct Compose project so names, networks, and lifecycle remain separate from personal Finlynq:
+The included Compose stack always binds the application to loopback port `3100`. It supports two edge arrangements while keeping the database, credentials, networks, and lifecycle isolated from personal Finlynq.
+
+### Shared host reverse proxy
+
+When an existing host Caddy or Nginx owns ports `80` and `443`, leave the `edge` profile disabled and run Business Finlynq as a distinct Compose project:
 
 ```bash
 docker compose -p business-finlynq build
@@ -32,18 +36,47 @@ docker compose -p business-finlynq run --rm migrate
 docker compose -p business-finlynq up -d app
 ```
 
+Install [deploy/Caddyfile.example](../../deploy/Caddyfile.example) into the host proxy, validate it, and reload only that proxy. The example forwards to `127.0.0.1:3100`.
+
+### Dedicated server with containerized Caddy
+
+On a clean dedicated server where this stack should own public ports `80` and `443`, enable the optional `edge` profile:
+
+```bash
+docker compose -p business-finlynq build
+docker compose -p business-finlynq run --rm migrate
+docker compose -p business-finlynq --profile edge up -d app edge
+docker compose -p business-finlynq --profile edge ps
+```
+
+The `edge` service uses [deploy/Caddyfile.container](../../deploy/Caddyfile.container), reaches the application only over `business_finlynq_edge`, and obtains and renews TLS certificates automatically. It publishes TCP `80`/`443` and UDP `443`; make sure the host firewall allows those ports and no host service or other container is already listening on them. Set `BUSINESS_FINLYNQ_HOSTNAME=business.finlynq.com`, and point the hostname's DNS records to the server before starting the profile. Do not install the host-proxy example in this arrangement.
+
 Before the first run:
 
-1. Create a root-controlled Compose environment file containing independent `POSTGRES_PASSWORD` and `APP_DATABASE_PASSWORD` values. Do not put the wrapping key in this file.
+1. Create a root-controlled Compose environment file containing independent `POSTGRES_PASSWORD` and `APP_DATABASE_PASSWORD` values. Set `BUSINESS_FINLYNQ_HOSTNAME` to the exact public hostname. Do not put the wrapping key in this file.
 2. Create `/etc/business-finlynq/secrets/organization-root-kek` containing exactly one base64-encoded 32-byte key. Make it root-owned, mode `0440`, with a dedicated numeric group recorded as `BUSINESS_FINLYNQ_SECRET_GID` in the Compose environment file. The app container receives that supplementary group and reads the mounted file at `/run/secrets/business_finlynq_root_kek`.
 3. Set `ORGANIZATION_ROOT_KEK_FILE=/etc/business-finlynq/secrets/organization-root-kek`. Compose exposes only this host path during interpolation, not the secret value.
 4. Keep `BUSINESS_WRITES_ENABLED=false`. The current artifact is suitable for the demo surface only; enabling real accounting mutations is prohibited until the recovery, encryption, authentication, and source-workflow launch gates are complete.
 
 On a fresh database volume, the initialization script creates the non-owner/non-`BYPASSRLS` `business_finlynq_app` role. The one-shot migration container connects as `business_finlynq_owner`; the long-running app connects only as `business_finlynq_app`. There is currently no separate migrator, worker, or backup role. Never reuse personal Finlynq credentials or key material. Rotating either database password requires changing the database role and deployment secret together. Replacing the wrapping-key file requires a versioned DEK rewrap procedure, not a blind file replacement.
 
-Compose fixes the project namespace to `business-finlynq` and applies initial ceilings of 1 CPU/1 GiB to PostgreSQL, 0.5 CPU/512 MiB to migrations, and 1 CPU/768 MiB to the app, with PID and log-rotation limits. Tune these only from observed production load and preserve explicit limits.
+Compose fixes the project namespace to `business-finlynq` and applies initial ceilings of 1 CPU/1 GiB to PostgreSQL, 0.5 CPU/512 MiB to migrations, 1 CPU/768 MiB to the app, and 0.5 CPU/256 MiB to the optional edge, with PID and log-rotation limits. Tune these only from observed production load and preserve explicit limits.
 
-Install [deploy/Caddyfile.example](../../deploy/Caddyfile.example) into the existing Caddy configuration, validate it, and reload Caddy. Do not expose PostgreSQL or container port 3000 publicly.
+Do not expose PostgreSQL or container port `3000` publicly. The loopback `3100` mapping exists for the shared-proxy path and local host diagnostics only.
+
+## Moving to another server
+
+The deployment is portable because Business Finlynq does not share a database, role, Docker network, volume, credential, wrapping key, or release directory with another application. Treat the database backup and wrapping-key backup as separate, equally required recovery artifacts.
+
+1. Put the application in maintenance mode and keep `BUSINESS_WRITES_ENABLED=false` during the move.
+2. Create and verify a logical PostgreSQL backup with an explicitly provisioned least-privilege backup role. Copy the encrypted backup off the source server.
+3. Transfer the Compose environment through a secret channel and transfer the separately escrowed organization root wrapping key. Preserve the key bytes, ownership, mode, and `BUSINESS_FINLYNQ_SECRET_GID`; never place the key in Git or inside the database backup.
+4. Check out the same pinned Git commit on the destination, recreate `/etc/business-finlynq/secrets`, and start a fresh database volume.
+5. Restore the backup as the database owner, run any newer migrations once, then start `app` and either the shared-proxy path or the `edge` profile.
+6. Verify the application, tenant isolation, audit chain, TLS, and backup restore before switching DNS. Lower DNS TTL ahead of the cutover when possible.
+7. Keep the source database and key available but offline until the destination passes the acceptance window; then retire them according to the retention policy.
+
+The named volumes are `business_finlynq_pgdata`, `business_finlynq_caddy_data`, and `business_finlynq_caddy_config`. PostgreSQL moves should use a logical backup/restore rather than copying `business_finlynq_pgdata` between hosts. Caddy state may be copied if desired, but it is not application data and can normally be recreated after DNS points to the destination.
 
 ## Required launch gates
 
