@@ -22,6 +22,14 @@ Target hostname: `business.finlynq.com`.
 6. Verify health, exact origin/security headers, tenant RLS, audit insertion, and a read-only smoke query.
 7. Roll back the application artifact if needed; database rollback uses an explicit forward repair migration.
 
+## P0 demo deployment and rollback
+
+The interactive demo remains a read-only release even though every visible route and control is functional. Keep `BUSINESS_WRITES_ENABLED=false` before, during, and after deployment, and verify that browser previews never reach a persistent write service.
+
+Deploy only a pinned commit that passed lint, type checking, unit tests, fresh migration replay, PostgreSQL integration tests, production build, and the browser checklist. Record the commit and image digest, retain the previous immutable application artifact, back up PostgreSQL off the VPS, and confirm that the separately escrowed wrapping key is recoverable before running the one-shot migrator. Keep the edge proxy running while replacing only the application release.
+
+After deployment, verify HTTPS and HTTP redirection, security headers, health, read-only database access, forced tenant RLS, every interactive route, search, export, validation previews, and the absence of persistent state changes. If acceptance fails, restore the previous application artifact when it is compatible with the migrated schema. Repair an incompatible schema with a reviewed forward migration; do not run an ad hoc down migration, delete the PostgreSQL volume, or replace the wrapping key. Keep writes disabled throughout rollback.
+
 ## Initial container deployment
 
 The included Compose stack always binds the application to loopback port `3100`. It supports two edge arrangements while keeping the database, credentials, networks, and lifecycle isolated from personal Finlynq.
@@ -84,9 +92,13 @@ The named volumes are `business_finlynq_pgdata`, `business_finlynq_caddy_data`, 
 
 - Restore drill from off-VPS encrypted database and separately stored root-key backup.
 - PostgreSQL tests using a non-owner, non-`BYPASSRLS` runtime role after fresh migration replay.
+- A non-superuser schema owner/migrator distinct from the PostgreSQL bootstrap administrator, with explicit grants instead of blanket default CRUD privileges.
 - A dedicated least-privilege backup role before automated production backups are enabled.
 - TLS renewal, disk, service, database, audit, backup-age, and failed-recovery alerts.
 - Rate-limited email recovery with generic responses and step-up controls.
 - Encrypted party/address persistence using the active organization DEK, plus key provision, rotation, recovery, and restore drills.
 - Authenticated session-to-membership resolution at every business write boundary; never construct tenant context from request body fields.
+- Secure, host-only session cookies, CSRF/origin enforcement, content security policy, private/no-store caching for authenticated responses, and rate limits for sensitive operations.
+- End-to-end coverage for authorization, maker/approver separation, posting and idempotency concurrency, reversal, period locks, multi-currency, tax, AR/AP, and browser accessibility.
+- Immutable, commit-addressed release artifacts with a tested application rollback and forward-only database repair procedure.
 - No production MCP write scope beyond draft creation.

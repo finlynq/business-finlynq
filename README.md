@@ -8,6 +8,14 @@ This repository is intentionally separate from personal Finlynq. It reuses prove
 
 The demo is deliberately read-only by default. `BUSINESS_WRITES_ENABLED=false` is a release gate, not a convenience flag: do not enable it until authenticated session resolution, encrypted party persistence, email recovery, and the source workflows have passed their acceptance tests. See [docs/roadmap.md](docs/roadmap.md).
 
+## P0 interactive demo
+
+The public P0 release is a complete interactive product preview over bundled synthetic data. All visible routes and controls are wired: navigation, global search, report export, dialogs, and form-validation previews work in the browser. They do not persist records or change accounting state.
+
+Posting, void/reversal, approval, period close/reopen/seal, role changes, recovery, tax overrides, payments, and MCP writes remain disabled. A preview must say that it is a demo and must never imply that a journal, document, or setting was saved. Reloading returns to the canonical demo dataset.
+
+The browser acceptance checklist and production launch gates are in [docs/operations/interactive-demo.md](docs/operations/interactive-demo.md). The deployment and rollback contract is in [docs/deployment/vps.md](docs/deployment/vps.md).
+
 ## Product contract
 
 - One organization can contain multiple legal entities.

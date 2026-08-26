@@ -14,6 +14,16 @@ The architecture review is accepted. Delivery is intentionally sliced so an attr
 - Ontario HST and Washington sales-tax reference packs with manual-review outcomes for unsupported facts.
 - Envelope-encryption primitives, mounted-root secret loading, CI, Docker/Compose, and VPS runbook.
 
+## P0 interactive demo release
+
+- Every visible route and control is functional against bundled synthetic data.
+- Global search, report export, dialogs, and validation previews provide realistic browser behavior.
+- Persistence and accounting state changes remain fail-closed behind `BUSINESS_WRITES_ENABLED=false`.
+- Posting, void/reversal, period transitions, identity administration, recovery, payment, and MCP write actions are clearly identified as previews.
+- The release passes the browser checklist in [operations/interactive-demo.md](operations/interactive-demo.md).
+
+P0 demonstrates the workflow and design; it does not satisfy or bypass any later milestone exit gate.
+
 ## Milestone 1 — identity, recovery, and encrypted master data
 
 - Signed session/OIDC identity resolver that produces tenant context server-side.
