@@ -1,0 +1,15 @@
+.git
+.github
+.next
+.tmp
+.env
+.env.*
+!.env.example
+node_modules
+coverage
+docs
+tests
+*.log
+*.tsbuildinfo
+AGENTS.md
+CLAUDE.md

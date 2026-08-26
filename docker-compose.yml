@@ -1,0 +1,104 @@
+name: business-finlynq
+
+services:
+  database:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: business_finlynq
+      POSTGRES_USER: business_finlynq_owner
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+      APP_DATABASE_PASSWORD: ${APP_DATABASE_PASSWORD:?set APP_DATABASE_PASSWORD}
+    volumes:
+      - business_finlynq_pgdata:/var/lib/postgresql/data
+      - ./deploy/postgres/010-runtime-role.sh:/docker-entrypoint-initdb.d/010-runtime-role.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U business_finlynq_owner -d business_finlynq"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+    networks: [business_finlynq_private]
+    cpus: "1.00"
+    mem_limit: 1g
+    pids_limit: 256
+    logging:
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+  migrate:
+    build:
+      context: .
+      target: migrator
+    environment:
+      BUSINESS_FINLYNQ_MIGRATION_DB_HOST: database
+      BUSINESS_FINLYNQ_MIGRATION_DB_PORT: "5432"
+      BUSINESS_FINLYNQ_MIGRATION_DB_NAME: business_finlynq
+      BUSINESS_FINLYNQ_MIGRATION_DB_USER: business_finlynq_owner
+      BUSINESS_FINLYNQ_MIGRATION_DB_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+    depends_on:
+      database:
+        condition: service_healthy
+    restart: "no"
+    networks: [business_finlynq_private]
+    cpus: "0.50"
+    mem_limit: 512m
+    pids_limit: 128
+    logging:
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  app:
+    build:
+      context: .
+      target: runner
+    environment:
+      BUSINESS_FINLYNQ_DB_HOST: database
+      BUSINESS_FINLYNQ_DB_PORT: "5432"
+      BUSINESS_FINLYNQ_DB_NAME: business_finlynq
+      BUSINESS_FINLYNQ_DB_USER: business_finlynq_app
+      BUSINESS_FINLYNQ_DB_PASSWORD: ${APP_DATABASE_PASSWORD:?set APP_DATABASE_PASSWORD}
+      APP_ORIGIN: https://business.finlynq.com
+      SESSION_COOKIE_NAME: business_finlynq_session
+      BUSINESS_WRITES_ENABLED: ${BUSINESS_WRITES_ENABLED:-false}
+      ORGANIZATION_ROOT_KEK_FILE: /run/secrets/business_finlynq_root_kek
+    secrets:
+      - business_finlynq_root_kek
+    group_add:
+      - ${BUSINESS_FINLYNQ_SECRET_GID:?set BUSINESS_FINLYNQ_SECRET_GID}
+    ports:
+      - "127.0.0.1:3100:3000"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    security_opt:
+      - no-new-privileges:true
+    cap_drop: [ALL]
+    restart: unless-stopped
+    networks: [business_finlynq_private, business_finlynq_egress]
+    cpus: "1.00"
+    mem_limit: 768m
+    pids_limit: 128
+    logging:
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+volumes:
+  business_finlynq_pgdata:
+    name: business_finlynq_pgdata
+
+secrets:
+  business_finlynq_root_kek:
+    file: ${ORGANIZATION_ROOT_KEK_FILE:?set ORGANIZATION_ROOT_KEK_FILE}
+
+networks:
+  business_finlynq_private:
+    name: business_finlynq_private
+    internal: true
+  business_finlynq_egress:
+    name: business_finlynq_egress
