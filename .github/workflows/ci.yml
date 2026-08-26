@@ -46,7 +46,7 @@ jobs:
           POSTGRES_DB: business_finlynq_test
           PGPASSWORD: postgres
           APP_DATABASE_PASSWORD: runtime-test-only
-        run: deploy/postgres/010-runtime-role.sh
+        run: sh deploy/postgres/010-runtime-role.sh
       - run: npm run db:migrate
       # TEST_DATABASE_URL enables the PostgreSQL integration suite inside the
       # normal Vitest run. Run it once, after replaying the canonical migrations.
