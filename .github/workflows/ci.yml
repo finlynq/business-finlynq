@@ -44,6 +44,7 @@ jobs:
         env:
           POSTGRES_USER: postgres
           POSTGRES_DB: business_finlynq_test
+          PGHOST: 127.0.0.1
           PGPASSWORD: postgres
           APP_DATABASE_PASSWORD: runtime-test-only
         run: sh deploy/postgres/010-runtime-role.sh
