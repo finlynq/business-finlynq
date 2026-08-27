@@ -43,13 +43,15 @@ const nextConfig: NextConfig = {
     ];
   },
   async headers() {
+    const turnstileOrigin = "https://challenges.cloudflare.com";
     const csp = [
       "default-src 'self'",
-      `script-src 'self' 'unsafe-inline'${process.env.NODE_ENV === "development" ? " 'unsafe-eval'" : ""}`,
+      `script-src 'self' 'unsafe-inline' ${turnstileOrigin}${process.env.NODE_ENV === "development" ? " 'unsafe-eval'" : ""}`,
       "style-src 'self' 'unsafe-inline'",
       "img-src 'self' data: blob:",
       "font-src 'self' data:",
-      "connect-src 'self'",
+      `connect-src 'self' ${turnstileOrigin}`,
+      `frame-src ${turnstileOrigin}`,
       "object-src 'none'",
       "base-uri 'self'",
       "form-action 'self'",
@@ -79,7 +81,7 @@ const nextConfig: NextConfig = {
         ],
       },
       {
-        source: "/(login|forgot-password|reset-password|accept-invitation|try-demo)",
+        source: "/(login|signup|complete-signup|forgot-password|reset-password|accept-invitation|try-demo)",
         headers: [
           { key: "Cache-Control", value: "private, no-store" },
           { key: "X-Robots-Tag", value: "noindex, nofollow, noarchive" },

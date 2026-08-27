@@ -5,6 +5,7 @@ Business Finlynq provisions one random 256-bit data-encryption key (DEK) per rea
 Initial provisioning is supported in two controlled paths:
 
 - `npm run org:onboard` creates a new organization foundation and its first wrapped DEK using the migration-owner connection.
+- Self-service owner signup generates the DEK in the server process, wraps it before any database call, and installs only the envelope inside the same atomic email-verification transaction that creates the real organization. The plaintext DEK and loaded root key are zeroed in a `finally` block.
 - An existing organization owner with `organization.recovery.manage` may call the application provisioning service, which installs only version 1 through `app.install_initial_organization_key`.
 
 The database permits exactly one active key. Public demo sessions and inactive organizations cannot install key material through the runtime service.

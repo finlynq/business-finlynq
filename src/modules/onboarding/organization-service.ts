@@ -33,11 +33,16 @@ const BASE_ACCOUNTS = [
   ["1000", "Cash", "ASSET", "NONE"],
   ["1100", "Accounts receivable", "ASSET", "AR"],
   ["1400", "Prepaid expenses", "ASSET", "NONE"],
+  ["1500", "Recoverable input tax", "ASSET", "NONE"],
   ["2000", "Accounts payable", "LIABILITY", "AP"],
+  ["2200", "Sales and use tax payable", "LIABILITY", "NONE"],
   ["2300", "Accrued liabilities", "LIABILITY", "NONE"],
   ["3000", "Owner equity", "EQUITY", "NONE"],
   ["4100", "Service revenue", "REVENUE", "NONE"],
+  ["4900", "Realized FX gain", "REVENUE", "NONE"],
   ["6100", "Operating expenses", "EXPENSE", "NONE"],
+  ["7100", "Realized FX loss", "EXPENSE", "NONE"],
+  ["7190", "FX rounding", "EXPENSE", "NONE"],
 ] as const;
 
 function monthDate(year: number, monthIndex: number, day: number): string {

@@ -59,6 +59,29 @@ export function emailLookupHash(email: string, secret = loadIdentitySecret()): s
   return identityLookupHash(`email|${normalizeEmail(email)}`, secret);
 }
 
+/**
+ * Derives a stable, non-enumerable UUID from the identity lookup key. Signup
+ * uses this to bind encrypted pending-user fields and the organization key
+ * envelope to retry-safe record identifiers without exposing the email.
+ */
+export function identityDerivedUuid(
+  scope: string,
+  value: string,
+  secret = loadIdentitySecret(),
+): string {
+  if (!/^[a-z0-9][a-z0-9._-]{0,99}$/.test(scope)) {
+    throw new Error("Identity UUID scope must be a canonical application key");
+  }
+  const bytes = createHmac("sha256", keys(secret).lookup)
+    .update(`business-finlynq|identity-uuid|${scope}|${value}`, "utf8")
+    .digest()
+    .subarray(0, 16);
+  bytes[6] = (bytes[6]! & 0x0f) | 0x40;
+  bytes[8] = (bytes[8]! & 0x3f) | 0x80;
+  const hex = bytes.toString("hex");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
 export function encryptIdentityField(
   plaintext: string,
   field: "email" | "display-name",

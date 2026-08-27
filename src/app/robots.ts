@@ -5,7 +5,7 @@ export default function robots(): MetadataRoute.Robots {
     rules: [{
       userAgent: "*",
       allow: ["/", "/security", "/privacy", "/terms"],
-      disallow: ["/app", "/api", "/login", "/forgot-password", "/reset-password", "/try-demo"],
+      disallow: ["/app", "/api", "/login", "/signup", "/complete-signup", "/forgot-password", "/reset-password", "/try-demo"],
     }],
     sitemap: "https://business.finlynq.com/sitemap.xml",
     host: "https://business.finlynq.com",

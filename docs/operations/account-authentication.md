@@ -24,6 +24,20 @@ The worker uses the dedicated `business_finlynq_auth_worker` database role. That
 
 The worker updates a singleton database heartbeat on every loop, including an empty queue. When real accounts are enabled, application readiness validates non-secret delivery metadata and fails closed if that heartbeat is stale, a delivery lease is stuck, or the oldest due message exceeds the allowed age. The app does not mount or read the provider credential. The worker uses a two-minute lease, exponential retry, a maximum of eight attempts, and provider idempotency; an expired final-attempt lease is recoverable with the same stable provider idempotency key instead of being stranded. Permanent failures and exhausted retries become `DEAD` and append an authentication security event. Alert separately on any dead message and on the age of the oldest pending message. Successful outbox rows are retained for 30 days and then pruned in bounded batches; they do not replace the immutable authentication event archive.
 
+## Self-service owner signup
+
+`ACCOUNT_SIGNUP_ENABLED` is an independent acquisition gate and defaults to `false`. It requires real login and authentication email delivery to be ready. Turning signup off stops new requests while already-issued verification links may still finish as long as `ACCOUNT_LOGIN_ENABLED=true`.
+
+Production signup also requires Cloudflare Turnstile. Create a widget restricted to `business.finlynq.com`, put its public site key in `SIGNUP_TURNSTILE_SITE_KEY`, mount the one-line secret from `TURNSTILE_SECRET_KEY_FILE`, and set `SIGNUP_TURNSTILE_ENABLED=true`. The server calls Siteverify for every signup, verifies the `organization_signup` action and exact application hostname, and fails closed on provider errors or malformed responses. An unchallenged signup is allowed only in non-production development. See Cloudflare's server-side validation requirements: <https://developers.cloudflare.com/turnstile/get-started/server-side-validation/>.
+
+The public flow deliberately has three stages:
+
+1. `POST /api/auth/signup/request` consumes durable IP and normalized-email budgets before the external bot check or any organization-key work. A successful eligible request creates only an encrypted inactive pending user, one-use 24-hour token, encrypted outbox payload, and pending signup record. The response is identical when the email already belongs to an account. Version 1 permits one organization per globally normalized email.
+2. The emailed fragment link opens `/complete-signup`. After a token/principal database budget admits the request, the server hashes the password. One narrowly scoped `SECURITY DEFINER` function then atomically creates the `REAL` organization, wrapped version-1 DEK, owner membership, five role templates, one legal entity and primary ledger, 12 calendar periods, the 13-account standard chart and base combinations, Custom 1–8 definitions, and the chosen posting policy. No demo transactions, parties, tax registrations, or synthetic identifiers are copied. If any insert fails, PostgreSQL rolls back the whole foundation and leaves the verification token usable.
+3. Email possession sets the password and begins TOTP enrollment, but the user and membership remain inactive. Only a valid authenticator code consumes the setup token and activates both. An interrupted enrollment can request a fresh signup email; accepted accounting configuration and the existing wrapped key are preserved rather than replaced.
+
+The Canadian selection derives CAD and `CAN_ASPE`; the US selection derives USD and `US_GAAP_NONPUBLIC`. Region, entity code, fiscal year, and `AUTO_POST` versus `REVIEW_REQUIRED` are explicit inputs. `0000` remains reserved and Custom 1–8 begin empty, nullable, and hidden.
+
 ## Invite an account
 
 The organization, role template, entity, ledger, and chart must already exist through the tenant-onboarding boundary. The invitation tool only creates an encrypted identity and inactive membership for an existing organization UUID and existing role UUID; it verifies that the role belongs to the organization.
@@ -68,9 +82,10 @@ A co-owner-approved, delayed, or factorless recovery does not merely remove MFA.
 
 ## Enablement checklist
 
-- Replay the complete canonical migration journal through `0010_auth_principal_rate_limits` on a fresh database, then run both explicit post-migration role reconcilers and test with the non-owner app and worker roles.
+- Replay the complete canonical migration journal through `0013_self_service_owner_signup` on a fresh database, then run both explicit post-migration role reconcilers and test with the non-owner app and worker roles.
 - Restore the database together with the exact identity secret and organization wrapping key in an isolated drill. Without the identity secret, emails, TOTP factors, and queued token payloads cannot be decrypted; without the organization key, accounting data cannot be decrypted.
 - Verify the worker health/age alert and force a retryable provider failure and a permanent failure.
 - Complete an invitation and TOTP enrollment, login, explicit step-up, logout, password reset, co-owner approval, delayed sole-owner recovery, session revocation, and security-notification delivery.
 - Verify direct runtime-role reads of auth tables fail.
-- Only then set `ACCOUNT_LOGIN_ENABLED=true`; keep `BUSINESS_WRITES_ENABLED=false` until the separate accounting write gates pass.
+- Keep `ACCOUNT_SIGNUP_ENABLED=false` until the Resend sender, live worker, Turnstile hostname/action configuration, mounted Turnstile secret, generic duplicate-email behavior, atomic rollback test, and full password/TOTP activation flow are verified.
+- Only then set `ACCOUNT_LOGIN_ENABLED=true` and, in a separate change, `ACCOUNT_SIGNUP_ENABLED=true`; keep `BUSINESS_WRITES_ENABLED=false` until the separate accounting write gates pass.

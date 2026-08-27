@@ -21,6 +21,7 @@ export default async function LoginPage({ searchParams }: { searchParams: Promis
   const next = safeAppPath(params.next);
   const initialMessage = params.demoError ? demoErrors[params.demoError] : params.reason === "expired" ? "Your session ended. Sign in again to continue." : undefined;
   const accountLoginEnabled = process.env.ACCOUNT_LOGIN_ENABLED === "true";
+  const accountSignupEnabled = accountLoginEnabled && process.env.ACCOUNT_SIGNUP_ENABLED === "true";
 
   return (
     <AuthShell
@@ -28,7 +29,7 @@ export default async function LoginPage({ searchParams }: { searchParams: Promis
       title={accountLoginEnabled ? "Welcome back" : "Explore Business Finlynq"}
       description={accountLoginEnabled ? "Sign in to your organization’s accounting workspace." : "Open the synthetic business directly—no registration or credentials required."}
     >
-      <LoginForm next={next} initialMessage={initialMessage} accountLoginEnabled={accountLoginEnabled} />
+      <LoginForm next={next} initialMessage={initialMessage} accountLoginEnabled={accountLoginEnabled} accountSignupEnabled={accountSignupEnabled} />
     </AuthShell>
   );
 }

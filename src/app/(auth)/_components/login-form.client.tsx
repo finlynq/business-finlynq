@@ -4,7 +4,7 @@ import Link from "next/link";
 import { FormEvent, useState } from "react";
 import styles from "../auth.module.css";
 
-export function LoginForm({ next, initialMessage, accountLoginEnabled }: { next: string; initialMessage?: string; accountLoginEnabled: boolean }) {
+export function LoginForm({ next, initialMessage, accountLoginEnabled, accountSignupEnabled }: { next: string; initialMessage?: string; accountLoginEnabled: boolean; accountSignupEnabled: boolean }) {
   const [error, setError] = useState(initialMessage ?? "");
   const [busy, setBusy] = useState(false);
   const [mfaRequired, setMfaRequired] = useState(false);
@@ -43,6 +43,7 @@ export function LoginForm({ next, initialMessage, accountLoginEnabled }: { next:
             <div className={styles.formRow}><span>Sessions expire after inactivity.</span><Link href="/forgot-password">Forgot password?</Link></div>
             <button className={styles.submitButton} type="submit" disabled={busy}>{busy ? "Signing in…" : "Sign in"}</button>
           </form>
+          {accountSignupEnabled && <Link className={styles.afterFormLink} href="/signup">Create a new business account</Link>}
           <div className={styles.divider}><span>or</span></div>
         </>
       )}
