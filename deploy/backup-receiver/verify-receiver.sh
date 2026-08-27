@@ -84,7 +84,7 @@ else
 fi
 
 if [[ -f "$AUTHORIZED_KEYS_FILE" && ! -L "$AUTHORIZED_KEYS_FILE" ]]; then
-  [[ "$(stat -c '%u:%g:%a' "$AUTHORIZED_KEYS_FILE")" == "0:0:600" ]] && pass "root-owned authorized key outside chroot" || fail "authorized key ownership or mode"
+  [[ "$(stat -c '%u:%g:%a' "$AUTHORIZED_KEYS_FILE")" == "0:0:644" ]] && pass "root-owned, non-writable authorized key outside chroot" || fail "authorized key ownership or mode"
   grep -Eq '^from="[^"[:space:]]+",restrict,command="internal-sftp -d /incoming -u 077" (ssh-ed25519|ssh-rsa|ecdsa-sha2-nistp256|sk-ssh-ed25519@openssh.com) ' "$AUTHORIZED_KEYS_FILE" && pass "source-restricted SFTP-only authorized key" || fail "authorized key restrictions"
 else
   fail "authorized key file"

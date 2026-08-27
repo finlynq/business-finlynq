@@ -228,7 +228,11 @@ install -d -o root -g root -m 0755 "$AUTHORIZED_KEYS_DIRECTORY"
 authorized_key_temporary="$(mktemp "$AUTHORIZED_KEYS_DIRECTORY/.${RECEIVER_USER}.XXXXXX")"
 printf 'from="%s",restrict,command="internal-sftp -d /incoming -u 077" %s %s\n' \
   "$normalized_source_cidr" "$key_type" "$key_material" > "$authorized_key_temporary"
-install -o root -g root -m 0600 "$authorized_key_temporary" "$AUTHORIZED_KEYS_FILE"
+# sshd evaluates AuthorizedKeysFile after dropping to the target account on
+# Ubuntu. Keep the public key root-owned and non-writable, while allowing that
+# unprivileged read. The key is public material; its restrictions remain
+# protected because only root can change the file or parent directory.
+install -o root -g root -m 0644 "$authorized_key_temporary" "$AUTHORIZED_KEYS_FILE"
 rm -f -- "$authorized_key_temporary"
 
 sshd_temporary="$(mktemp /etc/ssh/sshd_config.d/.business-finlynq-backup-receiver.XXXXXX)"

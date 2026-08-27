@@ -27,6 +27,7 @@ require_text "$provisioner" 'created_image="true"'
 require_text "$provisioner" 'mkfs.ext4 -q -F -L "$FILESYSTEM_LABEL" "$IMAGE_PATH"'
 require_text "$provisioner" 'Receiver root is already a non-loop mount; refusing to touch it'
 require_text "$provisioner" 'from="%s",restrict,command="internal-sftp -d /incoming -u 077"'
+require_text "$provisioner" 'install -o root -g root -m 0644 "$authorized_key_temporary" "$AUTHORIZED_KEYS_FILE"'
 require_text "$provisioner" 'AuthorizedKeysFile /etc/ssh/authorized_keys/%u'
 require_text "$provisioner" 'if ! sshd -t; then'
 require_text "$provisioner" 'systemctl reload ssh.service'
@@ -37,6 +38,7 @@ require_text "$ingester" 'RECEIVER_RETENTION_DAYS" == "60"'
 require_text "$service" 'ReadWritePaths=/srv/business-finlynq-backup /var/lib/business-finlynq-backup-receiver'
 require_text "$service" 'RestrictAddressFamilies=AF_UNIX'
 require_text "$timer" 'OnUnitInactiveSec=5m'
+require_text "$script_directory/README.md" 'host_key_algorithms = ssh-ed25519'
 
 if grep -ERn --exclude='test-static.sh' --exclude='README.md' --exclude='*.service' --exclude='*.timer' '(AGE-SECRET-KEY|ORGANIZATION_ROOT_KEK|IDENTITY_SECRET|BEGIN (OPENSSH|RSA|EC) PRIVATE KEY)' "$script_directory"; then
   printf '%s\n' 'Receiver assets must not contain encryption or recovery keys' >&2

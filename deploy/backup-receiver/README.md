@@ -42,6 +42,7 @@ user = finlynq-backup
 port = 22
 key_file = /run/secrets/business_finlynq_backup_receiver_ssh_private_key
 known_hosts_file = /run/secrets/business_finlynq_backup_receiver_known_hosts
+host_key_algorithms = ssh-ed25519
 shell_type = none
 ```
 
@@ -52,7 +53,7 @@ BACKUP_RECEIVER_SSH_PRIVATE_KEY_FILE=/etc/business-finlynq/secrets/backup-receiv
 BACKUP_RECEIVER_KNOWN_HOSTS_FILE=/etc/business-finlynq/backup/receiver-known-hosts
 ```
 
-Both host files must be regular, root/operator-managed files readable by the configured `BUSINESS_FINLYNQ_SECRET_GID`; use mode `0440` or stricter. Pin the key returned through an independently verified receiver console or provider panel—do not build `known_hosts` by blindly trusting an initial network connection.
+Both host files must be regular, root/operator-managed files readable by the configured `BUSINESS_FINLYNQ_SECRET_GID`; use mode `0440` or stricter. Pin the key returned through an independently verified receiver console or provider panel—do not build `known_hosts` by blindly trusting an initial network connection. Constraining `host_key_algorithms` to the pinned ED25519 key prevents an SFTP client from negotiating a different valid server key and then correctly rejecting it as a mismatch.
 
 Set the production backup environment to use the chroot-relative incoming directory:
 
