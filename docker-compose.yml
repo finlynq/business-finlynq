@@ -434,6 +434,43 @@ services:
         max-size: "10m"
         max-file: "3"
 
+  grant_platform_administrator:
+    profiles: [account-operations]
+    build:
+      context: .
+      target: migrator
+    entrypoint: ["npm", "run", "auth:grant-platform-admin", "--"]
+    environment:
+      BUSINESS_FINLYNQ_MIGRATION_DB_HOST: database
+      BUSINESS_FINLYNQ_MIGRATION_DB_PORT: "5432"
+      BUSINESS_FINLYNQ_MIGRATION_DB_NAME: business_finlynq
+      BUSINESS_FINLYNQ_MIGRATION_DB_USER: business_finlynq_owner
+      BUSINESS_FINLYNQ_MIGRATION_DB_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+      IDENTITY_SECRET_FILE: /run/secrets/business_finlynq_identity_secret
+    secrets:
+      - business_finlynq_identity_secret
+    group_add:
+      - ${BUSINESS_FINLYNQ_SECRET_GID:?set BUSINESS_FINLYNQ_SECRET_GID}
+    depends_on:
+      bootstrap_demo:
+        condition: service_completed_successfully
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    security_opt:
+      - no-new-privileges:true
+    cap_drop: [ALL]
+    restart: "no"
+    networks: [business_finlynq_private]
+    cpus: "0.50"
+    mem_limit: 512m
+    pids_limit: 96
+    logging:
+      options:
+        max-size: "10m"
+        max-file: "3"
+
   edge:
     image: caddy:2.10.2-alpine
     profiles: [edge]

@@ -103,7 +103,8 @@ export function SignupForm({
         <Script
           src="https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit"
           strategy="afterInteractive"
-          onLoad={renderChallenge}
+          onReady={renderChallenge}
+          onError={() => setError("Signup verification could not load. Refresh the page and try again.")}
         />
       )}
       <form className={styles.form} onSubmit={submit} noValidate>

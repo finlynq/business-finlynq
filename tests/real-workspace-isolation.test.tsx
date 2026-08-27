@@ -83,6 +83,7 @@ const mocks = vi.hoisted(() => {
       access: { ledger: true, receivables: true, payables: true, tax: true },
       postedJournalCount: 0,
       unpostedJournalCount: 0,
+      taxDecisionCount: 0,
       manualReviewTaxCount: 0,
       openReceivables: [],
       openPayables: [],

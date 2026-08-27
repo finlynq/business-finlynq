@@ -118,11 +118,26 @@ export async function lookupLogin(emailHash: string): Promise<LoginIdentity[]> {
 export async function issueMfaUserSession(input: {
   userId: string; organizationId: string; membershipId: string; factorId: string; totpCounter: number;
   tokenHash: string; ipHash: string; userAgentHash: string | null; requestId: string;
+  replacedDemoSessionTokenHash?: string | null;
 }): Promise<string | null> {
+  // The login route supplies a replacement token only after resolving it as a
+  // DEMO principal. Keeping issuance and revocation in one PostgreSQL statement
+  // prevents a failed replacement from orphaning a newly issued REAL session.
   const result = await queryDatabase<{ session_id: string | null }>(
-    "SELECT app.auth_issue_mfa_user_session($1,$2,$3,$4,$5,$6,$7,$8,$9) AS session_id",
+    `WITH issued AS MATERIALIZED (
+       SELECT app.auth_issue_mfa_user_session($1,$2,$3,$4,$5,$6,$7,$8,$9) AS session_id
+     ), demo_replacement AS MATERIALIZED (
+       SELECT app.auth_revoke_session($10,$9) AS revoked
+       FROM issued
+       WHERE issued.session_id IS NOT NULL
+         AND $10::text IS NOT NULL
+     )
+     SELECT issued.session_id
+     FROM issued
+     LEFT JOIN demo_replacement ON true`,
     [input.userId, input.organizationId, input.membershipId, input.factorId, input.totpCounter,
-      input.tokenHash, input.ipHash, input.userAgentHash, input.requestId],
+      input.tokenHash, input.ipHash, input.userAgentHash, input.requestId,
+      input.replacedDemoSessionTokenHash ?? null],
   );
   return result.rows[0]?.session_id ?? null;
 }

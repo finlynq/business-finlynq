@@ -19,14 +19,18 @@ export default function SignupPage() {
   return (
     <AuthShell
       eyebrow="Business account"
-      title={ready ? "Create your workspace" : "New accounts are not available"}
+      title={ready ? "Create your workspace" : "Secure account signup is being enabled"}
       description={ready
         ? "Start a full private US or Canadian organization. Verify your email and authenticator before the owner account becomes active."
-        : "Self-service account creation is currently closed. You can still explore the isolated public demo."}
+        : "Account creation is temporarily closed while verified email delivery and signup abuse protection are completed. This page will not create or retain an account request yet."}
     >
       {ready && challenge
         ? <SignupForm challenge={challenge} />
-        : <Link className={styles.afterFormLink} href="/login">Return to sign in</Link>}
+        : <>
+            <Link className={styles.demoButton} href="/try-demo?next=/app" prefetch={false}>Open the live demo <span aria-hidden="true">→</span></Link>
+            <Link className={styles.afterFormLink} href="/login">Sign in to an existing account</Link>
+            <p className={styles.securityNote}>Signup will open only after email verification, authenticator enrollment, delivery monitoring, and hostname-bound bot protection are ready.</p>
+          </>}
     </AuthShell>
   );
 }

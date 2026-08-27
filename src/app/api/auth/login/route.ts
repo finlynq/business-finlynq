@@ -7,7 +7,7 @@ import { assertAccountAuthenticationConfigured } from "@/modules/identity/email-
 import { consumeDummyPasswordCheck, verifyPassword } from "@/modules/identity/passwords";
 import { requestFingerprints, validateSameOriginMutation } from "@/modules/identity/request-security";
 import { safeAppPath } from "@/modules/identity/safe-redirect";
-import { createOpaqueToken, requestPrincipal, setSessionCookie } from "@/modules/identity/session";
+import { createOpaqueToken, hashOpaqueToken, requestPrincipal, sessionCookieName, setSessionCookie } from "@/modules/identity/session";
 import { verifyTotp } from "@/modules/identity/totp";
 import { decryptAuthPayload, emailLookupHash, identityLookupHash } from "@/security/identity-secret";
 
@@ -33,7 +33,13 @@ export async function POST(request: NextRequest) {
     assertAccountAuthenticationConfigured();
     await assertEmailDeliveryReady();
     const existing = await requestPrincipal(request);
-    if (existing) return NextResponse.json({ success: true, next: "/app" }, { headers: noStoreHeaders });
+    if (existing?.sessionMode === "real") {
+      return NextResponse.json({ success: true, next: "/app" }, { headers: noStoreHeaders });
+    }
+    const existingSessionToken = request.cookies.get(sessionCookieName())?.value;
+    const replacedDemoSessionTokenHash = existing?.sessionMode === "demo" && existingSessionToken
+      ? hashOpaqueToken(existingSessionToken)
+      : null;
 
     const { ipHash, userAgentHash } = requestFingerprints(request);
     const ipLimit = await consumeRateLimit("login-ip-minute", ipHash, 5, 60);
@@ -97,6 +103,7 @@ export async function POST(request: NextRequest) {
       ipHash,
       userAgentHash,
       requestId,
+      replacedDemoSessionTokenHash,
     };
     const sessionId = await issueMfaUserSession({ ...sessionInput, factorId: identity.mfa_factor_id, totpCounter: mfaCounter });
     if (!sessionId) throw new Error("The selected membership is no longer available");

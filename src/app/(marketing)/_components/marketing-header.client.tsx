@@ -73,6 +73,7 @@ export function MarketingHeader() {
           {navigation.map(([label, href]) => <a href={href} key={href}>{label}</a>)}
         </nav>
         <div className={styles.headerActions}>
+          <Link className={styles.signInLink} href="/signup">Create account</Link>
           <Link className={styles.signInLink} href="/login">Sign in</Link>
           <Link className={styles.headerDemo} href="/try-demo?next=/app" prefetch={false}>Open demo</Link>
         </div>
@@ -102,6 +103,7 @@ export function MarketingHeader() {
               {navigation.map(([label, href]) => <a href={href} key={href} onClick={close}>{label}</a>)}
             </nav>
             <div className={styles.mobileActions}>
+              <Link href="/signup" onClick={close}>Create account</Link>
               <Link href="/login" onClick={close}>Sign in</Link>
               <Link href="/try-demo?next=/app" prefetch={false} onClick={close}>Open live demo</Link>
             </div>

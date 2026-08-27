@@ -19,8 +19,6 @@ const capabilities = [
 ] as const;
 
 export default function MarketingHomePage() {
-  const signupEnabled = process.env.ACCOUNT_SIGNUP_ENABLED === "true" &&
-    process.env.ACCOUNT_LOGIN_ENABLED === "true";
   return (
     <div className={styles.site}>
       <a className={styles.skipLink} href="#main-content">Skip to main content</a>
@@ -35,7 +33,7 @@ export default function MarketingHomePage() {
               <p className={styles.heroLead}>Business Finlynq is a modular ERP foundation for teams that need multicurrency books, strong period controls, and a history that cannot quietly disappear.</p>
               <div className={styles.heroActions}>
                 <Link className={styles.primaryCta} href="/try-demo?next=/app" prefetch={false}>Explore the live demo <span aria-hidden="true">→</span></Link>
-                {signupEnabled && <Link className={styles.secondaryCta} href="/signup">Create account</Link>}
+                <Link className={styles.secondaryCta} href="/signup">Create account</Link>
                 <Link className={styles.secondaryCta} href="/login">Sign in</Link>
               </div>
               <ul className={styles.trustList} aria-label="Product principles">
@@ -121,7 +119,7 @@ export default function MarketingHomePage() {
           <p className={styles.kicker}>See the control model in context</p>
           <h2 id="final-title">Walk through a focused synthetic business.</h2>
           <p>No registration and no credentials to type. Sessions last up to one hour with a 15-minute idle limit; the same browser can reopen its private synthetic business until the nightly reset.</p>
-          <div><Link href="/try-demo?next=/app" prefetch={false}>Open the live demo <span aria-hidden="true">→</span></Link>{signupEnabled && <Link href="/signup">Create account</Link>}<Link href="/login">Sign in</Link></div>
+          <div><Link href="/try-demo?next=/app" prefetch={false}>Open the live demo <span aria-hidden="true">→</span></Link><Link href="/signup">Create account</Link><Link href="/login">Sign in</Link></div>
         </section>
       </main>
       <MarketingFooter />

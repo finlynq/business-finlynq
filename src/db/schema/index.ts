@@ -4,4 +4,5 @@ export * from "./identity";
 export * from "./journals";
 export * from "./ledger";
 export * from "./parties";
+export * from "./platform-administration";
 export * from "./tax";

@@ -25,6 +25,7 @@ export function MarketingFooter() {
         <nav aria-label="Open-source links">
           <strong>Open source</strong>
           <a href="https://github.com/finlynq/business-finlynq" rel="noreferrer">GitHub repository</a>
+          <Link href="/signup">Create account</Link>
           <Link href="/login">Sign in</Link>
           <Link href="/try-demo?next=/app" prefetch={false}>Open demo</Link>
         </nav>

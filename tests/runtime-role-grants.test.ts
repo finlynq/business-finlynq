@@ -18,6 +18,8 @@ describe("runtime role reconciliation contract", () => {
     expect(script).not.toMatch(/GRANT\s+DELETE/i);
     expect(script).toContain("'ledger_posting_policies'");
     expect(script).toContain("'parties', 'party_addresses'");
+    expect(script).not.toContain("'platform_administrator_grants'");
+    expect(script).not.toContain("'platform_administrator_grant_events'");
   });
 
   it("revokes inherited function execution and restores only reviewed app APIs", () => {
@@ -31,6 +33,8 @@ describe("runtime role reconciliation contract", () => {
     expect(script).toContain("app.assert_current_demo_session_lease()");
     expect(script).toContain("app.auth_lookup_login(text)");
     expect(script).toContain("app.auth_resolve_session(text,text)");
+    expect(script).toContain("app.auth_platform_administrator_authorization(uuid,uuid)");
+    expect(script).toContain("app.platform_administration_overview(uuid,uuid)");
     expect(script).toContain("app.organization_settings_read()");
     expect(script).toContain("app.organization_members_read()");
     expect(script).toContain("app.organization_update_settings(text,integer)");

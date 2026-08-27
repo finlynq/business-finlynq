@@ -3,7 +3,7 @@ import { RealJournalDraftForm } from "../../../_components/real-journal-draft-fo
 import { loadManualJournalOptions } from "@/modules/ledger/tenant-workspace";
 import { requireWorkspacePrincipal } from "@/modules/workspace/access";
 import { principalCanWrite } from "@/modules/workspace/write-policy";
-import { DEMO_BASELINE_DATE } from "@/modules/demo/constants";
+import { demoAccountingDate } from "@/modules/demo/accounting-clock";
 import { BackLink, DemoNotice, PageHeader } from "../../../_components/ui";
 
 export default async function NewJournalPage() {
@@ -12,7 +12,7 @@ export default async function NewJournalPage() {
     const options = await loadManualJournalOptions(principal);
     const selectedPeriod = options.entities[0]?.periods[0];
     const today = principal.sessionMode === "demo"
-      ? DEMO_BASELINE_DATE
+      ? demoAccountingDate()
       : new Date().toISOString().slice(0, 10);
     const initialAccountingDate = selectedPeriod
       ? today < selectedPeriod.startsOn

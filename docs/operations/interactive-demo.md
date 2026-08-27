@@ -24,6 +24,7 @@ BUSINESS_WRITES_ENABLED=false
 - A session expires after 15 minutes without activity and has a one-hour absolute maximum. The browser cookie cannot extend that maximum.
 - Logout or expiry revokes only the short-lived session. Re-entry from the same browser issues a new session for the same `ASSIGNED` sandbox and preserves its changes.
 - Nightly reconciliation at 04:15 `America/Toronto` invalidates every daily claim, revokes remaining sessions, resets every slot to the exact seed, verifies the baseline, and returns successful slots to `READY` with an incremented generation. No five-minute/session-release reset exists.
+- The demo accounting clock follows the `America/Toronto` date only inside the latest approved bundled tax-pack window. At the Washington pack's `effective_to` boundary it pins to that date; never extend an expired rate to keep the calendar moving. Before advancing the clock, publish a reviewed pack version with official source, digest, effective dates, and passing clock/tax/baseline tests.
 - Reset is an owner-only maintenance operation with no tenant selector. It purges tenant business data child-first while preserving the registered organization, synthetic identity, membership, role, and key envelope. Failed resets leave the slot `QUARANTINED`.
 - Synthetic accounting content belongs in PostgreSQL only. Do not put journal, party, tax, or subledger content in cookies, browser local storage, logs, or analytics.
 

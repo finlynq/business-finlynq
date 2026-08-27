@@ -8,7 +8,12 @@ export type AccountMenuPrincipal = Readonly<{
   organizationName: string;
   roleLabel: string;
   sessionMode: "real" | "demo";
+  isPlatformAdministrator: boolean;
 }>;
+
+export function showPlatformAdministrationLink(principal: AccountMenuPrincipal): boolean {
+  return principal.isPlatformAdministrator;
+}
 
 export function AccountMenu({ principal }: { principal: AccountMenuPrincipal }) {
   const panelId = useId();
@@ -55,6 +60,8 @@ export function AccountMenu({ principal }: { principal: AccountMenuPrincipal }) 
           <p>{principal.sessionMode === "demo" ? "Public synthetic sandbox. Changes are disposable; do not enter real information or connect external systems." : "Your session is checked against active organization membership and roles."}</p>
           <div className="account-popover-actions">
             <Link className="secondary-button compact-button" href="/app/settings" onClick={() => setOpen(false)}>Settings</Link>
+            {showPlatformAdministrationLink(principal) && <Link className="secondary-button compact-button" href="/app/platform" onClick={() => setOpen(false)}>Platform operations</Link>}
+            {principal.sessionMode === "demo" && <Link className="secondary-button compact-button" href="/signup" onClick={() => setOpen(false)}>Create account</Link>}
             <Link className="secondary-button compact-button" href="/" onClick={() => setOpen(false)}>Website</Link>
             <form action="/api/auth/logout" method="post"><button type="submit" className="primary-button compact-button">Sign out</button></form>
           </div>

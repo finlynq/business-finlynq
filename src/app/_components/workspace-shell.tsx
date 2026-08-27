@@ -41,7 +41,17 @@ function createSearchIndex(includeDemoRecords: boolean): readonly SearchEntry[] 
   return [...routes, ...records];
 }
 
-export function WorkspaceShell({ children, principal, readOnly }: { children: React.ReactNode; principal: SessionPrincipal; readOnly: boolean }) {
+export function WorkspaceShell({
+  children,
+  principal,
+  readOnly,
+  isPlatformAdministrator = false,
+}: {
+  children: React.ReactNode;
+  principal: SessionPrincipal;
+  readOnly: boolean;
+  isPlatformAdministrator?: boolean;
+}) {
   const organization = {
     name: principal.organizationName,
     environment: principal.sessionMode === "demo" ? "Nightly-reset sandbox" : "Private workspace",
@@ -52,6 +62,7 @@ export function WorkspaceShell({ children, principal, readOnly }: { children: Re
     organizationName: principal.organizationName,
     roleLabel: principal.roleLabel,
     sessionMode: principal.sessionMode,
+    isPlatformAdministrator,
   };
 
   return (

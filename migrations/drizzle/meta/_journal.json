@@ -127,6 +127,13 @@
       "when": 1787845000000,
       "tag": "0017_demo_claim_network_capacity",
       "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1787846000000,
+      "tag": "0018_platform_administrator_grants",
+      "breakpoints": true
     }
   ]
 }

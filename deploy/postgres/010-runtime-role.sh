@@ -186,6 +186,8 @@ BEGIN
     'app.auth_issue_mfa_user_session(uuid,uuid,uuid,uuid,bigint,text,text,text,text)',
     'app.auth_resolve_session(text,text)',
     'app.auth_resolve_session_v2(text,text)',
+    'app.auth_platform_administrator_authorization(uuid,uuid)',
+    'app.platform_administration_overview(uuid,uuid)',
     'app.auth_revoke_session(text,text)',
     'app.auth_queue_password_reset(text,text,text,uuid,text,text)',
     'app.auth_finish_password_reset(text,text,text)',

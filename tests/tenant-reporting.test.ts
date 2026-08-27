@@ -85,10 +85,10 @@ describe("tenant reporting authorization and tax exception evidence", () => {
   it("checks permission for every data class summarized by the accounting overview", async () => {
     mocks.query
       .mockResolvedValueOnce({ rows: [{ posted: 0, unposted: 0 }] })
-      .mockResolvedValueOnce({ rows: [{ count: 0 }] })
+      .mockResolvedValueOnce({ rows: [{ total: 4, manual_review: 0 }] })
       .mockResolvedValueOnce({ rows: [] });
 
-    await loadAccountingOverview(principal);
+    const overview = await loadAccountingOverview(principal);
 
     expect(mocks.hasPermission.mock.calls.map((call) => call[1]?.permission)).toEqual([
       PERMISSIONS.readMcpLedger,
@@ -96,6 +96,9 @@ describe("tenant reporting authorization and tax exception evidence", () => {
       PERMISSIONS.readPayables,
       PERMISSIONS.readTax,
     ]);
+    expect(overview.taxDecisionCount).toBe(4);
+    expect(overview.manualReviewTaxCount).toBe(0);
+    expect(mocks.query.mock.calls[1]?.[0]).toContain("current_draft_decisions");
   });
 
   it("queries and returns only the overview metrics allowed to a scoped role", async () => {

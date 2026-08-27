@@ -40,7 +40,10 @@ export default async function OverviewPage() {
     }] : []),
     ...(overview.access.tax ? [{
       label: "Tax review",
-      values: [`${overview.manualReviewTaxCount} decision${overview.manualReviewTaxCount === 1 ? "" : "s"}`],
+      values: [
+        `${overview.taxDecisionCount} recorded`,
+        `${overview.manualReviewTaxCount} review`,
+      ],
       note: overview.manualReviewTaxCount ? "Manual review remains required" : "No tax review exceptions",
       tone: "green",
     }] : []),
@@ -62,7 +65,7 @@ export default async function OverviewPage() {
 
       {principal.sessionMode === "demo" && (
         <DemoNotice>
-          This is your isolated writable sandbox. This browser returns to the same business after logout or session expiry; the seeded setup is restored nightly.
+          This is your isolated writable sandbox. This browser returns to the same business after logout or session expiry; the seeded setup is restored nightly. <Link href="/signup">Create a permanent business account</Link>.
         </DemoNotice>
       )}
 

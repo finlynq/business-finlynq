@@ -3,7 +3,7 @@ import "server-only";
 import { randomUUID } from "node:crypto";
 import type { PoolClient } from "pg";
 import { withTenantTransaction, type TenantTransactionContext } from "@/db/transaction";
-import { DEMO_BASELINE_DATE } from "@/modules/demo/constants";
+import { demoAccountingDate } from "@/modules/demo/accounting-clock";
 import {
   hasRecentStepUp,
   transactionAuthMethod,
@@ -285,6 +285,9 @@ export async function loadTenantJournalWorkspace(
       actorId: principal.userId,
       permission: PERMISSIONS.postAdjustment,
     });
+    const today = principal.sessionMode === "demo"
+      ? demoAccountingDate()
+      : new Date().toISOString().slice(0, 10);
     const reversalPeriodRows = canPost && canReverse
       ? await client.query<{
           id: string;
@@ -306,14 +309,11 @@ export async function loadTenantJournalWorkspace(
             AND entity.id = ledger.legal_entity_id AND entity.active
            WHERE period.organization_id = $1
              AND (period.state = 'OPEN' OR ($2::boolean AND period.state = 'ADJUSTMENT_ONLY'))
-           ORDER BY CASE WHEN CURRENT_DATE BETWEEN period.starts_on AND period.ends_on THEN 0 ELSE 1 END,
+           ORDER BY CASE WHEN $3::date BETWEEN period.starts_on AND period.ends_on THEN 0 ELSE 1 END,
              period.starts_on DESC, entity.code`,
-          [principal.organizationId, canPostAdjustment],
+          [principal.organizationId, canPostAdjustment, today],
         )
       : { rows: [] };
-    const today = principal.sessionMode === "demo"
-      ? DEMO_BASELINE_DATE
-      : new Date().toISOString().slice(0, 10);
     const reversalPeriods: TenantJournalReversalPeriodDto[] = reversalPeriodRows.rows.map((period) => ({
       id: period.id,
       ledgerId: period.ledger_id,

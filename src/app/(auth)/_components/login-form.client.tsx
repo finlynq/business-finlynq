@@ -4,7 +4,7 @@ import Link from "next/link";
 import { FormEvent, useState } from "react";
 import styles from "../auth.module.css";
 
-export function LoginForm({ next, initialMessage, accountLoginEnabled, accountSignupEnabled }: { next: string; initialMessage?: string; accountLoginEnabled: boolean; accountSignupEnabled: boolean }) {
+export function LoginForm({ next, initialMessage, accountLoginEnabled }: { next: string; initialMessage?: string; accountLoginEnabled: boolean }) {
   const [error, setError] = useState(initialMessage ?? "");
   const [busy, setBusy] = useState(false);
   const [mfaRequired, setMfaRequired] = useState(false);
@@ -43,11 +43,11 @@ export function LoginForm({ next, initialMessage, accountLoginEnabled, accountSi
             <div className={styles.formRow}><span>Sessions expire after inactivity.</span><Link href="/forgot-password">Forgot password?</Link></div>
             <button className={styles.submitButton} type="submit" disabled={busy}>{busy ? "Signing in…" : "Sign in"}</button>
           </form>
-          {accountSignupEnabled && <Link className={styles.afterFormLink} href="/signup">Create a new business account</Link>}
           <div className={styles.divider}><span>or</span></div>
         </>
       )}
       <Link className={styles.demoButton} href={`/try-demo?next=${encodeURIComponent(next)}`} prefetch={false}>Open the public demo <span aria-hidden="true">→</span></Link>
+      <Link className={styles.afterFormLink} href="/signup">Create a new business account</Link>
       <p className={styles.securityNote}>{accountLoginEnabled ? "The public demo is a separate disposable synthetic sandbox; it cannot administer recovery, security, banks, live payments, tax filing, or MCP access." : "This hosted preview provides an isolated disposable synthetic sandbox. Real account login and real-organization writes remain server-disabled."}</p>
     </>
   );

@@ -16,20 +16,23 @@ const demoErrors: Record<string, string> = {
 
 export default async function LoginPage({ searchParams }: { searchParams: Promise<{ next?: string; demoError?: string; reason?: string }> }) {
   const principal = await currentPrincipal();
-  if (principal) redirect("/app");
+  if (principal?.sessionMode === "real") redirect("/app");
   const params = await searchParams;
   const next = safeAppPath(params.next);
   const initialMessage = params.demoError ? demoErrors[params.demoError] : params.reason === "expired" ? "Your session ended. Sign in again to continue." : undefined;
   const accountLoginEnabled = process.env.ACCOUNT_LOGIN_ENABLED === "true";
-  const accountSignupEnabled = accountLoginEnabled && process.env.ACCOUNT_SIGNUP_ENABLED === "true";
 
   return (
     <AuthShell
       eyebrow={accountLoginEnabled ? "Secure workspace" : "Public product preview"}
       title={accountLoginEnabled ? "Welcome back" : "Explore Business Finlynq"}
-      description={accountLoginEnabled ? "Sign in to your organization’s accounting workspace." : "Open the synthetic business directly—no registration or credentials required."}
+      description={principal?.sessionMode === "demo" && accountLoginEnabled
+        ? "Sign in to switch from the public demo to your private organization. Your daily demo claim remains available until its nightly reset."
+        : accountLoginEnabled
+          ? "Sign in to your organization’s accounting workspace."
+          : "Open the synthetic business directly—no registration or credentials required."}
     >
-      <LoginForm next={next} initialMessage={initialMessage} accountLoginEnabled={accountLoginEnabled} accountSignupEnabled={accountSignupEnabled} />
+      <LoginForm next={next} initialMessage={initialMessage} accountLoginEnabled={accountLoginEnabled} />
     </AuthShell>
   );
 }

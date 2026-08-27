@@ -1,19 +1,42 @@
 import { createHash } from "node:crypto";
 import type { Pool, PoolClient } from "pg";
+import type { TenantTransactionContext } from "@/db/transaction";
+import {
+  demoAccountingCalendar,
+  demoDateOffset,
+  demoPeriodState,
+} from "@/modules/demo/accounting-clock";
+import { DEMO_BASELINE_DATE, DEMO_ORGANIZATION_ID, DEMO_USER_ID } from "@/modules/demo/constants";
+import { postJournalInTransaction } from "@/modules/ledger/posting-service";
+import { buildIssueJournalLines } from "@/modules/subledger/journal-line-builders";
+import {
+  assertSnapshotTaxDecisionsCurrent,
+  buildBusinessDocumentSnapshot,
+  canonicalHash,
+  sourceContentHash,
+  type SubledgerOwnerModule,
+} from "@/modules/subledger/document-model";
 import {
   createBlindIndex,
   encryptField,
   serializeEncryptedField,
 } from "@/security/organization-encryption";
 import { loadActiveOrganizationKey } from "@/security/organization-key-store";
+import {
+  WASHINGTON_SALES_USE_EFFECTIVE_FROM,
+  WASHINGTON_SALES_USE_EFFECTIVE_TO,
+  WASHINGTON_SALES_USE_SOURCE,
+  washingtonSalesUsePack,
+} from "@/modules/tax/packs/washington";
 import { ensureOperatorOrganizationKey } from "./organization-service";
-import { DEMO_ORGANIZATION_ID, DEMO_USER_ID } from "@/modules/demo/constants";
 
 export { DEMO_ORGANIZATION_ID } from "@/modules/demo/constants";
 
-const DEMO_BASELINE_VERSION = 1;
-const DEMO_FISCAL_YEAR = 2026;
-const BASELINE_TIMESTAMP = "2026-08-26T12:00:00.000Z";
+const DEMO_BASELINE_VERSION = 2;
+const DEMO_CALENDAR = demoAccountingCalendar();
+const DEMO_FISCAL_YEAR = DEMO_CALENDAR.fiscalYear;
+const DEMO_CURRENT_PERIOD = DEMO_CALENDAR.periodNumber;
+const BASELINE_TIMESTAMP = DEMO_CALENDAR.timestamp;
 const RESET_ADVISORY_LOCK_KEY = "business-finlynq-demo-sandbox-reset";
 
 const MONTH_NAMES = [
@@ -129,6 +152,112 @@ const DEMO_PARTIES = [
   },
 ] as const;
 
+const DEMO_ISSUED_DOCUMENTS = [
+  {
+    fixtureKey: "ca-sale-cad",
+    entityCode: "CA01",
+    partyKey: "harbour-dental",
+    kind: "SALES_INVOICE",
+    sourceNumber: "INV-CA-1001",
+    documentDate: demoDateOffset(DEMO_CALENDAR.accountingDate, -16),
+    dueOn: demoDateOffset(DEMO_CALENDAR.accountingDate, 14),
+    currency: "CAD",
+    fxRate: "1",
+    fxSource: "FUNCTIONAL_CURRENCY",
+    description: "Harbour Dental implementation services",
+    lineDescription: "Implementation and onboarding services",
+    netAmount: "10000.00",
+    sourceAccountCode: "4100",
+    controlAccountCode: "1100",
+    taxAccountCode: "2200",
+    tax: {
+      packKey: "ca.on.hst",
+      category: "STANDARD",
+      destinationCountry: "CA",
+      destinationRegion: "ON",
+      destinationCity: "Toronto",
+    },
+  },
+  {
+    fixtureKey: "ca-supplier-bill-usd",
+    entityCode: "CA01",
+    partyKey: "pine-lake",
+    kind: "SUPPLIER_BILL",
+    sourceNumber: "BILL-CA-FX-3001",
+    documentDate: demoDateOffset(DEMO_CALENDAR.accountingDate, -14),
+    dueOn: demoDateOffset(DEMO_CALENDAR.accountingDate, 16),
+    currency: "USD",
+    fxRate: "1.34",
+    fxSource: "DEMO_BANK_OF_CANADA_DAILY",
+    description: "Pine and Lake cross-border advisory bill",
+    lineDescription: "Advisory services",
+    netAmount: "3000.00",
+    sourceAccountCode: "6100",
+    controlAccountCode: "2000",
+    taxAccountCode: "1500",
+    tax: {
+      packKey: "ca.on.hst",
+      category: "STANDARD",
+      destinationCountry: "CA",
+      destinationRegion: "ON",
+      destinationCity: "Toronto",
+      recoverablePercent: "100",
+    },
+  },
+  {
+    fixtureKey: "us-sale-usd",
+    entityCode: "US01",
+    partyKey: "rainier-creative",
+    kind: "SALES_INVOICE",
+    sourceNumber: "INV-US-2001",
+    documentDate: demoDateOffset(DEMO_CALENDAR.accountingDate, -11),
+    dueOn: demoDateOffset(DEMO_CALENDAR.accountingDate, 19),
+    currency: "USD",
+    fxRate: "1",
+    fxSource: "FUNCTIONAL_CURRENCY",
+    description: "Rainier Creative managed-services invoice",
+    lineDescription: "Managed business services",
+    netAmount: "14000.00",
+    sourceAccountCode: "4100",
+    controlAccountCode: "1100",
+    taxAccountCode: "2200",
+    tax: {
+      packKey: "us.wa.sales-use",
+      category: "STANDARD",
+      destinationCountry: "US",
+      destinationRegion: "WA",
+      destinationCity: "Seattle",
+      locationCode: "1726",
+    },
+  },
+  {
+    fixtureKey: "us-supplier-bill-cad",
+    entityCode: "US01",
+    partyKey: "cascade-office",
+    kind: "SUPPLIER_BILL",
+    sourceNumber: "BILL-US-FX-4001",
+    documentDate: demoDateOffset(DEMO_CALENDAR.accountingDate, -8),
+    dueOn: demoDateOffset(DEMO_CALENDAR.accountingDate, 22),
+    currency: "CAD",
+    fxRate: "0.74",
+    fxSource: "DEMO_FEDERAL_RESERVE_DAILY",
+    description: "Cascade Office cross-border supply bill",
+    lineDescription: "Office supplies and workspace services",
+    netAmount: "4000.00",
+    sourceAccountCode: "6100",
+    controlAccountCode: "2000",
+    taxAccountCode: "2200",
+    tax: {
+      packKey: "us.wa.sales-use",
+      category: "STANDARD",
+      destinationCountry: "US",
+      destinationRegion: "WA",
+      destinationCity: "Seattle",
+      locationCode: "1726",
+    },
+  },
+] as const;
+
 export type DemoSandboxResetMode = "bootstrap" | "nightly";
 
 const SAFE_RESET_TABLE_NAME = /^[a-z][a-z0-9_]*$/;
@@ -147,6 +276,19 @@ type SeededFoundation = Readonly<{
   currency: "CAD" | "USD";
   accountIds: ReadonlyMap<string, string>;
   combinationIds: ReadonlyMap<string, string>;
+  periodIds: ReadonlyMap<number, string>;
+}>;
+
+type SeededPartyData = Readonly<{
+  partyAccountIds: ReadonlyMap<string, string>;
+  registrationIds: ReadonlyMap<string, string>;
+}>;
+
+type SeededJournalToPost = Readonly<{
+  fixtureKey: string;
+  journalId: string;
+  ownerModule: SubledgerOwnerModule;
+  journalTypeKey: "receivables.sales-invoice" | "payables.supplier-bill";
 }>;
 
 type SandboxSlot = Readonly<{
@@ -193,13 +335,13 @@ async function seedTaxPackVersions(client: PoolClient): Promise<void> {
       source: "https://www.canada.ca/en/revenue-agency/services/tax/businesses/topics/gst-hst-businesses/charge-collect-place-supply.html",
     },
     {
-      id: deterministicUuid(DEMO_ORGANIZATION_ID, "tax-pack:us.wa.sales-use:2026.Q3.DOR"),
-      key: "us.wa.sales-use",
-      version: "2026.Q3.DOR",
+      id: deterministicUuid(DEMO_ORGANIZATION_ID, `tax-pack:${washingtonSalesUsePack.key}:${washingtonSalesUsePack.version}`),
+      key: washingtonSalesUsePack.key,
+      version: washingtonSalesUsePack.version,
       jurisdiction: "US-WA-1726",
-      effectiveFrom: "2026-07-01",
-      effectiveTo: "2026-09-30",
-      source: "https://dor.wa.gov/taxes-rates/sales-use-tax-rates/local-sales-use-tax/local-sales-use-tax-rate-table",
+      effectiveFrom: WASHINGTON_SALES_USE_EFFECTIVE_FROM,
+      effectiveTo: WASHINGTON_SALES_USE_EFFECTIVE_TO,
+      source: WASHINGTON_SALES_USE_SOURCE,
     },
   ] as const;
 
@@ -291,34 +433,40 @@ async function seedLedgerFoundation(
   const ledgerId = ledger.rows[0]?.id;
   if (!ledgerId) throw new Error(`Unable to seed demo ledger ${foundation.entityCode}`);
 
+  const periodIds = new Map<number, string>();
   for (let monthIndex = 0; monthIndex < 12; monthIndex += 1) {
+    const periodNumber = monthIndex + 1;
     const startsOn = monthDate(DEMO_FISCAL_YEAR, monthIndex, 1);
     const endsOn = monthIndex === 11
       ? monthDate(DEMO_FISCAL_YEAR, 11, 31)
       : monthDate(DEMO_FISCAL_YEAR, monthIndex + 1, 0);
-    await client.query(
+    const state = demoPeriodState(periodNumber, DEMO_CURRENT_PERIOD);
+    const period = await client.query<{ id: string }>(
       `INSERT INTO fiscal_periods (
          id, organization_id, ledger_id, fiscal_year, period_number,
          label, starts_on, ends_on, state, version, closed_at
-       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'OPEN', 1, NULL)
+       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 1, $10)
        ON CONFLICT (ledger_id, fiscal_year, period_number) DO UPDATE SET
          label = EXCLUDED.label,
          starts_on = EXCLUDED.starts_on,
-         ends_on = EXCLUDED.ends_on,
-         state = 'OPEN',
-         version = 1,
-         closed_at = NULL`,
+         ends_on = EXCLUDED.ends_on
+       RETURNING id`,
       [
-        fixtureId(identity, `period:${foundation.entityCode}:${monthIndex + 1}`),
+        fixtureId(identity, `period:${foundation.entityCode}:${DEMO_FISCAL_YEAR}:${periodNumber}`),
         identity.organizationId,
         ledgerId,
         DEMO_FISCAL_YEAR,
-        monthIndex + 1,
+        periodNumber,
         `${MONTH_NAMES[monthIndex]} ${DEMO_FISCAL_YEAR}`,
         startsOn,
         endsOn,
+        state,
+        state === "OPEN" ? null : BASELINE_TIMESTAMP,
       ],
     );
+    const periodId = period.rows[0]?.id;
+    if (!periodId) throw new Error(`Unable to seed ${foundation.entityCode} period ${periodNumber}`);
+    periodIds.set(periodNumber, periodId);
   }
 
   const accountIds = new Map<string, string>();
@@ -346,7 +494,7 @@ async function seedLedgerFoundation(
         displayName,
         accountClass,
         controlKind,
-        `${DEMO_FISCAL_YEAR}-01-01`,
+        `${DEMO_BASELINE_DATE.slice(0, 4)}-01-01`,
       ],
     );
     const accountId = account.rows[0]?.id;
@@ -392,6 +540,7 @@ async function seedLedgerFoundation(
     currency: foundation.currency,
     accountIds,
     combinationIds,
+    periodIds,
   };
 }
 
@@ -412,7 +561,9 @@ async function seedEncryptedPartyData(
   client: PoolClient,
   identity: SeedIdentity,
   foundations: ReadonlyMap<string, SeededFoundation>,
-): Promise<void> {
+): Promise<SeededPartyData> {
+  const partyAccountIds = new Map<string, string>();
+  const registrationIds = new Map<string, string>();
   const activeKey = await loadActiveOrganizationKey(client, identity.organizationId);
   try {
     for (const party of DEMO_PARTIES) {
@@ -496,7 +647,7 @@ async function seedEncryptedPartyData(
         const controlCode = account.role === "CUSTOMER" ? "1100" : "2000";
         const controlAccountId = selectedFoundation.accountIds.get(controlCode);
         if (!controlAccountId) throw new Error(`Missing ${account.entityCode}.${controlCode} control account`);
-        await client.query(
+        const seededAccount = await client.query<{ id: string }>(
           `INSERT INTO party_accounts (
              id, organization_id, legal_entity_id, ledger_id, party_id,
              role, account_number, control_account_id, transaction_currency,
@@ -507,7 +658,8 @@ async function seedEncryptedPartyData(
              ledger_id = EXCLUDED.ledger_id,
              control_account_id = EXCLUDED.control_account_id,
              transaction_currency = EXCLUDED.transaction_currency,
-             active = true`,
+             active = true
+           RETURNING id`,
           [
             fixtureId(identity, `party-account:${account.entityCode}:${account.role}:${party.key}`),
             identity.organizationId,
@@ -524,13 +676,29 @@ async function seedEncryptedPartyData(
             BASELINE_TIMESTAMP,
           ],
         );
+        const partyAccountId = seededAccount.rows[0]?.id;
+        if (!partyAccountId) throw new Error(`Unable to seed demo party account ${party.key}`);
+        partyAccountIds.set(party.key, partyAccountId);
       }
     }
 
     for (const foundation of FOUNDATIONS) {
       const selectedFoundation = foundations.get(foundation.entityCode);
       if (!selectedFoundation) throw new Error(`Missing ${foundation.entityCode} demo tax foundation`);
-      const registrationId = fixtureId(identity, `tax-registration:${foundation.entityCode}`);
+      const regimeKey = foundation.countryCode === "CA" ? "ca.on.hst" : "us.wa.sales-use";
+      // The public template is intentionally not purged. Reuse its semantic
+      // registration row across baseline versions instead of letting a changed
+      // deterministic fixture id create duplicates.
+      const existingRegistration = await client.query<{ id: string }>(
+        `SELECT id FROM entity_tax_registrations
+         WHERE organization_id = $1 AND legal_entity_id = $2
+           AND regime_key = $3 AND valid_to IS NULL
+         ORDER BY valid_from DESC, id
+         LIMIT 1`,
+        [identity.organizationId, selectedFoundation.legalEntityId, regimeKey],
+      );
+      const registrationId = existingRegistration.rows[0]?.id ??
+        fixtureId(identity, `tax-registration:${foundation.entityCode}`);
       const registrationValue = foundation.countryCode === "CA"
         ? "SYNTHETIC-DEMO-GST-HST-000001"
         : "SYNTHETIC-DEMO-WA-1726-000001";
@@ -555,15 +723,331 @@ async function seedEncryptedPartyData(
           registrationId,
           identity.organizationId,
           selectedFoundation.legalEntityId,
-          foundation.countryCode === "CA" ? "ca.on.hst" : "us.wa.sales-use",
+          regimeKey,
           serializeEncryptedField(encryptedRegistration),
           String(activeKey.keyVersion),
         ],
       );
+      registrationIds.set(foundation.entityCode, registrationId);
     }
   } finally {
     activeKey.dek.fill(0);
   }
+  return { partyAccountIds, registrationIds };
+}
+
+async function seedIssuedDemoDocument(
+  client: PoolClient,
+  identity: SeedIdentity,
+  foundations: ReadonlyMap<string, SeededFoundation>,
+  partyData: SeededPartyData,
+  fixture: (typeof DEMO_ISSUED_DOCUMENTS)[number],
+): Promise<SeededJournalToPost> {
+  const foundation = foundations.get(fixture.entityCode);
+  const partyAccountId = partyData.partyAccountIds.get(fixture.partyKey);
+  const registrationId = partyData.registrationIds.get(fixture.entityCode);
+  const periodId = foundation?.periodIds.get(DEMO_CURRENT_PERIOD);
+  const sourceAccountCombinationId = foundation?.combinationIds.get(fixture.sourceAccountCode);
+  const controlAccountCombinationId = foundation?.combinationIds.get(fixture.controlAccountCode);
+  const taxAccountCombinationId = foundation?.combinationIds.get(fixture.taxAccountCode);
+  const fxRoundingAccountCombinationId = foundation?.combinationIds.get("7190");
+  if (
+    !foundation || !partyAccountId || !registrationId || !periodId ||
+    !sourceAccountCombinationId || !controlAccountCombinationId ||
+    !taxAccountCombinationId || !fxRoundingAccountCombinationId
+  ) {
+    throw new Error(`Demo issued-document foundation is incomplete for ${fixture.fixtureKey}`);
+  }
+
+  const snapshot = buildBusinessDocumentSnapshot({
+    kind: fixture.kind,
+    sourceNumber: fixture.sourceNumber,
+    ledgerId: foundation.ledgerId,
+    legalEntityId: foundation.legalEntityId,
+    partyAccountId,
+    controlAccountCombinationId,
+    taxAccountCombinationId,
+    fxRoundingAccountCombinationId,
+    documentDate: fixture.documentDate,
+    accountingDate: fixture.documentDate,
+    periodId,
+    dueOn: fixture.dueOn,
+    currency: fixture.currency,
+    fx: {
+      rate: fixture.fxRate,
+      source: fixture.fxSource,
+      effectiveAt: `${fixture.documentDate}T16:00:00.000Z`,
+      quoteConvention: "FUNCTIONAL_UNITS_PER_TRANSACTION_UNIT",
+    },
+    description: fixture.description,
+    lines: [{
+      description: fixture.lineDescription,
+      accountCombinationId: sourceAccountCombinationId,
+      netAmount: fixture.netAmount,
+      tax: {
+        ...fixture.tax,
+        registrationId,
+      },
+    }],
+  }, foundation.currency);
+  assertSnapshotTaxDecisionsCurrent(snapshot);
+
+  const draftSourceId = fixtureId(identity, `source-document:${fixture.fixtureKey}:draft`);
+  const postedSourceId = fixtureId(identity, `source-document:${fixture.fixtureKey}:posted`);
+  const draftIdempotencyKey = `demo-baseline-v${DEMO_BASELINE_VERSION}:${identity.organizationId}:${fixture.fixtureKey}:draft`;
+  const issueIdempotencyKey = `demo-baseline-v${DEMO_BASELINE_VERSION}:${identity.organizationId}:${fixture.fixtureKey}:issue`;
+  const contentHash = sourceContentHash(snapshot);
+  const draftCommandHash = canonicalHash({
+    operation: "create",
+    fixtureKey: fixture.fixtureKey,
+    snapshot,
+  });
+  const issueCommandHash = canonicalHash({
+    operation: "issue",
+    fixtureKey: fixture.fixtureKey,
+    sourceNumber: fixture.sourceNumber,
+    expectedVersion: 1,
+  });
+
+  await client.query(
+    `INSERT INTO source_documents (
+       id, organization_id, legal_entity_id, owner_module, source_type,
+       source_number, version, status, snapshot, content_hash,
+       idempotency_key, command_hash, supersedes_source_document_id,
+       created_by, void_reason, created_at
+     ) VALUES (
+       $1, $2, $3, $4, $5, $6, 1, 'DRAFT', $7::jsonb, $8,
+       $9, $10, NULL, $11, NULL, $12
+     )`,
+    [
+      draftSourceId,
+      identity.organizationId,
+      foundation.legalEntityId,
+      snapshot.ownerModule,
+      snapshot.sourceType,
+      snapshot.sourceNumber,
+      JSON.stringify(snapshot),
+      contentHash,
+      draftIdempotencyKey,
+      draftCommandHash,
+      identity.userId,
+      BASELINE_TIMESTAMP,
+    ],
+  );
+  await client.query(
+    `INSERT INTO source_documents (
+       id, organization_id, legal_entity_id, owner_module, source_type,
+       source_number, version, status, snapshot, content_hash,
+       idempotency_key, command_hash, supersedes_source_document_id,
+       created_by, void_reason, created_at
+     ) VALUES (
+       $1, $2, $3, $4, $5, $6, 2, 'POSTED', $7::jsonb, $8,
+       $9, $10, $11, $12, NULL, $13
+     )`,
+    [
+      postedSourceId,
+      identity.organizationId,
+      foundation.legalEntityId,
+      snapshot.ownerModule,
+      snapshot.sourceType,
+      snapshot.sourceNumber,
+      JSON.stringify(snapshot),
+      contentHash,
+      issueIdempotencyKey,
+      issueCommandHash,
+      draftSourceId,
+      identity.userId,
+      BASELINE_TIMESTAMP,
+    ],
+  );
+
+  const taxSnapshotIds = new Map<number, string>();
+  for (const line of snapshot.lines) {
+    const decision = line.taxDecision;
+    const taxPack = await client.query<{ id: string }>(
+      `SELECT id FROM tax_pack_versions
+       WHERE pack_key = $1 AND version = $2
+       LIMIT 1`,
+      [decision.packKey, decision.packVersion],
+    );
+    const taxPackVersionId = taxPack.rows[0]?.id;
+    if (!taxPackVersionId) {
+      throw new Error(`Approved tax pack is missing for ${fixture.fixtureKey}`);
+    }
+    const taxSnapshotId = fixtureId(
+      identity,
+      `tax-determination:${fixture.fixtureKey}:${line.lineNumber}`,
+    );
+    await client.query(
+      `INSERT INTO tax_determination_snapshots (
+         id, organization_id, ledger_id, legal_entity_id, tax_pack_version_id,
+         source_document_id, status, rule_key, jurisdiction, currency,
+         taxable_basis, total_tax, fact_snapshot, evidence_snapshot,
+         component_snapshot, rounding_snapshot, gl_mapping_snapshot,
+         decision_hash, created_at
+       ) VALUES (
+         $1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
+         $11, $12, $13::jsonb, $14::jsonb, $15::jsonb, $16::jsonb,
+         $17::jsonb, $18, $19
+       )`,
+      [
+        taxSnapshotId,
+        identity.organizationId,
+        foundation.ledgerId,
+        foundation.legalEntityId,
+        taxPackVersionId,
+        postedSourceId,
+        decision.status,
+        decision.ruleKey,
+        decision.jurisdiction,
+        snapshot.currency,
+        line.netAmount,
+        decision.totalTax,
+        JSON.stringify(decision.facts),
+        JSON.stringify({
+          registrationReference: line.tax.registrationId ?? null,
+          evidenceReference: line.tax.evidenceReference ?? null,
+          locationCode: line.tax.locationCode ?? null,
+        }),
+        JSON.stringify(decision.components),
+        JSON.stringify({ method: decision.rounding, lineNumber: line.lineNumber }),
+        JSON.stringify({
+          sourceAccountCombinationId: line.accountCombinationId,
+          taxAccountCombinationId: snapshot.taxAccountCombinationId,
+        }),
+        line.taxDecisionHash,
+        BASELINE_TIMESTAMP,
+      ],
+    );
+    taxSnapshotIds.set(line.lineNumber, taxSnapshotId);
+  }
+
+  const subledgerEventId = fixtureId(identity, `subledger-event:${fixture.fixtureKey}:issued`);
+  await client.query(
+    `INSERT INTO subledger_events (
+       id, organization_id, ledger_id, party_account_id,
+       source_document_id, event_type, event_version, event_at
+     ) VALUES ($1, $2, $3, $4, $5, $6, '2', $7)`,
+    [
+      subledgerEventId,
+      identity.organizationId,
+      foundation.ledgerId,
+      partyAccountId,
+      postedSourceId,
+      snapshot.kind === "SALES_INVOICE" ? "SALES_INVOICE_ISSUED" : "SUPPLIER_BILL_ISSUED",
+      BASELINE_TIMESTAMP,
+    ],
+  );
+
+  await client.query(
+    `INSERT INTO open_items (
+       id, organization_id, ledger_id, party_account_id, source_event_id,
+       status, transaction_currency, original_transaction_amount,
+       open_transaction_amount, original_functional_amount,
+       carrying_functional_amount, due_on, created_at
+     ) VALUES ($1, $2, $3, $4, $5, 'OPEN', $6, $7, $7, $8, $8, $9, $10)`,
+    [
+      fixtureId(identity, `open-item:${fixture.fixtureKey}`),
+      identity.organizationId,
+      foundation.ledgerId,
+      partyAccountId,
+      subledgerEventId,
+      snapshot.currency,
+      snapshot.grossTotal,
+      snapshot.grossFunctional,
+      snapshot.dueOn,
+      BASELINE_TIMESTAMP,
+    ],
+  );
+
+  const journalTypeKey = snapshot.sourceType;
+  const journalType = await client.query<{ id: string; version: number }>(
+    `SELECT id, version FROM journal_type_definitions
+     WHERE key = $1 AND owner_module = $2
+     ORDER BY version DESC LIMIT 1`,
+    [journalTypeKey, snapshot.ownerModule],
+  );
+  const selectedJournalType = journalType.rows[0];
+  if (!selectedJournalType) {
+    throw new Error(`Journal type is missing for ${fixture.fixtureKey}`);
+  }
+  const journalId = fixtureId(identity, `journal:${fixture.fixtureKey}:issued`);
+  const sourceEventKey = `${snapshot.sourceType}:${postedSourceId}:issued`;
+  await client.query(
+    `INSERT INTO journal_entries (
+       id, organization_id, ledger_id, legal_entity_id, period_id,
+       journal_type_key, journal_type_definition_id, journal_type_version,
+       source_document_id, source_event_key, idempotency_key, command_hash,
+       origin, purpose, status, accounting_date, functional_currency,
+       description, created_by, created_at
+     ) VALUES (
+       $1, $2, $3, $4, $5, $6, $7, $8,
+       $9, $10, $11, $12, 'SYSTEM', 'ROUTINE', 'DRAFT', $13, $14,
+       $15, $16, $17
+     )`,
+    [
+      journalId,
+      identity.organizationId,
+      foundation.ledgerId,
+      foundation.legalEntityId,
+      periodId,
+      journalTypeKey,
+      selectedJournalType.id,
+      selectedJournalType.version,
+      postedSourceId,
+      sourceEventKey,
+      issueIdempotencyKey,
+      issueCommandHash,
+      snapshot.accountingDate,
+      snapshot.functionalCurrency,
+      snapshot.description,
+      identity.userId,
+      BASELINE_TIMESTAMP,
+    ],
+  );
+
+  const journalLines = buildIssueJournalLines(snapshot, subledgerEventId, taxSnapshotIds);
+  for (const [index, line] of journalLines.entries()) {
+    await client.query(
+      `INSERT INTO journal_lines (
+         id, organization_id, ledger_id, journal_entry_id, line_number,
+         account_combination_id, debit_functional, credit_functional,
+         transaction_currency, debit_transaction, credit_transaction,
+         fx_rate, fx_rate_source, fx_rate_effective_at,
+         party_account_id, subledger_event_id, tax_snapshot_id, memo
+       ) VALUES (
+         $1, $2, $3, $4, $5, $6, $7, $8, $9,
+         $10, $11, $12, $13, $14, $15, $16, $17, $18
+       )`,
+      [
+        fixtureId(identity, `journal-line:${fixture.fixtureKey}:issued:${index + 1}`),
+        identity.organizationId,
+        foundation.ledgerId,
+        journalId,
+        index + 1,
+        line.accountCombinationId,
+        line.debitFunctional,
+        line.creditFunctional,
+        line.transactionCurrency,
+        line.debitTransaction,
+        line.creditTransaction,
+        line.fxRate,
+        line.fxRateSource,
+        line.fxRateEffectiveAt,
+        line.partyAccountId ?? null,
+        line.subledgerEventId ?? null,
+        line.taxSnapshotId ?? null,
+        line.memo,
+      ],
+    );
+  }
+
+  return {
+    fixtureKey: fixture.fixtureKey,
+    journalId,
+    ownerModule: snapshot.ownerModule,
+    journalTypeKey,
+  };
 }
 
 async function seedDraftJournal(
@@ -593,8 +1077,8 @@ async function seedDraftJournal(
        WHERE key = 'ledger.manual' ORDER BY version DESC LIMIT 1
      ) journal_type ON true
      WHERE period.organization_id = $1 AND period.ledger_id = $2
-       AND period.fiscal_year = $3 AND period.period_number = 8`,
-    [identity.organizationId, input.foundation.ledgerId, DEMO_FISCAL_YEAR],
+       AND period.fiscal_year = $3 AND period.period_number = $4`,
+    [identity.organizationId, input.foundation.ledgerId, DEMO_FISCAL_YEAR, DEMO_CURRENT_PERIOD],
   );
   const selected = setup.rows[0];
   const debitCombinationId = input.foundation.combinationIds.get(input.debitAccount);
@@ -623,7 +1107,7 @@ async function seedDraftJournal(
          status, accounting_date, functional_currency, description, created_by, created_at
        ) VALUES (
          $1, $2, $3, $4, $5, 'ledger.manual', $6, $7,
-         $8, $8, $9, 'USER', 'ROUTINE', 'DRAFT', '2026-08-26', $10, $11, $12, $13
+         $8, $8, $9, 'USER', 'ROUTINE', 'DRAFT', $10, $11, $12, $13, $14
        )`,
       [
         journalId,
@@ -635,6 +1119,7 @@ async function seedDraftJournal(
         selected.journal_type_version,
         idempotencyKey,
         commandHash,
+        DEMO_CALENDAR.accountingDate,
         input.foundation.currency,
         input.description,
         identity.userId,
@@ -667,14 +1152,17 @@ async function seedDraftJournal(
   );
 }
 
-async function seedOrganizationBaseline(client: PoolClient, identity: SeedIdentity): Promise<void> {
+async function seedOrganizationBaseline(
+  client: PoolClient,
+  identity: SeedIdentity,
+): Promise<readonly SeededJournalToPost[]> {
   await ensureOperatorOrganizationKey(client, identity.organizationId);
   const foundations = new Map<string, SeededFoundation>();
   for (const foundation of FOUNDATIONS) {
     foundations.set(foundation.entityCode, await seedLedgerFoundation(client, identity, foundation));
   }
   await seedSegmentDefinitions(client, identity);
-  await seedEncryptedPartyData(client, identity, foundations);
+  const partyData = await seedEncryptedPartyData(client, identity, foundations);
 
   const ca = foundations.get("CA01");
   const us = foundations.get("US01");
@@ -699,6 +1187,19 @@ async function seedOrganizationBaseline(client: PoolClient, identity: SeedIdenti
     creditAccount: "1000",
     amount: "2400.00",
   });
+
+  const journalsToPost: SeededJournalToPost[] = [];
+  if (!identity.publicTemplate) {
+    for (const fixture of DEMO_ISSUED_DOCUMENTS) {
+      journalsToPost.push(
+        await seedIssuedDemoDocument(client, identity, foundations, partyData, fixture),
+      );
+    }
+  }
+  if (identity.publicTemplate && journalsToPost.length !== 0) {
+    throw new Error("The fixed public demo template must remain draft-only");
+  }
+  return journalsToPost;
 }
 
 async function assertOperatorDatabaseOwner(client: PoolClient): Promise<void> {
@@ -851,11 +1352,20 @@ async function purgeSandboxBusinessData(client: PoolClient, organizationId: stri
 }
 
 async function verifySandboxBaseline(client: PoolClient, organizationId: string): Promise<void> {
+  const sealedPeriodsPerLedger = Math.max(DEMO_CURRENT_PERIOD - 2, 0);
+  const hardClosedPeriodsPerLedger = DEMO_CURRENT_PERIOD > 1 ? 1 : 0;
+  const openPeriodsPerLedger = 12 - sealedPeriodsPerLedger - hardClosedPeriodsPerLedger;
   const result = await client.query<Record<string, string>>(
     `SELECT
        (SELECT count(*) FROM legal_entities WHERE organization_id = $1)::text AS entities,
        (SELECT count(*) FROM ledgers WHERE organization_id = $1)::text AS ledgers,
        (SELECT count(*) FROM fiscal_periods WHERE organization_id = $1)::text AS periods,
+       (SELECT count(*) FROM fiscal_periods
+          WHERE organization_id = $1 AND state = 'SEALED')::text AS sealed_periods,
+       (SELECT count(*) FROM fiscal_periods
+          WHERE organization_id = $1 AND state = 'HARD_CLOSED')::text AS hard_closed_periods,
+       (SELECT count(*) FROM fiscal_periods
+          WHERE organization_id = $1 AND state = 'OPEN')::text AS open_periods,
        (SELECT count(*) FROM gl_accounts WHERE organization_id = $1)::text AS accounts,
        (SELECT count(*) FROM account_combinations WHERE organization_id = $1)::text AS combinations,
        (SELECT count(*) FROM segment_definitions WHERE organization_id = $1)::text AS segments,
@@ -868,12 +1378,26 @@ async function verifySandboxBaseline(client: PoolClient, organizationId: string)
        (SELECT count(*) FROM entity_tax_registrations WHERE organization_id = $1)::text AS registrations,
        (SELECT count(*) FROM ledger_posting_policies WHERE organization_id = $1)::text AS posting_policies,
        (SELECT count(*) FROM journal_entries WHERE organization_id = $1)::text AS journals,
+       (SELECT count(*) FROM journal_entries
+          WHERE organization_id = $1 AND status = 'POSTED')::text AS posted_journals,
+       (SELECT count(*) FROM journal_entries
+          WHERE organization_id = $1 AND status = 'DRAFT')::text AS draft_journals,
        (SELECT count(*) FROM journal_lines WHERE organization_id = $1)::text AS lines,
        (SELECT count(*) FROM source_documents WHERE organization_id = $1)::text AS source_documents,
+       (SELECT count(*) FROM source_documents
+          WHERE organization_id = $1 AND status = 'DRAFT' AND version = 1)::text AS draft_sources,
+       (SELECT count(*) FROM source_documents
+          WHERE organization_id = $1 AND status = 'POSTED' AND version = 2)::text AS posted_sources,
+       (SELECT count(*) FROM tax_determination_snapshots
+          WHERE organization_id = $1)::text AS tax_snapshots,
+       (SELECT count(*) FROM tax_determination_snapshots
+          WHERE organization_id = $1 AND status = 'APPLIED')::text AS applied_tax_snapshots,
        (SELECT count(*) FROM subledger_events WHERE organization_id = $1)::text AS subledger_events,
        (SELECT count(*) FROM open_items WHERE organization_id = $1)::text AS open_items,
        (SELECT count(*) FROM open_item_void_events WHERE organization_id = $1)::text AS open_item_void_events,
        (SELECT count(*) FROM document_settlement_allocations WHERE organization_id = $1)::text AS allocations,
+       (SELECT count(*) FROM journal_entry_relations WHERE organization_id = $1)::text AS journal_relations,
+       (SELECT count(*) FROM ledger_number_sequences WHERE organization_id = $1)::text AS number_sequences,
        (SELECT count(*) FROM audit_events WHERE organization_id = $1)::text AS audit_events,
        (SELECT count(*) FROM outbox_events WHERE organization_id = $1)::text AS outbox_events`,
     [organizationId],
@@ -883,6 +1407,9 @@ async function verifySandboxBaseline(client: PoolClient, organizationId: string)
     entities: "2",
     ledgers: "2",
     periods: "24",
+    sealed_periods: String(sealedPeriodsPerLedger * 2),
+    hard_closed_periods: String(hardClosedPeriodsPerLedger * 2),
+    open_periods: String(openPeriodsPerLedger * 2),
     accounts: "26",
     combinations: "26",
     segments: "10",
@@ -892,18 +1419,178 @@ async function verifySandboxBaseline(client: PoolClient, organizationId: string)
     currency_restricted_party_accounts: "0",
     registrations: "2",
     posting_policies: "2",
-    journals: "2",
-    lines: "4",
-    source_documents: "0",
-    subledger_events: "0",
-    open_items: "0",
+    journals: "6",
+    posted_journals: "4",
+    draft_journals: "2",
+    lines: "16",
+    source_documents: "8",
+    draft_sources: "4",
+    posted_sources: "4",
+    tax_snapshots: "4",
+    applied_tax_snapshots: "4",
+    subledger_events: "4",
+    open_items: "4",
     open_item_void_events: "0",
     allocations: "0",
-    audit_events: "0",
-    outbox_events: "0",
+    journal_relations: "0",
+    number_sequences: "2",
+    audit_events: "4",
+    outbox_events: "4",
   };
   if (!counts || Object.entries(expected).some(([key, value]) => counts[key] !== value)) {
     throw new Error(`Demo sandbox baseline verification failed for ${organizationId}`);
+  }
+
+  const integrity = await client.query<Record<string, string>>(
+    `SELECT
+       (SELECT count(*) FROM fiscal_periods period
+          WHERE period.organization_id = $1 AND (
+            period.state <> CASE
+              WHEN period.period_number < $2 - 1 THEN 'SEALED'::period_state
+              WHEN period.period_number = $2 - 1 THEN 'HARD_CLOSED'::period_state
+              ELSE 'OPEN'::period_state
+            END
+            OR (period.state = 'OPEN' AND period.closed_at IS NOT NULL)
+            OR (period.state <> 'OPEN' AND period.closed_at IS NULL)
+          ))::text AS period_layout_errors,
+       (SELECT count(DISTINCT (source_type, source_number))
+          FROM source_documents WHERE organization_id = $1)::text AS logical_documents,
+       (SELECT count(*) FROM source_documents posted
+          WHERE posted.organization_id = $1
+            AND posted.status = 'POSTED' AND posted.version = 2
+            AND NOT EXISTS (
+              SELECT 1 FROM source_documents draft
+              WHERE draft.organization_id = posted.organization_id
+                AND draft.id = posted.supersedes_source_document_id
+                AND draft.source_type = posted.source_type
+                AND draft.source_number = posted.source_number
+                AND draft.status = 'DRAFT' AND draft.version = 1
+            ))::text AS source_lineage_errors,
+       (SELECT count(*) FROM journal_entries journal
+          WHERE journal.organization_id = $1 AND journal.status = 'POSTED'
+            AND (
+              journal.journal_number IS NULL OR journal.content_hash IS NULL
+              OR journal.content_hash !~ '^[0-9a-f]{64}$'
+              OR journal.posted_by IS NULL OR journal.posted_at IS NULL
+              OR journal.total_debit_functional <= 0
+              OR journal.total_debit_functional <> journal.total_credit_functional
+            ))::text AS posted_journal_errors,
+       (SELECT count(*) FROM open_item_balances balance
+          WHERE balance.organization_id = $1 AND (
+            balance.derived_status <> 'OPEN'
+            OR balance.open_transaction_amount <> balance.original_transaction_amount
+            OR balance.carrying_functional_amount <> balance.original_functional_amount
+          ))::text AS open_balance_errors,
+       (SELECT count(*) FROM open_item_balances balance
+          JOIN ledgers ledger
+            ON ledger.organization_id = balance.organization_id
+           AND ledger.id = balance.ledger_id
+          WHERE balance.organization_id = $1
+            AND balance.transaction_currency <> ledger.functional_currency)::text AS cross_currency_items,
+       (SELECT count(*) FROM audit_events
+          WHERE organization_id = $1 AND action = 'journal.posted')::text AS posting_audits,
+       (SELECT count(*) FROM outbox_events
+          WHERE organization_id = $1 AND topic = 'ledger.journal-posted')::text AS posting_outbox_events`,
+    [organizationId, DEMO_CURRENT_PERIOD],
+  );
+  const integrityExpected: Readonly<Record<string, string>> = {
+    period_layout_errors: "0",
+    logical_documents: "4",
+    source_lineage_errors: "0",
+    posted_journal_errors: "0",
+    open_balance_errors: "0",
+    cross_currency_items: "2",
+    posting_audits: "4",
+    posting_outbox_events: "4",
+  };
+  const integrityResult = integrity.rows[0];
+  if (
+    !integrityResult ||
+    Object.entries(integrityExpected).some(([key, value]) => integrityResult[key] !== value)
+  ) {
+    throw new Error(`Demo sandbox integrity verification failed for ${organizationId}`);
+  }
+
+  const journalTotals = await client.query<{
+    source_number: string;
+    line_count: number;
+    debit: string;
+    credit: string;
+  }>(
+    `SELECT source.source_number, count(line.id)::int AS line_count,
+       round(journal.total_debit_functional, 2)::text AS debit,
+       round(journal.total_credit_functional, 2)::text AS credit
+     FROM journal_entries journal
+     JOIN source_documents source
+       ON source.organization_id = journal.organization_id
+      AND source.id = journal.source_document_id
+     JOIN journal_lines line
+       ON line.organization_id = journal.organization_id
+      AND line.journal_entry_id = journal.id
+     WHERE journal.organization_id = $1 AND journal.status = 'POSTED'
+     GROUP BY journal.id, source.source_number,
+       journal.total_debit_functional, journal.total_credit_functional
+     ORDER BY source.source_number`,
+    [organizationId],
+  );
+  const expectedJournalTotals = [
+    { source_number: "BILL-CA-FX-3001", line_count: 3, debit: "4542.60", credit: "4542.60" },
+    { source_number: "BILL-US-FX-4001", line_count: 3, debit: "3272.28", credit: "3272.28" },
+    { source_number: "INV-CA-1001", line_count: 3, debit: "11300.00", credit: "11300.00" },
+    { source_number: "INV-US-2001", line_count: 3, debit: "15477.00", credit: "15477.00" },
+  ];
+  if (JSON.stringify(journalTotals.rows) !== JSON.stringify(expectedJournalTotals)) {
+    throw new Error(`Demo sandbox journal totals verification failed for ${organizationId}`);
+  }
+
+  const openBalances = await client.query<{
+    source_number: string;
+    transaction_currency: string;
+    open_transaction_amount: string;
+    carrying_functional_amount: string;
+  }>(
+    `SELECT source.source_number, balance.transaction_currency,
+       round(balance.open_transaction_amount, 2)::text AS open_transaction_amount,
+       round(balance.carrying_functional_amount, 2)::text AS carrying_functional_amount
+     FROM open_item_balances balance
+     JOIN subledger_events event
+       ON event.organization_id = balance.organization_id
+      AND event.id = balance.source_event_id
+     JOIN source_documents source
+       ON source.organization_id = event.organization_id
+      AND source.id = event.source_document_id
+     WHERE balance.organization_id = $1
+     ORDER BY source.source_number`,
+    [organizationId],
+  );
+  const expectedOpenBalances = [
+    {
+      source_number: "BILL-CA-FX-3001",
+      transaction_currency: "USD",
+      open_transaction_amount: "3390.00",
+      carrying_functional_amount: "4542.60",
+    },
+    {
+      source_number: "BILL-US-FX-4001",
+      transaction_currency: "CAD",
+      open_transaction_amount: "4000.00",
+      carrying_functional_amount: "2960.00",
+    },
+    {
+      source_number: "INV-CA-1001",
+      transaction_currency: "CAD",
+      open_transaction_amount: "11300.00",
+      carrying_functional_amount: "11300.00",
+    },
+    {
+      source_number: "INV-US-2001",
+      transaction_currency: "USD",
+      open_transaction_amount: "15477.00",
+      carrying_functional_amount: "15477.00",
+    },
+  ];
+  if (JSON.stringify(openBalances.rows) !== JSON.stringify(expectedOpenBalances)) {
+    throw new Error(`Demo sandbox open-balance verification failed for ${organizationId}`);
   }
 }
 
@@ -953,7 +1640,65 @@ async function quarantineSlot(client: PoolClient, slot: SandboxSlot): Promise<vo
   }
 }
 
+async function postSeededJournal(
+  client: PoolClient,
+  identity: SeedIdentity,
+  journal: SeededJournalToPost,
+): Promise<void> {
+  const context: TenantTransactionContext = {
+    organizationId: identity.organizationId,
+    actorId: identity.userId,
+    sessionMode: "real",
+    requestId: `demo-baseline-v${DEMO_BASELINE_VERSION}:${journal.fixtureKey}:post`,
+    authMethod: "DEMO_BASELINE",
+    sourceSurface: "WORKER",
+    reason: "Restore the deterministic nightly demo baseline",
+  };
+
+  await client.query("BEGIN");
+  try {
+    await client.query("SET LOCAL statement_timeout = '60s'");
+    await client.query("SET LOCAL lock_timeout = '45s'");
+    await client.query("SELECT set_config('app.organization_id', $1, true)", [context.organizationId]);
+    await client.query("SELECT set_config('app.actor_id', $1, true)", [context.actorId]);
+    await client.query("SELECT set_config('app.session_id', '', true)");
+    await client.query("SELECT set_config('app.session_mode', 'real', true)");
+    await client.query("SELECT set_config('app.request_id', $1, true)", [context.requestId]);
+    await client.query("SELECT set_config('app.auth_method', $1, true)", [context.authMethod]);
+    await client.query("SELECT set_config('app.source_surface', $1, true)", [context.sourceSurface]);
+    await client.query("SELECT set_config('app.reason', $1, true)", [context.reason]);
+    await client.query("SELECT set_config('app.demo_write_authorized', 'false', true)");
+    const posted = await postJournalInTransaction(client, {
+      context,
+      journalId: journal.journalId,
+      requiredOwnerModule: journal.ownerModule,
+      requiredJournalType: journal.journalTypeKey,
+    });
+    if (posted.idempotentReplay || posted.status !== "POSTED") {
+      throw new Error(`Demo fixture ${journal.fixtureKey} did not perform a fresh post`);
+    }
+    await client.query("COMMIT");
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  }
+}
+
 async function resetClaimedSandbox(client: PoolClient, slot: SandboxSlot): Promise<void> {
+  if (!slot.user_id) {
+    throw new Error(`Demo sandbox slot ${slot.slot} has no active demo accountant`);
+  }
+  const suffix = String(slot.slot).padStart(3, "0");
+  const identity: SeedIdentity = {
+    organizationId: slot.organization_id,
+    userId: slot.user_id,
+    slug: `northstar-sandbox-${suffix}`,
+    organizationName: `Northstar Demo Sandbox ${suffix}`,
+  };
+  let journalsToPost: readonly SeededJournalToPost[] = [];
+
+  // Purge and reconstruct all immutable source data as database-owner
+  // fixtures, then commit before crossing the ordinary posting boundary.
   await client.query("BEGIN");
   try {
     await client.query("SET LOCAL statement_timeout = '300s'");
@@ -993,7 +1738,6 @@ async function resetClaimedSandbox(client: PoolClient, slot: SandboxSlot): Promi
       throw new Error(`Demo sandbox slot ${slot.slot} is not eligible for reset`);
     }
 
-    const suffix = String(slot.slot).padStart(3, "0");
     await client.query(
       `UPDATE organizations SET
          slug = $2, display_name = $3, active = true,
@@ -1001,17 +1745,40 @@ async function resetClaimedSandbox(client: PoolClient, slot: SandboxSlot): Promi
        WHERE id = $1`,
       [slot.organization_id, `northstar-sandbox-${suffix}`, `Northstar Demo Sandbox ${suffix}`],
     );
-    if (!slot.user_id) {
-      throw new Error(`Demo sandbox slot ${slot.slot} has no active demo accountant`);
-    }
     await purgeSandboxBusinessData(client, slot.organization_id);
     await client.query("SELECT app.reset_demo_sandbox_extensions($1, $2)", [slot.organization_id, slot.user_id]);
-    await seedOrganizationBaseline(client, {
-      organizationId: slot.organization_id,
-      userId: slot.user_id,
-      slug: `northstar-sandbox-${suffix}`,
-      organizationName: `Northstar Demo Sandbox ${suffix}`,
-    });
+    journalsToPost = await seedOrganizationBaseline(client, identity);
+    if (journalsToPost.length !== DEMO_ISSUED_DOCUMENTS.length) {
+      throw new Error(`Demo sandbox slot ${slot.slot} did not seed every issued fixture`);
+    }
+    await client.query("COMMIT");
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  }
+
+  // Each journal posts through the production permission, validation,
+  // numbering, audit, and outbox controls. Separate transactions also keep
+  // the append-only audit chain strictly ordered.
+  for (const journal of journalsToPost) {
+    await postSeededJournal(client, identity, journal);
+  }
+
+  await client.query("BEGIN");
+  try {
+    await client.query("SET LOCAL statement_timeout = '60s'");
+    await client.query("SET LOCAL lock_timeout = '45s'");
+    const selected = await client.query<{ organization_mode: string; state: string }>(
+      `SELECT organization.organization_mode, sandbox.state
+       FROM demo_sandbox_slots sandbox
+       JOIN organizations organization ON organization.id = sandbox.organization_id
+       WHERE sandbox.slot = $1 AND sandbox.organization_id = $2
+       FOR UPDATE OF sandbox`,
+      [slot.slot, slot.organization_id],
+    );
+    if (selected.rows[0]?.organization_mode !== "SANDBOX" || selected.rows[0]?.state !== "RESETTING") {
+      throw new Error(`Demo sandbox slot ${slot.slot} lost its reset claim before verification`);
+    }
     await verifySandboxBaseline(client, slot.organization_id);
     const released = await client.query(
       `UPDATE demo_sandbox_slots SET
@@ -1114,13 +1881,37 @@ export async function bootstrapDemoOrganization(pool: Pool): Promise<void> {
     if (user.rows.length !== 1) throw new Error("Fixed public demo user has not been installed by migrations");
 
     await seedTaxPackVersions(client);
-    await seedOrganizationBaseline(client, {
+    const publicJournalsToPost = await seedOrganizationBaseline(client, {
       organizationId: DEMO_ORGANIZATION_ID,
       userId: DEMO_USER_ID,
       slug: "northstar-demo",
       organizationName: "Northstar Demo Group",
       publicTemplate: true,
     });
+    if (publicJournalsToPost.length !== 0) {
+      throw new Error("The fixed public demo template cannot contain posted baseline fixtures");
+    }
+    const publicTemplateInvariant = await client.query<{
+      registrations: string;
+      source_documents: string;
+      posted_journals: string;
+    }>(
+      `SELECT
+         (SELECT count(*) FROM entity_tax_registrations
+            WHERE organization_id = $1)::text AS registrations,
+         (SELECT count(*) FROM source_documents
+            WHERE organization_id = $1)::text AS source_documents,
+         (SELECT count(*) FROM journal_entries
+            WHERE organization_id = $1 AND status = 'POSTED')::text AS posted_journals`,
+      [DEMO_ORGANIZATION_ID],
+    );
+    if (
+      publicTemplateInvariant.rows[0]?.registrations !== "2" ||
+      publicTemplateInvariant.rows[0]?.source_documents !== "0" ||
+      publicTemplateInvariant.rows[0]?.posted_journals !== "0"
+    ) {
+      throw new Error("The fixed public demo template violated its draft-only baseline invariant");
+    }
     await client.query("COMMIT");
   } catch (error) {
     await client.query("ROLLBACK");

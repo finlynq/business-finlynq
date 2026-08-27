@@ -1,5 +1,30 @@
 import { expect, test, type Page } from "@playwright/test";
 
+type ReadinessState = "ready" | "disabled";
+
+function expectedReadiness(...environmentNames: string[]): ReadinessState | null {
+  const configured = environmentNames
+    .map((name) => process.env[name])
+    .find((value) => value !== undefined);
+  if (configured === undefined) return null;
+  if (configured === "true") return "ready";
+  if (configured === "false") return "disabled";
+  throw new Error(`${environmentNames[0]} must be true or false when configured`);
+}
+
+const expectedAccountAuthentication = expectedReadiness(
+  "E2E_EXPECT_ACCOUNT_LOGIN_ENABLED",
+  "ACCOUNT_LOGIN_ENABLED",
+);
+const expectedAccountSignup = expectedReadiness(
+  "E2E_EXPECT_ACCOUNT_SIGNUP_ENABLED",
+  "ACCOUNT_SIGNUP_ENABLED",
+);
+const expectedEmailWorker = expectedReadiness(
+  "E2E_EXPECT_AUTH_EMAIL_WORKER",
+  "AUTH_EMAIL_DELIVERY_ENABLED",
+);
+
 function collectBrowserErrors(page: Page): string[] {
   const errors: string[] = [];
   page.on("console", (message) => {
@@ -67,6 +92,8 @@ test("public website, readiness, and security headers are release-ready", async 
 
   await expect(page.getByRole("heading", { level: 1 })).toContainText("Close the books with confidence");
   await expect(page.getByRole("banner").getByRole("link", { name: "Open demo" })).toBeVisible();
+  const createAccount = page.getByRole("banner").getByRole("link", { name: "Create account" });
+  await expect(createAccount).toBeVisible();
   expect(response?.status()).toBe(200);
   expect(response?.headers()["x-content-type-options"]).toBe("nosniff");
   expect(response?.headers()["x-frame-options"]).toBe("DENY");
@@ -79,10 +106,53 @@ test("public website, readiness, and security headers are release-ready", async 
   const ready = await request.get("/api/health");
   expect(ready.status()).toBe(200);
   expect(ready.headers()["cache-control"]).toContain("no-store");
-  await expect(ready.json()).resolves.toMatchObject({
+  const readiness = await ready.json() as {
+    status: string;
+    checks: {
+      database: string;
+      organizationKey: string;
+      identityKey: string;
+      accountAuthentication: ReadinessState;
+      accountSignup: ReadinessState;
+      emailWorker: ReadinessState;
+    };
+  };
+  expect(readiness).toMatchObject({
     status: "ready",
-    checks: { database: "ready", organizationKey: "ready", identityKey: "ready" },
+    checks: {
+      database: "ready",
+      organizationKey: "ready",
+      identityKey: "ready",
+    },
   });
+  expect(["ready", "disabled"]).toContain(readiness.checks.accountAuthentication);
+  expect(["ready", "disabled"]).toContain(readiness.checks.accountSignup);
+  expect(["ready", "disabled"]).toContain(readiness.checks.emailWorker);
+  if (expectedAccountAuthentication) {
+    expect(readiness.checks.accountAuthentication).toBe(expectedAccountAuthentication);
+  }
+  if (expectedAccountSignup) expect(readiness.checks.accountSignup).toBe(expectedAccountSignup);
+  if (expectedEmailWorker) expect(readiness.checks.emailWorker).toBe(expectedEmailWorker);
+  if (readiness.checks.accountAuthentication === "ready") {
+    expect(readiness.checks.emailWorker).toBe("ready");
+  }
+  if (readiness.checks.accountSignup === "ready") {
+    expect(readiness.checks.accountAuthentication).toBe("ready");
+    expect(readiness.checks.emailWorker).toBe("ready");
+  }
+
+  await createAccount.click();
+  await expect(page).toHaveURL(/\/signup$/);
+  if (readiness.checks.accountAuthentication === "ready" && readiness.checks.accountSignup === "ready") {
+    await expect(page.getByRole("heading", { level: 1, name: "Create your workspace" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Create account" })).toBeVisible();
+    await expect(page.getByLabel("Signup verification").locator("iframe")).toBeVisible({ timeout: 15_000 });
+  } else {
+    await expect(page.getByRole("heading", { level: 1, name: "Secure account signup is being enabled" })).toBeVisible();
+    await expect(page.getByRole("link", { name: /Open the live demo/ })).toBeVisible();
+    await expect(page.getByRole("link", { name: "Sign in to an existing account" })).toBeVisible();
+    await expect(page.locator("form")).toHaveCount(0);
+  }
   expect(errors).toEqual([]);
 });
 
@@ -118,8 +188,10 @@ test("demo session protects workspace routes and is revoked by sign-out", async 
 
   await page.goto("/app");
   await expect(page.getByRole("heading", { level: 1, name: "Accounting overview" })).toBeVisible();
+  await expect(page.getByRole("link", { name: "Create a permanent business account" })).toBeVisible();
   await page.getByRole("button", { name: "Open account menu" }).click();
   await expect(page.getByRole("region", { name: "Account details" })).toContainText("Public synthetic sandbox");
+  await expect(page.getByRole("link", { name: "Create account", exact: true })).toBeVisible();
   await page.getByRole("button", { name: "Sign out" }).click();
   await expect(page).toHaveURL(/\/$/);
 

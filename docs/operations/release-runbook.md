@@ -27,6 +27,18 @@ Use this checklist for every Business Finlynq release. Releases are commit-addre
 9. Re-enable writes only after tenant isolation, posting authorization, idempotency, audit insertion, and period controls pass against the deployed release.
 10. Record completion, evidence links, backup checksum, image digest, and operator approvals.
 
+When running the release gate against production, export explicit expectations so an accidentally disabled launch gate cannot pass merely because the Playwright runner does not share the server environment:
+
+```text
+PLAYWRIGHT_BASE_URL=https://business.finlynq.com
+E2E_EXPECT_ACCOUNT_LOGIN_ENABLED=true
+E2E_EXPECT_ACCOUNT_SIGNUP_ENABLED=true
+E2E_EXPECT_AUTH_EMAIL_WORKER=true
+npm run test:e2e
+```
+
+The browser test also reads `/api/health`, checks that enabled signup implies ready authentication and email delivery, and requires a rendered Turnstile iframe on the live signup page.
+
 ## Rollback
 
 - If the schema remains compatible, redeploy the prior immutable application artifact and repeat acceptance.

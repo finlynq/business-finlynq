@@ -3,7 +3,7 @@ import "server-only";
 import { randomUUID } from "node:crypto";
 import type { PoolClient } from "pg";
 import { withTenantTransaction, type TenantTransactionContext } from "@/db/transaction";
-import { DEMO_BASELINE_DATE } from "@/modules/demo/constants";
+import { demoAccountingDate } from "@/modules/demo/accounting-clock";
 import { actorHasActivePermission } from "@/modules/identity/authorization";
 import { PERMISSIONS, type Permission } from "@/modules/identity/permissions";
 import {
@@ -305,7 +305,7 @@ export async function loadSubledgerWorkspace(
     ? "receivables.sales-invoice"
     : "payables.supplier-bill";
   const currentDate = principal.sessionMode === "demo"
-    ? DEMO_BASELINE_DATE
+    ? demoAccountingDate()
     : new Date().toISOString().slice(0, 10);
 
   return withTenantTransaction(readContext(principal), async (client) => {
@@ -395,10 +395,10 @@ export async function loadSubledgerWorkspace(
          WHERE combination.organization_id = $1
            AND combination.active AND account.active AND account.postable
            AND account.control_kind = 'NONE'
-           AND account.valid_from <= current_date
-           AND (account.valid_to IS NULL OR account.valid_to >= current_date)
+           AND account.valid_from <= $2::date
+           AND (account.valid_to IS NULL OR account.valid_to >= $2::date)
          ORDER BY entity.code, account.code, combination.id`,
-        [principal.organizationId],
+        [principal.organizationId, currentDate],
       );
     const partyAccountsResult = await client.query<PartyAccountRow>(
         `SELECT account.id, account.legal_entity_id, party.id AS party_id,
@@ -432,10 +432,10 @@ export async function loadSubledgerWorkspace(
            LIMIT 1
          ) version ON true
          WHERE registration.organization_id = $1
-           AND registration.valid_from <= current_date
-           AND (registration.valid_to IS NULL OR registration.valid_to >= current_date)
+           AND registration.valid_from <= $2::date
+           AND (registration.valid_to IS NULL OR registration.valid_to >= $2::date)
          ORDER BY registration.legal_entity_id, registration.valid_from DESC`,
-        [principal.organizationId],
+        [principal.organizationId, currentDate],
       );
     const currencyResult = await client.query<{ code: string; minor_units: number }>(
         `SELECT code, minor_units

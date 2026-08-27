@@ -1,4 +1,5 @@
 import "server-only";
+import { demoAccountingDate } from "@/modules/demo/accounting-clock";
 
 import { randomUUID } from "node:crypto";
 import type { PoolClient } from "pg";
@@ -51,6 +52,9 @@ export type EntitySummary = Readonly<{
 export async function loadEntitySummaries(principal: SessionPrincipal): Promise<readonly EntitySummary[]> {
   return withTenantTransaction(readContext(principal), async (client) => {
     await assertReportPermission(client, principal, PERMISSIONS.readMcpLedger);
+    const asOfDate = principal.sessionMode === "demo"
+      ? demoAccountingDate()
+      : new Date().toISOString().slice(0, 10);
     const result = await client.query<{
       id: string; code: string; display_name: string; country_code: string; region_code: string;
       accounting_profile: string; ledger_id: string; ledger_code: string; functional_currency: string;
@@ -67,12 +71,12 @@ export async function loadEntitySummaries(principal: SessionPrincipal): Promise<
          SELECT period.label, period.state
          FROM fiscal_periods period
          WHERE period.organization_id = entity.organization_id AND period.ledger_id = ledger.id
-         ORDER BY (current_date BETWEEN period.starts_on AND period.ends_on) DESC,
+         ORDER BY ($2::date BETWEEN period.starts_on AND period.ends_on) DESC,
            period.starts_on DESC LIMIT 1
        ) current_period ON true
        WHERE entity.organization_id = $1 AND entity.active
        ORDER BY entity.code`,
-      [principal.organizationId],
+      [principal.organizationId, asOfDate],
     );
     return result.rows.map((row) => ({
       id: row.id, code: row.code, displayName: row.display_name,
@@ -171,6 +175,7 @@ export type AccountingOverview = Readonly<{
   }>;
   postedJournalCount: number;
   unpostedJournalCount: number;
+  taxDecisionCount: number;
   manualReviewTaxCount: number;
   openReceivables: readonly Readonly<{ currency: string; amount: string }>[];
   openPayables: readonly Readonly<{ currency: string; amount: string }>[];
@@ -203,20 +208,14 @@ export async function loadAccountingOverview(principal: SessionPrincipal): Promi
            count(*) FILTER (WHERE status IN ('DRAFT','SUBMITTED','APPROVED'))::int AS unposted
          FROM journal_entries WHERE organization_id = $1`, [principal.organizationId],
       ) : { rows: [{ posted: 0, unposted: 0 }] };
-    const taxCount = canReadTax ? await client.query<{ count: number }>(
-        `SELECT ((
-           SELECT count(*)
-           FROM tax_determination_snapshots snapshot
-           WHERE snapshot.organization_id = $1
-             AND snapshot.status IN ('MANUAL_REVIEW', 'MANUAL_REVIEW_REQUIRED')
-         ) + (
-           SELECT count(*)
+    const taxCounts = canReadTax ? await client.query<{ total: number; manual_review: number }>(
+        `WITH current_draft_decisions AS (
+           SELECT line.value -> 'taxDecision' ->> 'status' AS status
            FROM source_documents source
            CROSS JOIN LATERAL jsonb_array_elements(source.snapshot -> 'lines') AS line(value)
            WHERE source.organization_id = $1
              AND source.status = 'DRAFT'
              AND source.source_type IN ('receivables.sales-invoice', 'payables.supplier-bill')
-             AND line.value -> 'taxDecision' ->> 'status' = 'MANUAL_REVIEW_REQUIRED'
              AND NOT EXISTS (
                SELECT 1 FROM source_documents newer
                WHERE newer.organization_id = source.organization_id
@@ -224,9 +223,17 @@ export async function loadAccountingOverview(principal: SessionPrincipal): Promi
                  AND newer.source_number = source.source_number
                  AND newer.version > source.version
              )
-        ))::int AS count`,
+         )
+         SELECT ((SELECT count(*) FROM tax_determination_snapshots snapshot
+                    WHERE snapshot.organization_id = $1)
+                 + (SELECT count(*) FROM current_draft_decisions))::int AS total,
+           ((SELECT count(*) FROM tax_determination_snapshots snapshot
+               WHERE snapshot.organization_id = $1
+                 AND snapshot.status IN ('MANUAL_REVIEW', 'MANUAL_REVIEW_REQUIRED'))
+             + (SELECT count(*) FROM current_draft_decisions
+                  WHERE status = 'MANUAL_REVIEW_REQUIRED'))::int AS manual_review`,
         [principal.organizationId],
-      ) : { rows: [{ count: 0 }] };
+      ) : { rows: [{ total: 0, manual_review: 0 }] };
     const openBalances = canReadReceivables || canReadPayables
         ? await client.query<{ role: "CUSTOMER" | "SUPPLIER"; currency: string; amount: string }>(
         `SELECT account.role, balance.transaction_currency AS currency,
@@ -250,7 +257,8 @@ export async function loadAccountingOverview(principal: SessionPrincipal): Promi
       },
       postedJournalCount: journalCounts.rows[0]?.posted ?? 0,
       unpostedJournalCount: journalCounts.rows[0]?.unposted ?? 0,
-      manualReviewTaxCount: taxCount.rows[0]?.count ?? 0,
+      taxDecisionCount: taxCounts.rows[0]?.total ?? 0,
+      manualReviewTaxCount: taxCounts.rows[0]?.manual_review ?? 0,
       openReceivables: openBalances.rows.filter((row) => row.role === "CUSTOMER")
         .map((row) => ({ currency: row.currency, amount: row.amount })),
       openPayables: openBalances.rows.filter((row) => row.role === "SUPPLIER")

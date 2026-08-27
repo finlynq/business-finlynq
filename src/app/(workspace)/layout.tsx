@@ -1,6 +1,7 @@
 import { headers } from "next/headers";
 import { redirect } from "next/navigation";
 import { currentPrincipal } from "@/modules/identity/session";
+import { platformAdministratorAuthorization } from "@/modules/identity/platform-administration";
 import { safeAppPath } from "@/modules/identity/safe-redirect";
 import { principalCanWrite } from "@/modules/workspace/write-policy";
 import { WorkspaceShell } from "../_components/workspace-shell";
@@ -13,5 +14,14 @@ export default async function WorkspaceLayout({ children }: { children: React.Re
     const next = safeAppPath(requestHeaders.get("x-business-finlynq-request-path"));
     redirect(`/login?next=${encodeURIComponent(next)}&reason=expired`);
   }
-  return <WorkspaceShell principal={principal} readOnly={!principalCanWrite(principal)}>{children}</WorkspaceShell>;
+  const platformAdministrator = await platformAdministratorAuthorization(principal);
+  return (
+    <WorkspaceShell
+      principal={principal}
+      readOnly={!principalCanWrite(principal)}
+      isPlatformAdministrator={Boolean(platformAdministrator)}
+    >
+      {children}
+    </WorkspaceShell>
+  );
 }
