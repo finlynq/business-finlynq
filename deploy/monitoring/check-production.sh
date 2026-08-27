@@ -12,6 +12,9 @@ MONITOR_MAX_DISK_PERCENT="${MONITOR_MAX_DISK_PERCENT:-85}"
 MONITOR_EXPECT_EDGE="${MONITOR_EXPECT_EDGE:-true}"
 MONITOR_EXPECT_AUTH_EMAIL_WORKER="${MONITOR_EXPECT_AUTH_EMAIL_WORKER:-false}"
 MONITOR_REQUIRE_OFFSITE="${MONITOR_REQUIRE_OFFSITE:-true}"
+MONITOR_MAINTENANCE_SCHEDULER="${MONITOR_MAINTENANCE_SCHEDULER:-systemd}"
+readonly monitor_cron_schedule_file="/home/deploy/business-finlynq/deploy/cron/managed-crontab"
+readonly monitor_cron_maintenance_lock_file="/home/deploy/.local/state/business-finlynq/cron/demo-sandbox-maintenance.lock"
 
 : "${BUSINESS_FINLYNQ_IMAGE_REVISION:?BUSINESS_FINLYNQ_IMAGE_REVISION is required}"
 : "${MONITOR_EXPECT_REVISION:?MONITOR_EXPECT_REVISION is required}"
@@ -42,6 +45,10 @@ done
 [[ "$MONITOR_EXPECT_AUTH_EMAIL_WORKER" == "true" || "$MONITOR_EXPECT_AUTH_EMAIL_WORKER" == "false" ]] || exit 2
 [[ "$MONITOR_EXPECT_DEMO_MAINTENANCE" == "true" || "$MONITOR_EXPECT_DEMO_MAINTENANCE" == "false" ]] || exit 2
 [[ "$MONITOR_REQUIRE_OFFSITE" == "true" || "$MONITOR_REQUIRE_OFFSITE" == "false" ]] || exit 2
+[[ "$MONITOR_MAINTENANCE_SCHEDULER" == "systemd" || "$MONITOR_MAINTENANCE_SCHEDULER" == "cron" ]] || {
+  printf '%s\n' "MONITOR_MAINTENANCE_SCHEDULER must be systemd or cron" >&2
+  exit 2
+}
 for boolean_value in \
   MONITOR_EXPECT_DEMO_LOGIN_ENABLED MONITOR_EXPECT_DEMO_WRITES_ENABLED \
   MONITOR_EXPECT_ACCOUNT_LOGIN_ENABLED MONITOR_EXPECT_BUSINESS_WRITES_ENABLED; do
@@ -78,11 +85,19 @@ for command_name in curl docker jq openssl sha256sum; do
     exit 2
   }
 done
-if [[ "$MONITOR_EXPECT_DEMO_MAINTENANCE" == "true" ]]; then
+if [[ "$MONITOR_EXPECT_DEMO_MAINTENANCE" == "true" && "$MONITOR_MAINTENANCE_SCHEDULER" == "systemd" ]]; then
   command -v systemctl >/dev/null 2>&1 || {
     printf '%s\n' "Required monitoring command is unavailable: systemctl" >&2
     exit 2
   }
+fi
+if [[ "$MONITOR_MAINTENANCE_SCHEDULER" == "cron" ]]; then
+  for command_name in crontab flock; do
+    command -v "$command_name" >/dev/null 2>&1 || {
+      printf 'Required monitoring command is unavailable: %s\n' "$command_name" >&2
+      exit 2
+    }
+  done
 fi
 
 response_body="$(mktemp)"
@@ -169,7 +184,34 @@ if [[ -n "$app_container_id" ]]; then
     || record_failure "app image OCI revision label does not match the monitored release"
 fi
 
-if [[ "$MONITOR_EXPECT_DEMO_MAINTENANCE" == "true" ]]; then
+maintenance_active="false"
+if [[ "$MONITOR_MAINTENANCE_SCHEDULER" == "cron" ]]; then
+  cron_begin_marker="# BEGIN BUSINESS FINLYNQ MANAGED SCHEDULE"
+  cron_end_marker="# END BUSINESS FINLYNQ MANAGED SCHEDULE"
+  cron_contents=""
+  if ! cron_contents="$(crontab -l 2>/dev/null)"; then
+    record_failure "deploy-owned cron schedule is unavailable"
+  elif [[ ! -f "$monitor_cron_schedule_file" || -L "$monitor_cron_schedule_file" ]]; then
+    record_failure "committed cron schedule is missing or is a symbolic link"
+  else
+    cron_begin_count="$(grep -Fxc -- "$cron_begin_marker" <<<"$cron_contents" || true)"
+    cron_end_count="$(grep -Fxc -- "$cron_end_marker" <<<"$cron_contents" || true)"
+    cron_runner_count="$(grep -Fc -- "/bin/bash /home/deploy/business-finlynq/deploy/cron/run-job.sh " <<<"$cron_contents" || true)"
+    actual_cron_block="$(awk -v begin="$cron_begin_marker" -v end="$cron_end_marker" '
+      $0 == begin { managed = 1 }
+      managed { print }
+      $0 == end && managed { exit }
+    ' <<<"$cron_contents")"
+    expected_cron_block="$(cat -- "$monitor_cron_schedule_file")"
+    if [[ "$cron_begin_count" != "1" || "$cron_end_count" != "1" \
+      || "$cron_runner_count" != "4" || "$actual_cron_block" != "$expected_cron_block" ]]; then
+      record_failure "deploy-owned cron schedule does not match the reviewed four-job block"
+    fi
+  fi
+fi
+
+if [[ "$MONITOR_EXPECT_DEMO_MAINTENANCE" == "true" \
+  && "$MONITOR_MAINTENANCE_SCHEDULER" == "systemd" ]]; then
   for timer_name in business-finlynq-demo-reset.timer business-finlynq-demo-reconcile.timer; do
     systemctl is-enabled --quiet "$timer_name" 2>/dev/null \
       || record_failure "demo maintenance timer is not enabled: $timer_name"
@@ -177,14 +219,29 @@ if [[ "$MONITOR_EXPECT_DEMO_MAINTENANCE" == "true" ]]; then
       || record_failure "demo maintenance timer is not active: $timer_name"
   done
 
-  maintenance_active="false"
   for service_name in business-finlynq-demo-reset.service business-finlynq-demo-reconcile.service; do
     service_state="$(systemctl show --property=ActiveState --value "$service_name" 2>/dev/null || true)"
     if [[ "$service_state" == "active" || "$service_state" == "activating" ]]; then
       maintenance_active="true"
     fi
   done
+elif [[ "$MONITOR_EXPECT_DEMO_MAINTENANCE" == "true" ]]; then
+  if [[ ! -f "$monitor_cron_maintenance_lock_file" || -L "$monitor_cron_maintenance_lock_file" ]]; then
+    record_failure "deploy-owned cron maintenance lock is missing or is a symbolic link"
+  else
+    exec {maintenance_lock_fd}>"$monitor_cron_maintenance_lock_file"
+    if flock --nonblock "$maintenance_lock_fd"; then
+      # Hold the free maintenance lock through the pool query so a reset cannot
+      # begin between the activity check and the aggregate state snapshot.
+      :
+    else
+      maintenance_active="true"
+      exec {maintenance_lock_fd}>&-
+    fi
+  fi
+fi
 
+if [[ "$MONITOR_EXPECT_DEMO_MAINTENANCE" == "true" ]]; then
   slot_counts=""
   if [[ -n "$database_container_id" ]]; then
     slot_counts="$(docker exec "$database_container_id" \

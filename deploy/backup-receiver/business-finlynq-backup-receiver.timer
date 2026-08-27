@@ -1,0 +1,14 @@
+[Unit]
+Description=Ingest Business Finlynq encrypted backups every five minutes
+
+[Timer]
+OnBootSec=2m
+OnUnitInactiveSec=5m
+RandomizedDelaySec=30s
+AccuracySec=15s
+Persistent=true
+Unit=business-finlynq-backup-receiver.service
+
+[Install]
+WantedBy=timers.target
+

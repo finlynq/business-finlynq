@@ -566,6 +566,8 @@ services:
       - business_finlynq_backup_db_password
       - business_finlynq_backup_age_recipient
       - business_finlynq_rclone_config
+      - business_finlynq_backup_receiver_ssh_private_key
+      - business_finlynq_backup_receiver_known_hosts
     group_add:
       - ${BUSINESS_FINLYNQ_SECRET_GID:?set BUSINESS_FINLYNQ_SECRET_GID}
     volumes:
@@ -1040,6 +1042,10 @@ secrets:
     file: ${BACKUP_AGE_RECIPIENT_FILE:-./deploy/backup/not-configured}
   business_finlynq_rclone_config:
     file: ${BACKUP_RCLONE_CONFIG_FILE:-./deploy/backup/not-configured}
+  business_finlynq_backup_receiver_ssh_private_key:
+    file: ${BACKUP_RECEIVER_SSH_PRIVATE_KEY_FILE:-./deploy/backup/not-configured}
+  business_finlynq_backup_receiver_known_hosts:
+    file: ${BACKUP_RECEIVER_KNOWN_HOSTS_FILE:-./deploy/backup/not-configured}
   business_finlynq_backup_age_identity:
     file: ${BACKUP_AGE_IDENTITY_FILE:-./deploy/backup/not-configured}
   business_finlynq_restore_db_password:

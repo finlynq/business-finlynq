@@ -1,0 +1,6 @@
+# BEGIN BUSINESS FINLYNQ MANAGED SCHEDULE
+*/5 * * * * /bin/bash /home/deploy/business-finlynq/deploy/cron/run-job.sh dirty-reset
+18 * * * * /bin/bash /home/deploy/business-finlynq/deploy/cron/run-job.sh nightly-reconciliation
+29 0,6,12,18 * * * /bin/bash /home/deploy/business-finlynq/deploy/cron/run-job.sh backup
+2-59/5 * * * * /bin/bash /home/deploy/business-finlynq/deploy/cron/run-job.sh monitor
+# END BUSINESS FINLYNQ MANAGED SCHEDULE

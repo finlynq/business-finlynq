@@ -24,6 +24,8 @@ const providerSecret = "business_finlynq_resend_api_key";
 const appDatabaseSecret = "business_finlynq_app_db_password";
 const workerDatabaseSecret = "business_finlynq_auth_worker_db_password";
 const backupDatabaseSecret = "business_finlynq_backup_db_password";
+const backupReceiverPrivateKeySecret = "business_finlynq_backup_receiver_ssh_private_key";
+const backupReceiverKnownHostsSecret = "business_finlynq_backup_receiver_known_hosts";
 const rootKekSecret = "business_finlynq_root_kek";
 
 function secretSources(service) {
@@ -131,6 +133,18 @@ if (backup.environment?.BACKUP_DATABASE_PASSWORD_FILE !== "/run/secrets/business
 if (!secretSources(backup).includes(backupDatabaseSecret)) fail("backup does not mount its dedicated database secret");
 if (secretSources(backup).includes(appDatabaseSecret) || secretSources(backup).includes(workerDatabaseSecret)) {
   fail("backup mounts an application or worker database secret");
+}
+for (const receiverSecret of [backupReceiverPrivateKeySecret, backupReceiverKnownHostsSecret]) {
+  if (!secretSources(backup).includes(receiverSecret)) {
+    fail(`backup does not mount receiver transport secret ${receiverSecret}`);
+  }
+  const consumers = Object.entries(services)
+    .filter(([, service]) => secretSources(service).includes(receiverSecret))
+    .map(([name]) => name)
+    .sort();
+  if (consumers.join(",") !== "backup") {
+    fail(`receiver transport secret ${receiverSecret} must be mounted only by backup; found ${consumers.join(",") || "none"}`);
+  }
 }
 
 for (const [name, expectedMode] of [

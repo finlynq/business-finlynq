@@ -62,6 +62,8 @@ jobs:
         run: node -e "const fs=require('node:fs'),c=require('node:crypto');fs.writeFileSync(process.env.ORGANIZATION_ROOT_KEK_FILE,c.randomBytes(32).toString('base64')+'\n',{mode:0o600});fs.writeFileSync(process.env.IDENTITY_SECRET_FILE,c.randomBytes(64).toString('base64')+'\n',{mode:0o600});fs.writeFileSync(process.env.APP_DATABASE_PASSWORD_FILE,'runtime-test-only-password-2026\n',{mode:0o600});fs.writeFileSync(process.env.AUTH_WORKER_DATABASE_PASSWORD_FILE,'auth-worker-test-only-2026\n',{mode:0o600});fs.writeFileSync(process.env.BACKUP_DATABASE_PASSWORD_FILE,'backup-test-only-password-2026\n',{mode:0o600})"
       - name: Validate operations shell syntax
         run: find deploy -type f -name '*.sh' -print0 | xargs -0 -n1 bash -n
+      - name: Verify off-server backup receiver security invariants
+        run: bash deploy/backup-receiver/test-static.sh
       - name: Verify fail-safe deployment-secret bootstrap
         run: |
           bootstrap_root="$(mktemp -d)"

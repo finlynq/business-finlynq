@@ -64,6 +64,68 @@ for (const content of [dirtyWrapper, nightlyWrapper]) {
   }
 }
 
+const managedCron = read("deploy/cron/managed-crontab");
+const expectedCron = `# BEGIN BUSINESS FINLYNQ MANAGED SCHEDULE
+*/5 * * * * /bin/bash ${targetRoot}/deploy/cron/run-job.sh dirty-reset
+18 * * * * /bin/bash ${targetRoot}/deploy/cron/run-job.sh nightly-reconciliation
+29 0,6,12,18 * * * /bin/bash ${targetRoot}/deploy/cron/run-job.sh backup
+2-59/5 * * * * /bin/bash ${targetRoot}/deploy/cron/run-job.sh monitor
+# END BUSINESS FINLYNQ MANAGED SCHEDULE
+`;
+if (managedCron !== expectedCron) {
+  throw new Error("deploy/cron/managed-crontab differs from the reviewed four-job schedule");
+}
+
+const cronInstaller = read("deploy/cron/install.sh");
+for (const expected of [
+  'readonly repository_root="/home/deploy/business-finlynq"',
+  'readonly operations_env="/home/deploy/.config/business-finlynq/operations.env"',
+  "stat -c '%a'",
+  '== "600"',
+  "stat -c '%u'",
+  'MONITOR_MAINTENANCE_SCHEDULER:-systemd}',
+  'flock --exclusive --wait 7200 7',
+  "existing_crontab=",
+  "unmanaged_crontab=",
+  'crontab "$temporary_crontab"',
+]) requireText(cronInstaller, expected, "deploy-owned cron installer");
+if (cronInstaller.includes("crontab -r")) {
+  throw new Error("deploy-owned cron installer may not remove the user's complete crontab");
+}
+
+const cronRunner = read("deploy/cron/run-job.sh");
+for (const expected of [
+  "dirty-reset|nightly-reconciliation|backup|monitor",
+  'source "$operations_env"',
+  "stat -c '%a'",
+  'flock --shared --nonblock 7',
+  'flock --nonblock 8',
+  "logger_path",
+  'nightly_timezone="America/Toronto"',
+  'nightly_stamp_file=',
+  'last_reconciled_date',
+  'current_local_hour',
+  '$repository_root/deploy/demo-sandbox/run-dirty-reset.sh',
+  '$repository_root/deploy/demo-sandbox/run-nightly-reconciliation.sh',
+  '$repository_root/deploy/backup/run-scheduled-backup.sh',
+  '$repository_root/deploy/monitoring/check-production.sh',
+]) requireText(cronRunner, expected, "allowlisted cron wrapper");
+if (/\beval\b/.test(cronRunner)) {
+  throw new Error("allowlisted cron wrapper may not evaluate a caller-selected command");
+}
+
+const cronRemover = read("deploy/cron/remove.sh");
+for (const expected of [
+  'readonly scheduler_lock_file="$state_dir/scheduler.lock"',
+  'flock --exclusive --wait 7200 7',
+  "existing_crontab=",
+  "unmanaged_crontab=",
+  'crontab "$temporary_crontab"',
+]) requireText(cronRemover, expected, "deploy-owned cron remover");
+if (cronRemover.includes("crontab -r")) {
+  throw new Error("deploy-owned cron remover may not remove the user's complete crontab");
+}
+
 const resetImplementation = read("src/modules/onboarding/demo-bootstrap.ts");
 requireText(resetImplementation, "resetDemoSandboxes", "demo-sandbox reset implementation");
 requireText(resetImplementation, "open_item_void_events", "demo-sandbox reset table coverage");
@@ -78,6 +140,10 @@ for (const expected of [
   "MONITOR_EXPECT_BUSINESS_WRITES_ENABLED",
   "MONITOR_EXPECT_DEMO_POOL_SIZE",
   "MONITOR_MIN_DEMO_READY_SLOTS",
+  'MONITOR_MAINTENANCE_SCHEDULER="${MONITOR_MAINTENANCE_SCHEDULER:-systemd}"',
+  'MONITOR_MAINTENANCE_SCHEDULER" == "cron"',
+  "deploy-owned cron schedule does not match the reviewed four-job block",
+  "monitor_cron_maintenance_lock_file",
   "FROM demo_sandbox_slots",
   "quarantined slot(s)",
   "stranded resetting slot(s)",

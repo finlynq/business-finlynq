@@ -15,7 +15,7 @@ Both endpoints are non-cacheable and excluded from indexing. Readiness returns o
 - certificate validity beyond the configured threshold;
 - expected app, database, and edge container state;
 - exact app-container demo/account/business write gates for the reviewed release;
-- enabled and active demo reset/reconciliation timers when writable sandboxes are expected;
+- the selected systemd or deploy-owned cron reset/reconciliation scheduler when writable sandboxes are expected;
 - the full externally served, configured, and container release revision;
 - aggregate sandbox capacity and state, including size, minimum ready capacity, stranded reset work, and quarantine;
 - backup filesystem utilization;
@@ -38,11 +38,13 @@ The unit files invoke the scripts from `/home/deploy/business-finlynq`; the opti
 
 Configure the mandatory `/etc/business-finlynq/operations.env` with thresholds and every explicit expected gate from `.env.example`. The backup, monitor, and both demo-maintenance services refuse to start without it; only the failure notifier treats it as optional so it can still report a missing file. For webhook delivery, put one HTTPS URL in `/etc/business-finlynq/secrets/monitor-webhook-url`, mode `0400`. The notification contains only the failed unit and host name. If no webhook exists, the failure remains in journald, which is safe but is **not** an external alert.
 
+If root-managed systemd timers are temporarily unavailable, the reviewed fallback is the `deploy` user's crontab. Copy the same operations settings to `/home/deploy/.config/business-finlynq/operations.env`, set `MONITOR_MAINTENANCE_SCHEDULER=cron`, make the file owned by `deploy` with mode `0600`, then run `bash deploy/cron/install.sh` as `deploy`. The idempotent installer replaces only its marked block and preserves unrelated crontab entries. Its allowlisted wrapper uses per-job and shared maintenance locks, sends output to the system logger, resets dirty sandboxes every five minutes, backs up every six hours, and monitors every five minutes. An hourly due-check uses `America/Toronto` calendar time and a success-only state stamp so the full reconciliation runs once after 04:00 on each local day, including DST transitions. The production monitor fails if any of the four reviewed cron lines or their markers differ. Before a release, `bash deploy/cron/remove.sh` drains active wrappers under an exclusive scheduler lock and removes only the marked block; rerun the installer after acceptance. Prefer the systemd units once root operator access is available; switch the setting back to `systemd` when replacing the fallback.
+
 Set `MONITOR_EXPECT_REVISION` to the same full reviewed Git SHA as `BUSINESS_FINLYNQ_IMAGE_REVISION` during each release. Both are mandatory, must match exactly, and are checked against the running container and readiness response.
 
 Set `MONITOR_EXPECT_AUTH_EMAIL_WORKER=true` at the same cutover that enables real account email delivery. Before that cutover it stays false so the intentionally absent profile is not reported as an outage.
 
-The production writable-demo boundary requires `MONITOR_EXPECT_DEMO_LOGIN_ENABLED=true`, `MONITOR_EXPECT_DEMO_WRITES_ENABLED=true`, both real-account gates false, and `MONITOR_EXPECT_DEMO_MAINTENANCE=true`. The host monitor fails if the app differs, either timer is disabled/inactive, the pool is not exactly 32 slots, any slot is quarantined, a reset is stranded, or ready capacity falls below four outside an active maintenance pass. Set maintenance false only when demo login and writes are intentionally disabled, such as during rollback to an artifact that predates sandbox resets.
+The production writable-demo boundary requires `MONITOR_EXPECT_DEMO_LOGIN_ENABLED=true`, `MONITOR_EXPECT_DEMO_WRITES_ENABLED=true`, both real-account gates false, and `MONITOR_EXPECT_DEMO_MAINTENANCE=true`. The host monitor fails if the app differs, the selected scheduler is missing or altered, the pool is not exactly 32 slots, any slot is quarantined, a reset is stranded, or ready capacity falls below four outside an active maintenance pass. Set maintenance false only when demo login and writes are intentionally disabled, such as during rollback to an artifact that predates sandbox resets.
 
 The database readiness contract intentionally reports dead-letter count separately from worker availability: one permanently failed address must not disable every account login. Configure centralized worker-log/provider telemetry to page on any transition to `DEAD`, and retain a metric for oldest pending age. The public readiness endpoint catches a stopped worker, stuck lease, or materially delayed due queue without exposing counts or recipients.
 
