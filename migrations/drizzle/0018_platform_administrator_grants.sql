@@ -450,7 +450,7 @@ STABLE
 SECURITY DEFINER
 SET search_path = public, pg_temp
 AS $$
-  WITH authorization AS (
+  WITH administrator_authorization AS (
     SELECT * FROM app.auth_platform_administrator_authorization(
       selected_session_id,
       selected_user_id
@@ -508,7 +508,7 @@ AS $$
         AND grant_record.linked_user_id IS NOT NULL
     ),
     statement_timestamp()
-  FROM authorization
+  FROM administrator_authorization
 $$;
 --> statement-breakpoint
 
