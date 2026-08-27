@@ -102,6 +102,8 @@ describe("organization administration database boundary", () => {
 
   it("makes demo invitations local and includes their identities in the nightly reset extension", () => {
     expect(migration).toContain("Demo invitations must remain synthetic and local");
+    expect(migration).toContain("Demo sandbox member limit of 32 reached");
+    expect(migration).toMatch(/selected_organization\.is_demo[\s\S]*?count\(\*\)[\s\S]*?organization_memberships[\s\S]*?>= 32/);
     expect(migration).toContain("'organization_invitations'");
     expect(migration).toContain("CREATE OR REPLACE FUNCTION app.reset_demo_sandbox_extensions");
     expect(migration).toContain("settings_version = 1");

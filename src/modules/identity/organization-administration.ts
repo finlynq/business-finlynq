@@ -372,7 +372,7 @@ export function organizationAdministrationFailure(error: unknown): OrganizationA
       "PERMISSION_DENIED",
     );
   }
-  if (/version|changed by another|last active|already|cannot be invited|pending invitation/i.test(message)) {
+  if (/version|changed by another|last active|already|cannot be invited|pending invitation|member limit/i.test(message)) {
     return new OrganizationAdministrationError(
       "The organization access record changed or the requested transition is not allowed. Refresh and try again.",
       409,

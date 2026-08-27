@@ -1,10 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import type { ZodType } from "zod";
 import { consumeRateLimit } from "@/modules/identity/auth-store";
+import { organizationAdministrationFailure } from "@/modules/identity/organization-administration";
 import {
-  organizationAdministrationFailure,
-} from "@/modules/identity/organization-administration";
-import { validateSameOriginMutation } from "@/modules/identity/request-security";
+  requestFingerprints,
+  validateSameOriginMutation,
+} from "@/modules/identity/request-security";
 import { requestPrincipal, type SessionPrincipal } from "@/modules/identity/session";
 import { readBoundedJson, MutationBodyError } from "@/modules/ledger/request-body";
 import { demoWritesEnabled } from "@/modules/workspace/write-policy";
@@ -49,8 +50,9 @@ export async function prepareOrganizationAdminMutation(
     };
   }
 
+  const { ipHash } = requestFingerprints(request);
   const keyHash = identityLookupHash(
-    `organization-administration|${principal.organizationId}|${principal.sessionId}|${action}`,
+    `organization-administration|${principal.organizationId}|${ipHash}|${action}`,
   );
   const [minute, hour] = await Promise.all([
     consumeRateLimit(`organization-admin-${action}-minute`, keyHash, 20, 60),

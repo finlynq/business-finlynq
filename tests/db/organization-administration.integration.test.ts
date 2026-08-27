@@ -374,4 +374,97 @@ runDatabaseTests("organization administration concurrency", () => {
       invitation_status: "ACCEPTED",
     });
   });
+
+  it("enforces the sandbox member ceiling inside the serialized database mutation", async () => {
+    const client = await pool.connect();
+    await client.query("BEGIN");
+    try {
+      const issued = await client.query<{
+        session_id: string;
+        user_id: string;
+        organization_id: string;
+      }>(
+        "SELECT * FROM app.auth_issue_demo_session($1,$2,$3,$4,$5,$6)",
+        [
+          randomUUID().replaceAll("-", "").repeat(2),
+          null,
+          randomUUID().replaceAll("-", "").repeat(2),
+          randomUUID().replaceAll("-", "").repeat(2),
+          randomUUID().replaceAll("-", "").repeat(2),
+          randomUUID(),
+        ],
+      );
+      expect(issued.rowCount).toBe(1);
+      const principal = issued.rows[0]!;
+      await client.query("SELECT set_config('app.organization_id', $1, true)", [principal.organization_id]);
+      await client.query("SELECT set_config('app.actor_id', $1, true)", [principal.user_id]);
+      await client.query("SELECT set_config('app.session_id', $1, true)", [principal.session_id]);
+      await client.query("SELECT set_config('app.session_mode', 'demo', true)");
+      await client.query("SELECT set_config('app.auth_method', 'demo-link', true)");
+      await client.query("SELECT set_config('app.request_id', $1, true)", [randomUUID()]);
+      await client.query("SELECT set_config('app.source_surface', 'UI', true)");
+      await client.query("SELECT set_config('app.reason', 'Sandbox member capacity test', true)");
+      const role = await client.query<{ id: string }>(
+        `SELECT id FROM roles WHERE organization_id=$1
+           AND key='VIEWER_AUDITOR' AND active AND system_template`,
+        [principal.organization_id],
+      );
+      for (let index = 0; index < 31; index += 1) {
+        const userId = randomUUID();
+        const membershipId = randomUUID();
+        await client.query(
+          `INSERT INTO users(
+             id,email_lookup_hash,email_ciphertext,display_name_ciphertext,
+             password_hash,active,is_demo,mfa_required,email_verified_at
+           ) VALUES($1,$2,$3,$4,'!demo-invitation-disabled!',true,true,false,now())`,
+          [
+            userId,
+            randomUUID().replaceAll("-", "").repeat(2),
+            `idv1:${"e".repeat(80)}`,
+            `idv1:${"n".repeat(80)}`,
+          ],
+        );
+        await client.query(
+          `INSERT INTO organization_memberships(id,organization_id,user_id,active)
+           VALUES($1,$2,$3,false)`,
+          [membershipId, principal.organization_id, userId],
+        );
+        await client.query(
+          `INSERT INTO membership_roles(organization_id,membership_id,role_id,assigned_by)
+           VALUES($1,$2,$3,$4)`,
+          [principal.organization_id, membershipId, role.rows[0]!.id, principal.user_id],
+        );
+      }
+      expect((await client.query<{ count: number }>(
+        `SELECT count(*)::int AS count FROM organization_memberships
+         WHERE organization_id=$1`,
+        [principal.organization_id],
+      )).rows[0]?.count).toBe(32);
+
+      await client.query("SAVEPOINT demo_member_cap");
+      await expect(client.query(
+        `SELECT * FROM app.organization_invite_member(
+           $1,$2,$3,$4,$5,$6,$7,NULL,NULL,NULL,NULL
+         )`,
+        [
+          role.rows[0]!.id,
+          randomUUID(),
+          randomUUID(),
+          randomUUID(),
+          randomUUID().replaceAll("-", "").repeat(2),
+          `idv1:${"x".repeat(80)}`,
+          `idv1:${"y".repeat(80)}`,
+        ],
+      )).rejects.toThrow(/member limit of 32/i);
+      await client.query("ROLLBACK TO SAVEPOINT demo_member_cap");
+      expect((await client.query<{ count: number }>(
+        `SELECT count(*)::int AS count FROM organization_memberships
+         WHERE organization_id=$1`,
+        [principal.organization_id],
+      )).rows[0]?.count).toBe(32);
+    } finally {
+      await client.query("ROLLBACK");
+      client.release();
+    }
+  });
 });

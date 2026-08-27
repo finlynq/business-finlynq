@@ -724,6 +724,13 @@ BEGIN
   END IF;
   SELECT * INTO selected_organization FROM organizations
   WHERE id = administrator.organization_id FOR SHARE;
+  IF selected_organization.is_demo AND (
+    SELECT count(*) FROM organization_memberships membership
+    WHERE membership.organization_id = administrator.organization_id
+  ) >= 32 THEN
+    RAISE EXCEPTION 'Demo sandbox member limit of 32 reached'
+      USING ERRCODE = '54000';
+  END IF;
   SELECT * INTO selected_role FROM roles
   WHERE organization_id = administrator.organization_id
     AND id = selected_role_id AND active AND system_template
