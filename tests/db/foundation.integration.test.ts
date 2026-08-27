@@ -42,6 +42,7 @@ const ids = {
   keyVersion: "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
   unauthorizedActor: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
   makerActor: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeee1",
+  orgBActor: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeee2",
   makerMembership: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb1",
   orgBMembership: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb2",
   makerRole: "cccccccc-cccc-4ccc-8ccc-ccccccccccc1",
@@ -142,12 +143,13 @@ runDatabaseTests("PostgreSQL accounting controls", () => {
         `INSERT INTO users (id, email_lookup_hash, email_ciphertext, password_hash)
          VALUES
            ($1, 'actor-email-lookup', 'encrypted-email', 'password-hash'),
-           ($2, 'maker-email-lookup', 'encrypted-maker-email', 'password-hash')`,
-        [ids.actor, ids.makerActor],
+           ($2, 'maker-email-lookup', 'encrypted-maker-email', 'password-hash'),
+           ($3, 'org-b-email-lookup', 'encrypted-org-b-email', 'password-hash')`,
+        [ids.actor, ids.makerActor, ids.orgBActor],
       );
       await admin.query(
         `INSERT INTO organization_memberships (id, organization_id, user_id)
-         VALUES ($1, $2, $3), ($4, $2, $5), ($6, $7, $3)`,
+         VALUES ($1, $2, $3), ($4, $2, $5), ($6, $7, $8)`,
         [
           ids.membership,
           ids.orgA,
@@ -156,6 +158,7 @@ runDatabaseTests("PostgreSQL accounting controls", () => {
           ids.makerActor,
           ids.orgBMembership,
           ids.orgB,
+          ids.orgBActor,
         ],
       );
       await admin.query(
@@ -170,7 +173,7 @@ runDatabaseTests("PostgreSQL accounting controls", () => {
              now() + interval '2 hours', now() + interval '24 hours', now() - interval '20 minutes', now() - interval '10 minutes'),
            ($3, 'integration-wrong-actor-session', $8, $6, $9, 'PASSWORD', 'REAL', 7200,
              now() + interval '2 hours', now() + interval '24 hours', now(), now() + interval '10 minutes'),
-           ($4, 'integration-wrong-org-session', $5, $10, $11, 'PASSWORD', 'REAL', 7200,
+           ($4, 'integration-wrong-org-session', $12, $10, $11, 'PASSWORD', 'REAL', 7200,
              now() + interval '2 hours', now() + interval '24 hours', now(), now() + interval '10 minutes')`,
         [
           ids.validSession,
@@ -184,6 +187,7 @@ runDatabaseTests("PostgreSQL accounting controls", () => {
           ids.makerMembership,
           ids.orgB,
           ids.orgBMembership,
+          ids.orgBActor,
         ],
       );
       await admin.query(

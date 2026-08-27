@@ -221,13 +221,27 @@ runDatabaseTests("PostgreSQL identity controls", () => {
     const inviteHash = randomUUID().replaceAll("-", "").repeat(2);
     const setupHash = randomUUID().replaceAll("-", "").repeat(2);
     const factorId = randomUUID();
+    const roleId = randomUUID();
+    const invitationId = randomUUID();
+    const invitationTokenId = randomUUID();
     await pool.query("INSERT INTO organizations(id,slug,display_name) VALUES($1,$2,'Invite Test')", [orgId, `invite-${orgId}`]);
     await pool.query(
       "INSERT INTO users(id,email_lookup_hash,email_ciphertext,password_hash,active,mfa_required) VALUES($1,$2,'encrypted-email','!invitation-pending!',false,true)",
       [userId, randomUUID().replaceAll("-", "")],
     );
+    await pool.query(
+      "INSERT INTO roles(id,organization_id,key,display_name,system_template,active) VALUES($1,$2,'VIEWER_AUDITOR','Viewer',true,true)",
+      [roleId, orgId],
+    );
     await pool.query("INSERT INTO organization_memberships(id,organization_id,user_id,active) VALUES($1,$2,$3,false)", [membershipId, orgId, userId]);
-    await pool.query("INSERT INTO auth_one_time_tokens(token_hash,purpose,user_id,organization_id,expires_at) VALUES($1,'INVITATION',$2,$3,now()+interval '1 hour')", [inviteHash, userId, orgId]);
+    await pool.query("INSERT INTO auth_one_time_tokens(id,token_hash,purpose,user_id,organization_id,expires_at) VALUES($1,$2,'INVITATION',$3,$4,now()+interval '1 hour')", [invitationTokenId, inviteHash, userId, orgId]);
+    await pool.query(
+      `INSERT INTO organization_invitations(
+         id,organization_id,user_id,membership_id,role_id,token_id,
+         status,invited_by_user_id,expires_at
+       ) VALUES($1,$2,$3,$4,$5,$6,'PENDING',$3,now()+interval '1 hour')`,
+      [invitationId, orgId, userId, membershipId, roleId, invitationTokenId],
+    );
     const passwordHash = `scrypt-v1$32768$8$1$${"s".repeat(24)}$${"h".repeat(88)}`;
     const accepted = await pool.query(
       "SELECT * FROM app.auth_accept_invitation($1,$2,$3,$4,$5,$6)",
