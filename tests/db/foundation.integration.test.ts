@@ -681,7 +681,7 @@ runDatabaseTests("PostgreSQL accounting controls", () => {
          (SELECT count(*)::int FROM roles WHERE organization_id = $1 AND system_template) AS roles`,
       [first.organizationId],
     );
-    expect(foundation.rows[0]).toEqual({ active_keys: 1, periods: 12, accounts: 8, roles: 5 });
+    expect(foundation.rows[0]).toEqual({ active_keys: 1, periods: 12, accounts: 13, roles: 6 });
   });
 
   it("denies cross-tenant and public-demo journal writes at the service boundary", async () => {
