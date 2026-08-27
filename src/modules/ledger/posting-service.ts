@@ -2,6 +2,7 @@ import type { PoolClient } from "pg";
 import { withTenantTransaction, type TenantTransactionContext } from "@/db/transaction";
 import { assertActorHasActivePermission } from "@/modules/identity/authorization";
 import { PERMISSIONS } from "@/modules/identity/permissions";
+import { assertTenantWritesEnabled } from "@/modules/workspace/write-policy";
 
 const CONTENT_HASH_PATTERN = /^[a-f0-9]{64}$/i;
 
@@ -25,7 +26,14 @@ type LockedJournal = {
   status: "DRAFT" | "SUBMITTED" | "APPROVED" | "POSTED" | "REVERSED";
   content_hash: string | null;
   journal_number: number | null;
+  journal_type_key: string;
+  owner_module: string;
 };
+
+type PostingBoundary = PostJournalCommand & Readonly<{
+  requiredOwnerModule?: string;
+  requiredJournalType?: string;
+}>;
 
 async function lockJournal(
   client: PoolClient,
@@ -33,10 +41,16 @@ async function lockJournal(
   journalId: string,
 ): Promise<LockedJournal> {
   const result = await client.query<LockedJournal>(
-    `SELECT id, organization_id, ledger_id, status, content_hash, journal_number
-     FROM journal_entries
-     WHERE organization_id = $1 AND id = $2
-     FOR UPDATE`,
+    `SELECT entry.id, entry.organization_id, entry.ledger_id, entry.status,
+       entry.content_hash, entry.journal_number, entry.journal_type_key,
+       journal_type.owner_module
+     FROM journal_entries entry
+     JOIN journal_type_definitions journal_type
+       ON journal_type.id = entry.journal_type_definition_id
+      AND journal_type.key = entry.journal_type_key
+      AND journal_type.version = entry.journal_type_version
+     WHERE entry.organization_id = $1 AND entry.id = $2
+     FOR UPDATE OF entry`,
     [organizationId, journalId],
   );
 
@@ -46,12 +60,6 @@ async function lockJournal(
   }
 
   return journal;
-}
-
-function assertBusinessWritesEnabled(): void {
-  if (process.env.BUSINESS_WRITES_ENABLED !== "true") {
-    throw new Error("Business writes are disabled");
-  }
 }
 
 function normalizeExpectedContentHash(value: string | undefined): string | undefined {
@@ -78,7 +86,7 @@ async function computeCanonicalContentHash(client: PoolClient, journalId: string
 
 export async function postJournalInTransaction(
   client: PoolClient,
-  command: PostJournalCommand,
+  command: PostingBoundary,
 ): Promise<PostJournalResult> {
   const expectedContentHash = normalizeExpectedContentHash(command.expectedContentHash);
   await assertActorHasActivePermission(client, {
@@ -88,6 +96,13 @@ export async function postJournalInTransaction(
   });
 
   const journal = await lockJournal(client, command.context.organizationId, command.journalId);
+
+  if (command.requiredOwnerModule !== undefined && journal.owner_module !== command.requiredOwnerModule) {
+    throw new Error(`This journal must be posted from its owning ${journal.owner_module} module`);
+  }
+  if (command.requiredJournalType !== undefined && journal.journal_type_key !== command.requiredJournalType) {
+    throw new Error("Only a manual general-ledger journal can be posted from the journal register");
+  }
 
   if (!new Set(["DRAFT", "SUBMITTED", "APPROVED", "POSTED"]).has(journal.status)) {
     throw new Error(`Journal cannot post from status ${journal.status}`);
@@ -146,8 +161,12 @@ export async function postJournalInTransaction(
 }
 
 export async function postJournal(command: PostJournalCommand): Promise<PostJournalResult> {
-  assertBusinessWritesEnabled();
+  assertTenantWritesEnabled(command.context);
   return withTenantTransaction(command.context, async (client) => {
-    return postJournalInTransaction(client, command);
+    return postJournalInTransaction(client, {
+      ...command,
+      requiredOwnerModule: "ledger",
+      requiredJournalType: "ledger.manual",
+    });
   });
 }

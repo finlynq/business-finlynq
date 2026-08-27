@@ -7,9 +7,9 @@ OnFailure=business-finlynq-monitor-notify@%n.service
 
 [Service]
 Type=oneshot
-WorkingDirectory=/opt/business-finlynq/current
-EnvironmentFile=-/etc/business-finlynq/operations.env
-ExecStart=/opt/business-finlynq/current/deploy/monitoring/check-production.sh
+WorkingDirectory=/home/deploy/business-finlynq
+EnvironmentFile=/etc/business-finlynq/operations.env
+ExecStart=/home/deploy/business-finlynq/deploy/monitoring/check-production.sh
 UMask=0077
 NoNewPrivileges=true
 PrivateTmp=true

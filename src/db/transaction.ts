@@ -2,17 +2,49 @@ import { Pool, type PoolClient, type QueryResult, type QueryResultRow } from "pg
 import { readFileSync } from "node:fs";
 import { z } from "zod";
 
-const tenantContextSchema = z.object({
+const tenantContextInputSchema = z.object({
   organizationId: z.uuid(),
   actorId: z.uuid(),
   sessionId: z.uuid().optional(),
+  sessionMode: z.enum(["real", "demo"]).optional(),
   requestId: z.string().trim().min(1).max(200),
   authMethod: z.string().trim().min(1).max(100),
   sourceSurface: z.enum(["UI", "API", "IMPORT", "WORKER", "MCP"]),
   reason: z.string().trim().min(1).max(500).optional(),
+  demoWriteAuthorized: z.boolean().optional(),
 });
 
-export type TenantTransactionContext = z.infer<typeof tenantContextSchema>;
+const tenantContextSchema = tenantContextInputSchema.transform((context, issueContext) => {
+  const sessionMode = context.sessionMode ??
+    (context.authMethod.toLowerCase() === "demo-link" ? "demo" : "real");
+  const usesDemoAuthentication = context.authMethod.toLowerCase() === "demo-link";
+
+  if ((sessionMode === "demo") !== usesDemoAuthentication) {
+    issueContext.addIssue({
+      code: "custom",
+      message: "Transaction session mode does not match its authentication method",
+      path: ["sessionMode"],
+    });
+  }
+  if (sessionMode === "demo" && !context.sessionId) {
+    issueContext.addIssue({
+      code: "custom",
+      message: "Demo transactions require a session identifier",
+      path: ["sessionId"],
+    });
+  }
+  if (sessionMode !== "demo" && context.demoWriteAuthorized === true) {
+    issueContext.addIssue({
+      code: "custom",
+      message: "Only demo transactions can carry demo-write authorization",
+      path: ["demoWriteAuthorized"],
+    });
+  }
+
+  return { ...context, sessionMode };
+});
+
+export type TenantTransactionContext = z.input<typeof tenantContextSchema>;
 
 let pool: Pool | undefined;
 
@@ -92,10 +124,20 @@ export async function withTenantTransaction<T>(
     await client.query("SELECT set_config('app.organization_id', $1, true)", [context.organizationId]);
     await client.query("SELECT set_config('app.actor_id', $1, true)", [context.actorId]);
     await client.query("SELECT set_config('app.session_id', $1, true)", [context.sessionId ?? ""]);
+    await client.query("SELECT set_config('app.session_mode', $1, true)", [context.sessionMode]);
     await client.query("SELECT set_config('app.request_id', $1, true)", [context.requestId]);
     await client.query("SELECT set_config('app.auth_method', $1, true)", [context.authMethod]);
     await client.query("SELECT set_config('app.source_surface', $1, true)", [context.sourceSurface]);
     await client.query("SELECT set_config('app.reason', $1, true)", [context.reason ?? ""]);
+    await client.query("SELECT set_config('app.demo_write_authorized', $1, true)", [
+      context.demoWriteAuthorized === true ? "true" : "false",
+    ]);
+    if (context.sessionMode === "demo") {
+      // The SECURITY DEFINER assertion locks the authentication row first and
+      // its sandbox slot second for this transaction's full lifetime. Reset,
+      // logout, and lease handoff take those rows in the same order.
+      await client.query("SELECT app.assert_current_demo_session_lease()");
+    }
 
     const result = await work(client);
     await client.query("COMMIT");

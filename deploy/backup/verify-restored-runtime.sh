@@ -20,6 +20,7 @@ done
 : "${PGDATABASE:?PGDATABASE is required}"
 : "${APP_DATABASE_PASSWORD_FILE:?APP_DATABASE_PASSWORD_FILE is required}"
 : "${AUTH_WORKER_DATABASE_PASSWORD_FILE:?AUTH_WORKER_DATABASE_PASSWORD_FILE is required}"
+: "${BACKUP_DATABASE_PASSWORD_FILE:?BACKUP_DATABASE_PASSWORD_FILE is required}"
 
 PGPORT="${PGPORT:-5432}"
 RESTORE_APP_URL="${RESTORE_APP_URL:-http://restore_app:3000}"
@@ -28,6 +29,7 @@ RESTORE_ALLOWED_HOST="${RESTORE_ALLOWED_HOST:-restore_database}"
 RESTORE_CONFIRM_DISPOSABLE="${RESTORE_CONFIRM_DISPOSABLE:-}"
 RESTORE_APP_DATABASE_USER="${RESTORE_APP_DATABASE_USER:-business_finlynq_app}"
 RESTORE_AUTH_WORKER_DATABASE_USER="${RESTORE_AUTH_WORKER_DATABASE_USER:-business_finlynq_auth_worker}"
+RESTORE_BACKUP_DATABASE_USER="${RESTORE_BACKUP_DATABASE_USER:-business_finlynq_backup}"
 
 [[ "$RESTORE_CONFIRM_DISPOSABLE" == "business-finlynq-restore-drill" ]] || fail "Restore confirmation phrase is missing"
 [[ "$PGHOST" == "$RESTORE_ALLOWED_HOST" ]] || fail "Runtime verification target is not the explicitly allowed disposable host"
@@ -53,7 +55,7 @@ read_secret() {
 
 temporary_directory="$(mktemp -d /tmp/business-finlynq-runtime-verify.XXXXXX)"
 cleanup() {
-  unset PGPASSWORD app_password worker_password
+  unset PGPASSWORD app_password worker_password backup_password
   rm -rf -- "$temporary_directory"
 }
 trap cleanup EXIT INT TERM
@@ -150,4 +152,68 @@ app_claim_privilege="$(psql --no-password --tuples-only --no-align --set=ON_ERRO
   --command "SELECT has_function_privilege(current_user, 'app.auth_claim_email_delivery(uuid)', 'EXECUTE');")"
 [[ "$app_claim_privilege" == "f" ]] || fail "Application role can claim email deliveries"
 
-log "Restored runtime verification passed: readiness, demo session, app ACL, and worker ACL"
+backup_password="$(read_secret "$BACKUP_DATABASE_PASSWORD_FILE" "Backup database password")"
+PGPASSWORD="$backup_password"
+export PGPASSWORD
+
+log "Checking restored backup-role permissions"
+backup_role_contract="$(psql --no-password --tuples-only --no-align --set=ON_ERROR_STOP=1 \
+  --host "$PGHOST" --port "$PGPORT" --dbname "$PGDATABASE" \
+  --username "$RESTORE_BACKUP_DATABASE_USER" \
+  --command "
+    SELECT role.rolcanlogin
+      AND role.rolbypassrls
+      AND NOT role.rolsuper
+      AND NOT role.rolcreatedb
+      AND NOT role.rolcreaterole
+      AND NOT role.rolreplication
+      AND NOT role.rolinherit
+      AND role.rolconnlimit = 2
+      AND current_setting('transaction_read_only') = 'on'
+      AND NOT EXISTS (
+        SELECT 1
+        FROM pg_class relation
+        JOIN pg_namespace schema ON schema.oid = relation.relnamespace
+        WHERE schema.nspname IN ('public', 'drizzle')
+          AND relation.relkind IN ('r', 'p', 'v', 'm', 'f')
+          AND (
+            NOT has_table_privilege(current_user, relation.oid, 'SELECT')
+            OR has_table_privilege(current_user, relation.oid, 'INSERT')
+            OR has_table_privilege(current_user, relation.oid, 'UPDATE')
+            OR has_table_privilege(current_user, relation.oid, 'DELETE')
+            OR has_table_privilege(current_user, relation.oid, 'TRUNCATE')
+          )
+      )
+      AND NOT EXISTS (
+        SELECT 1
+        FROM pg_proc routine
+        JOIN pg_namespace schema ON schema.oid = routine.pronamespace
+        WHERE schema.nspname <> 'information_schema'
+          AND schema.nspname !~ '^pg_'
+          AND NOT EXISTS (
+            SELECT 1 FROM pg_depend dependency
+            WHERE dependency.classid = 'pg_proc'::regclass
+              AND dependency.objid = routine.oid
+              AND dependency.deptype = 'e'
+          )
+          AND has_function_privilege(current_user, routine.oid, 'EXECUTE')
+      )
+    FROM pg_roles role
+    WHERE role.rolname = current_user;")"
+[[ "$backup_role_contract" == "t" ]] || fail "Restored backup role does not match the reviewed read-only contract"
+
+backup_visible_organizations="$(psql --no-password --tuples-only --no-align --set=ON_ERROR_STOP=1 \
+  --host "$PGHOST" --port "$PGPORT" --dbname "$PGDATABASE" \
+  --username "$RESTORE_BACKUP_DATABASE_USER" \
+  --command "SELECT count(*) > 0 FROM public.organizations;")"
+[[ "$backup_visible_organizations" == "t" ]] || fail "Restored backup role cannot read the restored organization set"
+
+if psql --no-password --quiet --set=ON_ERROR_STOP=1 \
+  --host "$PGHOST" --port "$PGPORT" --dbname "$PGDATABASE" \
+  --username "$RESTORE_BACKUP_DATABASE_USER" \
+  --command "BEGIN; SET TRANSACTION READ WRITE; UPDATE public.organizations SET active = active; ROLLBACK;" \
+  >/dev/null 2>&1; then
+  fail "Restored backup role can write application data"
+fi
+
+log "Restored runtime verification passed: readiness, demo session, app ACL, worker ACL, and backup ACL"

@@ -98,6 +98,27 @@ describe("versioned tax decisions", () => {
     expect(decision.components.map((component) => component.amount)).toEqual(["6.50", "4.05"]);
   });
 
+  it("classifies Washington purchase tax as buyer-remitted consumer use tax", () => {
+    const decision = decideTax("us.wa.sales-use", {
+      direction: "PURCHASE",
+      taxPointDate: "2026-08-26",
+      currency: "USD",
+      taxableBasis: "100",
+      destinationCountry: "US",
+      destinationRegion: "WA",
+      destinationCity: "Seattle",
+      locationCode: "1726",
+      category: "STANDARD",
+    });
+
+    expect(decision.ruleKey).toBe("wa-consumer-use");
+    expect(decision.totalTax).toBe("10.55");
+    expect(decision.components).toEqual([
+      expect.objectContaining({ amount: "6.50", treatment: "SELF_ASSESSED_PAYABLE" }),
+      expect.objectContaining({ amount: "4.05", treatment: "SELF_ASSESSED_PAYABLE" }),
+    ]);
+  });
+
   it("never guesses zero tax when a Washington location is unknown", () => {
     const decision = decideTax("us.wa.sales-use", {
       direction: "SALE",

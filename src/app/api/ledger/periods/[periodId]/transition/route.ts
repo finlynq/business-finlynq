@@ -5,11 +5,11 @@ import { validateSameOriginMutation } from "@/modules/identity/request-security"
 import {
   hasRecentStepUp,
   requestPrincipal,
-  transactionAuthMethod,
 } from "@/modules/identity/session";
 import { consumeLedgerMutationRateLimit } from "@/modules/ledger/mutation-rate-limit";
 import { transitionFiscalPeriod } from "@/modules/ledger/period-service";
 import { MutationBodyError, readBoundedJson } from "@/modules/ledger/request-body";
+import { mutationContext, principalCanWrite } from "@/modules/workspace/write-policy";
 
 const bodySchema = z.object({
   expectedVersion: z.number().int().positive(),
@@ -31,7 +31,7 @@ export async function POST(
     );
   }
   const [principal, params] = await Promise.all([requestPrincipal(request), context.params]);
-  if (!principal || principal.sessionMode !== "real" || !z.uuid().safeParse(params.periodId).success) {
+  if (!principal || !principalCanWrite(principal) || !z.uuid().safeParse(params.periodId).success) {
     return NextResponse.json(
       { error: "An authorized organization period is required." },
       { status: 403, headers: noStoreHeaders },
@@ -62,22 +62,15 @@ export async function POST(
     if (!parsed.success) {
       return NextResponse.json({ error: "Period transition fields are invalid." }, { status: 400, headers: noStoreHeaders });
     }
-    if ((parsed.data.toState === "OPEN" || parsed.data.toState === "SEALED") && !hasRecentStepUp(principal)) {
+    if ((parsed.data.toState === "OPEN" || parsed.data.toState === "SEALED") &&
+        (principal.sessionMode === "demo" || !hasRecentStepUp(principal))) {
       return NextResponse.json(
         { error: "A current MFA step-up is required to reopen or seal a period." },
         { status: 403, headers: noStoreHeaders },
       );
     }
     const result = await transitionFiscalPeriod({
-      context: {
-        organizationId: principal.organizationId,
-        actorId: principal.userId,
-        sessionId: principal.sessionId,
-        requestId,
-        authMethod: transactionAuthMethod(principal),
-        sourceSurface: "UI",
-        reason: parsed.data.reason,
-      },
+      context: mutationContext(principal, requestId, { reason: parsed.data.reason }),
       periodId: params.periodId,
       expectedVersion: parsed.data.expectedVersion,
       toState: parsed.data.toState,

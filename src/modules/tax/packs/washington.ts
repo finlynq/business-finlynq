@@ -1,4 +1,4 @@
-import { exact, quantizeMoney, sumExact } from "@/kernel/money";
+import { exact, minorUnits, quantizeMoney, sumExact } from "@/kernel/money";
 import { manualReview, type TaxDecision, type TaxFacts, type TaxPack } from "../types";
 
 const SOURCE = "https://dor.wa.gov/taxes-rates/sales-use-tax-rates/local-sales-use-tax/local-sales-use-tax-rate-table";
@@ -19,7 +19,7 @@ function zeroDecision(
     effectiveTo: EFFECTIVE_TO,
     facts,
     components: [],
-    totalTax: "0.00",
+    totalTax: quantizeMoney(0, facts.currency).toFixed(minorUnits(facts.currency)),
     rounding: "LINE_HALF_UP",
     source: SOURCE,
   };
@@ -33,8 +33,10 @@ export const washingtonSalesUsePack: TaxPack = {
       return manualReview(this, facts, "Washington pack requires a Washington sourcing decision", SOURCE);
     }
 
-    if (facts.currency !== "USD") {
-      return manualReview(this, facts, "Washington demo pack accepts USD documents only", SOURCE);
+    try {
+      quantizeMoney(0, facts.currency);
+    } catch {
+      return manualReview(this, facts, "Document currency precision is not configured", SOURCE);
     }
 
     if (facts.taxPointDate < EFFECTIVE_FROM || facts.taxPointDate > EFFECTIVE_TO) {
@@ -66,22 +68,32 @@ export const washingtonSalesUsePack: TaxPack = {
     }
 
     const basis = exact(facts.taxableBasis);
-    const stateTax = quantizeMoney(basis.times("0.065"), "USD");
-    const localTax = quantizeMoney(basis.times("0.0405"), "USD");
+    let stateTax: ReturnType<typeof quantizeMoney>;
+    let localTax: ReturnType<typeof quantizeMoney>;
+    try {
+      stateTax = quantizeMoney(basis.times("0.065"), facts.currency);
+      localTax = quantizeMoney(basis.times("0.0405"), facts.currency);
+    } catch {
+      return manualReview(this, facts, "Document currency precision is not configured", SOURCE);
+    }
     const components = [
       {
         key: "WA_STATE",
         label: "Washington state",
         rate: "0.065",
-        amount: stateTax.toFixed(2),
-        treatment: (facts.direction === "SALE" ? "PAYABLE" : "NONRECOVERABLE") as "PAYABLE" | "NONRECOVERABLE",
+        amount: stateTax.toFixed(minorUnits(facts.currency)),
+        treatment: (facts.direction === "SALE" ? "PAYABLE" : "SELF_ASSESSED_PAYABLE") as
+          | "PAYABLE"
+          | "SELF_ASSESSED_PAYABLE",
       },
       {
         key: "WA_LOCAL_1726",
         label: "Seattle local",
         rate: "0.0405",
-        amount: localTax.toFixed(2),
-        treatment: (facts.direction === "SALE" ? "PAYABLE" : "NONRECOVERABLE") as "PAYABLE" | "NONRECOVERABLE",
+        amount: localTax.toFixed(minorUnits(facts.currency)),
+        treatment: (facts.direction === "SALE" ? "PAYABLE" : "SELF_ASSESSED_PAYABLE") as
+          | "PAYABLE"
+          | "SELF_ASSESSED_PAYABLE",
       },
     ];
 
@@ -95,7 +107,8 @@ export const washingtonSalesUsePack: TaxPack = {
       effectiveTo: EFFECTIVE_TO,
       facts,
       components,
-      totalTax: sumExact(components.map((component) => component.amount)).toFixed(2),
+      totalTax: sumExact(components.map((component) => component.amount))
+        .toFixed(minorUnits(facts.currency)),
       rounding: "LINE_HALF_UP",
       source: SOURCE,
     };

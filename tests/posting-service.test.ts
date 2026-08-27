@@ -34,6 +34,8 @@ function fakeClient(input: Readonly<{
   databaseHash?: string | null;
   storedHash?: string | null;
   journalNumber?: number | null;
+  ownerModule?: string;
+  journalTypeKey?: string;
 }> = {}) {
   const status = input.status ?? "DRAFT";
   const query = vi.fn(async (statement: string, parameters?: readonly unknown[]) => {
@@ -50,6 +52,8 @@ function fakeClient(input: Readonly<{
           status,
           content_hash: input.storedHash ?? null,
           journal_number: input.journalNumber ?? null,
+          journal_type_key: input.journalTypeKey ?? "ledger.manual",
+          owner_module: input.ownerModule ?? "ledger",
         }],
       };
     }
@@ -158,6 +162,21 @@ describe("posting service authorization and content integrity", () => {
         expectedContentHash: "b".repeat(64),
       }),
     ).rejects.toThrow("Journal content changed");
+    expect(query.mock.calls.some(([statement]) => statement.includes("UPDATE journal_entries"))).toBe(false);
+  });
+
+  it("cannot post a source-owned journal through the general-ledger boundary", async () => {
+    const { client, query } = fakeClient({
+      ownerModule: "receivables",
+      journalTypeKey: "receivables.invoice",
+    });
+    transactionMocks.withTenantTransaction.mockImplementation(
+      async (_context, work: (transactionClient: PoolClient) => Promise<unknown>) => work(client),
+    );
+
+    await expect(postJournal({ context, journalId: ids.journal })).rejects.toThrow(
+      "owning receivables module",
+    );
     expect(query.mock.calls.some(([statement]) => statement.includes("UPDATE journal_entries"))).toBe(false);
   });
 

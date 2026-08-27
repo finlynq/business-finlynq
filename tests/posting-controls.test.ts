@@ -114,6 +114,15 @@ describe("posting controls", () => {
     expect(codes).toContain("FUNCTIONAL_TRANSACTION_MISMATCH");
   });
 
+  it("rejects a zero FX rate", () => {
+    const journal = {
+      ...balancedJournal,
+      lines: [{ ...balancedJournal.lines[0], fxRate: "0" }, balancedJournal.lines[1]],
+    };
+
+    expect(validateJournalDraft(journal).map((issue) => issue.code)).toContain("FX_RATE_INVALID");
+  });
+
   it("accepts foreign-currency conversion rounded to functional minor units", () => {
     const journal: JournalDraft = {
       ...balancedJournal,

@@ -2,13 +2,14 @@ import Link from "next/link";
 import { demoClosePackages } from "@/modules/demo/dashboard-data";
 import { loadPeriodControlWorkspace } from "@/modules/ledger/tenant-workspace";
 import { requireWorkspacePrincipal } from "@/modules/workspace/access";
+import { principalCanWrite } from "@/modules/workspace/write-policy";
 import { CloseReadinessForm } from "../../../_components/close-readiness-form.client";
 import { PeriodTransitionForm } from "../../../_components/period-transition-form.client";
 import { DemoNotice, PageHeader, StatusPill } from "../../../_components/ui";
 
 export default async function PeriodClosePage() {
   const principal = await requireWorkspacePrincipal("/app/controls/period-close");
-  if (principal.sessionMode === "real") {
+  if (principalCanWrite(principal)) {
     const workspace = await loadPeriodControlWorkspace(principal);
     return (
       <div className="page-content">

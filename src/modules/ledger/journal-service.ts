@@ -1,7 +1,6 @@
 import "server-only";
 
 import { createHash, randomUUID } from "node:crypto";
-import type { PoolClient } from "pg";
 import { z } from "zod";
 import { withTenantTransaction, type TenantTransactionContext } from "@/db/transaction";
 import { exact, isQuantizedMoney, sumExact } from "@/kernel/money";
@@ -11,6 +10,10 @@ import {
 } from "@/modules/identity/authorization";
 import { PERMISSIONS } from "@/modules/identity/permissions";
 import { postJournalInTransaction } from "./posting-service";
+import {
+  assertTenantWritesEnabled,
+  assertWritableOrganization,
+} from "@/modules/workspace/write-policy";
 
 const amountSchema = z.string().trim().regex(/^\d+(?:\.\d{1,9})?$/);
 const rateSchema = z.string().trim().regex(/^\d+(?:\.\d{1,18})?$/);
@@ -69,10 +72,6 @@ type JournalResultRow = Readonly<{
   journal_number: number | null;
 }>;
 
-function assertBusinessWritesEnabled(): void {
-  if (process.env.BUSINESS_WRITES_ENABLED !== "true") throw new Error("Business writes are disabled");
-}
-
 function commandFingerprint(value: unknown): string {
   return createHash("sha256").update(JSON.stringify(value), "utf8").digest("hex");
 }
@@ -93,10 +92,10 @@ function assertLineAndJournalAmounts(
     if (debitTransaction.isZero() === creditTransaction.isZero()) {
       throw new Error(`Line ${index + 1} requires exactly one transaction debit or credit side`);
     }
-    if (debit.isPositive() !== debitTransaction.isPositive()) {
+    if (debit.greaterThan(0) !== debitTransaction.greaterThan(0)) {
       throw new Error(`Line ${index + 1} transaction side does not match its functional side`);
     }
-    if (!fxRate.isPositive()) throw new Error(`Line ${index + 1} FX rate must be positive`);
+    if (!fxRate.greaterThan(0)) throw new Error(`Line ${index + 1} FX rate must be positive`);
     if (!isQuantizedMoney(debit, functionalCurrency) || !isQuantizedMoney(credit, functionalCurrency)) {
       throw new Error(`Line ${index + 1} exceeds ${functionalCurrency} precision`);
     }
@@ -109,16 +108,6 @@ function assertLineAndJournalAmounts(
   const credits = sumExact(lines.map((line) => line.creditFunctional));
   if (debits.isZero() || !debits.equals(credits)) {
     throw new Error("Journal requires a non-zero exact functional debit/credit balance");
-  }
-}
-
-async function assertRealOrganization(client: PoolClient, organizationId: string): Promise<void> {
-  const result = await client.query<{ active: boolean; is_demo: boolean }>(
-    "SELECT active, is_demo FROM organizations WHERE id = $1",
-    [organizationId],
-  );
-  if (!result.rows[0]?.active || result.rows[0].is_demo) {
-    throw new Error("Accounting writes require an active non-demo organization");
   }
 }
 
@@ -138,11 +127,11 @@ function resultFromRow(row: JournalResultRow, idempotentReplay: boolean, autoPos
 export async function createManualJournal(
   unparsedCommand: CreateManualJournalCommand,
 ): Promise<JournalCommandResult> {
-  assertBusinessWritesEnabled();
+  assertTenantWritesEnabled(unparsedCommand.context);
   const command = draftSchema.parse(unparsedCommand);
 
   return withTenantTransaction(unparsedCommand.context, async (client) => {
-    await assertRealOrganization(client, unparsedCommand.context.organizationId);
+    await assertWritableOrganization(client, unparsedCommand.context);
     await assertActorHasActivePermission(client, {
       organizationId: unparsedCommand.context.organizationId,
       actorId: unparsedCommand.context.actorId,
@@ -178,8 +167,7 @@ export async function createManualJournal(
        LEFT JOIN ledger_posting_policies policy
          ON policy.organization_id = ledger.organization_id AND policy.ledger_id = ledger.id
        WHERE ledger.organization_id = $1 AND ledger.id = $2
-         AND entity.id = $3 AND period.id = $4 AND ledger.active
-       FOR SHARE OF ledger, entity, period`,
+         AND entity.id = $3 AND period.id = $4 AND ledger.active`,
       [
         unparsedCommand.context.organizationId,
         command.ledgerId,
@@ -209,7 +197,7 @@ export async function createManualJournal(
          AND combination.entity_id = $3
          AND combination.id = ANY($4::uuid[])
          AND combination.active AND account.active AND account.postable
-       FOR SHARE OF combination, account`,
+         AND account.control_kind = 'NONE'`,
       [
         unparsedCommand.context.organizationId,
         command.ledgerId,
@@ -219,7 +207,7 @@ export async function createManualJournal(
     );
     const authorizedCombinations = new Set(combinations.rows.map((row) => row.id));
     if (command.lines.some((line) => !authorizedCombinations.has(line.accountCombinationId))) {
-      throw new Error("One or more account combinations are not active in the selected tenant ledger");
+      throw new Error("Manual journals require active non-control accounts in the selected tenant ledger");
     }
 
     const fingerprint = commandFingerprint(command);
@@ -333,14 +321,14 @@ export async function createManualJournal(
 export async function reversePostedJournal(
   unparsedCommand: ReverseJournalCommand,
 ): Promise<JournalCommandResult> {
-  assertBusinessWritesEnabled();
+  assertTenantWritesEnabled(unparsedCommand.context);
   const command = reversalSchema.parse(unparsedCommand);
   if (unparsedCommand.context.reason !== command.reason) {
     throw new Error("Reversal reason must be bound to the transaction audit context");
   }
 
   return withTenantTransaction(unparsedCommand.context, async (client) => {
-    await assertRealOrganization(client, unparsedCommand.context.organizationId);
+    await assertWritableOrganization(client, unparsedCommand.context);
     await assertActorHasActivePermission(client, {
       organizationId: unparsedCommand.context.organizationId,
       actorId: unparsedCommand.context.actorId,
@@ -353,9 +341,11 @@ export async function reversePostedJournal(
       functional_currency: string;
       status: string;
       owner_module: string;
+      journal_type_key: string;
     }>(
       `SELECT entry.id, entry.ledger_id, entry.legal_entity_id,
-         entry.functional_currency, entry.status, journal_type.owner_module
+         entry.functional_currency, entry.status, journal_type.owner_module,
+         entry.journal_type_key
        FROM journal_entries entry
        JOIN journal_type_definitions journal_type
          ON journal_type.id = entry.journal_type_definition_id
@@ -371,6 +361,9 @@ export async function reversePostedJournal(
     }
     if (original.owner_module !== "ledger") {
       throw new Error(`This journal must be corrected in its owning ${original.owner_module} module`);
+    }
+    if (original.journal_type_key !== "ledger.manual") {
+      throw new Error("Only a posted ledger.manual journal can be reversed from the general ledger");
     }
 
     const fingerprint = commandFingerprint(command);

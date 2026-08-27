@@ -52,6 +52,24 @@ async function main(): Promise<void> {
       unwrappedKeyCount += 1;
     }
 
+    const missingKeyCoverage = await pool.query<{ missing_count: number }>(
+      `SELECT count(*)::int AS missing_count
+       FROM (
+         SELECT organization_id FROM parties WHERE display_name_ciphertext IS NOT NULL
+         UNION
+         SELECT organization_id FROM party_addresses WHERE ciphertext IS NOT NULL
+       ) encrypted_organization
+       WHERE NOT EXISTS (
+         SELECT 1 FROM organization_key_versions key_version
+         WHERE key_version.organization_id = encrypted_organization.organization_id
+           AND key_version.active
+       )`,
+    );
+    const encryptedOrganizationsMissingKeys = missingKeyCoverage.rows[0]?.missing_count ?? -1;
+    if (encryptedOrganizationsMissingKeys !== 0) {
+      throw new Error("Restore contains encrypted organization data without an active wrapped key");
+    }
+
     const identityResult = await pool.query<{
       id: string;
       email_ciphertext: string;
@@ -79,6 +97,7 @@ async function main(): Promise<void> {
     process.stdout.write(`${JSON.stringify({
       status: "verified",
       wrappedOrganizationKeys: unwrappedKeyCount,
+      encryptedOrganizationsMissingKeys,
       encryptedIdentities: decryptedIdentityCount,
     })}\n`);
   } finally {

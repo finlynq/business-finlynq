@@ -11,5 +11,21 @@ export const receivablesModule = defineAccountingModule({
     correctionRoute: "/receivables/invoices",
     editableInGeneralLedger: false,
     deterministicSourceMayPost: true,
+  }, {
+    key: "receivables.customer-receipt",
+    version: 1,
+    ownerModule: "receivables",
+    label: "Customer receipt",
+    correctionRoute: "/receivables/invoices",
+    editableInGeneralLedger: false,
+    deterministicSourceMayPost: true,
+  }, {
+    key: "receivables.invoice-void",
+    version: 1,
+    ownerModule: "receivables",
+    label: "Sales invoice void",
+    correctionRoute: "/receivables/invoices",
+    editableInGeneralLedger: false,
+    deterministicSourceMayPost: true,
   }],
 });

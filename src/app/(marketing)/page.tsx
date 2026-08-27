@@ -38,7 +38,7 @@ export default function MarketingHomePage() {
               <ul className={styles.trustList} aria-label="Product principles">
                 <li>U.S. & Canada foundation</li><li>Multicurrency by design</li><li>Audit-first</li><li>AGPL open source</li>
               </ul>
-              <p className={styles.demoNote}>The public demo is read-only and uses synthetic records. Production accounting writes remain gated until the launch controls are complete.</p>
+              <p className={styles.demoNote}>Each visitor receives an isolated synthetic sandbox. Try the accounting workflows, then leave it behind—real accounts, real data, and production writes remain disabled.</p>
             </div>
             <div className={styles.heroPreview}><ProductPreview /></div>
           </div>
@@ -117,7 +117,7 @@ export default function MarketingHomePage() {
         <section className={styles.finalCta} aria-labelledby="final-title">
           <p className={styles.kicker}>See the control model in context</p>
           <h2 id="final-title">Walk through a focused synthetic business.</h2>
-          <p>No registration and no credentials to type. The link creates a short-lived, read-only demo session.</p>
+          <p>No registration and no credentials to type. The link creates a private synthetic sandbox for up to one hour; inactivity ends it after 15 minutes.</p>
           <div><Link href="/try-demo?next=/app" prefetch={false}>Open the live demo <span aria-hidden="true">→</span></Link><Link href="/login">Sign in</Link></div>
         </section>
       </main>

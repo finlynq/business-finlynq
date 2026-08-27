@@ -27,7 +27,12 @@ export type TaxComponent = Readonly<{
   label: string;
   rate: string;
   amount: string;
-  treatment: "PAYABLE" | "RECOVERABLE" | "NONRECOVERABLE" | "DISCLOSURE_ONLY";
+  treatment:
+    | "PAYABLE"
+    | "RECOVERABLE"
+    | "NONRECOVERABLE"
+    | "SELF_ASSESSED_PAYABLE"
+    | "DISCLOSURE_ONLY";
 }>;
 
 export type TaxDecisionStatus =

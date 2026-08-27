@@ -1,18 +1,41 @@
-import { demoPayableBills } from "@/modules/demo/dashboard-data";
+import Link from "next/link";
+import { ArApWorkspace } from "@/app/_components/ar-ap-workspace.client";
+import { DemoNotice, EmptyState, PageHeader } from "@/app/_components/ui";
+import { loadSubledgerWorkspace } from "@/modules/subledger/workspace";
 import { requireWorkspacePrincipal } from "@/modules/workspace/access";
 import { TenantModuleUnavailable } from "../../../_components/tenant-module-unavailable";
-import { DemoNotice, EmptyState, PageHeader, StatusPill } from "../../../_components/ui";
 
-export default async function BillsPage({ searchParams }: { searchParams: Promise<{ q?: string }> }) {
+export default async function BillsPage({
+  searchParams,
+}: Readonly<{ searchParams: Promise<{ q?: string }> }>) {
   const principal = await requireWorkspacePrincipal("/app/payables/bills");
-  if (principal.sessionMode !== "demo") return <TenantModuleUnavailable moduleName="Accounts payable" />;
-  const query = (await searchParams).q?.trim().toLocaleLowerCase() ?? "";
-  const bills = demoPayableBills.filter((bill) => !query || Object.values(bill).join(" ").toLocaleLowerCase().includes(query));
+  const query = (await searchParams).q?.trim() ?? "";
+  const workspace = await loadSubledgerWorkspace(principal, "payables", query);
+  if (!workspace.canRead) return <TenantModuleUnavailable moduleName="Accounts payable" />;
+  const ready = workspace.entities.some((entity) =>
+    entity.periods.length > 0 && entity.partyAccounts.length > 0 &&
+    entity.lineAccounts.length > 0 && entity.taxAccounts.length > 0);
+
   return (
     <div className="page-content">
-      <PageHeader eyebrow="Accounts payable" title="Supplier bills" description="Confirmed bill journals are owned by Payables and route back here for any future correction workflow." />
-      <DemoNotice>Bill confirmation, credits, payments, and allocations remain behind the write gate. No supplier record can be changed from this demo.</DemoNotice>
-      {bills.length ? <div className="record-grid">{bills.map((bill) => <article className="record-card" id={`bill-${bill.id}`} key={bill.id}><div><span className="code-chip">{bill.number}</span><StatusPill status={bill.status} /></div><h2>{bill.supplierName}</h2><p>{bill.entityCode} · billed {bill.billDate} · due {bill.dueOn}</p><strong className="record-amount">{bill.currency} {bill.total}</strong><dl><div><dt>Open amount</dt><dd>{bill.currency} {bill.openAmount}</dd></div><div><dt>Tax</dt><dd>{bill.currency} {bill.tax}</dd></div><div><dt>Ledger link</dt><dd>{bill.journalId ?? "Not posted · review draft"}</dd></div></dl></article>)}</div> : <EmptyState title="No bill found">Search by bill number, supplier, status, or entity.</EmptyState>}
+      <PageHeader
+        eyebrow="Accounts payable"
+        title="Supplier bills & payments"
+        description="Capture service bills, determine recoverable tax, post immutable AP journals, allocate payments, and correct mistakes by voiding at the source."
+        actions={<Link className="secondary-button" href="/app/parties">Manage suppliers</Link>}
+      />
+      {workspace.demoOnly && (
+        <DemoNotice>
+          This is your private writable demo business. Create, issue, allocate, and void transactions freely; the seeded company is restored automatically every night and after the sandbox expires.
+        </DemoNotice>
+      )}
+      {!ready ? (
+        <EmptyState title="Payables setup is incomplete">
+          Add an active legal entity, primary ledger, open fiscal period, supplier party account, chart combinations, and tax registration before entering bills.
+        </EmptyState>
+      ) : (
+        <ArApWorkspace workspace={workspace} />
+      )}
     </div>
   );
 }

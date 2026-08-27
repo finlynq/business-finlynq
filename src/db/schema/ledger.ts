@@ -41,6 +41,12 @@ export const customSlotState = pgEnum("custom_slot_state", [
   "INACTIVE_LOCKED",
 ]);
 
+export const currencyDefinitions = pgTable("currency_definitions", {
+  code: text("code").primaryKey(),
+  minorUnits: integer("minor_units").notNull(),
+  active: boolean("active").notNull().default(true),
+});
+
 export const legalEntities = pgTable(
   "legal_entities",
   {

@@ -172,6 +172,42 @@ services:
         max-size: "10m"
         max-file: "3"
 
+  reconcile_backup_grants:
+    build:
+      context: .
+      target: operations
+    command: ["/usr/local/bin/business-finlynq-provision-backup-role"]
+    environment:
+      PGHOST: database
+      PGPORT: "5432"
+      POSTGRES_DB: business_finlynq
+      POSTGRES_USER: business_finlynq_owner
+      PGPASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+      BACKUP_DATABASE_PASSWORD_FILE: /run/secrets/business_finlynq_backup_db_password
+    secrets:
+      - business_finlynq_backup_db_password
+    group_add:
+      - ${BUSINESS_FINLYNQ_SECRET_GID:?set BUSINESS_FINLYNQ_SECRET_GID}
+    depends_on:
+      reconcile_auth_worker_grants:
+        condition: service_completed_successfully
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp:size=32m,mode=1777
+    security_opt:
+      - no-new-privileges:true
+    cap_drop: [ALL]
+    restart: "no"
+    networks: [business_finlynq_private]
+    cpus: "0.25"
+    mem_limit: 128m
+    pids_limit: 64
+    logging:
+      options:
+        max-size: "10m"
+        max-file: "3"
+
   bootstrap_demo:
     build:
       context: .
@@ -189,8 +225,84 @@ services:
     group_add:
       - ${BUSINESS_FINLYNQ_SECRET_GID:?set BUSINESS_FINLYNQ_SECRET_GID}
     depends_on:
-      reconcile_auth_worker_grants:
+      reconcile_backup_grants:
         condition: service_completed_successfully
+    restart: "no"
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    security_opt:
+      - no-new-privileges:true
+    cap_drop: [ALL]
+    networks: [business_finlynq_private]
+    cpus: "0.50"
+    mem_limit: 512m
+    pids_limit: 96
+    logging:
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  reset_demo_sandboxes:
+    profiles: [demo-maintenance]
+    build:
+      context: .
+      target: migrator
+    command: ["npm", "run", "demo:reset"]
+    environment:
+      BUSINESS_FINLYNQ_MIGRATION_DB_HOST: database
+      BUSINESS_FINLYNQ_MIGRATION_DB_PORT: "5432"
+      BUSINESS_FINLYNQ_MIGRATION_DB_NAME: business_finlynq
+      BUSINESS_FINLYNQ_MIGRATION_DB_USER: business_finlynq_owner
+      BUSINESS_FINLYNQ_MIGRATION_DB_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+      ORGANIZATION_ROOT_KEK_FILE: /run/secrets/business_finlynq_root_kek
+      DEMO_RESET_MODE: incremental
+    secrets:
+      - business_finlynq_root_kek
+    group_add:
+      - ${BUSINESS_FINLYNQ_SECRET_GID:?set BUSINESS_FINLYNQ_SECRET_GID}
+    depends_on:
+      database:
+        condition: service_healthy
+    restart: "no"
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    security_opt:
+      - no-new-privileges:true
+    cap_drop: [ALL]
+    networks: [business_finlynq_private]
+    cpus: "0.50"
+    mem_limit: 512m
+    pids_limit: 96
+    logging:
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  reconcile_demo_sandboxes:
+    profiles: [demo-maintenance]
+    build:
+      context: .
+      target: migrator
+    command: ["npm", "run", "demo:reset"]
+    environment:
+      BUSINESS_FINLYNQ_MIGRATION_DB_HOST: database
+      BUSINESS_FINLYNQ_MIGRATION_DB_PORT: "5432"
+      BUSINESS_FINLYNQ_MIGRATION_DB_NAME: business_finlynq
+      BUSINESS_FINLYNQ_MIGRATION_DB_USER: business_finlynq_owner
+      BUSINESS_FINLYNQ_MIGRATION_DB_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+      ORGANIZATION_ROOT_KEK_FILE: /run/secrets/business_finlynq_root_kek
+      DEMO_RESET_MODE: nightly
+    secrets:
+      - business_finlynq_root_kek
+    group_add:
+      - ${BUSINESS_FINLYNQ_SECRET_GID:?set BUSINESS_FINLYNQ_SECRET_GID}
+    depends_on:
+      database:
+        condition: service_healthy
     restart: "no"
     init: true
     read_only: true
@@ -212,6 +324,8 @@ services:
     build:
       context: .
       target: runner
+      args:
+        BUSINESS_FINLYNQ_IMAGE_REVISION: ${BUSINESS_FINLYNQ_IMAGE_REVISION:-unknown}
     environment:
       BUSINESS_FINLYNQ_DB_HOST: database
       BUSINESS_FINLYNQ_DB_PORT: "5432"
@@ -221,6 +335,7 @@ services:
       APP_ORIGIN: https://${BUSINESS_FINLYNQ_HOSTNAME:-business.finlynq.com}
       SESSION_COOKIE_NAME: __Host-business_finlynq_session
       DEMO_LOGIN_ENABLED: ${DEMO_LOGIN_ENABLED:-false}
+      DEMO_WRITES_ENABLED: ${DEMO_WRITES_ENABLED:-false}
       ACCOUNT_LOGIN_ENABLED: ${ACCOUNT_LOGIN_ENABLED:-false}
       AUTH_EMAIL_DELIVERY_ENABLED: ${AUTH_EMAIL_DELIVERY_ENABLED:-false}
       AUTH_EMAIL_PROVIDER: ${AUTH_EMAIL_PROVIDER:-resend}
@@ -675,6 +790,86 @@ services:
         max-size: "10m"
         max-file: "3"
 
+  restore_backup_grants:
+    profiles: [restore-drill]
+    build:
+      context: .
+      target: operations
+    command: ["/usr/local/bin/business-finlynq-reconcile-restored-role"]
+    environment:
+      PGHOST: restore_database
+      PGPORT: "5432"
+      POSTGRES_DB: business_finlynq_restore_drill
+      POSTGRES_USER: restore_drill_owner
+      RESTORE_DATABASE_PASSWORD_FILE: /run/secrets/business_finlynq_restore_db_password
+      RESTORE_RECONCILIATION_TARGET: backup
+      RESTORE_CONFIRM_DISPOSABLE: business-finlynq-restore-drill
+      BACKUP_DATABASE_PASSWORD_FILE: /run/secrets/business_finlynq_backup_db_password
+    secrets:
+      - business_finlynq_restore_db_password
+      - business_finlynq_backup_db_password
+    group_add:
+      - ${BUSINESS_FINLYNQ_SECRET_GID:?set BUSINESS_FINLYNQ_SECRET_GID}
+    depends_on:
+      restore_auth_worker_grants:
+        condition: service_completed_successfully
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp:size=32m,mode=1777
+    security_opt:
+      - no-new-privileges:true
+    cap_drop: [ALL]
+    restart: "no"
+    networks: [business_finlynq_restore_drill]
+    cpus: "0.25"
+    mem_limit: 128m
+    pids_limit: 64
+    logging:
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  restore_demo_bootstrap:
+    profiles: [restore-drill]
+    build:
+      context: .
+      target: migrator
+    command:
+      - sh
+      - -c
+      - export BUSINESS_FINLYNQ_MIGRATION_DB_PASSWORD="$$(cat /run/secrets/business_finlynq_restore_db_password)" && npm run demo:bootstrap && DEMO_RESET_MODE=nightly exec npm run demo:reset
+    environment:
+      BUSINESS_FINLYNQ_MIGRATION_DB_HOST: restore_database
+      BUSINESS_FINLYNQ_MIGRATION_DB_PORT: "5432"
+      BUSINESS_FINLYNQ_MIGRATION_DB_NAME: business_finlynq_restore_drill
+      BUSINESS_FINLYNQ_MIGRATION_DB_USER: restore_drill_owner
+      ORGANIZATION_ROOT_KEK_FILE: /run/secrets/business_finlynq_root_kek
+    secrets:
+      - business_finlynq_restore_db_password
+      - business_finlynq_root_kek
+    group_add:
+      - ${BUSINESS_FINLYNQ_SECRET_GID:?set BUSINESS_FINLYNQ_SECRET_GID}
+    depends_on:
+      restore_key_verify:
+        condition: service_completed_successfully
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    security_opt:
+      - no-new-privileges:true
+    cap_drop: [ALL]
+    restart: "no"
+    networks: [business_finlynq_restore_drill]
+    cpus: "0.50"
+    mem_limit: 512m
+    pids_limit: 96
+    logging:
+      options:
+        max-size: "10m"
+        max-file: "3"
+
   restore_key_verify:
     profiles: [restore-drill]
     build:
@@ -691,7 +886,7 @@ services:
       BUSINESS_FINLYNQ_DB_USER: restore_drill_owner
       ORGANIZATION_ROOT_KEK_FILE: /run/secrets/business_finlynq_root_kek
       IDENTITY_SECRET_FILE: /run/secrets/business_finlynq_identity_secret
-      RESTORE_REQUIRE_WRAPPED_KEYS: ${RESTORE_REQUIRE_WRAPPED_KEYS:-false}
+      RESTORE_REQUIRE_WRAPPED_KEYS: ${RESTORE_REQUIRE_WRAPPED_KEYS:-true}
       RESTORE_REQUIRE_ENCRYPTED_IDENTITIES: ${RESTORE_REQUIRE_ENCRYPTED_IDENTITIES:-false}
     secrets:
       - business_finlynq_restore_db_password
@@ -700,7 +895,7 @@ services:
     group_add:
       - ${BUSINESS_FINLYNQ_SECRET_GID:?set BUSINESS_FINLYNQ_SECRET_GID}
     depends_on:
-      restore_auth_worker_grants:
+      restore_backup_grants:
         condition: service_completed_successfully
     init: true
     read_only: true
@@ -736,6 +931,9 @@ services:
       APP_ORIGIN: https://${BUSINESS_FINLYNQ_HOSTNAME:-business.finlynq.com}
       SESSION_COOKIE_NAME: business_finlynq_restore_session
       DEMO_LOGIN_ENABLED: "true"
+      # Restore verification is deliberately degraded/read-only. Sandbox reset
+      # operators and maintenance timers are not part of this drill surface.
+      DEMO_WRITES_ENABLED: "false"
       ACCOUNT_LOGIN_ENABLED: "false"
       AUTH_EMAIL_DELIVERY_ENABLED: "false"
       BUSINESS_WRITES_ENABLED: "false"
@@ -749,7 +947,7 @@ services:
     group_add:
       - ${BUSINESS_FINLYNQ_SECRET_GID:?set BUSINESS_FINLYNQ_SECRET_GID}
     depends_on:
-      restore_key_verify:
+      restore_demo_bootstrap:
         condition: service_completed_successfully
     healthcheck:
       test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:3000/api/live"]
@@ -786,6 +984,7 @@ services:
       PGDATABASE: business_finlynq_restore_drill
       APP_DATABASE_PASSWORD_FILE: /run/secrets/business_finlynq_app_db_password
       AUTH_WORKER_DATABASE_PASSWORD_FILE: /run/secrets/business_finlynq_auth_worker_db_password
+      BACKUP_DATABASE_PASSWORD_FILE: /run/secrets/business_finlynq_backup_db_password
       RESTORE_APP_URL: http://restore_app:3000
       RESTORE_EXPECTED_APP_ORIGIN: https://${BUSINESS_FINLYNQ_HOSTNAME:-business.finlynq.com}
       RESTORE_ALLOWED_HOST: restore_database
@@ -793,6 +992,7 @@ services:
     secrets:
       - business_finlynq_app_db_password
       - business_finlynq_auth_worker_db_password
+      - business_finlynq_backup_db_password
     group_add:
       - ${BUSINESS_FINLYNQ_SECRET_GID:?set BUSINESS_FINLYNQ_SECRET_GID}
     depends_on:

@@ -120,12 +120,15 @@ BEGIN
     'organizations', 'organization_memberships', 'roles',
     'membership_roles', 'role_permissions', 'permissions',
     'organization_key_versions', 'legal_entities', 'ledgers',
+    'currency_definitions',
     'fiscal_periods', 'period_events', 'ledger_number_sequences',
     'ledger_posting_policies', 'gl_accounts', 'segment_definitions',
     'segment_values', 'account_combinations', 'journal_type_definitions',
     'source_documents', 'journal_entries', 'journal_approvals',
     'journal_lines', 'journal_entry_relations', 'parties',
     'party_addresses', 'party_accounts', 'subledger_events', 'open_items',
+    'document_settlement_allocations', 'open_item_void_events',
+    'open_item_balances',
     'tax_pack_versions', 'entity_tax_registrations',
     'tax_determination_snapshots'
   ] LOOP
@@ -138,6 +141,7 @@ BEGIN
   -- No application table receives DELETE.
   FOREACH selected_name IN ARRAY ARRAY[
     'journal_entries', 'journal_lines', 'parties', 'party_addresses',
+    'party_accounts',
     'ledger_posting_policies', 'ledger_number_sequences'
   ] LOOP
     IF to_regclass(format('public.%I', selected_name)) IS NOT NULL THEN
@@ -146,7 +150,10 @@ BEGIN
   END LOOP;
 
   FOREACH selected_name IN ARRAY ARRAY[
-    'journal_approvals', 'journal_entry_relations'
+    'journal_approvals', 'journal_entry_relations', 'source_documents',
+    'subledger_events', 'open_items', 'document_settlement_allocations',
+    'open_item_void_events',
+    'tax_determination_snapshots'
   ] LOOP
     IF to_regclass(format('public.%I', selected_name)) IS NOT NULL THEN
       EXECUTE format('GRANT INSERT ON TABLE public.%I TO business_finlynq_app', selected_name);
@@ -165,6 +172,8 @@ BEGIN
     'app.current_actor_has_permission(text)',
     'app.segment_value_is_valid(uuid,uuid,text,date)',
     'app.currency_minor_units(text)',
+    'app.current_demo_session_is_valid()',
+    'app.assert_current_demo_session_lease()',
     'app.allocate_journal_number(uuid,uuid,text)',
     'app.compute_journal_content_hash(uuid)',
     'app.install_initial_organization_key(text,text)',
@@ -172,6 +181,7 @@ BEGIN
     'app.auth_lookup_login(text)',
     'app.auth_lookup_login_v2(text)',
     'app.auth_issue_demo_session(text,text,text,text)',
+    'app.auth_demo_session_lease_valid(uuid)',
     'app.auth_issue_mfa_user_session(uuid,uuid,uuid,uuid,bigint,text,text,text,text)',
     'app.auth_resolve_session(text,text)',
     'app.auth_resolve_session_v2(text,text)',

@@ -13,6 +13,24 @@ import {
 } from "drizzle-orm/pg-core";
 import { organizationMemberships, organizations, users } from "./identity";
 
+export const demoSandboxSlots = pgTable(
+  "demo_sandbox_slots",
+  {
+    slot: integer("slot").primaryKey(),
+    organizationId: uuid("organization_id").notNull().references(() => organizations.id, { onDelete: "restrict" }),
+    state: text("state").notNull().default("DIRTY"),
+    generation: integer("generation").notNull().default(1),
+    leaseSessionId: uuid("lease_session_id"),
+    baselineVersion: integer("baseline_version").notNull().default(1),
+    lastClaimedAt: timestamp("last_claimed_at", { withTimezone: true }),
+    lastResetAt: timestamp("last_reset_at", { withTimezone: true }),
+  },
+  (table) => [
+    uniqueIndex("demo_sandbox_slots_organization_unique").on(table.organizationId),
+    uniqueIndex("demo_sandbox_slots_lease_session_unique").on(table.leaseSessionId),
+  ],
+);
+
 export const authSessions = pgTable(
   "auth_sessions",
   {
@@ -33,6 +51,7 @@ export const authSessions = pgTable(
     revokedAt: timestamp("revoked_at", { withTimezone: true }),
     mfaVerifiedAt: timestamp("mfa_verified_at", { withTimezone: true }),
     stepUpExpiresAt: timestamp("step_up_expires_at", { withTimezone: true }),
+    demoGeneration: integer("demo_generation"),
   },
   (table) => [
     uniqueIndex("auth_sessions_token_hash_unique").on(table.tokenHash),

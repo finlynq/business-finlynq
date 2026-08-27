@@ -11,6 +11,7 @@ const rendered = execFileSync(
     "--profile", "auth-email",
     "--profile", "account-operations",
     "--profile", "operations",
+    "--profile", "demo-maintenance",
     "--profile", "restore-drill",
     "config",
     "--format", "json",
@@ -22,6 +23,8 @@ const services = configuration.services ?? {};
 const providerSecret = "business_finlynq_resend_api_key";
 const appDatabaseSecret = "business_finlynq_app_db_password";
 const workerDatabaseSecret = "business_finlynq_auth_worker_db_password";
+const backupDatabaseSecret = "business_finlynq_backup_db_password";
+const rootKekSecret = "business_finlynq_root_kek";
 
 function secretSources(service) {
   return (service?.secrets ?? []).map((secret) => typeof secret === "string" ? secret : secret.source);
@@ -66,6 +69,9 @@ if ((worker.networks ?? {}).business_finlynq_edge) fail("auth_email_worker is at
 
 const app = services.app;
 if (!app) fail("app service is missing");
+if (app.build?.args?.BUSINESS_FINLYNQ_IMAGE_REVISION !== process.env.BUSINESS_FINLYNQ_IMAGE_REVISION) {
+  fail("app image build does not embed the configured release revision");
+}
 if (app.environment?.BUSINESS_FINLYNQ_DB_PASSWORD) fail("app exposes its database password inline");
 if (app.environment?.BUSINESS_FINLYNQ_DB_PASSWORD_FILE !== "/run/secrets/business_finlynq_app_db_password") {
   fail("app does not use its dedicated database-password file");
@@ -73,6 +79,14 @@ if (app.environment?.BUSINESS_FINLYNQ_DB_PASSWORD_FILE !== "/run/secrets/busines
 if (!secretSources(app).includes(appDatabaseSecret)) fail("app does not mount its database secret");
 if (secretSources(app).includes(workerDatabaseSecret)) fail("app mounts the authentication-worker database secret");
 if (secretSources(app).includes(providerSecret)) fail("app mounts the email-provider credential");
+for (const [gate, expected] of [
+  ["DEMO_LOGIN_ENABLED", "true"],
+  ["DEMO_WRITES_ENABLED", "true"],
+  ["ACCOUNT_LOGIN_ENABLED", "false"],
+  ["BUSINESS_WRITES_ENABLED", "false"],
+]) {
+  if (app.environment?.[gate] !== expected) fail(`app release gate ${gate} must render as ${expected}`);
+}
 
 const invite = services.invite_account;
 if (!invite) fail("invite_account service is missing");
@@ -85,8 +99,68 @@ if (dependencyCondition(services.reconcile_runtime_grants, "migrate") !== "servi
 if (dependencyCondition(services.reconcile_auth_worker_grants, "reconcile_runtime_grants") !== "service_completed_successfully") {
   fail("authentication-worker grants are not reconciled after runtime grants");
 }
-if (dependencyCondition(services.bootstrap_demo, "reconcile_auth_worker_grants") !== "service_completed_successfully") {
+const backupReconciler = services.reconcile_backup_grants;
+if (!backupReconciler) fail("mandatory backup-role reconciliation service is missing");
+if (dependencyCondition(backupReconciler, "reconcile_auth_worker_grants") !== "service_completed_successfully") {
+  fail("backup grants are not reconciled after authentication-worker grants");
+}
+if (backupReconciler.environment?.BACKUP_DATABASE_PASSWORD_FILE !== "/run/secrets/business_finlynq_backup_db_password") {
+  fail("backup-role reconciler does not use the dedicated database-password file");
+}
+if (!secretSources(backupReconciler).includes(backupDatabaseSecret)) {
+  fail("backup-role reconciler does not mount the dedicated backup database secret");
+}
+if (secretSources(backupReconciler).includes(appDatabaseSecret) || secretSources(backupReconciler).includes(workerDatabaseSecret)) {
+  fail("backup-role reconciler mounts an application or worker database secret");
+}
+if ((backupReconciler.ports ?? []).length > 0) fail("backup-role reconciler publishes a port");
+if (Object.keys(backupReconciler.networks ?? {}).join(",") !== "business_finlynq_private") {
+  fail("backup-role reconciler is not isolated to the private database network");
+}
+if (dependencyCondition(services.bootstrap_demo, "reconcile_backup_grants") !== "service_completed_successfully") {
   fail("demo bootstrap can start before grant reconciliation completes");
+}
+
+const backup = services.backup;
+if (!backup) fail("backup service is missing");
+if (backup.environment?.PGUSER !== "business_finlynq_backup") fail("backup does not use its dedicated role");
+if (backup.environment?.PGPASSWORD) fail("backup exposes its database password inline");
+if (backup.environment?.BACKUP_DATABASE_PASSWORD_FILE !== "/run/secrets/business_finlynq_backup_db_password") {
+  fail("backup does not use its dedicated database-password file");
+}
+if (!secretSources(backup).includes(backupDatabaseSecret)) fail("backup does not mount its dedicated database secret");
+if (secretSources(backup).includes(appDatabaseSecret) || secretSources(backup).includes(workerDatabaseSecret)) {
+  fail("backup mounts an application or worker database secret");
+}
+
+for (const [name, expectedMode] of [
+  ["reset_demo_sandboxes", "incremental"],
+  ["reconcile_demo_sandboxes", "nightly"],
+]) {
+  const service = services[name];
+  if (!service) fail(`${name} service is missing`);
+  if (service.build?.target !== "migrator") fail(`${name} does not use the reviewed operator image`);
+  if ((service.command ?? []).join(" ") !== "npm run demo:reset") {
+    fail(`${name} can pass an unreviewed command-line selector`);
+  }
+  if (service.environment?.DEMO_RESET_MODE !== expectedMode) fail(`${name} has the wrong reset mode`);
+  if (service.environment?.BUSINESS_FINLYNQ_MIGRATION_DB_USER !== "business_finlynq_owner") {
+    fail(`${name} is not explicitly bound to the migration owner`);
+  }
+  for (const forbiddenKey of ["DEMO_ORGANIZATION_ID", "ORGANIZATION_ID", "DEMO_SANDBOX_SLOT"]) {
+    if (service.environment?.[forbiddenKey]) fail(`${name} accepts forbidden target selector ${forbiddenKey}`);
+  }
+  if (secretSources(service).join(",") !== rootKekSecret) {
+    fail(`${name} must receive only the organization wrapping-key secret`);
+  }
+  if (Object.keys(service.networks ?? {}).join(",") !== "business_finlynq_private") {
+    fail(`${name} is not isolated to the private database network`);
+  }
+  if ((service.ports ?? []).length > 0) fail(`${name} publishes a port`);
+  if (service.read_only !== true || service.restart !== "no") fail(`${name} is not a hardened one-shot`);
+  if (dependencyCondition(service, "database") !== "service_healthy") {
+    fail(`${name} can run before the database is healthy`);
+  }
 }
 
 for (const [name, service] of Object.entries(services).filter(([serviceName]) => serviceName.startsWith("restore_"))) {
@@ -106,11 +180,56 @@ if (dependencyCondition(services.restore_runtime_grants, "restore_migrate") !== 
 if (dependencyCondition(services.restore_auth_worker_grants, "restore_runtime_grants") !== "service_completed_successfully") {
   fail("restore worker grants can run before runtime grant reconciliation");
 }
-if (dependencyCondition(services.restore_key_verify, "restore_auth_worker_grants") !== "service_completed_successfully") {
+const restoreBackupReconciler = services.restore_backup_grants;
+if (!restoreBackupReconciler) fail("restore backup-role reconciliation service is missing");
+if (dependencyCondition(restoreBackupReconciler, "restore_auth_worker_grants") !== "service_completed_successfully") {
+  fail("restore backup grants can run before worker grant reconciliation");
+}
+if (restoreBackupReconciler.environment?.RESTORE_RECONCILIATION_TARGET !== "backup") {
+  fail("restore backup reconciler is not pinned to the backup target");
+}
+if (restoreBackupReconciler.environment?.BACKUP_DATABASE_PASSWORD_FILE !== "/run/secrets/business_finlynq_backup_db_password") {
+  fail("restore backup reconciler does not use the dedicated password file");
+}
+if (!secretSources(restoreBackupReconciler).includes(backupDatabaseSecret)) {
+  fail("restore backup reconciler does not mount the dedicated backup secret");
+}
+if (secretSources(restoreBackupReconciler).includes(appDatabaseSecret) || secretSources(restoreBackupReconciler).includes(workerDatabaseSecret)) {
+  fail("restore backup reconciler mounts an application or worker database secret");
+}
+const restoreDemoBootstrap = services.restore_demo_bootstrap;
+if (!restoreDemoBootstrap) fail("restore demo bootstrap service is missing");
+if (dependencyCondition(restoreDemoBootstrap, "restore_key_verify") !== "service_completed_successfully") {
+  fail("restore demo bootstrap can run before restored key material is verified");
+}
+const restoreDemoCommand = (restoreDemoBootstrap.command ?? []).join(" ");
+if (!restoreDemoCommand.includes("npm run demo:bootstrap") || !restoreDemoCommand.includes("DEMO_RESET_MODE=nightly exec npm run demo:reset")) {
+  fail("restore demo bootstrap does not recreate and fully reconcile the sandbox pool");
+}
+const restoreDemoSecrets = secretSources(restoreDemoBootstrap).sort();
+const expectedRestoreDemoSecrets = ["business_finlynq_restore_db_password", rootKekSecret].sort();
+if (restoreDemoSecrets.join(",") !== expectedRestoreDemoSecrets.join(",")) {
+  fail("restore demo bootstrap receives credentials outside the restore owner and wrapping key");
+}
+if (dependencyCondition(services.restore_key_verify, "restore_backup_grants") !== "service_completed_successfully") {
   fail("restore key verification can race archive restore or role reconciliation");
 }
 if (dependencyCondition(services.restore_runtime_verify, "restore_app") !== "service_healthy") {
   fail("restored runtime acceptance can run before the restored app is healthy");
+}
+for (const disabledGate of ["DEMO_WRITES_ENABLED", "ACCOUNT_LOGIN_ENABLED", "BUSINESS_WRITES_ENABLED"]) {
+  if (services.restore_app?.environment?.[disabledGate] !== "false") {
+    fail(`restored app does not force ${disabledGate} off`);
+  }
+}
+if (dependencyCondition(services.restore_app, "restore_demo_bootstrap") !== "service_completed_successfully") {
+  fail("restored app can start before the sandbox pool is rebuilt");
+}
+if (services.restore_runtime_verify?.environment?.BACKUP_DATABASE_PASSWORD_FILE !== "/run/secrets/business_finlynq_backup_db_password") {
+  fail("restored runtime acceptance cannot validate the backup role");
+}
+if (!secretSources(services.restore_runtime_verify).includes(backupDatabaseSecret)) {
+  fail("restored runtime acceptance does not mount the backup-role credential");
 }
 
 const rollbackRendered = execFileSync(

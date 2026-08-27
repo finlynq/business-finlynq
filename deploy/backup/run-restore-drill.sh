@@ -10,7 +10,8 @@ cd -- "$repository_root"
 cleanup() {
   docker compose --profile restore-drill rm --stop --force \
     restore_database restore_verify restore_migrate restore_runtime_grants \
-    restore_auth_worker_grants restore_key_verify restore_app \
+    restore_auth_worker_grants restore_backup_grants restore_demo_bootstrap \
+    restore_key_verify restore_app \
     restore_runtime_verify >/dev/null 2>&1 || true
 }
 trap cleanup EXIT INT TERM
@@ -23,8 +24,10 @@ docker compose --profile restore-drill run --rm --no-deps restore_verify
 docker compose --profile restore-drill run --rm --no-deps restore_migrate
 docker compose --profile restore-drill run --rm --no-deps restore_runtime_grants
 docker compose --profile restore-drill run --rm --no-deps restore_auth_worker_grants
+docker compose --profile restore-drill run --rm --no-deps restore_backup_grants
 docker compose --profile restore-drill run --rm --no-deps restore_key_verify
+docker compose --profile restore-drill run --rm --no-deps restore_demo_bootstrap
 docker compose --profile restore-drill up --detach --wait --no-deps restore_app
 docker compose --profile restore-drill run --rm --no-deps restore_runtime_verify
 
-printf '%s\n' "Restore drill, key recovery, migrations, role reconciliation, and runtime acceptance completed successfully"
+printf '%s\n' "Restore drill, key recovery, migrations, all role reconciliations, demo bootstrap, and runtime acceptance completed successfully"

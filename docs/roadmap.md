@@ -14,15 +14,16 @@ The architecture review is accepted. Delivery is intentionally sliced so an attr
 - Ontario HST and Washington sales-tax reference packs with manual-review outcomes for unsupported facts.
 - Envelope-encryption primitives, mounted-root secret loading, CI, Docker/Compose, and VPS runbook.
 
-## P0 interactive demo release
+## P0 writable interactive demo release
 
-- Every visible route and control is functional against bundled synthetic data.
-- Global search, report export, dialogs, and validation previews provide realistic browser behavior.
-- Persistence and accounting state changes remain fail-closed behind `BUSINESS_WRITES_ENABLED=false`.
-- Posting, void/reversal, period transitions, identity administration, recovery, payment, and MCP write actions are clearly identified as previews.
-- The release passes the browser checklist in [operations/interactive-demo.md](operations/interactive-demo.md).
+- Each visitor leases an isolated, independently encrypted synthetic sandbox instead of sharing a mutable demo tenant.
+- Manual GL, service/non-stock AR/AP, recorded settlement and allocation, transaction-tax snapshot, trial-balance/reporting, and period-control workflows persist for the visitor's session.
+- `DEMO_LOGIN_ENABLED=true` and `DEMO_WRITES_ENABLED=true` authorize sandbox-only mutations; `ACCOUNT_LOGIN_ENABLED=false` and `BUSINESS_WRITES_ENABLED=false` keep real identities and organizations fail-closed.
+- Sessions expire after 15 minutes idle or one hour total. Released/expired slots are reset to the exact seed, and nightly reconciliation revokes remaining demo sessions and rebuilds the full pool.
+- Inventory, bank connections/reconciliation, live payment execution, production tax returns/filing, and public MCP access remain out of scope.
+- The release passes the isolation, browser, reset, and monitoring checklist in [operations/interactive-demo.md](operations/interactive-demo.md).
 
-P0 demonstrates the workflow and design; it does not satisfy or bypass any later milestone exit gate.
+P0 demonstrates durable accounting behavior inside disposable synthetic tenants; it does not satisfy or bypass any real-account milestone exit gate.
 
 ## Milestone 1 — identity, recovery, and encrypted master data (implemented; activation gated)
 
@@ -33,7 +34,7 @@ P0 demonstrates the workflow and design; it does not satisfy or bypass any later
 - Privileged organization-key provision/rotation/rewrap service and restore drill.
 - Encrypted party names, addresses, tax IDs, bank details, attachments, and connector credentials with blind-index search where required.
 
-Exit gate: recovery and encrypted persistence pass end-to-end tests; only then may `BUSINESS_WRITES_ENABLED` be enabled in a non-production test environment.
+Exit gate: recovery and encrypted persistence pass end-to-end tests; only then may `BUSINESS_WRITES_ENABLED` be enabled for a real organization in a non-production test environment. The sandbox-only demo gate is independent.
 
 The application paths and automated tests for this milestone are present. Public activation still requires a verified sending domain/provider credential, a running isolated email worker, separately escrowed recovery material, and an operator-observed acceptance exercise. Online organization-key rotation is deliberately unavailable until record re-encryption and blind-index rebuilding can be made atomic.
 
@@ -45,17 +46,21 @@ The application paths and automated tests for this milestone are present. Public
 
 Tenant onboarding, encrypted master data, manual journal draft/role-based auto-post, explicit posting, full linked reversal, source-module ownership, and period close/reopen/seal services are implemented. Posting-policy administration UI, interactive reversal controls, recurring journals, CSV import, attachments, and the complete reporting set remain gated work.
 
-## Milestone 3 — receivables and payables
+## Milestone 3 — receivables and payables (core demo workflow implemented)
 
 - Customer/supplier account workflows, quotes/orders where needed, invoices, bills, credit notes, payments, allocations, aging, statements, and realized FX.
 - Append-only open-item allocation/settlement events; balances are derived rather than overwritten.
 - Deterministic invoice/bill synchronous posting when the actor has the posting role; otherwise create a reviewable draft.
+
+The current demo slice implements customer/supplier accounts, service/non-stock invoice and bill drafts, issue/post, open items, recorded receipt/payment allocation, realized-FX posting, and void/reversal with source-owned journal lineage and transaction-tax snapshots. Quotes/orders, credit-note UX, aging, statements, dunning, and external payment execution remain later work.
 
 ## Milestone 4 — production tax packs
 
 - Effective-dated Ontario HST and Washington location-rate ingestion with evidence, approvals, regression fixtures, tax returns, and reconciliation to the ledger.
 - Preserve recoverable and nonrecoverable tax components separately through snapshot and GL mapping.
 - Add jurisdictions as independent signed/versioned packs against the same engine contract.
+
+The demo uses bundled Ontario and Washington reference packs for transaction decisions and evidence snapshots only. It does not ingest live official rates, prepare production returns, or file tax.
 
 ## Milestone 5 — banking and reconciliation
 
@@ -66,6 +71,8 @@ Tenant onboarding, encrypted master data, manual journal draft/role-based auto-p
 
 - Organization-bound OAuth service principals, rate limits, idempotency, tool-level scopes, audit, and revocation.
 - Read tools and explicit draft creation only in v0. Posting, approval, period reopen, role changes, recovery, payment execution, and hard deletion are never MCP tools.
+
+No public MCP endpoint is active in the writable-demo release.
 
 ## Later modular work
 

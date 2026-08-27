@@ -1,42 +1,89 @@
 import Link from "next/link";
-import { demoDashboard } from "@/modules/demo/dashboard-data";
+import { formatMoney } from "@/kernel/money";
+import {
+  loadAccountingOverview,
+  loadEntitySummaries,
+} from "@/modules/reporting/tenant-reporting";
 import { requireWorkspacePrincipal } from "@/modules/workspace/access";
-import { TenantModuleUnavailable } from "../../_components/tenant-module-unavailable";
-import { PageHeader, StatusPill } from "../../_components/ui";
+import { DemoNotice, EmptyState, PageHeader, StatusPill } from "../../_components/ui";
+
+function displayAmount(currency: string, amount: string): string {
+  return formatMoney(amount, currency);
+}
 
 export default async function OverviewPage() {
   const principal = await requireWorkspacePrincipal("/app");
-  if (principal.sessionMode !== "demo") return <TenantModuleUnavailable moduleName="Overview" />;
+  const overview = await loadAccountingOverview(principal);
+  const entities = overview.access.ledger ? await loadEntitySummaries(principal) : [];
+  const metrics = [
+    ...(overview.access.receivables ? [{
+      label: "Open receivables",
+      values: overview.openReceivables.length
+        ? overview.openReceivables.map(({ currency, amount }) => displayAmount(currency, amount))
+        : ["No open balance"],
+      note: "Customer open items, kept separate by transaction currency",
+      tone: "blue",
+    }] : []),
+    ...(overview.access.payables ? [{
+      label: "Open payables",
+      values: overview.openPayables.length
+        ? overview.openPayables.map(({ currency, amount }) => displayAmount(currency, amount))
+        : ["No open balance"],
+      note: "Supplier open items, kept separate by transaction currency",
+      tone: "amber",
+    }] : []),
+    ...(overview.access.ledger ? [{
+      label: "Journal workflow",
+      values: [`${overview.postedJournalCount} posted`, `${overview.unpostedJournalCount} unposted`],
+      note: "Draft, submitted, and approved journals remain unposted",
+      tone: "purple",
+    }] : []),
+    ...(overview.access.tax ? [{
+      label: "Tax review",
+      values: [`${overview.manualReviewTaxCount} decision${overview.manualReviewTaxCount === 1 ? "" : "s"}`],
+      note: overview.manualReviewTaxCount ? "Manual review remains required" : "No tax review exceptions",
+      tone: "green",
+    }] : []),
+  ];
+
   return (
     <div className="page-content">
       <PageHeader
-        eyebrow={`${demoDashboard.organization.name} · Overview`}
+        eyebrow={`${principal.organizationName} · Overview`}
         title="Accounting overview"
-        description={`Sample position as of ${demoDashboard.organization.currentDate}. Currencies remain separate and no transactions can be saved.`}
-        actions={(
+        description="Live balances and workflow counts from your organization ledger and subledgers. Currencies are never combined implicitly."
+        actions={overview.access.ledger ? (
           <>
             <Link className="secondary-button" href="/app/reports/trial-balance.csv">Export trial balance</Link>
             <Link className="primary-button" href="/app/journals/new">＋ New journal</Link>
           </>
-        )}
+        ) : undefined}
       />
 
-      <section className="attention-banner" aria-labelledby="attention-title">
-        <span className="attention-icon" aria-hidden="true">!</span>
-        <div>
-          <strong id="attention-title">Two tax decisions need review before close</strong>
-          <p>Unknown treatment never defaults to zero. Review the demo exceptions before considering period close.</p>
-        </div>
-        <Link href="/app/tax?status=review">Review exceptions <span aria-hidden="true">→</span></Link>
-      </section>
+      {principal.sessionMode === "demo" && (
+        <DemoNotice>
+          This is your isolated writable sandbox. Changes are private to this session and the seeded business is restored automatically after use and reconciled nightly.
+        </DemoNotice>
+      )}
+
+      {overview.access.tax && overview.manualReviewTaxCount > 0 && (
+        <section className="attention-banner" aria-labelledby="attention-title">
+          <span className="attention-icon" aria-hidden="true">!</span>
+          <div>
+            <strong id="attention-title">Tax decisions require review</strong>
+            <p>Unsupported tax facts are held for review instead of silently defaulting to zero.</p>
+          </div>
+          <Link href="/app/tax?status=review">Review exceptions <span aria-hidden="true">→</span></Link>
+        </section>
+      )}
 
       <section aria-labelledby="position-title">
         <div className="section-heading">
           <div><p className="eyebrow">Position</p><h2 id="position-title">At a glance</h2></div>
-          <span className="subtle-label">Currencies shown separately · no implicit translation</span>
+          <span className="subtle-label">Persisted tenant data · currencies shown separately</span>
         </div>
-        <div className="metric-grid">
-          {demoDashboard.metrics.map((metric) => (
+        {metrics.length ? <div className="metric-grid">
+          {metrics.map((metric) => (
             <article className="metric-card" key={metric.label}>
               <span className={`metric-signal signal-${metric.tone}`} aria-hidden="true" />
               <p>{metric.label}</p>
@@ -44,98 +91,79 @@ export default async function OverviewPage() {
               <span>{metric.note}</span>
             </article>
           ))}
-        </div>
+        </div> : (
+          <EmptyState title="No accounting summary permissions">
+            Ask an organization administrator to assign access to the ledger, receivables, payables, or tax workspace.
+          </EmptyState>
+        )}
       </section>
 
-      <section aria-labelledby="entities-title">
+      {overview.access.ledger && <section aria-labelledby="entities-title">
         <div className="section-heading">
           <div><p className="eyebrow">Legal entities</p><h2 id="entities-title">Primary ledgers</h2></div>
-          <Link className="text-link" href="/app/entities">Manage entities</Link>
+          <Link className="text-link" href="/app/entities">View entities</Link>
         </div>
-        <div className="entity-grid">
-          {demoDashboard.entities.map((entity) => (
-            <article className="entity-card" key={entity.code}>
-              <div className="entity-card-heading"><span className="code-chip">{entity.code}</span><StatusPill status={entity.periodState} /></div>
-              <h3>{entity.name}</h3>
-              <p>{entity.location} · {entity.profile}</p>
-              <div className="balance-callout"><span>Trial balance</span><strong>{entity.currency} {entity.trialBalance}</strong></div>
-              <dl className="detail-grid">
-                <div><dt>Open AR</dt><dd>{entity.openReceivables}</dd></div>
-                <div><dt>Open AP</dt><dd>{entity.openPayables}</dd></div>
-                <div><dt>Period</dt><dd>{entity.period}</dd></div>
-              </dl>
-              <div className="progress-label"><span>Close readiness</span><strong>{entity.closeProgress}%</strong></div>
-              <div className="progress-track" role="progressbar" aria-label={`${entity.name} close readiness`} aria-valuemin={0} aria-valuemax={100} aria-valuenow={entity.closeProgress}>
-                <span style={{ width: `${entity.closeProgress}%` }} />
-              </div>
-            </article>
-          ))}
-        </div>
-      </section>
-
-      <div className="dashboard-columns">
-        <section className="panel" aria-labelledby="journals-title">
-          <div className="panel-heading"><div><p className="eyebrow">Immutable ledger</p><h2 id="journals-title">Recent journals</h2></div><Link className="text-link" href="/app/journals">View all</Link></div>
-          <div className="table-scroll" tabIndex={0} aria-label="Recent journal table; scroll horizontally if needed">
-            <table>
-              <caption className="sr-only">Recent journal activity</caption>
-              <thead><tr><th scope="col">Journal</th><th scope="col">Source / owner</th><th scope="col">Amount</th><th scope="col">Status</th></tr></thead>
-              <tbody>{demoDashboard.journals.map((journal) => (
-                <tr key={`${journal.entity}-${journal.number}-${journal.source}`}>
-                  <td><strong>{journal.number}</strong><small>{journal.date} · {journal.entity} · {journal.type}</small></td>
-                  <td><strong>{journal.source}</strong><small>{journal.owner} · {journal.typeKey}</small></td>
-                  <td className="amount-cell">{journal.amount}</td>
-                  <td><StatusPill status={journal.status} /></td>
-                </tr>
-              ))}</tbody>
-            </table>
-          </div>
-          <p className="panel-note"><strong>Corrections preserve history.</strong> Posted source entries route back to their owner module.</p>
-        </section>
-
-        <section className="panel" aria-labelledby="close-title">
-          <div className="panel-heading"><div><p className="eyebrow">Period control</p><h2 id="close-title">August close</h2></div><StatusPill status="BLOCKED" /></div>
-          <p className="panel-note">Period state is controlled independently for each legal entity and ledger.</p>
-          <ul className="checklist" aria-label="Period state by legal entity">
-            {demoDashboard.entities.map((entity) => (
-              <li key={entity.code}>
-                <span className={entity.periodState === "OPEN" ? "check-open" : "check-done"} aria-hidden="true">{entity.periodState === "OPEN" ? "1" : "2"}</span>
-                <div><strong>{entity.code} · {entity.period}</strong><small>{entity.name}</small></div>
-                <StatusPill status={entity.periodState} />
-              </li>
+        {entities.length ? (
+          <div className="entity-grid">
+            {entities.map((entity) => (
+              <article className="entity-card" key={entity.id}>
+                <div className="entity-card-heading">
+                  <span className="code-chip">{entity.code}</span>
+                  <StatusPill status={entity.periodState ?? "NO PERIOD"} />
+                </div>
+                <h3>{entity.displayName}</h3>
+                <p>{entity.regionCode}, {entity.countryCode} · {entity.accountingProfile.replaceAll("_", " ")}</p>
+                <dl className="stacked-details">
+                  <div><dt>Primary ledger</dt><dd>{entity.ledgerCode}</dd></div>
+                  <div><dt>Functional currency</dt><dd>{entity.functionalCurrency}</dd></div>
+                  <div><dt>Current period</dt><dd>{entity.periodLabel ?? "Not configured"}</dd></div>
+                </dl>
+              </article>
             ))}
-          </ul>
-          <ul className="checklist">{demoDashboard.closeChecklist.map((item) => (
-            <li key={item.label}><span className={item.done ? "check-done" : "check-open"} aria-hidden="true">{item.done ? "✓" : "·"}</span><div><strong>{item.label}</strong><small>{item.detail}</small></div></li>
-          ))}</ul>
-          <div className="panel-actions">
-            <Link className="secondary-button" href="/app/controls/period-close">View close package</Link>
-            <Link className="primary-button" href="/app/controls/period-close#request">Request hard close</Link>
           </div>
-        </section>
-      </div>
+        ) : (
+          <EmptyState title="No legal entities configured">
+            Add an active legal entity and primary ledger to begin accounting.
+          </EmptyState>
+        )}
+      </section>}
 
-      <section className="panel account-key-panel" aria-labelledby="account-key-title">
-        <div className="panel-heading"><div><p className="eyebrow">Typed account classification</p><h2 id="account-key-title">Account key preview</h2></div><span className="code-chip">13 fields · 8 custom slots</span></div>
-        <code className="canonical-key">{demoDashboard.accountExample.canonicalKey}</code>
-        <div className="segment-grid">{demoDashboard.accountExample.segments.map(([label, value]) => <div key={label}><span>{label}</span><strong>{value}</strong></div>)}</div>
-        <p className="panel-note">Null remains null in PostgreSQL and renders as reserved <code>0000</code>. Party and address numbers stay outside this key.</p>
-      </section>
+      {overview.access.ledger && <div className="dashboard-columns equal-columns">
+        <section className="panel" aria-labelledby="journal-workflow-title">
+          <div className="panel-heading">
+            <div><p className="eyebrow">Immutable ledger</p><h2 id="journal-workflow-title">Journal workflow</h2></div>
+            <Link className="text-link" href="/app/journals">View journals</Link>
+          </div>
+          <div style={{ padding: "18px 20px 0" }}>
+            <dl className="detail-grid">
+              <div><dt>Posted</dt><dd>{overview.postedJournalCount}</dd></div>
+              <div><dt>Awaiting posting</dt><dd>{overview.unpostedJournalCount}</dd></div>
+              <div><dt>Total active workflow</dt><dd>{overview.postedJournalCount + overview.unpostedJournalCount}</dd></div>
+            </dl>
+          </div>
+          <p className="panel-note"><strong>Corrections preserve history.</strong> Posted source entries are corrected through their owning module.</p>
+        </section>
 
-      <div className="dashboard-columns equal-columns">
-        <section className="panel" aria-labelledby="parties-title">
-          <div className="panel-heading"><div><p className="eyebrow">Unified address book</p><h2 id="parties-title">Parties & roles</h2></div><Link className="text-link" href="/app/parties">Open address book</Link></div>
-          <ul className="party-list">{demoDashboard.parties.map((party) => (
-            <li key={party.party}><span className="party-avatar" aria-hidden="true">{party.name.slice(0, 2).toUpperCase()}</span><div><strong>{party.name}</strong><small>{party.party} · {party.entity}</small></div><span>{party.roles.join(" · ")}</span><strong>{party.balance}</strong></li>
-          ))}</ul>
+        <section className="panel" aria-labelledby="period-control-title">
+          <div className="panel-heading">
+            <div><p className="eyebrow">Period control</p><h2 id="period-control-title">Entity ledger states</h2></div>
+            <Link className="text-link" href="/app/controls/period-close">Open controls</Link>
+          </div>
+          {entities.length ? (
+            <ul className="checklist" aria-label="Period state by legal entity">
+              {entities.map((entity) => (
+                <li key={entity.id}>
+                  <span className={entity.periodState === "OPEN" ? "check-open" : "check-done"} aria-hidden="true">·</span>
+                  <div><strong>{entity.code} · {entity.periodLabel ?? "No period"}</strong><small>{entity.ledgerCode} · {entity.functionalCurrency}</small></div>
+                  <StatusPill status={entity.periodState ?? "NOT CONFIGURED"} />
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p className="panel-note">No primary ledger period is configured.</p>
+          )}
         </section>
-        <section className="panel" aria-labelledby="tax-title">
-          <div className="panel-heading"><div><p className="eyebrow">Versioned decisions</p><h2 id="tax-title">Tax packs</h2></div><Link className="text-link" href="/app/tax">View tax</Link></div>
-          <div className="tax-card-grid">{demoDashboard.taxDecisions.map((tax) => (
-            <article key={tax.jurisdiction}><div><strong>{tax.jurisdiction}</strong><small>{tax.pack}</small></div><dl><div><dt>Rate</dt><dd>{tax.rate}</dd></div><div><dt>On 100.00</dt><dd>{tax.result}</dd></div></dl><p>{tax.note}</p><StatusPill status={tax.status} /></article>
-          ))}</div>
-        </section>
-      </div>
+      </div>}
     </div>
   );
 }

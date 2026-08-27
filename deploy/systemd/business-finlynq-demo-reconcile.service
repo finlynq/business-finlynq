@@ -1,0 +1,18 @@
+[Unit]
+Description=Nightly reconciliation of every Business Finlynq demo sandbox
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+OnFailure=business-finlynq-monitor-notify@%n.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/deploy/business-finlynq
+EnvironmentFile=/etc/business-finlynq/operations.env
+ExecStart=/bin/bash /home/deploy/business-finlynq/deploy/demo-sandbox/run-nightly-reconciliation.sh
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=read-only
+TimeoutStartSec=2h

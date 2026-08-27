@@ -1,5 +1,12 @@
 import { NextRequest } from "next/server";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
+
+const previousBusinessWrites = process.env.BUSINESS_WRITES_ENABLED;
+process.env.BUSINESS_WRITES_ENABLED = "true";
+afterAll(() => {
+  if (previousBusinessWrites === undefined) delete process.env.BUSINESS_WRITES_ENABLED;
+  else process.env.BUSINESS_WRITES_ENABLED = previousBusinessWrites;
+});
 
 const mocks = vi.hoisted(() => {
   const principal = {

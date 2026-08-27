@@ -72,9 +72,76 @@ SELECT format('ALTER ROLE business_finlynq_backup PASSWORD %L', :'backup_passwor
 \gexec
 
 ALTER ROLE business_finlynq_backup
-  NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION BYPASSRLS;
+  NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION BYPASSRLS
+  CONNECTION LIMIT 2 VALID UNTIL 'infinity';
 ALTER ROLE business_finlynq_backup SET default_transaction_read_only = on;
 ALTER ROLE business_finlynq_backup SET lock_timeout = '30s';
+
+-- Reconcile from a deny-by-default baseline. This removes stale direct grants
+-- or memberships if the role existed before this reviewed contract.
+SELECT format('REVOKE %I FROM business_finlynq_backup', granted_role.rolname)
+FROM pg_auth_members membership
+JOIN pg_roles granted_role ON granted_role.oid = membership.roleid
+JOIN pg_roles member_role ON member_role.oid = membership.member
+WHERE member_role.rolname = 'business_finlynq_backup'
+\gexec
+
+SELECT format('REVOKE business_finlynq_backup FROM %I', member_role.rolname)
+FROM pg_auth_members membership
+JOIN pg_roles granted_role ON granted_role.oid = membership.roleid
+JOIN pg_roles member_role ON member_role.oid = membership.member
+WHERE granted_role.rolname = 'business_finlynq_backup'
+\gexec
+
+SELECT format('REVOKE ALL PRIVILEGES ON DATABASE %I FROM business_finlynq_backup', :'database_name')
+\gexec
+
+SELECT format('REVOKE ALL PRIVILEGES ON SCHEMA %I FROM business_finlynq_backup', nspname)
+FROM pg_namespace
+WHERE nspname <> 'information_schema' AND nspname !~ '^pg_'
+\gexec
+
+SELECT format('REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA %I FROM business_finlynq_backup', nspname)
+FROM pg_namespace
+WHERE nspname <> 'information_schema' AND nspname !~ '^pg_'
+\gexec
+
+SELECT format('REVOKE ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA %I FROM business_finlynq_backup', nspname)
+FROM pg_namespace
+WHERE nspname <> 'information_schema' AND nspname !~ '^pg_'
+\gexec
+
+SELECT format('REVOKE ALL PRIVILEGES ON ALL ROUTINES IN SCHEMA %I FROM business_finlynq_backup', nspname)
+FROM pg_namespace
+WHERE nspname <> 'information_schema' AND nspname !~ '^pg_'
+\gexec
+
+SELECT format(
+  'ALTER DEFAULT PRIVILEGES FOR ROLE %I IN SCHEMA %I REVOKE ALL PRIVILEGES ON TABLES FROM business_finlynq_backup',
+  :'owner_role',
+  nspname
+)
+FROM pg_namespace
+WHERE nspname <> 'information_schema' AND nspname !~ '^pg_'
+\gexec
+
+SELECT format(
+  'ALTER DEFAULT PRIVILEGES FOR ROLE %I IN SCHEMA %I REVOKE ALL PRIVILEGES ON SEQUENCES FROM business_finlynq_backup',
+  :'owner_role',
+  nspname
+)
+FROM pg_namespace
+WHERE nspname <> 'information_schema' AND nspname !~ '^pg_'
+\gexec
+
+SELECT format(
+  'ALTER DEFAULT PRIVILEGES FOR ROLE %I IN SCHEMA %I REVOKE ALL PRIVILEGES ON ROUTINES FROM business_finlynq_backup',
+  :'owner_role',
+  nspname
+)
+FROM pg_namespace
+WHERE nspname <> 'information_schema' AND nspname !~ '^pg_'
+\gexec
 
 SELECT format('GRANT CONNECT ON DATABASE %I TO business_finlynq_backup', :'database_name')
 \gexec
@@ -113,9 +180,10 @@ WHERE nspname IN ('public', 'drizzle')
 \gexec
 
 DO $$
+DECLARE
+  selected_role oid;
 BEGIN
-  IF NOT EXISTS (
-    SELECT 1
+  SELECT oid INTO selected_role
     FROM pg_roles
     WHERE rolname = 'business_finlynq_backup'
       AND rolcanlogin
@@ -124,8 +192,86 @@ BEGIN
       AND NOT rolcreatedb
       AND NOT rolcreaterole
       AND NOT rolreplication
-  ) THEN
+      AND NOT rolinherit
+      AND rolconnlimit = 2
+      AND (rolvaliduntil IS NULL OR rolvaliduntil = 'infinity'::timestamptz);
+  IF selected_role IS NULL THEN
     RAISE EXCEPTION 'backup role attributes are unsafe';
+  END IF;
+  IF EXISTS (
+    SELECT 1 FROM pg_auth_members
+    WHERE member = selected_role OR roleid = selected_role
+  ) THEN
+    RAISE EXCEPTION 'backup role must have no inbound or outbound role memberships';
+  END IF;
+  IF NOT has_database_privilege('business_finlynq_backup', current_database(), 'CONNECT') THEN
+    RAISE EXCEPTION 'backup role is missing database CONNECT';
+  END IF;
+  IF EXISTS (
+    SELECT 1
+    FROM pg_class relation
+    JOIN pg_namespace schema ON schema.oid = relation.relnamespace
+    WHERE schema.nspname <> 'information_schema' AND schema.nspname !~ '^pg_'
+      AND schema.nspname NOT IN ('public', 'drizzle')
+      AND relation.relkind IN ('r', 'p', 'v', 'm', 'f', 'S')
+  ) THEN
+    RAISE EXCEPTION 'an unreviewed application data schema requires an explicit backup policy';
+  END IF;
+  IF EXISTS (
+    SELECT 1
+    FROM pg_class relation
+    JOIN pg_namespace schema ON schema.oid = relation.relnamespace
+    WHERE schema.nspname IN ('public', 'drizzle')
+      AND relation.relkind IN ('r', 'p', 'v', 'm', 'f')
+      AND NOT has_table_privilege('business_finlynq_backup', relation.oid, 'SELECT')
+  ) THEN
+    RAISE EXCEPTION 'backup role is missing SELECT on a reviewed relation';
+  END IF;
+  IF EXISTS (
+    SELECT 1
+    FROM pg_class relation
+    JOIN pg_namespace schema ON schema.oid = relation.relnamespace
+    WHERE schema.nspname IN ('public', 'drizzle')
+      AND relation.relkind IN ('r', 'p', 'v', 'm', 'f')
+      AND (
+        has_table_privilege('business_finlynq_backup', relation.oid, 'INSERT')
+        OR has_table_privilege('business_finlynq_backup', relation.oid, 'UPDATE')
+        OR has_table_privilege('business_finlynq_backup', relation.oid, 'DELETE')
+        OR has_table_privilege('business_finlynq_backup', relation.oid, 'TRUNCATE')
+        OR has_table_privilege('business_finlynq_backup', relation.oid, 'REFERENCES')
+        OR has_table_privilege('business_finlynq_backup', relation.oid, 'TRIGGER')
+      )
+  ) THEN
+    RAISE EXCEPTION 'backup role has a write-capable relation privilege';
+  END IF;
+  IF EXISTS (
+    SELECT 1
+    FROM pg_class sequence
+    JOIN pg_namespace schema ON schema.oid = sequence.relnamespace
+    WHERE schema.nspname IN ('public', 'drizzle')
+      AND sequence.relkind = 'S'
+      AND (
+        NOT has_sequence_privilege('business_finlynq_backup', sequence.oid, 'SELECT')
+        OR has_sequence_privilege('business_finlynq_backup', sequence.oid, 'USAGE')
+        OR has_sequence_privilege('business_finlynq_backup', sequence.oid, 'UPDATE')
+      )
+  ) THEN
+    RAISE EXCEPTION 'backup role sequence privileges are unsafe';
+  END IF;
+  IF EXISTS (
+    SELECT 1
+    FROM pg_proc routine
+    JOIN pg_namespace schema ON schema.oid = routine.pronamespace
+    WHERE schema.nspname <> 'information_schema' AND schema.nspname !~ '^pg_'
+      AND NOT EXISTS (
+        SELECT 1 FROM pg_depend dependency
+        WHERE dependency.classid = 'pg_proc'::regclass
+          AND dependency.objid = routine.oid
+          AND dependency.deptype = 'e'
+      )
+      AND has_function_privilege('business_finlynq_backup', routine.oid, 'EXECUTE')
+  ) THEN
+    RAISE EXCEPTION 'backup role has executable application routine privileges';
   END IF;
 END
 $$;

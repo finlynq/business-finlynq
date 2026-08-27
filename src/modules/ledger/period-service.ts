@@ -4,6 +4,10 @@ import { z } from "zod";
 import { withTenantTransaction, type TenantTransactionContext } from "@/db/transaction";
 import { assertActorHasActivePermission } from "@/modules/identity/authorization";
 import { PERMISSIONS } from "@/modules/identity/permissions";
+import {
+  assertTenantWritesEnabled,
+  assertWritableOrganization,
+} from "@/modules/workspace/write-policy";
 
 const commandSchema = z.object({
   periodId: z.uuid(),
@@ -24,7 +28,7 @@ export async function transitionFiscalPeriod(
   version: number;
   idempotentReplay: boolean;
 }>> {
-  if (process.env.BUSINESS_WRITES_ENABLED !== "true") throw new Error("Business writes are disabled");
+  assertTenantWritesEnabled(unparsedCommand.context);
   if (!unparsedCommand.context.reason) throw new Error("Period transitions require an audit reason");
   const command = commandSchema.parse(unparsedCommand);
   const transactionContext = {
@@ -32,6 +36,7 @@ export async function transitionFiscalPeriod(
     requestId: `period:${command.idempotencyKey}`,
   };
   return withTenantTransaction(transactionContext, async (client) => {
+    await assertWritableOrganization(client, unparsedCommand.context);
     const current = await client.query<{
       state: "OPEN" | "ADJUSTMENT_ONLY" | "HARD_CLOSED" | "SEALED";
       version: number;
@@ -46,7 +51,7 @@ export async function transitionFiscalPeriod(
       [unparsedCommand.context.organizationId, command.periodId],
     );
     const period = current.rows[0];
-    if (!period || period.is_demo) throw new Error("Period was not found in an active non-demo organization");
+    if (!period) throw new Error("Period was not found in the active organization");
 
     const isReopen = command.toState === "OPEN" ||
       (period.state === "HARD_CLOSED" && command.toState === "ADJUSTMENT_ONLY");

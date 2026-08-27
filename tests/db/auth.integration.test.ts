@@ -14,17 +14,30 @@ runDatabaseTests("PostgreSQL identity controls", () => {
 
   afterAll(async () => pool.end());
 
-  it("issues, resolves, and revokes a fixed read-only demo session", async () => {
+  it("leases, resolves, and releases an isolated writable demo sandbox", async () => {
     const tokenHash = randomUUID().replaceAll("-", "").repeat(2);
     const requestId = randomUUID();
     const issued = await pool.query(
       "SELECT * FROM app.auth_issue_demo_session($1, $2, $3, $4)",
       [tokenHash, "b".repeat(64), "c".repeat(64), requestId],
     );
-    expect(issued.rows[0]).toMatchObject({
-      user_id: "10000000-0000-4000-8000-000000000002",
-      organization_id: "10000000-0000-4000-8000-000000000001",
-      role_label: "Demo viewer",
+    expect(issued.rows[0]).toMatchObject({ role_label: "Demo accountant" });
+    expect(issued.rows[0].session_id).toBeTruthy();
+    expect(issued.rows[0].user_id).toBeTruthy();
+    expect(issued.rows[0].organization_id).toBeTruthy();
+    expect(issued.rows[0].membership_id).toBeTruthy();
+    expect(issued.rows[0].organization_name).toMatch(/^Northstar Demo Sandbox \d{2}$/);
+    const leased = await pool.query(
+      `SELECT slot.state, slot.lease_session_id, organization.organization_mode
+       FROM demo_sandbox_slots slot
+       JOIN organizations organization ON organization.id = slot.organization_id
+       WHERE slot.organization_id = $1`,
+      [issued.rows[0].organization_id],
+    );
+    expect(leased.rows[0]).toMatchObject({
+      state: "LEASED",
+      lease_session_id: issued.rows[0].session_id,
+      organization_mode: "SANDBOX",
     });
 
     const resolved = await pool.query("SELECT * FROM app.auth_resolve_session_v2($1, $2)", [tokenHash, "c".repeat(64)]);
@@ -43,6 +56,85 @@ runDatabaseTests("PostgreSQL identity controls", () => {
     expect(revoked.rows[0].revoked).toBe(true);
     const afterLogout = await pool.query("SELECT * FROM app.auth_resolve_session_v2($1, $2)", [tokenHash, "c".repeat(64)]);
     expect(afterLogout.rowCount).toBe(0);
+    const released = await pool.query(
+      "SELECT state, lease_session_id FROM demo_sandbox_slots WHERE organization_id = $1",
+      [issued.rows[0].organization_id],
+    );
+    expect(released.rows[0]).toMatchObject({ state: "DIRTY", lease_session_id: null });
+  });
+
+  it("caps concurrent live demo leases per network identity", async () => {
+    const ipHash = randomUUID().replaceAll("-", "").repeat(2);
+    const attempts = Array.from({ length: 3 }, (_, index) => ({
+      tokenHash: randomUUID().replaceAll("-", "").repeat(2),
+      requestId: `demo-ip-cap-${index}-${randomUUID()}`,
+    }));
+    const issued = await Promise.all(attempts.map((attempt) => pool.query(
+      "SELECT * FROM app.auth_issue_demo_session($1, $2, $3, $4)",
+      [attempt.tokenHash, ipHash, "d".repeat(64), attempt.requestId],
+    )));
+    expect(issued.filter((result) => result.rowCount === 1)).toHaveLength(2);
+    expect(issued.filter((result) => result.rowCount === 0)).toHaveLength(1);
+    expect((await pool.query(
+      `SELECT count(*)::int AS count FROM auth_sessions
+       WHERE session_mode = 'DEMO' AND ip_hash = $1 AND revoked_at IS NULL
+         AND expires_at > now() AND idle_expires_at > now()`,
+      [ipHash],
+    )).rows[0]?.count).toBe(2);
+    await Promise.all(attempts.map((attempt, index) =>
+      issued[index]?.rowCount === 1
+        ? pool.query("SELECT app.auth_revoke_session($1, $2)", [attempt.tokenHash, randomUUID()])
+        : Promise.resolve()));
+  });
+
+  it("holds a demo lease through the tenant transaction and blocks handoff", async () => {
+    const tokenHash = randomUUID().replaceAll("-", "").repeat(2);
+    const issued = await pool.query(
+      "SELECT * FROM app.auth_issue_demo_session($1, $2, $3, $4)",
+      [tokenHash, randomUUID().replaceAll("-", "").repeat(2), "e".repeat(64), randomUUID()],
+    );
+    const principal = issued.rows[0];
+    expect(principal?.session_id).toBeTruthy();
+    const tenant = await pool.connect();
+    const revoker = await pool.connect();
+    try {
+      await tenant.query("BEGIN");
+      await tenant.query("SELECT set_config('app.organization_id', $1, true)", [principal.organization_id]);
+      await tenant.query("SELECT set_config('app.actor_id', $1, true)", [principal.user_id]);
+      await tenant.query("SELECT set_config('app.session_id', $1, true)", [principal.session_id]);
+      await tenant.query("SELECT set_config('app.session_mode', 'demo', true)");
+      await tenant.query("SELECT set_config('app.auth_method', 'demo-link', true)");
+      await tenant.query("SELECT app.assert_current_demo_session_lease()");
+
+      await revoker.query("BEGIN");
+      await revoker.query("SET LOCAL lock_timeout = '100ms'");
+      await expect(revoker.query(
+        "SELECT app.auth_revoke_session($1, $2)",
+        [tokenHash, randomUUID()],
+      )).rejects.toThrow(/lock timeout/i);
+      await revoker.query("ROLLBACK");
+
+      await tenant.query("COMMIT");
+      expect((await pool.query(
+        "SELECT app.auth_revoke_session($1, $2) AS revoked",
+        [tokenHash, randomUUID()],
+      )).rows[0]?.revoked).toBe(true);
+
+      await tenant.query("BEGIN");
+      await tenant.query("SELECT set_config('app.organization_id', $1, true)", [principal.organization_id]);
+      await tenant.query("SELECT set_config('app.actor_id', $1, true)", [principal.user_id]);
+      await tenant.query("SELECT set_config('app.session_id', $1, true)", [principal.session_id]);
+      await tenant.query("SELECT set_config('app.session_mode', 'demo', true)");
+      await tenant.query("SELECT set_config('app.auth_method', 'demo-link', true)");
+      await expect(tenant.query("SELECT app.assert_current_demo_session_lease()"))
+        .rejects.toThrow(/not live/i);
+      await tenant.query("ROLLBACK");
+    } finally {
+      await tenant.query("ROLLBACK").catch(() => undefined);
+      await revoker.query("ROLLBACK").catch(() => undefined);
+      tenant.release();
+      revoker.release();
+    }
   });
 
   it("rate limits durably and resets by window", async () => {

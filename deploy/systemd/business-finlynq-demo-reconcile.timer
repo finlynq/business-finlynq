@@ -1,0 +1,10 @@
+[Unit]
+Description=Reconcile Business Finlynq demo sandboxes nightly
+
+[Timer]
+OnCalendar=*-*-* 04:15:00 America/Toronto
+Persistent=true
+Unit=business-finlynq-demo-reconcile.service
+
+[Install]
+WantedBy=timers.target

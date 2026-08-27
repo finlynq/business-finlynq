@@ -3,6 +3,7 @@ import "server-only";
 import { randomUUID } from "node:crypto";
 import type { PoolClient } from "pg";
 import { withTenantTransaction, type TenantTransactionContext } from "@/db/transaction";
+import { DEMO_BASELINE_DATE } from "@/modules/demo/constants";
 import {
   hasRecentStepUp,
   transactionAuthMethod,
@@ -16,11 +17,13 @@ import {
   parseEncryptedField,
 } from "@/security/organization-encryption";
 import { loadActiveOrganizationKey } from "@/security/organization-key-store";
+import { principalCanWrite } from "@/modules/workspace/write-policy";
 
 export type TenantReadiness = "EMPTY_ORGANIZATION" | "ENCRYPTION_SETUP_REQUIRED" | "READY";
 
 export type TenantJournalDto = Readonly<{
   id: string;
+  ledgerId: string;
   number: string;
   accountingDate: string;
   entityCode: string;
@@ -32,7 +35,23 @@ export type TenantJournalDto = Readonly<{
   correctionRoute: string;
   status: string;
   amount: string;
+  sourceNumber: string | null;
+  expectedContentHash: string | null;
   reversalOfNumber: string | null;
+  reversedByNumber: string | null;
+  canPost: boolean;
+  canReverse: boolean;
+}>;
+
+export type TenantJournalReversalPeriodDto = Readonly<{
+  id: string;
+  ledgerId: string;
+  entityCode: string;
+  label: string;
+  startsOn: string;
+  endsOn: string;
+  state: "OPEN" | "ADJUSTMENT_ONLY";
+  defaultAccountingDate: string;
 }>;
 
 export type TenantJournalWorkspaceDto = Readonly<{
@@ -40,6 +59,8 @@ export type TenantJournalWorkspaceDto = Readonly<{
   readiness: TenantReadiness;
   canDraft: boolean;
   canPost: boolean;
+  canReverse: boolean;
+  reversalPeriods: readonly TenantJournalReversalPeriodDto[];
   journals: readonly TenantJournalDto[];
 }>;
 
@@ -97,6 +118,7 @@ function readContext(principal: SessionPrincipal): TenantTransactionContext {
     organizationId: principal.organizationId,
     actorId: principal.userId,
     sessionId: principal.sessionId,
+    sessionMode: principal.sessionMode,
     requestId: `read:${randomUUID()}`,
     authMethod: transactionAuthMethod(principal),
     sourceSurface: "UI",
@@ -122,7 +144,7 @@ async function assertActiveSessionMembership(
   return { isDemo: result.rows[0].is_demo };
 }
 
-async function tenantReadiness(client: PoolClient, organizationId: string, isDemo: boolean): Promise<TenantReadiness> {
+async function tenantReadiness(client: PoolClient, organizationId: string): Promise<TenantReadiness> {
   const result = await client.query<{
     entity_count: number;
     ledger_count: number;
@@ -136,7 +158,7 @@ async function tenantReadiness(client: PoolClient, organizationId: string, isDem
   );
   const counts = result.rows[0];
   if (!counts || counts.entity_count === 0 || counts.ledger_count === 0) return "EMPTY_ORGANIZATION";
-  if (!isDemo && counts.active_key_count !== 1) return "ENCRYPTION_SETUP_REQUIRED";
+  if (counts.active_key_count !== 1) return "ENCRYPTION_SETUP_REQUIRED";
   return "READY";
 }
 
@@ -147,10 +169,17 @@ export async function loadTenantJournalWorkspace(
   const normalizedSearch = search.trim().slice(0, 100);
   return withTenantTransaction(readContext(principal), async (client) => {
     const membership = await assertActiveSessionMembership(client, principal);
-    const readiness = await tenantReadiness(client, principal.organizationId, membership.isDemo);
+    const canReadLedger = await actorHasActivePermission(client, {
+      organizationId: principal.organizationId,
+      actorId: principal.userId,
+      permission: PERMISSIONS.readMcpLedger,
+    });
+    if (!canReadLedger) throw new Error("Ledger read permission is required");
+    const readiness = await tenantReadiness(client, principal.organizationId);
     const pattern = `%${normalizedSearch.replace(/[\\%_]/g, "\\$&")}%`;
     const journals = await client.query<{
       id: string;
+      ledger_id: string;
       journal_number: number | null;
       accounting_date: string;
       entity_code: string;
@@ -161,27 +190,47 @@ export async function loadTenantJournalWorkspace(
       owner_module: string;
       correction_route: string;
       status: string;
+      period_state: "OPEN" | "ADJUSTMENT_ONLY" | "HARD_CLOSED" | "SEALED";
       total_debit_functional: string;
+      source_number: string | null;
+      canonical_content_hash: string | null;
       reversal_of_number: number | null;
+      reversed_by_number: number | null;
     }>(
-      `SELECT entry.id, entry.journal_number, entry.accounting_date::text,
+      `SELECT entry.id, entry.ledger_id, entry.journal_number, entry.accounting_date::text,
          entity.code AS entity_code, entry.functional_currency, entry.description,
          entry.journal_type_key, journal_type.display_name AS type_label,
          journal_type.owner_module, journal_type.correction_route, entry.status,
+         entry_period.state AS period_state,
          CASE WHEN entry.status = 'POSTED' THEN entry.total_debit_functional
               ELSE coalesce((SELECT sum(line.debit_functional)
                              FROM journal_lines line
                              WHERE line.organization_id = entry.organization_id
                                AND line.journal_entry_id = entry.id), 0)
          END::text AS total_debit_functional,
-         reversed.journal_number AS reversal_of_number
+         source.source_number,
+         CASE WHEN entry.status = 'DRAFT'
+                    AND entry.journal_type_key = 'ledger.manual'
+                    AND journal_type.owner_module = 'ledger'
+              THEN app.compute_journal_content_hash(entry.id)::text
+              ELSE NULL
+         END AS canonical_content_hash,
+         reversed.journal_number AS reversal_of_number,
+         reversed_by.journal_number AS reversed_by_number
        FROM journal_entries entry
        JOIN legal_entities entity
          ON entity.organization_id = entry.organization_id AND entity.id = entry.legal_entity_id
+       JOIN fiscal_periods entry_period
+         ON entry_period.organization_id = entry.organization_id
+        AND entry_period.ledger_id = entry.ledger_id
+        AND entry_period.id = entry.period_id
        JOIN journal_type_definitions journal_type
          ON journal_type.id = entry.journal_type_definition_id
         AND journal_type.key = entry.journal_type_key
         AND journal_type.version = entry.journal_type_version
+       LEFT JOIN source_documents source
+         ON source.organization_id = entry.organization_id
+        AND source.id = entry.source_document_id
        LEFT JOIN LATERAL (
          SELECT original.journal_number
          FROM journal_entry_relations relation
@@ -193,6 +242,18 @@ export async function loadTenantJournalWorkspace(
            AND relation.kind = 'REVERSAL_OF'
          LIMIT 1
        ) reversed ON true
+       LEFT JOIN LATERAL (
+         SELECT reversal.journal_number
+         FROM journal_entry_relations relation
+         JOIN journal_entries reversal
+           ON reversal.organization_id = relation.organization_id
+          AND reversal.id = relation.from_journal_id
+         WHERE relation.organization_id = entry.organization_id
+           AND relation.to_journal_id = entry.id
+           AND relation.kind = 'REVERSAL_OF'
+         ORDER BY reversal.created_at DESC, reversal.id DESC
+         LIMIT 1
+       ) reversed_by ON true
        WHERE entry.organization_id = $1
          AND ($2 = '' OR entry.description ILIKE $3 ESCAPE '\\'
               OR entry.journal_type_key ILIKE $3 ESCAPE '\\'
@@ -202,25 +263,79 @@ export async function loadTenantJournalWorkspace(
        LIMIT 100`,
       [principal.organizationId, normalizedSearch, pattern],
     );
-    const [canDraft, canPost] = membership.isDemo ? [false, false] : await Promise.all([
-      actorHasActivePermission(client, {
-        organizationId: principal.organizationId,
-        actorId: principal.userId,
-        permission: PERMISSIONS.draftJournal,
-      }),
-      actorHasActivePermission(client, {
-        organizationId: principal.organizationId,
-        actorId: principal.userId,
-        permission: PERMISSIONS.postJournal,
-      }),
-    ]);
+    const writable = principalCanWrite(principal);
+    const canDraft = writable && await actorHasActivePermission(client, {
+      organizationId: principal.organizationId,
+      actorId: principal.userId,
+      permission: PERMISSIONS.draftJournal,
+    });
+    const canPost = writable && await actorHasActivePermission(client, {
+      organizationId: principal.organizationId,
+      actorId: principal.userId,
+      permission: PERMISSIONS.postJournal,
+    });
+    const canReverse = writable && await actorHasActivePermission(client, {
+      organizationId: principal.organizationId,
+      actorId: principal.userId,
+      permission: PERMISSIONS.reverseJournal,
+    });
+    const canPostAdjustment = writable && await actorHasActivePermission(client, {
+      organizationId: principal.organizationId,
+      actorId: principal.userId,
+      permission: PERMISSIONS.postAdjustment,
+    });
+    const reversalPeriodRows = canPost && canReverse
+      ? await client.query<{
+          id: string;
+          ledger_id: string;
+          entity_code: string;
+          label: string;
+          starts_on: string;
+          ends_on: string;
+          state: "OPEN" | "ADJUSTMENT_ONLY";
+        }>(
+          `SELECT period.id, period.ledger_id, entity.code AS entity_code,
+             period.label, period.starts_on::text, period.ends_on::text, period.state
+           FROM fiscal_periods period
+           JOIN ledgers ledger
+             ON ledger.organization_id = period.organization_id
+            AND ledger.id = period.ledger_id AND ledger.active
+           JOIN legal_entities entity
+             ON entity.organization_id = ledger.organization_id
+            AND entity.id = ledger.legal_entity_id AND entity.active
+           WHERE period.organization_id = $1
+             AND (period.state = 'OPEN' OR ($2::boolean AND period.state = 'ADJUSTMENT_ONLY'))
+           ORDER BY CASE WHEN CURRENT_DATE BETWEEN period.starts_on AND period.ends_on THEN 0 ELSE 1 END,
+             period.starts_on DESC, entity.code`,
+          [principal.organizationId, canPostAdjustment],
+        )
+      : { rows: [] };
+    const today = principal.sessionMode === "demo"
+      ? DEMO_BASELINE_DATE
+      : new Date().toISOString().slice(0, 10);
+    const reversalPeriods: TenantJournalReversalPeriodDto[] = reversalPeriodRows.rows.map((period) => ({
+      id: period.id,
+      ledgerId: period.ledger_id,
+      entityCode: period.entity_code,
+      label: period.label,
+      startsOn: period.starts_on,
+      endsOn: period.ends_on,
+      state: period.state,
+      defaultAccountingDate: today < period.starts_on
+        ? period.starts_on
+        : today > period.ends_on ? period.ends_on : today,
+    }));
+    const contentHashPattern = /^[a-f0-9]{64}$/i;
     return {
       demoOnly: membership.isDemo,
       readiness,
       canDraft,
       canPost,
+      canReverse: canPost && canReverse,
+      reversalPeriods,
       journals: journals.rows.map((row) => ({
         id: row.id,
+        ledgerId: row.ledger_id,
         number: row.journal_number === null ? "Draft" : String(row.journal_number),
         accountingDate: row.accounting_date,
         entityCode: row.entity_code,
@@ -232,7 +347,17 @@ export async function loadTenantJournalWorkspace(
         correctionRoute: row.correction_route,
         status: row.status,
         amount: row.total_debit_functional,
+        sourceNumber: row.source_number,
+        expectedContentHash: row.canonical_content_hash,
         reversalOfNumber: row.reversal_of_number === null ? null : String(row.reversal_of_number),
+        reversedByNumber: row.reversed_by_number === null ? null : String(row.reversed_by_number),
+        canPost: canPost && row.owner_module === "ledger" && row.journal_type_key === "ledger.manual" &&
+          row.status === "DRAFT" && (row.period_state === "OPEN" ||
+            (row.period_state === "ADJUSTMENT_ONLY" && canPostAdjustment)) &&
+          contentHashPattern.test(row.canonical_content_hash ?? ""),
+        canReverse: canPost && canReverse && row.owner_module === "ledger" &&
+          row.journal_type_key === "ledger.manual" && row.status === "POSTED" &&
+          row.reversed_by_number === null && reversalPeriods.some((period) => period.ledgerId === row.ledger_id),
       })),
     };
   });
@@ -245,13 +370,13 @@ export async function loadTenantPartyDirectory(
   const normalizedSearch = search.trim().slice(0, 200);
   return withTenantTransaction(readContext(principal), async (client) => {
     const membership = await assertActiveSessionMembership(client, principal);
-    const readiness = await tenantReadiness(client, principal.organizationId, membership.isDemo);
-    const canManage = !membership.isDemo && await actorHasActivePermission(client, {
+    const readiness = await tenantReadiness(client, principal.organizationId);
+    const canManage = principalCanWrite(principal) && await actorHasActivePermission(client, {
       organizationId: principal.organizationId,
       actorId: principal.userId,
       permission: PERMISSIONS.manageParties,
     });
-    if (!membership.isDemo && !(await actorHasActivePermission(client, {
+    if (!(await actorHasActivePermission(client, {
       organizationId: principal.organizationId,
       actorId: principal.userId,
       permission: PERMISSIONS.readParties,
@@ -315,8 +440,14 @@ export async function loadManualJournalOptions(
   principal: SessionPrincipal,
 ): Promise<ManualJournalOptionsDto> {
   return withTenantTransaction(readContext(principal), async (client) => {
-    const membership = await assertActiveSessionMembership(client, principal);
-    const canDraft = !membership.isDemo && await actorHasActivePermission(client, {
+    await assertActiveSessionMembership(client, principal);
+    const canReadLedger = await actorHasActivePermission(client, {
+      organizationId: principal.organizationId,
+      actorId: principal.userId,
+      permission: PERMISSIONS.readMcpLedger,
+    });
+    if (!canReadLedger) throw new Error("Ledger read permission is required");
+    const canDraft = principalCanWrite(principal) && await actorHasActivePermission(client, {
       organizationId: principal.organizationId,
       actorId: principal.userId,
       permission: PERMISSIONS.draftJournal,
@@ -420,26 +551,22 @@ export async function loadPeriodControlWorkspace(
 ): Promise<PeriodControlWorkspaceDto> {
   return withTenantTransaction(readContext(principal), async (client) => {
     const membership = await assertActiveSessionMembership(client, principal);
-    if (membership.isDemo) {
-      return { canClose: false, canReopen: false, canSeal: false, recentStepUp: false, periods: [] };
-    }
-    const [canClose, canReopen, canSeal] = await Promise.all([
-      actorHasActivePermission(client, {
-        organizationId: principal.organizationId,
-        actorId: principal.userId,
-        permission: PERMISSIONS.closePeriod,
-      }),
-      actorHasActivePermission(client, {
-        organizationId: principal.organizationId,
-        actorId: principal.userId,
-        permission: PERMISSIONS.reopenPeriod,
-      }),
-      actorHasActivePermission(client, {
-        organizationId: principal.organizationId,
-        actorId: principal.userId,
-        permission: PERMISSIONS.sealPeriod,
-      }),
-    ]);
+    const writable = principalCanWrite(principal);
+    const canClose = writable && await actorHasActivePermission(client, {
+      organizationId: principal.organizationId,
+      actorId: principal.userId,
+      permission: PERMISSIONS.closePeriod,
+    });
+    const canReopen = !membership.isDemo && writable && await actorHasActivePermission(client, {
+      organizationId: principal.organizationId,
+      actorId: principal.userId,
+      permission: PERMISSIONS.reopenPeriod,
+    });
+    const canSeal = !membership.isDemo && writable && await actorHasActivePermission(client, {
+      organizationId: principal.organizationId,
+      actorId: principal.userId,
+      permission: PERMISSIONS.sealPeriod,
+    });
     const periods = await client.query<{
       id: string;
       ledger_id: string;

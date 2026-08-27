@@ -42,7 +42,11 @@ case "$RESTORE_RECONCILIATION_TARGET" in
   auth-worker)
     exec /usr/local/bin/business-finlynq-provision-auth-worker-role
     ;;
+  backup)
+    : "${BACKUP_DATABASE_PASSWORD_FILE:?BACKUP_DATABASE_PASSWORD_FILE is required for backup reconciliation}"
+    exec /usr/local/bin/business-finlynq-provision-backup-role
+    ;;
   *)
-    fail "target must be runtime or auth-worker"
+    fail "target must be runtime, auth-worker, or backup"
     ;;
 esac

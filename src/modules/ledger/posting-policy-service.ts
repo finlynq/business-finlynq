@@ -4,6 +4,10 @@ import { z } from "zod";
 import { withTenantTransaction, type TenantTransactionContext } from "@/db/transaction";
 import { assertActorHasActivePermission } from "@/modules/identity/authorization";
 import { PERMISSIONS } from "@/modules/identity/permissions";
+import {
+  assertTenantWritesEnabled,
+  assertWritableOrganization,
+} from "@/modules/workspace/write-policy";
 
 const commandSchema = z.object({
   ledgerId: z.uuid(),
@@ -24,10 +28,11 @@ export type LedgerPostingPolicyResult = Readonly<{
 export async function setLedgerPostingPolicy(
   unparsedCommand: SetLedgerPostingPolicyCommand,
 ): Promise<LedgerPostingPolicyResult> {
-  if (process.env.BUSINESS_WRITES_ENABLED !== "true") throw new Error("Business writes are disabled");
+  assertTenantWritesEnabled(unparsedCommand.context);
   const command = commandSchema.parse(unparsedCommand);
 
   return withTenantTransaction(unparsedCommand.context, async (client) => {
+    await assertWritableOrganization(client, unparsedCommand.context);
     await assertActorHasActivePermission(client, {
       organizationId: unparsedCommand.context.organizationId,
       actorId: unparsedCommand.context.actorId,
@@ -38,10 +43,10 @@ export async function setLedgerPostingPolicy(
        FROM ledgers ledger
        JOIN organizations organization ON organization.id = ledger.organization_id
        WHERE ledger.organization_id = $1 AND ledger.id = $2
-         AND ledger.active AND organization.active AND NOT organization.is_demo`,
+         AND ledger.active AND organization.active`,
       [unparsedCommand.context.organizationId, command.ledgerId],
     );
-    if (!ledger.rows[0]) throw new Error("An active non-demo tenant ledger is required");
+    if (!ledger.rows[0]) throw new Error("An active tenant ledger is required");
 
     const existing = await client.query<{
       manual_mode: "REVIEW_REQUIRED" | "AUTO_POST";

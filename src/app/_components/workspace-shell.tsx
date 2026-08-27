@@ -12,6 +12,7 @@ import {
 const workspaceItems: readonly NavigationItem[] = [
   { abbreviation: "OV", label: "Overview", href: "/app" },
   { abbreviation: "GL", label: "General ledger", href: "/app/journals" },
+  { abbreviation: "PT", label: "Parties", href: "/app/parties" },
   { abbreviation: "AR", label: "Receivables", href: "/app/receivables/invoices" },
   { abbreviation: "AP", label: "Payables", href: "/app/payables/bills" },
   { abbreviation: "TX", label: "Tax", href: "/app/tax" },
@@ -42,7 +43,7 @@ function createSearchIndex(includeDemoRecords: boolean): readonly SearchEntry[] 
 export function WorkspaceShell({ children, principal, readOnly }: { children: React.ReactNode; principal: SessionPrincipal; readOnly: boolean }) {
   const organization = {
     name: principal.organizationName,
-    environment: principal.sessionMode === "demo" ? "Public preview" : "Private workspace",
+    environment: principal.sessionMode === "demo" ? "Disposable sandbox" : "Private workspace",
   };
   const searchIndex = createSearchIndex(principal.sessionMode === "demo");
   const accountPrincipal: AccountMenuPrincipal = {
@@ -88,7 +89,9 @@ export function WorkspaceShell({ children, principal, readOnly }: { children: Re
           <div>
             <span className="read-only-dot" aria-hidden="true" />
             <strong>{principal.sessionMode === "demo" ? "Public demo" : "Accounting workspace"}</strong>
-            <span>{principal.sessionMode === "demo" ? "Synthetic records · changes are not saved" : readOnly ? "Business writes are disabled for this deployment" : "Posting follows your assigned roles"}</span>
+            <span>{principal.sessionMode === "demo"
+              ? readOnly ? "Synthetic records · sandbox writes are disabled" : "Synthetic records · changes reset after this session"
+              : readOnly ? "Business writes are disabled for this deployment" : "Posting follows your assigned roles"}</span>
           </div>
           <GlobalSearch entries={searchIndex} />
         </div>

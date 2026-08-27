@@ -1,4 +1,4 @@
-import { exact, quantizeMoney } from "@/kernel/money";
+import { exact, minorUnits, quantizeMoney } from "@/kernel/money";
 import { manualReview, type TaxDecision, type TaxFacts, type TaxPack } from "../types";
 
 const SOURCE = "https://www.canada.ca/en/revenue-agency/services/tax/businesses/topics/gst-hst-businesses/charge-collect-place-supply.html";
@@ -17,7 +17,7 @@ function zeroDecision(
     effectiveTo: null,
     facts,
     components: [],
-    totalTax: "0.00",
+    totalTax: quantizeMoney(0, facts.currency).toFixed(minorUnits(facts.currency)),
     rounding: "LINE_HALF_UP",
     source: SOURCE,
   };
@@ -31,8 +31,10 @@ export const ontarioHstPack: TaxPack = {
       return manualReview(this, facts, "Ontario pack requires an Ontario place-of-supply decision", SOURCE);
     }
 
-    if (facts.currency !== "CAD") {
-      return manualReview(this, facts, "Ontario demo pack accepts CAD documents only", SOURCE);
+    try {
+      quantizeMoney(0, facts.currency);
+    } catch {
+      return manualReview(this, facts, "Document currency precision is not configured", SOURCE);
     }
 
     if (!facts.registrationId) {
@@ -48,7 +50,12 @@ export const ontarioHstPack: TaxPack = {
     }
 
     const basis = exact(facts.taxableBasis);
-    const tax = quantizeMoney(basis.times("0.13"), "CAD");
+    let tax: ReturnType<typeof quantizeMoney>;
+    try {
+      tax = quantizeMoney(basis.times("0.13"), facts.currency);
+    } catch {
+      return manualReview(this, facts, "Document currency precision is not configured", SOURCE);
+    }
     let recoveryRate = exact(0);
     if (facts.direction === "PURCHASE") {
       try {
@@ -63,7 +70,7 @@ export const ontarioHstPack: TaxPack = {
     }
 
     const recoverable = facts.direction === "PURCHASE"
-      ? quantizeMoney(tax.times(recoveryRate), "CAD")
+      ? quantizeMoney(tax.times(recoveryRate), facts.currency)
       : exact(0);
     const nonrecoverable = facts.direction === "PURCHASE" ? tax.minus(recoverable) : exact(0);
     const components = facts.direction === "SALE"
@@ -72,7 +79,7 @@ export const ontarioHstPack: TaxPack = {
             key: "HST",
             label: "Ontario HST",
             rate: "0.13",
-            amount: tax.toFixed(2),
+            amount: tax.toFixed(minorUnits(facts.currency)),
             treatment: "PAYABLE" as const,
           },
         ]
@@ -83,7 +90,7 @@ export const ontarioHstPack: TaxPack = {
                   key: "HST_RECOVERABLE",
                   label: "Ontario HST — recoverable ITC",
                   rate: "0.13",
-                  amount: recoverable.toFixed(2),
+                  amount: recoverable.toFixed(minorUnits(facts.currency)),
                   treatment: "RECOVERABLE" as const,
                 },
               ]
@@ -94,7 +101,7 @@ export const ontarioHstPack: TaxPack = {
                   key: "HST_NONRECOVERABLE",
                   label: "Ontario HST — nonrecoverable",
                   rate: "0.13",
-                  amount: nonrecoverable.toFixed(2),
+                  amount: nonrecoverable.toFixed(minorUnits(facts.currency)),
                   treatment: "NONRECOVERABLE" as const,
                 },
               ]
@@ -111,7 +118,7 @@ export const ontarioHstPack: TaxPack = {
       effectiveTo: null,
       facts,
       components,
-      totalTax: tax.toFixed(2),
+      totalTax: tax.toFixed(minorUnits(facts.currency)),
       rounding: "LINE_HALF_UP",
       source: SOURCE,
     };

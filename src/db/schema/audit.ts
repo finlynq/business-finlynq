@@ -24,10 +24,12 @@ export const auditEvents = pgTable(
     occurredAt: timestamp("occurred_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [
-    uniqueIndex("audit_events_org_request_action_unique").on(
+    uniqueIndex("audit_events_org_request_action_entity_unique").on(
       table.organizationId,
       table.requestId,
       table.action,
+      table.entityType,
+      table.entityId,
     ),
   ],
 );

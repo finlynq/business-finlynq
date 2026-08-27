@@ -236,11 +236,11 @@ export function validateJournalDraft(journal: JournalDraft): PostingIssue[] {
       addIssue("ZERO_TRANSACTION_AMOUNT", "Transaction amount cannot be zero");
     }
 
-    if (!fxRate.isPositive()) {
+    if (!fxRate.greaterThan(0)) {
       addIssue("FX_RATE_INVALID", "FX rate must be greater than zero");
     }
 
-    if (hasExactlyOneFunctionalSide && !transactionAmount.isZero() && fxRate.isPositive()) {
+    if (hasExactlyOneFunctionalSide && !transactionAmount.isZero() && fxRate.greaterThan(0)) {
       const signedFunctionalAmount = debit.greaterThan(0) ? debit : credit.negated();
       if (signedFunctionalAmount.greaterThan(0) !== transactionAmount.greaterThan(0)) {
         addIssue(

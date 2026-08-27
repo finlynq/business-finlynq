@@ -11,5 +11,21 @@ export const payablesModule = defineAccountingModule({
     correctionRoute: "/payables/bills",
     editableInGeneralLedger: false,
     deterministicSourceMayPost: true,
+  }, {
+    key: "payables.supplier-payment",
+    version: 1,
+    ownerModule: "payables",
+    label: "Supplier payment",
+    correctionRoute: "/payables/bills",
+    editableInGeneralLedger: false,
+    deterministicSourceMayPost: true,
+  }, {
+    key: "payables.bill-void",
+    version: 1,
+    ownerModule: "payables",
+    label: "Supplier bill void",
+    correctionRoute: "/payables/bills",
+    editableInGeneralLedger: false,
+    deterministicSourceMayPost: true,
   }],
 });

@@ -4,6 +4,7 @@ import { consumeRateLimit, issueDemoSession } from "@/modules/identity/auth-stor
 import { configuredAppOrigin, isSpeculativeNavigation, requestFingerprints } from "@/modules/identity/request-security";
 import { safeAppPath } from "@/modules/identity/safe-redirect";
 import { clearSessionCookie, createOpaqueToken, requestPrincipal, sessionCookieName, setSessionCookie } from "@/modules/identity/session";
+import { identityLookupHash } from "@/security/identity-secret";
 
 function loginError(code: string): NextResponse {
   const url = new URL("/login", configuredAppOrigin());
@@ -16,6 +17,8 @@ function loginError(code: string): NextResponse {
 export async function GET(request: NextRequest) {
   if (isSpeculativeNavigation(request)) return new NextResponse(null, { status: 204, headers: { "Cache-Control": "private, no-store" } });
   if (process.env.DEMO_LOGIN_ENABLED !== "true") return loginError("disabled");
+  const fetchSite = request.headers.get("sec-fetch-site");
+  if (fetchSite && fetchSite !== "same-origin" && fetchSite !== "none") return loginError("unavailable");
 
   try {
     const existing = await requestPrincipal(request);
@@ -28,10 +31,13 @@ export async function GET(request: NextRequest) {
     }
 
     const { ipHash, userAgentHash } = requestFingerprints(request);
-    const rate = await consumeRateLimit("demo-login-ip-minute", ipHash, 10, 60);
-    if (!rate.allowed) {
+    const [rate, globalRate] = await Promise.all([
+      consumeRateLimit("demo-login-ip-minute", ipHash, 10, 60),
+      consumeRateLimit("demo-login-global-minute", identityLookupHash("demo-sandbox-global-claim"), 60, 60),
+    ]);
+    if (!rate.allowed || !globalRate.allowed) {
       const response = loginError("rate-limited");
-      response.headers.set("Retry-After", String(rate.retry_after_seconds));
+      response.headers.set("Retry-After", String(Math.max(rate.retry_after_seconds, globalRate.retry_after_seconds)));
       return response;
     }
 
@@ -40,7 +46,7 @@ export async function GET(request: NextRequest) {
     if (!issued) return loginError("unavailable");
     const response = NextResponse.redirect(new URL(safeAppPath(request.nextUrl.searchParams.get("next")), configuredAppOrigin()), 303);
     response.headers.set("Cache-Control", "private, no-store");
-    setSessionCookie(response, token.raw, 8 * 60 * 60);
+    setSessionCookie(response, token.raw, 60 * 60);
     return response;
   } catch (error) {
     console.error("Business Finlynq demo login failed", { error });

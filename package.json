@@ -19,6 +19,7 @@
     "db:migrate": "drizzle-kit migrate",
     "org:onboard": "tsx scripts/onboard-organization.ts",
     "demo:bootstrap": "tsx scripts/bootstrap-demo.ts",
+    "demo:reset": "tsx scripts/reset-demo.ts",
     "check": "npm run lint && npm run typecheck && npm run test"
   },
   "dependencies": {

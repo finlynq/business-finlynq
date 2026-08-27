@@ -14,7 +14,10 @@ Both endpoints are non-cacheable and excluded from indexing. Readiness returns o
 - public HTTPS readiness and required no-store/HSTS headers;
 - certificate validity beyond the configured threshold;
 - expected app, database, and edge container state;
-- the externally served revision when `MONITOR_EXPECT_REVISION` is set;
+- exact app-container demo/account/business write gates for the reviewed release;
+- enabled and active demo reset/reconciliation timers when writable sandboxes are expected;
+- the full externally served, configured, and container release revision;
+- aggregate sandbox capacity and state, including size, minimum ready capacity, stranded reset work, and quarantine;
 - backup filesystem utilization;
 - newest backup age, internally consistent manifest/artifact/checksum, and verified off-site marker.
 
@@ -31,13 +34,15 @@ systemctl enable --now business-finlynq-monitor.timer
 systemctl start business-finlynq-monitor.service
 ```
 
-The unit files invoke the scripts from `/opt/business-finlynq/current`; the optional `/usr/local/sbin` copies above are useful for administrators but are not used unless the unit is customized.
+The unit files invoke the scripts from `/home/deploy/business-finlynq`; the optional `/usr/local/sbin` copies above are useful for administrators but are not used unless the unit is customized. If the checkout moves, update the service paths before reloading the units so an `OnFailure` notification never points at a stale release.
 
-Configure `/etc/business-finlynq/operations.env` with thresholds from `.env.example`. For webhook delivery, put one HTTPS URL in `/etc/business-finlynq/secrets/monitor-webhook-url`, mode `0400`. The notification contains only the failed unit and host name. If no webhook exists, the failure remains in journald, which is safe but is **not** an external alert.
+Configure the mandatory `/etc/business-finlynq/operations.env` with thresholds and every explicit expected gate from `.env.example`. The backup, monitor, and both demo-maintenance services refuse to start without it; only the failure notifier treats it as optional so it can still report a missing file. For webhook delivery, put one HTTPS URL in `/etc/business-finlynq/secrets/monitor-webhook-url`, mode `0400`. The notification contains only the failed unit and host name. If no webhook exists, the failure remains in journald, which is safe but is **not** an external alert.
 
-Set `MONITOR_EXPECT_REVISION` to the same reviewed Git SHA as `BUSINESS_FINLYNQ_IMAGE_REVISION` during each release. A mismatch then fails the host check instead of silently monitoring an older container.
+Set `MONITOR_EXPECT_REVISION` to the same full reviewed Git SHA as `BUSINESS_FINLYNQ_IMAGE_REVISION` during each release. Both are mandatory, must match exactly, and are checked against the running container and readiness response.
 
 Set `MONITOR_EXPECT_AUTH_EMAIL_WORKER=true` at the same cutover that enables real account email delivery. Before that cutover it stays false so the intentionally absent profile is not reported as an outage.
+
+The production writable-demo boundary requires `MONITOR_EXPECT_DEMO_LOGIN_ENABLED=true`, `MONITOR_EXPECT_DEMO_WRITES_ENABLED=true`, both real-account gates false, and `MONITOR_EXPECT_DEMO_MAINTENANCE=true`. The host monitor fails if the app differs, either timer is disabled/inactive, the pool is not exactly 32 slots, any slot is quarantined, a reset is stranded, or ready capacity falls below four outside an active maintenance pass. Set maintenance false only when demo login and writes are intentionally disabled, such as during rollback to an artifact that predates sandbox resets.
 
 The database readiness contract intentionally reports dead-letter count separately from worker availability: one permanently failed address must not disable every account login. Configure centralized worker-log/provider telemetry to page on any transition to `DEAD`, and retain a metric for oldest pending age. The public readiness endpoint catches a stopped worker, stuck lease, or materially delayed due queue without exposing counts or recipients.
 
@@ -48,16 +53,17 @@ Production requires an independent external uptime/alerting service that calls `
 - disk use at or above 85%;
 - backup older than 8 hours or without off-site verification;
 - database/container unhealthy or restart loop;
+- demo reset/reconciliation timer inactive, reset failure, quarantined slot, or repeated pool exhaustion;
 - auth email worker stopped, repeated delivery failures, and password-recovery abuse rate;
 - sustained 5xx responses and abnormal latency;
 - audit-chain verification failure.
 
-The first five are implemented by the host script. Provider delivery telemetry, centralized log alerting, audit-chain scheduling, and off-host uptime paging require the selected monitoring vendor and must be tested with a real notification before account login or writes are enabled.
+Readiness, TLS, disk, backup, container, revision, app-gate, demo-timer, quarantine, stranded-reset, and minimum-capacity checks are implemented by the host script. Repeated claim exhaustion still requires centralized service-log telemetry. Provider delivery telemetry, centralized log alerting, audit-chain scheduling, and off-host uptime paging require the selected monitoring vendor. Demo maintenance notifications must be tested before writable demo traffic; identity-provider notifications must be tested before real account login or business writes.
 
 ## Incident triage
 
 1. Acknowledge the page and record UTC time, hostname, release SHA, and failing check.
-2. Inspect `systemctl status` for monitor/backup and `docker compose --profile edge --profile auth-email ps`.
+2. Inspect `systemctl status` for monitor, backup, and both demo-maintenance timers, then run `docker compose --profile edge --profile auth-email ps`.
 3. Read bounded logs with `docker compose logs --since 30m <service>`; never paste secret files or full identity/accounting records into a ticket.
 4. If readiness fails but liveness passes, check database health and secret mounts before restarting the app. Do not rotate or replace encryption keys as a troubleshooting step.
 5. If backup freshness/checksum fails, preserve the newest artifacts, repair the destination or credentials, rerun a backup, and verify off-site checksum. Do not prune the only recoverable set.

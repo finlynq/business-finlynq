@@ -143,3 +143,72 @@ export const openItems = pgTable(
   },
   (table) => [uniqueIndex("open_items_org_id_unique").on(table.organizationId, table.id)],
 );
+
+export const documentSettlementAllocations = pgTable(
+  "document_settlement_allocations",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    organizationId: uuid("organization_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "restrict" }),
+    ledgerId: uuid("ledger_id")
+      .notNull()
+      .references(() => ledgers.id, { onDelete: "restrict" }),
+    paymentSourceDocumentId: uuid("payment_source_document_id").notNull(),
+    openItemId: uuid("open_item_id")
+      .notNull()
+      .references(() => openItems.id, { onDelete: "restrict" }),
+    allocationType: text("allocation_type").notNull(),
+    reversesAllocationId: uuid("reverses_allocation_id"),
+    transactionCurrency: text("transaction_currency").notNull(),
+    transactionAmount: numeric("transaction_amount", { precision: 38, scale: 9 }).notNull(),
+    carryingFunctionalAmount: numeric("carrying_functional_amount", { precision: 38, scale: 9 }).notNull(),
+    settlementFunctionalAmount: numeric("settlement_functional_amount", { precision: 38, scale: 9 }).notNull(),
+    realizedFxFunctional: numeric("realized_fx_functional", { precision: 38, scale: 9 }).notNull(),
+    settlementFxRate: numeric("settlement_fx_rate", { precision: 38, scale: 18 }).notNull(),
+    fxRateSource: text("fx_rate_source").notNull(),
+    fxRateEffectiveAt: timestamp("fx_rate_effective_at", { withTimezone: true }).notNull(),
+    idempotencyKey: text("idempotency_key").notNull(),
+    commandHash: text("command_hash").notNull(),
+    createdBy: uuid("created_by").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("document_settlement_allocations_org_id_unique").on(table.organizationId, table.id),
+    uniqueIndex("document_settlement_allocations_org_idempotency_unique").on(
+      table.organizationId,
+      table.idempotencyKey,
+    ),
+    uniqueIndex("document_settlement_allocations_reversal_unique").on(table.reversesAllocationId),
+  ],
+);
+
+export const openItemVoidEvents = pgTable(
+  "open_item_void_events",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    organizationId: uuid("organization_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "restrict" }),
+    ledgerId: uuid("ledger_id")
+      .notNull()
+      .references(() => ledgers.id, { onDelete: "restrict" }),
+    openItemId: uuid("open_item_id")
+      .notNull()
+      .references(() => openItems.id, { onDelete: "restrict" }),
+    voidSourceDocumentId: uuid("void_source_document_id").notNull(),
+    reason: text("reason").notNull(),
+    idempotencyKey: text("idempotency_key").notNull(),
+    commandHash: text("command_hash").notNull(),
+    createdBy: uuid("created_by").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("open_item_void_events_org_id_unique").on(table.organizationId, table.id),
+    uniqueIndex("open_item_void_events_item_unique").on(table.openItemId),
+    uniqueIndex("open_item_void_events_org_idempotency_unique").on(
+      table.organizationId,
+      table.idempotencyKey,
+    ),
+  ],
+);

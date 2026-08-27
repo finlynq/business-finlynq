@@ -36,6 +36,7 @@ jobs:
       APP_ORIGIN: http://127.0.0.1:3000
       SESSION_COOKIE_NAME: business_finlynq_session
       DEMO_LOGIN_ENABLED: "true"
+      DEMO_WRITES_ENABLED: "true"
       ACCOUNT_LOGIN_ENABLED: "false"
       AUTH_EMAIL_DELIVERY_ENABLED: "false"
       BUSINESS_WRITES_ENABLED: "false"
@@ -45,6 +46,7 @@ jobs:
       IDENTITY_SECRET_FILE: /tmp/business-finlynq-identity-secret
       APP_DATABASE_PASSWORD_FILE: /tmp/business-finlynq-app-db-password
       AUTH_WORKER_DATABASE_PASSWORD_FILE: /tmp/business-finlynq-auth-worker-db-password
+      BACKUP_DATABASE_PASSWORD_FILE: /tmp/business-finlynq-backup-db-password
       BUSINESS_FINLYNQ_SECRET_GID: "20001"
       BUSINESS_FINLYNQ_IMAGE_REVISION: ${{ github.sha }}
       PLAYWRIGHT_BASE_URL: http://127.0.0.1:3000
@@ -57,7 +59,7 @@ jobs:
           cache: npm
       - run: npm ci
       - name: Create ephemeral CI encryption secrets
-        run: node -e "const fs=require('node:fs'),c=require('node:crypto');fs.writeFileSync(process.env.ORGANIZATION_ROOT_KEK_FILE,c.randomBytes(32).toString('base64')+'\n',{mode:0o600});fs.writeFileSync(process.env.IDENTITY_SECRET_FILE,c.randomBytes(64).toString('base64')+'\n',{mode:0o600});fs.writeFileSync(process.env.APP_DATABASE_PASSWORD_FILE,'runtime-test-only-password-2026\n',{mode:0o600});fs.writeFileSync(process.env.AUTH_WORKER_DATABASE_PASSWORD_FILE,'auth-worker-test-only-2026\n',{mode:0o600})"
+        run: node -e "const fs=require('node:fs'),c=require('node:crypto');fs.writeFileSync(process.env.ORGANIZATION_ROOT_KEK_FILE,c.randomBytes(32).toString('base64')+'\n',{mode:0o600});fs.writeFileSync(process.env.IDENTITY_SECRET_FILE,c.randomBytes(64).toString('base64')+'\n',{mode:0o600});fs.writeFileSync(process.env.APP_DATABASE_PASSWORD_FILE,'runtime-test-only-password-2026\n',{mode:0o600});fs.writeFileSync(process.env.AUTH_WORKER_DATABASE_PASSWORD_FILE,'auth-worker-test-only-2026\n',{mode:0o600});fs.writeFileSync(process.env.BACKUP_DATABASE_PASSWORD_FILE,'backup-test-only-password-2026\n',{mode:0o600})"
       - name: Validate operations shell syntax
         run: find deploy -type f -name '*.sh' -print0 | xargs -0 -n1 bash -n
       - name: Verify fail-safe deployment-secret bootstrap
@@ -68,16 +70,21 @@ jobs:
           BUSINESS_FINLYNQ_SECRET_DIR="$bootstrap_root/secrets" sh deploy/bootstrap-demo-secrets.sh "$bootstrap_root/project"
           grep -q '^APP_DATABASE_PASSWORD_FILE=' "$bootstrap_root/project/.env"
           grep -q '^AUTH_WORKER_DATABASE_PASSWORD_FILE=' "$bootstrap_root/project/.env"
+          grep -q '^BACKUP_DATABASE_PASSWORD_FILE=' "$bootstrap_root/project/.env"
           test -s "$bootstrap_root/secrets/app-db-password"
           test -s "$bootstrap_root/secrets/auth-worker-db-password"
+          test -s "$bootstrap_root/secrets/backup-db-password"
           test "$(stat -c '%a' "$bootstrap_root/secrets/app-db-password")" = "440"
           test "$(stat -c '%a' "$bootstrap_root/secrets/auth-worker-db-password")" = "440"
+          test "$(stat -c '%a' "$bootstrap_root/secrets/backup-db-password")" = "440"
           if BUSINESS_FINLYNQ_SECRET_DIR="$bootstrap_root/secrets" sh deploy/bootstrap-demo-secrets.sh "$bootstrap_root/project"; then
             echo 'secret bootstrap overwrote existing material' >&2
             exit 1
           fi
       - name: Verify Compose credential and network boundaries
         run: node scripts/operations/verify-compose-boundaries.mjs
+      - name: Verify scheduled operations paths and reset boundaries
+        run: node scripts/operations/verify-scheduled-operations.mjs
       - run: npm run lint
       - run: npm run typecheck
       - name: Provision non-owner runtime role
@@ -94,7 +101,29 @@ jobs:
           PGHOST: 127.0.0.1
           PGPASSWORD: postgres
         run: sh deploy/postgres/015-auth-worker-role.sh
+      - name: Provision read-only cross-tenant backup role
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_DB: business_finlynq_test
+          PGHOST: 127.0.0.1
+          PGPASSWORD: postgres
+        run: sh deploy/postgres/020-backup-role.sh
       - run: npm run db:migrate
+      - name: Inject stale backup privileges for reconciliation coverage
+        env:
+          PGHOST: 127.0.0.1
+          PGDATABASE: business_finlynq_test
+          PGUSER: postgres
+          PGPASSWORD: postgres
+        run: |
+          psql --no-password --set=ON_ERROR_STOP=1 <<'SQL'
+          CREATE ROLE business_finlynq_backup_inherited_stale NOLOGIN;
+          CREATE ROLE business_finlynq_backup_delegate_stale NOLOGIN;
+          GRANT business_finlynq_backup_inherited_stale TO business_finlynq_backup;
+          GRANT business_finlynq_backup TO business_finlynq_backup_delegate_stale;
+          GRANT INSERT, UPDATE ON organizations TO business_finlynq_backup;
+          GRANT USAGE, UPDATE ON ALL SEQUENCES IN SCHEMA public TO business_finlynq_backup;
+          SQL
       - name: Reconcile reviewed runtime grants after migrations
         env:
           POSTGRES_USER: postgres
@@ -109,10 +138,45 @@ jobs:
           PGHOST: 127.0.0.1
           PGPASSWORD: postgres
         run: sh deploy/postgres/015-auth-worker-role.sh
+      - name: Reconcile backup grants after migrations
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_DB: business_finlynq_test
+          PGHOST: 127.0.0.1
+          PGPASSWORD: postgres
+        run: sh deploy/postgres/020-backup-role.sh
+      - name: Verify backup role bypasses tenant RLS but cannot mutate
+        env:
+          PGHOST: 127.0.0.1
+          PGDATABASE: business_finlynq_test
+          PGUSER: business_finlynq_backup
+          PGPASSWORD: backup-test-only-password-2026
+        run: |
+          test "$(psql --no-password --tuples-only --no-align --command 'SHOW default_transaction_read_only')" = "on"
+          test "$(psql --no-password --tuples-only --no-align --command 'SELECT count(*) > 0 FROM organizations')" = "t"
+          if psql --no-password --set=ON_ERROR_STOP=1 --command "SET default_transaction_read_only = off; UPDATE organizations SET active = active"; then
+            echo 'backup role unexpectedly mutated a tenant table' >&2
+            exit 1
+          fi
+          pg_dump --no-password --format=custom --no-owner --no-privileges --file=/tmp/business-finlynq-backup-role-smoke.dump
+          pg_restore --list /tmp/business-finlynq-backup-role-smoke.dump | grep -q 'TABLE DATA public organizations'
+      - name: Remove backup reconciliation test roles
+        env:
+          PGHOST: 127.0.0.1
+          PGDATABASE: business_finlynq_test
+          PGUSER: postgres
+          PGPASSWORD: postgres
+        run: |
+          psql --no-password --set=ON_ERROR_STOP=1 --command 'DROP ROLE business_finlynq_backup_inherited_stale'
+          psql --no-password --set=ON_ERROR_STOP=1 --command 'DROP ROLE business_finlynq_backup_delegate_stale'
       # TEST_DATABASE_URL enables the PostgreSQL integration suite inside the
       # normal Vitest run. Run it once, after replaying the canonical migrations.
-      - name: Bootstrap the fixed synthetic demo tenant
+      - name: Bootstrap the fixed public demo and sandbox pool
         run: npm run demo:bootstrap
+      - name: Exercise incremental and nightly demo-sandbox maintenance
+        run: |
+          DEMO_RESET_MODE=incremental npm run demo:reset
+          DEMO_RESET_MODE=nightly npm run demo:reset
       - run: npm run test
       - run: npm run build
       - name: Build hardened operations and email-worker images

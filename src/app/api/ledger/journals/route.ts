@@ -2,10 +2,11 @@ import { randomUUID } from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { validateSameOriginMutation } from "@/modules/identity/request-security";
-import { requestPrincipal, transactionAuthMethod } from "@/modules/identity/session";
+import { requestPrincipal } from "@/modules/identity/session";
 import { createManualJournal } from "@/modules/ledger/journal-service";
 import { consumeLedgerMutationRateLimit } from "@/modules/ledger/mutation-rate-limit";
 import { MutationBodyError, readBoundedJson } from "@/modules/ledger/request-body";
+import { mutationContext, principalCanWrite } from "@/modules/workspace/write-policy";
 
 const bodySchema = z.object({
   ledgerId: z.uuid(),
@@ -36,8 +37,8 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "The journal request could not be verified." }, { status: 403, headers: noStoreHeaders });
   }
   const principal = await requestPrincipal(request);
-  if (!principal || principal.sessionMode !== "real") {
-    return NextResponse.json({ error: "A real organization session is required." }, { status: 403, headers: noStoreHeaders });
+  if (!principal || !principalCanWrite(principal)) {
+    return NextResponse.json({ error: "A writable organization session is required." }, { status: 403, headers: noStoreHeaders });
   }
   try {
     const rateLimit = await consumeLedgerMutationRateLimit(principal, "create");
@@ -64,14 +65,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "Journal fields are invalid." }, { status: 400, headers: noStoreHeaders });
     }
     const result = await createManualJournal({
-      context: {
-        organizationId: principal.organizationId,
-        actorId: principal.userId,
-        sessionId: principal.sessionId,
-        requestId,
-        authMethod: transactionAuthMethod(principal),
-        sourceSurface: "UI",
-      },
+      context: mutationContext(principal, requestId),
       ...parsed.data,
       origin: "USER",
     });

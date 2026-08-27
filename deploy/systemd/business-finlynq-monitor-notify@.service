@@ -7,10 +7,10 @@ Wants=network-online.target
 Type=oneshot
 EnvironmentFile=-/etc/business-finlynq/operations.env
 Environment=MONITOR_FAILED_UNIT=%i
-ExecStart=/opt/business-finlynq/current/deploy/monitoring/notify-failure.sh
+ExecStart=/home/deploy/business-finlynq/deploy/monitoring/notify-failure.sh
 UMask=0077
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
-ProtectHome=true
+ProtectHome=read-only
 TimeoutStartSec=1m

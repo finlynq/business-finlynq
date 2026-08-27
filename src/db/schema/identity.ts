@@ -18,6 +18,7 @@ export const organizations = pgTable(
     displayName: text("display_name").notNull(),
     active: boolean("active").notNull().default(true),
     isDemo: boolean("is_demo").notNull().default(false),
+    mode: text("organization_mode").notNull().default("REAL"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [uniqueIndex("organizations_slug_unique").on(table.slug)],

@@ -1,0 +1,12 @@
+[Unit]
+Description=Reset dirty Business Finlynq demo sandboxes every five minutes
+
+[Timer]
+OnBootSec=3m
+OnUnitInactiveSec=5m
+RandomizedDelaySec=30s
+AccuracySec=30s
+Unit=business-finlynq-demo-reset.service
+
+[Install]
+WantedBy=timers.target

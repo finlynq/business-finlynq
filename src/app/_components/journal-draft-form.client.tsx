@@ -181,7 +181,7 @@ export function JournalDraftForm() {
         <button type="submit" className="primary-button">Validate draft</button>
         <button type="button" className="secondary-button" disabled aria-describedby={`${formId}-write-gate`}>Save draft unavailable</button>
       </div>
-      <p id={`${formId}-write-gate`} className="form-footnote">Saving and posting require a signed tenant session, encrypted persistence, authorization, and <code>BUSINESS_WRITES_ENABLED=true</code>.</p>
+      <p id={`${formId}-write-gate`} className="form-footnote">Saving requires an authorized role and the write gate for this workspace. Demo-sandbox and real-business writes are enabled independently.</p>
     </form>
   );
 }

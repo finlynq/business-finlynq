@@ -2,16 +2,25 @@ import { randomUUID } from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { validateSameOriginMutation } from "@/modules/identity/request-security";
-import { requestPrincipal, transactionAuthMethod } from "@/modules/identity/session";
+import { requestPrincipal } from "@/modules/identity/session";
 import { consumeLedgerMutationRateLimit } from "@/modules/ledger/mutation-rate-limit";
 import { MutationBodyError, readBoundedJson } from "@/modules/ledger/request-body";
 import { createParty } from "@/modules/parties/party-service";
+import { mutationContext, principalCanWrite } from "@/modules/workspace/write-policy";
 
 const bodySchema = z.object({
   partyNumber: z.string().trim().regex(/^[A-Za-z0-9][A-Za-z0-9_-]{0,31}$/),
   displayName: z.string().trim().min(1).max(200),
   idempotencyKey: z.string().trim().min(1).max(180),
   internalLegalEntityId: z.uuid().optional(),
+  account: z.object({
+    legalEntityId: z.uuid(),
+    ledgerId: z.uuid(),
+    role: z.enum(["CUSTOMER", "SUPPLIER"]),
+    accountNumber: z.string().trim().regex(/^[A-Za-z0-9][A-Za-z0-9_-]{0,31}$/),
+    controlAccountId: z.uuid(),
+    transactionCurrency: z.string().trim().regex(/^[A-Za-z]{3}$/).nullable().optional(),
+  }),
   address: z.object({
     kind: z.enum(["BILLING", "SHIPPING", "REMIT_TO", "REGISTERED"]),
     line1: z.string().trim().min(1).max(200),
@@ -34,9 +43,9 @@ export async function POST(request: NextRequest) {
     );
   }
   const principal = await requestPrincipal(request);
-  if (!principal || principal.sessionMode !== "real") {
+  if (!principal || !principalCanWrite(principal)) {
     return NextResponse.json(
-      { error: "A real organization session is required." },
+      { error: "A writable organization session is required." },
       { status: 403, headers: noStoreHeaders },
     );
   }
@@ -69,14 +78,7 @@ export async function POST(request: NextRequest) {
       );
     }
     const result = await createParty({
-      context: {
-        organizationId: principal.organizationId,
-        actorId: principal.userId,
-        sessionId: principal.sessionId,
-        requestId,
-        authMethod: transactionAuthMethod(principal),
-        sourceSurface: "UI",
-      },
+      context: mutationContext(principal, requestId),
       ...parsed.data,
     });
     return NextResponse.json(result, {

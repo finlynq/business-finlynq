@@ -18,7 +18,8 @@ compose=(docker compose -f docker-compose.yml -f deploy/rollback/docker-compose.
 cleanup() {
   "${compose[@]}" rm --stop --force \
     restore_database restore_verify restore_migrate restore_runtime_grants \
-    restore_auth_worker_grants restore_key_verify restore_app \
+    restore_auth_worker_grants restore_backup_grants restore_demo_bootstrap \
+    restore_key_verify restore_app \
     restore_runtime_verify rollback_rehearsal_app rollback_rehearsal_verify \
     >/dev/null 2>&1 || true
 }
@@ -30,8 +31,10 @@ cleanup
 "${compose[@]}" run --rm --no-deps restore_migrate
 "${compose[@]}" run --rm --no-deps restore_runtime_grants
 "${compose[@]}" run --rm --no-deps restore_auth_worker_grants
+"${compose[@]}" run --rm --no-deps restore_backup_grants
 "${compose[@]}" run --rm --no-deps restore_key_verify
+"${compose[@]}" run --rm --no-deps restore_demo_bootstrap
 "${compose[@]}" up --detach --wait --no-deps rollback_rehearsal_app
 "${compose[@]}" run --rm --no-deps rollback_rehearsal_verify
 
-printf '%s\n' "Hard-pinned f8485 image passed the post-0010 isolated restore rehearsal"
+printf '%s\n' "Hard-pinned f8485 image passed the current-schema isolated restore rehearsal"

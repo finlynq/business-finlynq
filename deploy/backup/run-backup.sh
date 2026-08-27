@@ -25,6 +25,7 @@ done
 : "${PGUSER:?PGUSER is required}"
 : "${BACKUP_DATABASE_PASSWORD_FILE:?BACKUP_DATABASE_PASSWORD_FILE is required}"
 : "${BACKUP_AGE_RECIPIENT_FILE:?BACKUP_AGE_RECIPIENT_FILE is required}"
+: "${BUSINESS_FINLYNQ_IMAGE_REVISION:?BUSINESS_FINLYNQ_IMAGE_REVISION is required}"
 
 PGPORT="${PGPORT:-5432}"
 BACKUP_OUTPUT_DIR="${BACKUP_OUTPUT_DIR:-/backups}"
@@ -32,11 +33,12 @@ BACKUP_LOCAL_RETENTION_DAYS="${BACKUP_LOCAL_RETENTION_DAYS:-14}"
 BACKUP_REQUIRE_OFFSITE="${BACKUP_REQUIRE_OFFSITE:-false}"
 BACKUP_RCLONE_REMOTE="${BACKUP_RCLONE_REMOTE:-}"
 BACKUP_RCLONE_CONFIG_FILE="${BACKUP_RCLONE_CONFIG_FILE:-/run/secrets/business_finlynq_rclone_config}"
-BACKUP_IMAGE_REVISION="${BUSINESS_FINLYNQ_IMAGE_REVISION:-${BACKUP_GIT_COMMIT:-unknown}}"
+BACKUP_IMAGE_REVISION="$BUSINESS_FINLYNQ_IMAGE_REVISION"
 
 [[ "$PGPORT" =~ ^[0-9]+$ ]] || fail "PGPORT must be numeric"
 [[ "$BACKUP_LOCAL_RETENTION_DAYS" =~ ^[0-9]+$ ]] || fail "BACKUP_LOCAL_RETENTION_DAYS must be a non-negative integer"
 [[ "$BACKUP_REQUIRE_OFFSITE" == "true" || "$BACKUP_REQUIRE_OFFSITE" == "false" ]] || fail "BACKUP_REQUIRE_OFFSITE must be true or false"
+[[ "$BACKUP_IMAGE_REVISION" =~ ^([a-f0-9]{40}|[a-f0-9]{64})$ && ! "$BACKUP_IMAGE_REVISION" =~ ^0+$ ]] || fail "BUSINESS_FINLYNQ_IMAGE_REVISION must be a full Git revision"
 
 [[ -s "$BACKUP_DATABASE_PASSWORD_FILE" ]] || fail "Backup database password file is missing or empty"
 [[ -s "$BACKUP_AGE_RECIPIENT_FILE" ]] || fail "Age recipient file is missing or empty"

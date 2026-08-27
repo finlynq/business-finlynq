@@ -28,8 +28,10 @@ const ids = {
   workflowPeriod: "55555555-5555-4555-8555-555555555553",
   debitAccount: "66666666-6666-4666-8666-666666666661",
   creditAccount: "66666666-6666-4666-8666-666666666662",
+  arControlAccount: "66666666-6666-4666-8666-666666666663",
   debitCombination: "77777777-7777-4777-8777-777777777771",
   creditCombination: "77777777-7777-4777-8777-777777777772",
+  arControlCombination: "77777777-7777-4777-8777-777777777773",
   journalType: "88888888-8888-4888-8888-888888888888",
   postedJournal: "99999999-9999-4999-8999-999999999991",
   closedJournal: "99999999-9999-4999-8999-999999999992",
@@ -87,7 +89,11 @@ runDatabaseTests("PostgreSQL accounting controls", () => {
            IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'business_finlynq_test_runtime') THEN
              CREATE ROLE business_finlynq_test_runtime LOGIN PASSWORD 'runtime-test-only'
                NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOBYPASSRLS;
-           ELSE
+           ELSIF EXISTS (
+             SELECT 1 FROM pg_roles selected_role
+             WHERE selected_role.rolname = current_user
+               AND (selected_role.rolsuper OR selected_role.rolcreaterole)
+           ) THEN
              ALTER ROLE business_finlynq_test_runtime PASSWORD 'runtime-test-only'
                NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOBYPASSRLS;
            END IF;
@@ -199,10 +205,12 @@ runDatabaseTests("PostgreSQL accounting controls", () => {
            ($1, $2, 'ledger.posting_policy.manage'),
            ($1, $2, 'ledger.period.close'),
            ($1, $2, 'ledger.period.reopen'),
-           ($1, $2, 'ledger.period.seal'),
-           ($1, $2, 'parties.read'),
-           ($1, $2, 'parties.manage'),
-           ($1, $3, 'ledger.journal.draft')`,
+            ($1, $2, 'ledger.period.seal'),
+            ($1, $2, 'parties.read'),
+            ($1, $2, 'parties.manage'),
+            ($1, $2, 'receivables.settle'),
+            ($1, $2, 'receivables.void'),
+            ($1, $3, 'ledger.journal.draft')`,
         [ids.orgA, ids.postingRole, ids.makerRole],
       );
       await admin.query(
@@ -239,11 +247,21 @@ runDatabaseTests("PostgreSQL accounting controls", () => {
         [ids.controlPeriod, ids.workflowPeriod, ids.orgA, ids.ledger],
       );
       await admin.query(
-        "INSERT INTO gl_accounts (id, organization_id, ledger_id, code, display_name, class, valid_from) VALUES ($1, $2, $3, '6100', 'Professional fees', 'EXPENSE', '2026-01-01'), ($4, $2, $3, '1000', 'Cash', 'ASSET', '2026-01-01')",
-        [ids.debitAccount, ids.orgA, ids.ledger, ids.creditAccount],
+        `INSERT INTO gl_accounts (
+           id, organization_id, ledger_id, code, display_name, class, control_kind, valid_from
+         ) VALUES
+           ($1, $2, $3, '6100', 'Professional fees', 'EXPENSE', 'NONE', '2026-01-01'),
+           ($4, $2, $3, '1000', 'Cash', 'ASSET', 'NONE', '2026-01-01'),
+           ($5, $2, $3, '1100', 'Accounts receivable', 'ASSET', 'AR', '2026-01-01')`,
+        [ids.debitAccount, ids.orgA, ids.ledger, ids.creditAccount, ids.arControlAccount],
       );
       await admin.query(
-        "INSERT INTO account_combinations (id, organization_id, ledger_id, entity_id, account_id) VALUES ($1, $2, $3, $4, $5), ($6, $2, $3, $4, $7)",
+        `INSERT INTO account_combinations (
+           id, organization_id, ledger_id, entity_id, account_id
+         ) VALUES
+           ($1, $2, $3, $4, $5),
+           ($6, $2, $3, $4, $7),
+           ($8, $2, $3, $4, $9)`,
         [
           ids.debitCombination,
           ids.orgA,
@@ -252,6 +270,8 @@ runDatabaseTests("PostgreSQL accounting controls", () => {
           ids.debitAccount,
           ids.creditCombination,
           ids.creditAccount,
+          ids.arControlCombination,
+          ids.arControlAccount,
         ],
       );
       await admin.query(
@@ -715,7 +735,7 @@ runDatabaseTests("PostgreSQL accounting controls", () => {
       },
       ...journal,
       idempotencyKey: "demo-boundary-write",
-    })).rejects.toThrow(/non-demo organization/i);
+    })).rejects.toThrow(/live isolated|organization mode|organization/i);
   });
 
   it("creates journals concurrently with bound idempotency, role-aware auto-post, and one full reversal", async () => {
@@ -852,6 +872,17 @@ runDatabaseTests("PostgreSQL accounting controls", () => {
     };
     const reversal = await reversePostedJournal(reversalCommand);
     expect(reversal).toMatchObject({ status: "POSTED", idempotentReplay: false });
+    await expect(reversePostedJournal({
+      ...reversalCommand,
+      context: {
+        ...reversalCommand.context,
+        requestId: "reversal-of-reversal-blocked",
+        reason: "A reversal journal cannot itself be reversed from the general ledger",
+      },
+      originalJournalId: reversal.journalId,
+      reason: "A reversal journal cannot itself be reversed from the general ledger",
+      idempotencyKey: "workflow-reversal-of-reversal",
+    })).rejects.toThrow(/ledger\.manual journal/i);
     expect(await reversePostedJournal({
       ...reversalCommand,
       context: { ...reversalCommand.context, requestId: "reversal-service-replay" },
@@ -870,6 +901,227 @@ runDatabaseTests("PostgreSQL accounting controls", () => {
     expect(relation.rows[0]?.count).toBe(1);
   });
 
+  it("applies and exactly reverses multiple allocations with derived carrying amounts", async () => {
+    const fixture = {
+      party: randomUUID(),
+      partyAccount: randomUUID(),
+      invoiceSourceA: randomUUID(),
+      invoiceSourceB: randomUUID(),
+      paymentSource: randomUUID(),
+      voidPaymentSource: randomUUID(),
+      eventA: randomUUID(),
+      eventB: randomUUID(),
+      itemA: randomUUID(),
+      itemB: randomUUID(),
+      allocationA: randomUUID(),
+      allocationB: randomUUID(),
+      reversalA: randomUUID(),
+      reversalB: randomUUID(),
+    };
+    const admin = await adminPool.connect();
+    try {
+      await admin.query("BEGIN");
+      await admin.query("SET LOCAL session_replication_role = replica");
+      await admin.query(
+        `INSERT INTO parties (
+           id, organization_id, party_number, display_name_ciphertext,
+           search_token, command_hash
+         ) VALUES ($1, $2, 'C-ALLOC-1', 'encrypted-allocation-party', $3, $4)`,
+        [fixture.party, ids.orgA, `hmac-sha256-v1:${"1".repeat(64)}`, "2".repeat(64)],
+      );
+      await admin.query(
+        `INSERT INTO party_accounts (
+           id, organization_id, legal_entity_id, ledger_id, party_id,
+           role, account_number, control_account_id, transaction_currency
+         ) VALUES ($1, $2, $3, $4, $5, 'CUSTOMER', 'C-ALLOC-1', $6, 'USD')`,
+        [fixture.partyAccount, ids.orgA, ids.entity, ids.ledger, fixture.party, ids.creditAccount],
+      );
+      await admin.query(
+        `INSERT INTO source_documents (
+           id, organization_id, legal_entity_id, owner_module, source_type,
+           source_number, version, status, snapshot, content_hash,
+           idempotency_key, command_hash, supersedes_source_document_id, created_by, void_reason
+         ) VALUES
+           ($1, $5, $6, 'receivables', 'receivables.sales-invoice', 'ALLOC-INV-A', 1,
+             'POSTED', '{}'::jsonb, $7, 'alloc-invoice-a', $8, NULL, $9, NULL),
+           ($2, $5, $6, 'receivables', 'receivables.sales-invoice', 'ALLOC-INV-B', 1,
+             'POSTED', '{}'::jsonb, $7, 'alloc-invoice-b', $8, NULL, $9, NULL),
+           ($3, $5, $6, 'receivables', 'receivables.customer-receipt', 'ALLOC-RECEIPT', 1,
+             'POSTED', jsonb_build_object('partyAccountId', $10::text, 'ledgerId', $11::text),
+             $7, 'alloc-payment', $8, NULL, $9, NULL),
+           ($4, $5, $6, 'receivables', 'receivables.customer-receipt', 'ALLOC-RECEIPT', 2,
+             'VOIDED', jsonb_build_object('partyAccountId', $10::text, 'ledgerId', $11::text),
+             $7, 'alloc-payment-void', $8, $3, $9, 'Reverse multi-allocation receipt')`,
+        [
+          fixture.invoiceSourceA,
+          fixture.invoiceSourceB,
+          fixture.paymentSource,
+          fixture.voidPaymentSource,
+          ids.orgA,
+          ids.entity,
+          "3".repeat(64),
+          "4".repeat(64),
+          ids.actor,
+          fixture.partyAccount,
+          ids.ledger,
+        ],
+      );
+      await admin.query(
+        `INSERT INTO subledger_events (
+           id, organization_id, ledger_id, party_account_id,
+           source_document_id, event_type, event_version
+         ) VALUES
+           ($1, $3, $4, $5, $6, 'receivables.invoice-issued', '1'),
+           ($2, $3, $4, $5, $7, 'receivables.invoice-issued', '1')`,
+        [
+          fixture.eventA,
+          fixture.eventB,
+          ids.orgA,
+          ids.ledger,
+          fixture.partyAccount,
+          fixture.invoiceSourceA,
+          fixture.invoiceSourceB,
+        ],
+      );
+      await admin.query(
+        `INSERT INTO open_items (
+           id, organization_id, ledger_id, party_account_id, source_event_id,
+           status, transaction_currency, original_transaction_amount,
+           open_transaction_amount, original_functional_amount, carrying_functional_amount
+         ) VALUES
+           ($1, $3, $4, $5, $6, 'OPEN', 'USD', 100, 100, 130, 130),
+           ($2, $3, $4, $5, $7, 'OPEN', 'USD', 50, 50, 65, 65)`,
+        [fixture.itemA, fixture.itemB, ids.orgA, ids.ledger, fixture.partyAccount, fixture.eventA, fixture.eventB],
+      );
+      await admin.query("COMMIT");
+    } catch (error) {
+      await admin.query("ROLLBACK");
+      throw error;
+    } finally {
+      admin.release();
+    }
+
+    await expect(asTenant(async (client) => {
+      await client.query("SELECT set_config('app.request_id', 'allocation-invalid-carrying', true)");
+      await client.query(
+        `INSERT INTO document_settlement_allocations (
+           id, organization_id, ledger_id, payment_source_document_id, open_item_id,
+           allocation_type, transaction_currency, transaction_amount,
+           carrying_functional_amount, settlement_functional_amount,
+           realized_fx_functional, settlement_fx_rate, fx_rate_source,
+           fx_rate_effective_at, idempotency_key, command_hash, created_by
+         ) VALUES ($1, $2, $3, $4, $5, 'APPLY', 'USD', 10, 12.99, 13.50,
+           0.51, 1.35, 'TEST_RATE', '2026-08-27T12:00:00Z', 'alloc-invalid', $6, $7)`,
+        [fixture.allocationA, ids.orgA, ids.ledger, fixture.paymentSource, fixture.itemA, "5".repeat(64), ids.actor],
+      );
+    })).rejects.toThrow(/carrying amount/i);
+
+    await asTenant(async (client) => {
+      await client.query("SELECT set_config('app.request_id', 'allocation-multi-apply', true)");
+      await client.query("SELECT set_config('app.auth_method', 'password', true)");
+      await client.query("SELECT set_config('app.source_surface', 'UI', true)");
+      await client.query(
+        `INSERT INTO document_settlement_allocations (
+           id, organization_id, ledger_id, payment_source_document_id, open_item_id,
+           allocation_type, transaction_currency, transaction_amount,
+           carrying_functional_amount, settlement_functional_amount,
+           realized_fx_functional, settlement_fx_rate, fx_rate_source,
+           fx_rate_effective_at, idempotency_key, command_hash, created_by
+         ) VALUES
+           ($1, $3, $4, $5, $6, 'APPLY', 'USD', 40, 52, 54, 2, 1.35,
+             'TEST_RATE', '2026-08-27T12:00:00Z', 'alloc-valid-a', $7, $8),
+           ($2, $3, $4, $5, $9, 'APPLY', 'USD', 20, 26, 27, 1, 1.35,
+             'TEST_RATE', '2026-08-27T12:00:00Z', 'alloc-valid-b', $7, $8)`,
+        [
+          fixture.allocationA,
+          fixture.allocationB,
+          ids.orgA,
+          ids.ledger,
+          fixture.paymentSource,
+          fixture.itemA,
+          "6".repeat(64),
+          ids.actor,
+          fixture.itemB,
+        ],
+      );
+    });
+
+    await expect(asTenant(async (client) => {
+      await client.query("SELECT set_config('app.request_id', 'allocation-invalid-prior-carrying', true)");
+      await client.query(
+        `INSERT INTO document_settlement_allocations (
+           organization_id, ledger_id, payment_source_document_id, open_item_id,
+           allocation_type, transaction_currency, transaction_amount,
+           carrying_functional_amount, settlement_functional_amount,
+           realized_fx_functional, settlement_fx_rate, fx_rate_source,
+           fx_rate_effective_at, idempotency_key, command_hash, created_by
+         ) VALUES ($1, $2, $3, $4, 'APPLY', 'USD', 10, 12.99, 13.50,
+           0.51, 1.35, 'TEST_RATE', '2026-08-27T12:00:00Z', 'alloc-invalid-prior', $5, $6)`,
+        [ids.orgA, ids.ledger, fixture.paymentSource, fixture.itemA, "7".repeat(64), ids.actor],
+      );
+    })).rejects.toThrow(/carrying amount/i);
+
+    await asTenant(async (client) => {
+      await client.query("SELECT set_config('app.request_id', 'allocation-multi-reverse', true)");
+      await client.query("SELECT set_config('app.auth_method', 'password', true)");
+      await client.query("SELECT set_config('app.source_surface', 'UI', true)");
+      await client.query(
+        `INSERT INTO document_settlement_allocations (
+           id, organization_id, ledger_id, payment_source_document_id, open_item_id,
+           allocation_type, reverses_allocation_id, transaction_currency,
+           transaction_amount, carrying_functional_amount, settlement_functional_amount,
+           realized_fx_functional, settlement_fx_rate, fx_rate_source,
+           fx_rate_effective_at, idempotency_key, command_hash, created_by
+         ) VALUES
+           ($1, $3, $4, $5, $6, 'REVERSAL', $7, 'USD', 40, 52, 54, 2, 1.35,
+             'TEST_RATE', '2026-08-27T12:00:00Z', 'alloc-reverse-a', $8, $9),
+           ($2, $3, $4, $5, $10, 'REVERSAL', $11, 'USD', 20, 26, 27, 1, 1.35,
+             'TEST_RATE', '2026-08-27T12:00:00Z', 'alloc-reverse-b', $8, $9)`,
+        [
+          fixture.reversalA,
+          fixture.reversalB,
+          ids.orgA,
+          ids.ledger,
+          fixture.voidPaymentSource,
+          fixture.itemA,
+          fixture.allocationA,
+          "8".repeat(64),
+          ids.actor,
+          fixture.itemB,
+          fixture.allocationB,
+        ],
+      );
+    });
+
+    const evidence = await asTenant((client) => client.query<{
+      allocation_count: number;
+      audit_count: number;
+      open_transaction_total: string;
+      carrying_total: string;
+    }>(
+      `SELECT
+         (SELECT count(*)::int FROM document_settlement_allocations
+          WHERE id = ANY($1::uuid[])) AS allocation_count,
+         (SELECT count(*)::int FROM audit_events
+          WHERE entity_type = 'document_settlement_allocation'
+            AND request_id IN ('allocation-multi-apply', 'allocation-multi-reverse')) AS audit_count,
+         (SELECT sum(open_transaction_amount)::text FROM open_item_balances
+          WHERE id = ANY($2::uuid[])) AS open_transaction_total,
+         (SELECT sum(carrying_functional_amount)::text FROM open_item_balances
+          WHERE id = ANY($2::uuid[])) AS carrying_total`,
+      [
+        [fixture.allocationA, fixture.allocationB, fixture.reversalA, fixture.reversalB],
+        [fixture.itemA, fixture.itemB],
+      ],
+    ));
+    expect(evidence.rows[0]).toEqual({
+      allocation_count: 4,
+      audit_count: 4,
+      open_transaction_total: "150.000000000",
+      carrying_total: "195.000000000",
+    });
+  });
+
   it("round-trips encrypted party master data and rejects a conflicting replay", async () => {
     const context = {
       organizationId: ids.orgA,
@@ -883,6 +1135,14 @@ runDatabaseTests("PostgreSQL accounting controls", () => {
       partyNumber: "CUST-9001",
       displayName: "Maple Ridge Advisory",
       idempotencyKey: "party-maple-ridge-1",
+      account: {
+        legalEntityId: ids.entity,
+        ledgerId: ids.ledger,
+        role: "CUSTOMER" as const,
+        accountNumber: "C-CA-9001",
+        controlAccountId: ids.arControlAccount,
+        transactionCurrency: null,
+      },
       address: {
         kind: "BILLING" as const,
         line1: "100 King Street West",
@@ -897,6 +1157,12 @@ runDatabaseTests("PostgreSQL accounting controls", () => {
     expect(created).toMatchObject({
       idempotentReplay: false,
       party: { partyNumber: "CUST-9001", displayName: "Maple Ridge Advisory" },
+      partyAccount: {
+        legalEntityId: ids.entity,
+        role: "CUSTOMER",
+        accountNumber: "C-CA-9001",
+        controlAccountId: ids.arControlAccount,
+      },
     });
     const replay = await createParty({ ...command, context: { ...context, requestId: "party-create-replay" } });
     expect(replay).toMatchObject({ idempotentReplay: true, party: { id: created.party.id } });
@@ -920,6 +1186,21 @@ runDatabaseTests("PostgreSQL accounting controls", () => {
     );
     expect(stored.rows[0]?.display_name_ciphertext).not.toContain("Maple Ridge Advisory");
     expect(stored.rows[0]?.ciphertext).not.toContain("100 King Street West");
+    const storedAccount = await adminPool.query<{
+      role: string;
+      control_account_id: string;
+      transaction_currency: string | null;
+    }>(
+      `SELECT role, control_account_id, transaction_currency
+       FROM party_accounts
+       WHERE party_id = $1`,
+      [created.party.id],
+    );
+    expect(storedAccount.rows).toEqual([{
+      role: "CUSTOMER",
+      control_account_id: ids.arControlAccount,
+      transaction_currency: null,
+    }]);
 
     await expect(asTenant((client) => client.query(
       "DELETE FROM party_addresses WHERE party_id = $1",

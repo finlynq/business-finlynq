@@ -1,18 +1,41 @@
-import { demoReceivableInvoices } from "@/modules/demo/dashboard-data";
+import Link from "next/link";
+import { ArApWorkspace } from "@/app/_components/ar-ap-workspace.client";
+import { DemoNotice, EmptyState, PageHeader } from "@/app/_components/ui";
+import { loadSubledgerWorkspace } from "@/modules/subledger/workspace";
 import { requireWorkspacePrincipal } from "@/modules/workspace/access";
 import { TenantModuleUnavailable } from "../../../_components/tenant-module-unavailable";
-import { DemoNotice, EmptyState, PageHeader, StatusPill } from "../../../_components/ui";
 
-export default async function InvoicesPage({ searchParams }: { searchParams: Promise<{ q?: string }> }) {
+export default async function InvoicesPage({
+  searchParams,
+}: Readonly<{ searchParams: Promise<{ q?: string }> }>) {
   const principal = await requireWorkspacePrincipal("/app/receivables/invoices");
-  if (principal.sessionMode !== "demo") return <TenantModuleUnavailable moduleName="Accounts receivable" />;
-  const query = (await searchParams).q?.trim().toLocaleLowerCase() ?? "";
-  const invoices = demoReceivableInvoices.filter((invoice) => !query || Object.values(invoice).join(" ").toLocaleLowerCase().includes(query));
+  const query = (await searchParams).q?.trim() ?? "";
+  const workspace = await loadSubledgerWorkspace(principal, "receivables", query);
+  if (!workspace.canRead) return <TenantModuleUnavailable moduleName="Accounts receivable" />;
+  const ready = workspace.entities.some((entity) =>
+    entity.periods.length > 0 && entity.partyAccounts.length > 0 &&
+    entity.lineAccounts.length > 0 && entity.taxAccounts.length > 0);
+
   return (
     <div className="page-content">
-      <PageHeader eyebrow="Accounts receivable" title="Sales invoices" description="Issued invoice journals are owned by Receivables and cannot be edited from the general ledger." />
-      <DemoNotice>Invoice issuing, credit notes, payments, and allocations remain behind the write gate. This route exposes the current sample source records only.</DemoNotice>
-      {invoices.length ? <div className="record-grid">{invoices.map((invoice) => <article className="record-card" id={`invoice-${invoice.id}`} key={invoice.id}><div><span className="code-chip">{invoice.number}</span><StatusPill status={invoice.status} /></div><h2>{invoice.customerName}</h2><p>{invoice.entityCode} · issued {invoice.issuedOn} · due {invoice.dueOn}</p><strong className="record-amount">{invoice.currency} {invoice.total}</strong><dl><div><dt>Open amount</dt><dd>{invoice.currency} {invoice.openAmount}</dd></div><div><dt>Tax</dt><dd>{invoice.currency} {invoice.tax} · <StatusPill status={invoice.taxDecisionStatus} /></dd></div><div><dt>Ledger link</dt><dd>{invoice.journalId ?? "Not posted · review draft"}</dd></div></dl></article>)}</div> : <EmptyState title="No invoice found">Search by invoice number, customer, status, or entity.</EmptyState>}
+      <PageHeader
+        eyebrow="Accounts receivable"
+        title="Sales invoices & receipts"
+        description="Draft service invoices, determine tax, post immutable AR journals, allocate receipts, and correct mistakes by voiding at the source."
+        actions={<Link className="secondary-button" href="/app/parties">Manage customers</Link>}
+      />
+      {workspace.demoOnly && (
+        <DemoNotice>
+          This is your private writable demo business. Create, issue, allocate, and void transactions freely; the seeded company is restored automatically every night and after the sandbox expires.
+        </DemoNotice>
+      )}
+      {!ready ? (
+        <EmptyState title="Receivables setup is incomplete">
+          Add an active legal entity, primary ledger, open fiscal period, customer party account, chart combinations, and tax registration before entering invoices.
+        </EmptyState>
+      ) : (
+        <ArApWorkspace workspace={workspace} />
+      )}
     </div>
   );
 }

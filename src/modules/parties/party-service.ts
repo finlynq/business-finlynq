@@ -13,10 +13,22 @@ import {
   serializeEncryptedField,
 } from "@/security/organization-encryption";
 import { loadActiveOrganizationKey } from "@/security/organization-key-store";
+import {
+  assertTenantWritesEnabled,
+  assertWritableOrganization,
+} from "@/modules/workspace/write-policy";
 
 const partyNumberSchema = z.string().trim().toUpperCase().regex(/^[A-Z0-9][A-Z0-9_-]{0,31}$/);
 const displayNameSchema = z.string().trim().min(1).max(200);
 const idempotencyKeySchema = z.string().trim().min(1).max(180);
+const partyAccountSchema = z.object({
+  legalEntityId: z.uuid(),
+  ledgerId: z.uuid(),
+  role: z.enum(["CUSTOMER", "SUPPLIER"]),
+  accountNumber: z.string().trim().toUpperCase().regex(/^[A-Z0-9][A-Z0-9_-]{0,31}$/),
+  controlAccountId: z.uuid(),
+  transactionCurrency: z.string().trim().toUpperCase().regex(/^[A-Z]{3}$/).nullable().optional(),
+});
 const addressSchema = z.object({
   kind: z.enum(["BILLING", "SHIPPING", "REMIT_TO", "REGISTERED"]),
   line1: z.string().trim().min(1).max(200),
@@ -34,7 +46,18 @@ export type CreatePartyCommand = Readonly<{
   displayName: string;
   idempotencyKey: string;
   internalLegalEntityId?: string;
+  account: z.input<typeof partyAccountSchema>;
   address?: z.input<typeof addressSchema>;
+}>;
+
+export type PartyAccountDto = Readonly<{
+  id: string;
+  legalEntityId: string;
+  ledgerId: string;
+  role: "CUSTOMER" | "SUPPLIER";
+  accountNumber: string;
+  controlAccountId: string;
+  transactionCurrency: string | null;
 }>;
 
 export type PartyDto = Readonly<{
@@ -55,9 +78,15 @@ type StoredParty = Readonly<{
   command_hash: string;
 }>;
 
-function assertBusinessWritesEnabled(): void {
-  if (process.env.BUSINESS_WRITES_ENABLED !== "true") throw new Error("Business writes are disabled");
-}
+type StoredPartyAccount = Readonly<{
+  id: string;
+  legal_entity_id: string;
+  ledger_id: string;
+  role: "CUSTOMER" | "SUPPLIER";
+  account_number: string;
+  control_account_id: string;
+  transaction_currency: string | null;
+}>;
 
 function decryptPartyName(
   row: StoredParty,
@@ -83,19 +112,34 @@ function toDto(row: StoredParty, displayName: string): PartyDto {
   };
 }
 
+function accountToDto(row: StoredPartyAccount): PartyAccountDto {
+  return {
+    id: row.id,
+    legalEntityId: row.legal_entity_id,
+    ledgerId: row.ledger_id,
+    role: row.role,
+    accountNumber: row.account_number,
+    controlAccountId: row.control_account_id,
+    transactionCurrency: row.transaction_currency,
+  };
+}
+
 export async function createParty(
   command: CreatePartyCommand,
-): Promise<Readonly<{ party: PartyDto; idempotentReplay: boolean }>> {
-  assertBusinessWritesEnabled();
+): Promise<Readonly<{ party: PartyDto; partyAccount: PartyAccountDto; idempotentReplay: boolean }>> {
+  assertTenantWritesEnabled(command.context);
   const partyNumber = partyNumberSchema.parse(command.partyNumber);
   const displayName = displayNameSchema.parse(command.displayName);
   const idempotencyKey = idempotencyKeySchema.parse(command.idempotencyKey);
+  const account = partyAccountSchema.parse(command.account);
+  const transactionCurrency = account.transactionCurrency ?? null;
   const address = command.address ? addressSchema.parse(command.address) : undefined;
   const commandHash = createHash("sha256").update(JSON.stringify({
     partyNumber,
     displayName,
     idempotencyKey,
     internalLegalEntityId: command.internalLegalEntityId ?? null,
+    account: { ...account, transactionCurrency },
     address: address ?? null,
   }), "utf8").digest("hex");
 
@@ -105,13 +149,7 @@ export async function createParty(
       actorId: command.context.actorId,
       permission: PERMISSIONS.manageParties,
     });
-    const organization = await client.query<{ active: boolean; is_demo: boolean }>(
-      "SELECT active, is_demo FROM organizations WHERE id = $1",
-      [command.context.organizationId],
-    );
-    if (!organization.rows[0]?.active || organization.rows[0].is_demo) {
-      throw new Error("Party persistence requires an active non-demo organization");
-    }
+    await assertWritableOrganization(client, command.context);
     if (command.internalLegalEntityId) {
       const entity = await client.query(
         `SELECT 1 FROM legal_entities
@@ -159,6 +197,7 @@ export async function createParty(
 
       let stored = inserted.rows[0];
       const idempotentReplay = !stored;
+      let storedAccount: StoredPartyAccount | undefined;
       if (!stored) {
         const existing = await client.query<StoredParty>(
           `SELECT id, party_number, display_name_ciphertext, display_name_key_version,
@@ -172,7 +211,110 @@ export async function createParty(
         if (!stored || stored.command_hash !== commandHash) {
           throw new Error("Party number is already bound to different master data");
         }
-      } else if (address) {
+        const replayAccount = await client.query<StoredPartyAccount>(
+          `SELECT id, legal_entity_id, ledger_id, role, account_number,
+             control_account_id, transaction_currency
+           FROM party_accounts
+           WHERE organization_id = $1
+             AND party_id = $2
+             AND legal_entity_id = $3
+             AND ledger_id = $4
+             AND role = $5
+             AND account_number = $6
+             AND control_account_id = $7
+             AND transaction_currency IS NOT DISTINCT FROM $8::text
+           FOR SHARE`,
+          [
+            command.context.organizationId,
+            stored.id,
+            account.legalEntityId,
+            account.ledgerId,
+            account.role,
+            account.accountNumber,
+            account.controlAccountId,
+            transactionCurrency,
+          ],
+        );
+        storedAccount = replayAccount.rows[0];
+        if (!storedAccount) {
+          throw new Error("Party replay is missing its bound customer or supplier account");
+        }
+      } else {
+        const accountingSetup = await client.query(
+          `SELECT 1
+           FROM legal_entities entity
+           JOIN ledgers ledger
+             ON ledger.organization_id = entity.organization_id
+            AND ledger.legal_entity_id = entity.id
+            AND ledger.id = $3
+            AND ledger.kind = 'PRIMARY'
+            AND ledger.active
+           JOIN gl_accounts control_account
+             ON control_account.organization_id = ledger.organization_id
+            AND control_account.ledger_id = ledger.id
+            AND control_account.id = $5
+            AND control_account.active
+            AND control_account.postable
+            AND control_account.valid_from <= current_date
+            AND (control_account.valid_to IS NULL OR control_account.valid_to >= current_date)
+           WHERE entity.organization_id = $1
+             AND entity.id = $2
+             AND entity.active
+             AND entity.country_code IN ('CA', 'US')
+             AND control_account.control_kind = CASE $4::text
+               WHEN 'CUSTOMER' THEN 'AR'::control_account_kind
+               WHEN 'SUPPLIER' THEN 'AP'::control_account_kind
+             END
+             AND EXISTS (
+               SELECT 1
+               FROM account_combinations combination
+               WHERE combination.organization_id = entity.organization_id
+                 AND combination.ledger_id = ledger.id
+                 AND combination.entity_id = entity.id
+                 AND combination.account_id = control_account.id
+                 AND combination.active
+             )
+             AND ($6::text IS NULL OR EXISTS (
+               SELECT 1 FROM currency_definitions currency
+               WHERE currency.code = $6 AND currency.active
+             ))`,
+          [
+            command.context.organizationId,
+            account.legalEntityId,
+            account.ledgerId,
+            account.role,
+            account.controlAccountId,
+            transactionCurrency,
+          ],
+        );
+        if (!accountingSetup.rows[0]) {
+          throw new Error("The selected entity, primary ledger, role, control account, or currency is not an active AR/AP configuration");
+        }
+        const partyAccountId = randomUUID();
+        const insertedAccount = await client.query<StoredPartyAccount>(
+          `INSERT INTO party_accounts (
+             id, organization_id, legal_entity_id, ledger_id, party_id,
+             role, account_number, control_account_id, transaction_currency
+           ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+           RETURNING id, legal_entity_id, ledger_id, role, account_number,
+             control_account_id, transaction_currency`,
+          [
+            partyAccountId,
+            command.context.organizationId,
+            account.legalEntityId,
+            account.ledgerId,
+            stored.id,
+            account.role,
+            account.accountNumber,
+            account.controlAccountId,
+            transactionCurrency,
+          ],
+        );
+        storedAccount = insertedAccount.rows[0];
+        if (!storedAccount) throw new Error("Customer or supplier account was not persisted");
+      }
+
+      if (!idempotentReplay && address) {
         const addressId = randomUUID();
         const encryptedAddress = encryptField(JSON.stringify(address), activeKey.dek, {
           organizationId: command.context.organizationId,
@@ -199,6 +341,7 @@ export async function createParty(
 
       return {
         party: toDto(stored, decryptPartyName(stored, command.context.organizationId, activeKey.dek)),
+        partyAccount: accountToDto(storedAccount),
         idempotentReplay,
       };
     } finally {

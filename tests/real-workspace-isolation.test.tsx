@@ -1,5 +1,5 @@
 import { NextRequest } from "next/server";
-import { describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { demoSearchIndex } from "@/modules/demo/dashboard-data";
 
 const mocks = vi.hoisted(() => {
@@ -28,6 +28,8 @@ const mocks = vi.hoisted(() => {
       readiness: "EMPTY_ORGANIZATION" as const,
       canDraft: false,
       canPost: false,
+      canReverse: false,
+      reversalPeriods: [],
       journals: [],
     })),
     loadTenantPartyDirectory: vi.fn(async (): Promise<{
@@ -41,6 +43,17 @@ const mocks = vi.hoisted(() => {
       canManage: false,
       parties: [],
     })),
+    loadPartyAccountCreationOptions: vi.fn(async (): Promise<readonly Readonly<{
+      legalEntityId: string;
+      entityCode: string;
+      ledgerId: string;
+      ledgerCode: string;
+      functionalCurrency: string;
+      role: "CUSTOMER" | "SUPPLIER";
+      controlAccountId: string;
+      controlAccountCode: string;
+      controlAccountName: string;
+    }>[]> => []),
     loadManualJournalOptions: vi.fn(async () => ({
       readOnly: true,
       entities: [],
@@ -51,6 +64,45 @@ const mocks = vi.hoisted(() => {
       canSeal: false,
       recentStepUp: false,
       periods: [],
+    })),
+    loadEntitySummaries: vi.fn(async () => ([{
+      id: "30000000-0000-4000-8000-000000000001",
+      code: "SECOND",
+      displayName: "Second Organization LLC",
+      countryCode: "US",
+      regionCode: "WA",
+      accountingProfile: "US_GAAP",
+      ledgerId: "30000000-0000-4000-8000-000000000002",
+      ledgerCode: "SECOND-PRIMARY",
+      functionalCurrency: "USD",
+      periodLabel: "August 2026",
+      periodState: "OPEN",
+    }])),
+    loadAccountingOverview: vi.fn(async () => ({
+      access: { ledger: true, receivables: true, payables: true, tax: true },
+      postedJournalCount: 0,
+      unpostedJournalCount: 0,
+      manualReviewTaxCount: 0,
+      openReceivables: [],
+      openPayables: [],
+    })),
+    loadTrialBalance: vi.fn(async () => []),
+    loadTaxDeterminations: vi.fn(async () => []),
+    loadSubledgerWorkspace: vi.fn(async (_principal: unknown, ownerModule: "receivables" | "payables") => ({
+      ownerModule,
+      businessKind: ownerModule === "receivables" ? "SALES_INVOICE" as const : "SUPPLIER_BILL" as const,
+      settlementKind: ownerModule === "receivables" ? "CUSTOMER_RECEIPT" as const : "SUPPLIER_PAYMENT" as const,
+      demoOnly: false,
+      canRead: true,
+      canManage: false,
+      canPost: false,
+      canSettle: false,
+      canVoid: false,
+      currentDate: "2026-08-27",
+      currencies: [],
+      entities: [],
+      documents: [],
+      openItems: [],
     })),
   };
 });
@@ -69,6 +121,19 @@ vi.mock("@/modules/ledger/tenant-workspace", () => ({
   loadManualJournalOptions: mocks.loadManualJournalOptions,
   loadPeriodControlWorkspace: mocks.loadPeriodControlWorkspace,
 }));
+vi.mock("@/modules/parties/party-workspace", () => ({
+  loadPartyAccountCreationOptions: mocks.loadPartyAccountCreationOptions,
+}));
+vi.mock("@/modules/reporting/tenant-reporting", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/modules/reporting/tenant-reporting")>()),
+  loadEntitySummaries: mocks.loadEntitySummaries,
+  loadAccountingOverview: mocks.loadAccountingOverview,
+  loadTrialBalance: mocks.loadTrialBalance,
+  loadTaxDeterminations: mocks.loadTaxDeterminations,
+}));
+vi.mock("@/modules/subledger/workspace", () => ({
+  loadSubledgerWorkspace: mocks.loadSubledgerWorkspace,
+}));
 
 import OverviewPage from "@/app/(workspace)/app/page";
 import AutomationPage from "@/app/(workspace)/automation/page";
@@ -86,7 +151,15 @@ import { PartyCreateForm } from "@/app/_components/party-create-form.client";
 import { WorkspaceShell } from "@/app/_components/workspace-shell";
 
 function serialized(value: unknown): string {
-  return JSON.stringify(value);
+  const seen = new WeakSet<object>();
+  return JSON.stringify(value, (_key, child: unknown) => {
+    if (typeof child === "function") return `[Function ${child.name || "anonymous"}]`;
+    if (typeof child === "object" && child !== null) {
+      if (seen.has(child)) return "[Circular]";
+      seen.add(child);
+    }
+    return child;
+  });
 }
 
 function findSearchEntries(value: unknown): readonly { label: string }[] {
@@ -104,7 +177,18 @@ function findSearchEntries(value: unknown): readonly { label: string }[] {
 }
 
 describe("real organization workspace isolation", () => {
-  it("executes every fixture-backed page as an explicit unavailable state for a second organization", async () => {
+  const previousBusinessWrites = process.env.BUSINESS_WRITES_ENABLED;
+
+  beforeAll(() => {
+    process.env.BUSINESS_WRITES_ENABLED = "true";
+  });
+
+  afterAll(() => {
+    if (previousBusinessWrites === undefined) delete process.env.BUSINESS_WRITES_ENABLED;
+    else process.env.BUSINESS_WRITES_ENABLED = previousBusinessWrites;
+  });
+
+  it("executes every workspace page without leaking another organization's fixtures", async () => {
     const pages = await Promise.all([
       OverviewPage(),
       AutomationPage(),
@@ -114,13 +198,24 @@ describe("real organization workspace isolation", () => {
       TrialBalancePage(),
       TaxPage({ searchParams: Promise.resolve({}) }),
     ]);
-    const moduleNames = ["Overview", "AI and MCP", "Legal entities", "Accounts payable", "Accounts receivable", "Trial balance", "Tax"];
-    for (const [index, page] of pages.entries()) {
+    for (const page of pages) {
       const output = serialized(page);
-      expect(output).toContain(`\"moduleName\":\"${moduleNames[index]}\"`);
       expect(output).not.toContain("Northstar");
       expect(output).not.toContain("Harbour Dental");
     }
+    expect(serialized(pages[0])).toContain("Accounting overview");
+    expect(serialized(pages[1])).toContain("AI and MCP");
+    expect(serialized(pages[2])).toContain("Second Organization LLC");
+    expect(serialized(pages[3])).toContain("Accounts payable");
+    expect(serialized(pages[4])).toContain("Accounts receivable");
+    expect(serialized(pages[5])).toContain("No posted balances");
+    expect(serialized(pages[6])).toContain("No recorded tax decisions");
+    expect(mocks.loadEntitySummaries).toHaveBeenCalledWith(mocks.principal);
+    expect(mocks.loadAccountingOverview).toHaveBeenCalledWith(mocks.principal);
+    expect(mocks.loadTrialBalance).toHaveBeenCalledWith(mocks.principal);
+    expect(mocks.loadTaxDeterminations).toHaveBeenCalledWith(mocks.principal, { reviewOnly: false });
+    expect(mocks.loadSubledgerWorkspace).toHaveBeenCalledWith(mocks.principal, "payables", "");
+    expect(mocks.loadSubledgerWorkspace).toHaveBeenCalledWith(mocks.principal, "receivables", "");
   });
 
   it("executes the real journal and period-control pages only with tenant-scoped DTOs", async () => {
@@ -153,11 +248,25 @@ describe("real organization workspace isolation", () => {
       canManage: true,
       parties: [],
     });
+    mocks.loadPartyAccountCreationOptions.mockResolvedValueOnce([{
+      legalEntityId: "30000000-0000-4000-8000-000000000010",
+      entityCode: "SECOND",
+      ledgerId: "30000000-0000-4000-8000-000000000011",
+      ledgerCode: "SECOND-PRIMARY",
+      functionalCurrency: "USD",
+      role: "CUSTOMER" as const,
+      controlAccountId: "30000000-0000-4000-8000-000000000012",
+      controlAccountCode: "1100",
+      controlAccountName: "Accounts receivable",
+    }]);
     const parties = await PartiesPage({ searchParams: Promise.resolve({}) });
     const children = (parties.props as { children: unknown[] }).children;
-    expect(children.some((child) => (
+    const form = children.find((child) => (
       typeof child === "object" && child !== null && "type" in child && child.type === PartyCreateForm
-    ))).toBe(true);
+    )) as { props?: { accountOptions?: readonly { role: string; entityCode: string }[] } } | undefined;
+    expect(form?.props?.accountOptions).toEqual([
+      expect.objectContaining({ role: "CUSTOMER", entityCode: "SECOND" }),
+    ]);
     expect(serialized(parties)).not.toContain("Northstar");
   });
 
@@ -168,7 +277,9 @@ describe("real organization workspace isolation", () => {
     for (const entry of demoSearchIndex) expect(searchEntries.map((item) => item.label)).not.toContain(entry.title);
 
     const response = await trialBalanceCsv(new NextRequest("http://localhost/app/reports/trial-balance.csv"));
-    expect(response.status).toBe(501);
-    expect(await response.text()).not.toContain("Northstar");
+    expect(response.status).toBe(200);
+    const csv = await response.text();
+    expect(csv).toContain('"Entity","Ledger","Currency"');
+    expect(csv).not.toContain("Northstar");
   });
 });

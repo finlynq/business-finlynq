@@ -73,6 +73,11 @@ export const sourceDocuments = pgTable(
     status: text("status").notNull(),
     snapshot: jsonb("snapshot").notNull(),
     contentHash: text("content_hash").notNull(),
+    idempotencyKey: text("idempotency_key"),
+    commandHash: text("command_hash"),
+    supersedesSourceDocumentId: uuid("supersedes_source_document_id"),
+    createdBy: uuid("created_by"),
+    voidReason: text("void_reason"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [
@@ -83,6 +88,10 @@ export const sourceDocuments = pgTable(
       table.version,
     ),
     uniqueIndex("source_documents_org_id_unique").on(table.organizationId, table.id),
+    uniqueIndex("source_documents_org_idempotency_unique").on(
+      table.organizationId,
+      table.idempotencyKey,
+    ),
   ],
 );
 

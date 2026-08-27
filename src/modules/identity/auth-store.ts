@@ -137,7 +137,13 @@ export async function issueDemoSession(input: { tokenHash: string; ipHash: strin
 
 export async function resolveStoredSession(tokenHash: string, userAgentHash: string | null): Promise<StoredPrincipal | null> {
   const result = await queryDatabase<StoredPrincipal>("SELECT * FROM app.auth_resolve_session_v2($1, $2)", [tokenHash, userAgentHash]);
-  return result.rows[0] ?? null;
+  const principal = result.rows[0] ?? null;
+  if (!principal || principal.session_mode !== "DEMO") return principal;
+  const lease = await queryDatabase<{ valid: boolean }>(
+    "SELECT app.auth_demo_session_lease_valid($1) AS valid",
+    [principal.session_id],
+  );
+  return lease.rows[0]?.valid ? principal : null;
 }
 
 export async function revokeStoredSession(tokenHash: string, requestId: string): Promise<boolean> {

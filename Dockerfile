@@ -63,6 +63,9 @@ USER 70:70
 
 FROM node:24-alpine AS runner
 
+ARG BUSINESS_FINLYNQ_IMAGE_REVISION=unknown
+LABEL org.opencontainers.image.revision=$BUSINESS_FINLYNQ_IMAGE_REVISION
+
 RUN apk add --no-cache curl libc6-compat \
   && addgroup --system --gid 1001 nodejs \
   && adduser --system --uid 1001 nextjs
