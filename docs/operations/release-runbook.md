@@ -37,7 +37,7 @@ E2E_EXPECT_AUTH_EMAIL_WORKER=true
 npm run test:e2e
 ```
 
-The browser test also reads `/api/health`, checks that enabled signup implies ready authentication and email delivery, and requires a rendered Turnstile iframe on the live signup page.
+The browser test also reads `/api/health`, checks that enabled signup implies ready authentication and email delivery, and requires Cloudflare's widget API to render its response control on the live signup page. Managed challenges may solve without exposing a visible iframe, and Cloudflare does not guarantee that iframe as a public integration contract.
 
 ## Rollback
 
