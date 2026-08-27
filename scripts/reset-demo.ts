@@ -11,7 +11,7 @@ async function main(): Promise<void> {
     application_name: `business-finlynq-demo-reset-${selected.mode}`,
   });
   try {
-    await resetDemoSandboxes(pool, { nightly: selected.nightly });
+    await resetDemoSandboxes(pool, { mode: selected.mode });
     process.stdout.write(`Business Finlynq ${selected.mode} demo-sandbox maintenance completed.\n`);
   } finally {
     await pool.end();

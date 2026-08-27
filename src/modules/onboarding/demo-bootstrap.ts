@@ -129,34 +129,9 @@ const DEMO_PARTIES = [
   },
 ] as const;
 
-const PURGE_TABLES = [
-  "open_item_void_events",
-  "document_settlement_allocations",
-  "journal_entry_relations",
-  "journal_approvals",
-  "journal_lines",
-  "open_items",
-  "subledger_events",
-  "tax_determination_snapshots",
-  "journal_entries",
-  "source_documents",
-  "party_addresses",
-  "party_accounts",
-  "parties",
-  "entity_tax_registrations",
-  "period_events",
-  "ledger_posting_policies",
-  "ledger_number_sequences",
-  "account_combinations",
-  "segment_values",
-  "segment_definitions",
-  "fiscal_periods",
-  "gl_accounts",
-  "ledgers",
-  "legal_entities",
-  "audit_events",
-  "outbox_events",
-] as const;
+export type DemoSandboxResetMode = "bootstrap" | "nightly";
+
+const SAFE_RESET_TABLE_NAME = /^[a-z][a-z0-9_]*$/;
 
 type SeedIdentity = Readonly<{
   organizationId: string;
@@ -741,28 +716,14 @@ async function assertOperatorDatabaseOwner(client: PoolClient): Promise<void> {
 
 async function listSandboxCandidates(
   client: PoolClient,
-  nightly: boolean,
+  mode: DemoSandboxResetMode,
 ): Promise<readonly SandboxCandidate[]> {
   const result = await client.query<SandboxCandidate>(
     `SELECT slot.slot, slot.organization_id
      FROM demo_sandbox_slots slot
-     WHERE $1::boolean
-       OR slot.state IN ('DIRTY', 'RESETTING')
-       OR (
-         slot.state = 'LEASED'
-         AND NOT EXISTS (
-           SELECT 1 FROM auth_sessions selected_session
-           WHERE selected_session.id = slot.lease_session_id
-             AND selected_session.organization_id = slot.organization_id
-             AND selected_session.session_mode = 'DEMO'
-             AND selected_session.demo_generation = slot.generation
-             AND selected_session.revoked_at IS NULL
-             AND selected_session.expires_at > now()
-             AND selected_session.idle_expires_at > now()
-         )
-       )
+     WHERE $1::boolean OR slot.state IN ('DIRTY', 'RESETTING')
      ORDER BY slot.slot`,
-    [nightly],
+    [mode === "nightly"],
   );
   return result.rows;
 }
@@ -770,16 +731,16 @@ async function listSandboxCandidates(
 async function claimSandboxForReset(
   client: PoolClient,
   candidate: SandboxCandidate,
-  nightly: boolean,
+  mode: DemoSandboxResetMode,
 ): Promise<SandboxSlot | null> {
   await client.query("BEGIN");
   try {
     await client.query("SET LOCAL statement_timeout = '60s'");
     await client.query("SET LOCAL lock_timeout = '45s'");
 
-    // Tenant transactions lock their one live auth row before the slot. Taking
-    // the same locks exclusively drains the old visitor without blocking any
-    // other sandbox's data tables.
+    // Tenant transactions lock their live auth row, daily claim, and slot in
+    // this order. The nightly reset takes the same locks exclusively before
+    // invalidating access; bootstrap may claim only never-assigned dirty slots.
     await client.query(
       `SELECT id FROM auth_sessions
        WHERE organization_id = $1 AND session_mode = 'DEMO' AND revoked_at IS NULL
@@ -787,30 +748,22 @@ async function claimSandboxForReset(
        FOR UPDATE`,
       [candidate.organization_id],
     );
-    const selected = await client.query<{
-      state: string;
-      lease_session_id: string | null;
-      live_lease: boolean;
-    }>(
-      `SELECT slot.state, slot.lease_session_id,
-         EXISTS (
-           SELECT 1 FROM auth_sessions selected_session
-           WHERE selected_session.id = slot.lease_session_id
-             AND selected_session.organization_id = slot.organization_id
-             AND selected_session.session_mode = 'DEMO'
-             AND selected_session.demo_generation = slot.generation
-             AND selected_session.revoked_at IS NULL
-             AND selected_session.expires_at > now()
-             AND selected_session.idle_expires_at > now()
-         ) AS live_lease
+    await client.query(
+      `SELECT id FROM demo_daily_claims
+       WHERE organization_id = $1 AND invalidated_at IS NULL
+       ORDER BY id
+       FOR UPDATE`,
+      [candidate.organization_id],
+    );
+    const selected = await client.query<{ state: string }>(
+      `SELECT slot.state
        FROM demo_sandbox_slots slot
        WHERE slot.slot = $1 AND slot.organization_id = $2
        FOR UPDATE OF slot`,
       [candidate.slot, candidate.organization_id],
     );
     const slot = selected.rows[0];
-    const eligible = nightly || slot?.state === "DIRTY" || slot?.state === "RESETTING" ||
-      (slot?.state === "LEASED" && !slot.live_lease);
+    const eligible = mode === "nightly" || slot?.state === "DIRTY" || slot?.state === "RESETTING";
     if (!slot || !eligible) {
       await client.query("COMMIT");
       return null;
@@ -823,8 +776,14 @@ async function claimSandboxForReset(
       [candidate.organization_id],
     );
     await client.query(
+      `UPDATE demo_daily_claims
+       SET invalidated_at = coalesce(invalidated_at, now())
+       WHERE organization_id = $1 AND invalidated_at IS NULL`,
+      [candidate.organization_id],
+    );
+    await client.query(
       `UPDATE demo_sandbox_slots
-       SET state = 'RESETTING', lease_session_id = NULL
+       SET state = 'RESETTING'
        WHERE slot = $1 AND organization_id = $2`,
       [candidate.slot, candidate.organization_id],
     );
@@ -857,11 +816,34 @@ async function claimSandboxForReset(
   }
 }
 
+export async function registeredDemoSandboxResetTables(client: PoolClient): Promise<readonly string[]> {
+  const result = await client.query<{ table_name: string; valid: boolean }>(
+    `SELECT registry.table_name,
+       class.oid IS NOT NULL AND attribute.attname IS NOT NULL AS valid
+     FROM demo_sandbox_reset_tables registry
+     LEFT JOIN pg_class class
+       ON class.relnamespace = 'public'::regnamespace
+      AND class.relname = registry.table_name
+      AND class.relkind IN ('r', 'p')
+     LEFT JOIN pg_attribute attribute
+       ON attribute.attrelid = class.oid
+      AND attribute.attname = 'organization_id'
+      AND attribute.attnum > 0 AND NOT attribute.attisdropped
+     ORDER BY registry.purge_order`,
+  );
+  if (result.rows.length === 0 || result.rows.some((row) => !row.valid || !SAFE_RESET_TABLE_NAME.test(row.table_name))) {
+    throw new Error("Demo sandbox reset registry contains an invalid organization-owned table");
+  }
+  return result.rows.map((row) => row.table_name);
+}
+
 async function purgeSandboxBusinessData(client: PoolClient, organizationId: string): Promise<void> {
+  const resetTables = await registeredDemoSandboxResetTables(client);
   await client.query("SET LOCAL session_replication_role = replica");
   try {
-    for (const table of PURGE_TABLES) {
-      await client.query(`DELETE FROM ${table} WHERE organization_id = $1`, [organizationId]);
+    for (const table of resetTables) {
+      const quotedTable = `"${table.replaceAll('"', '""')}"`;
+      await client.query(`DELETE FROM ${quotedTable} WHERE organization_id = $1`, [organizationId]);
     }
   } finally {
     await client.query("SET LOCAL session_replication_role = origin");
@@ -937,8 +919,19 @@ async function quarantineSlot(client: PoolClient, slot: SandboxSlot): Promise<vo
       [slot.organization_id],
     );
     await client.query(
+      `SELECT id FROM demo_daily_claims
+       WHERE organization_id = $1 AND invalidated_at IS NULL
+       ORDER BY id FOR UPDATE`,
+      [slot.organization_id],
+    );
+    await client.query(
       `UPDATE auth_sessions SET revoked_at = coalesce(revoked_at, now())
        WHERE organization_id = $1 AND session_mode = 'DEMO' AND revoked_at IS NULL`,
+      [slot.organization_id],
+    );
+    await client.query(
+      `UPDATE demo_daily_claims SET invalidated_at = coalesce(invalidated_at, now())
+       WHERE organization_id = $1 AND invalidated_at IS NULL`,
       [slot.organization_id],
     );
     await client.query(
@@ -949,7 +942,7 @@ async function quarantineSlot(client: PoolClient, slot: SandboxSlot): Promise<vo
     );
     await client.query(
       `UPDATE demo_sandbox_slots
-       SET state = 'QUARANTINED', lease_session_id = NULL
+       SET state = 'QUARANTINED'
        WHERE slot = $1 AND organization_id = $2 AND state = 'RESETTING'`,
       [slot.slot, slot.organization_id],
     );
@@ -973,8 +966,19 @@ async function resetClaimedSandbox(client: PoolClient, slot: SandboxSlot): Promi
       [slot.organization_id],
     );
     await client.query(
+      `SELECT id FROM demo_daily_claims
+       WHERE organization_id = $1 AND invalidated_at IS NULL
+       ORDER BY id FOR UPDATE`,
+      [slot.organization_id],
+    );
+    await client.query(
       `UPDATE auth_sessions SET revoked_at = coalesce(revoked_at, now())
        WHERE organization_id = $1 AND session_mode = 'DEMO' AND revoked_at IS NULL`,
+      [slot.organization_id],
+    );
+    await client.query(
+      `UPDATE demo_daily_claims SET invalidated_at = coalesce(invalidated_at, now())
+       WHERE organization_id = $1 AND invalidated_at IS NULL`,
       [slot.organization_id],
     );
     const selected = await client.query<{ organization_mode: string; state: string }>(
@@ -989,7 +993,7 @@ async function resetClaimedSandbox(client: PoolClient, slot: SandboxSlot): Promi
       throw new Error(`Demo sandbox slot ${slot.slot} is not eligible for reset`);
     }
 
-    const suffix = String(slot.slot).padStart(2, "0");
+    const suffix = String(slot.slot).padStart(3, "0");
     await client.query(
       `UPDATE organizations SET
          slug = $2, display_name = $3, active = true,
@@ -1001,6 +1005,7 @@ async function resetClaimedSandbox(client: PoolClient, slot: SandboxSlot): Promi
       throw new Error(`Demo sandbox slot ${slot.slot} has no active demo accountant`);
     }
     await purgeSandboxBusinessData(client, slot.organization_id);
+    await client.query("SELECT app.reset_demo_sandbox_extensions($1, $2)", [slot.organization_id, slot.user_id]);
     await seedOrganizationBaseline(client, {
       organizationId: slot.organization_id,
       userId: slot.user_id,
@@ -1012,7 +1017,6 @@ async function resetClaimedSandbox(client: PoolClient, slot: SandboxSlot): Promi
       `UPDATE demo_sandbox_slots SET
          state = 'READY',
          generation = generation + 1,
-         lease_session_id = NULL,
          baseline_version = $2,
          last_claimed_at = NULL,
          last_reset_at = now()
@@ -1030,7 +1034,7 @@ async function resetClaimedSandbox(client: PoolClient, slot: SandboxSlot): Promi
 
 export async function resetDemoSandboxes(
   pool: Pool,
-  options: Readonly<{ nightly: boolean }>,
+  options: Readonly<{ mode: DemoSandboxResetMode }>,
 ): Promise<void> {
   const client = await pool.connect();
   let lockHeld = false;
@@ -1038,10 +1042,10 @@ export async function resetDemoSandboxes(
     await assertOperatorDatabaseOwner(client);
     await client.query("SELECT pg_advisory_lock(hashtextextended($1, 0))", [RESET_ADVISORY_LOCK_KEY]);
     lockHeld = true;
-    const candidates = await listSandboxCandidates(client, options.nightly);
+    const candidates = await listSandboxCandidates(client, options.mode);
     const failures: string[] = [];
     for (const candidate of candidates) {
-      const claimed = await claimSandboxForReset(client, candidate, options.nightly);
+      const claimed = await claimSandboxForReset(client, candidate, options.mode);
       if (!claimed) continue;
       try {
         await resetClaimedSandbox(client, claimed);
@@ -1059,6 +1063,26 @@ export async function resetDemoSandboxes(
     }
     if (failures.length > 0) {
       throw new Error(`Demo sandbox reset quarantined ${failures.length} slot(s): ${failures.join("; ")}`);
+    }
+    if (options.mode === "nightly") {
+      await client.query("BEGIN");
+      try {
+        await client.query("SET LOCAL lock_timeout = '45s'");
+        await client.query("SELECT singleton FROM demo_sandbox_pool WHERE singleton FOR UPDATE");
+        const completed = await client.query(
+          `UPDATE demo_sandbox_pool SET
+             cycle = cycle + 1,
+             reset_after = app.next_demo_reset_after(greatest(now(), reset_after)),
+             last_completed_reset_at = now()
+           WHERE singleton
+           RETURNING cycle`,
+        );
+        if (completed.rowCount !== 1) throw new Error("Demo sandbox pool state is missing");
+        await client.query("COMMIT");
+      } catch (error) {
+        await client.query("ROLLBACK");
+        throw error;
+      }
     }
   } finally {
     try {
@@ -1105,7 +1129,7 @@ export async function bootstrapDemoOrganization(pool: Pool): Promise<void> {
     client.release();
   }
 
-  // Deploys repair only new, dirty, expired, or interrupted slots. Active
-  // leases survive releases; the nightly job intentionally resets all slots.
-  await resetDemoSandboxes(pool, { nightly: false });
+  // Ordinary deploys prepare only additive DIRTY slots. Assigned browser
+  // claims and their data survive bootstrap, logout, and session expiry.
+  await resetDemoSandboxes(pool, { mode: "bootstrap" });
 }

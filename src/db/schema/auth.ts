@@ -1,6 +1,7 @@
 import {
   bigint,
   boolean,
+  foreignKey,
   index,
   integer,
   jsonb,
@@ -11,7 +12,21 @@ import {
   uniqueIndex,
   uuid,
 } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
 import { organizationMemberships, organizations, users } from "./identity";
+
+export const demoSandboxPool = pgTable("demo_sandbox_pool", {
+  singleton: boolean("singleton").primaryKey().default(true),
+  cycle: bigint("cycle", { mode: "number" }).notNull().default(1),
+  resetAfter: timestamp("reset_after", { withTimezone: true }).notNull(),
+  initializedAt: timestamp("initialized_at", { withTimezone: true }).notNull().defaultNow(),
+  lastCompletedResetAt: timestamp("last_completed_reset_at", { withTimezone: true }),
+});
+
+export const demoSandboxResetTables = pgTable("demo_sandbox_reset_tables", {
+  tableName: text("table_name").primaryKey(),
+  purgeOrder: integer("purge_order").notNull().unique(),
+});
 
 export const demoSandboxSlots = pgTable(
   "demo_sandbox_slots",
@@ -20,14 +35,42 @@ export const demoSandboxSlots = pgTable(
     organizationId: uuid("organization_id").notNull().references(() => organizations.id, { onDelete: "restrict" }),
     state: text("state").notNull().default("DIRTY"),
     generation: integer("generation").notNull().default(1),
-    leaseSessionId: uuid("lease_session_id"),
     baselineVersion: integer("baseline_version").notNull().default(1),
     lastClaimedAt: timestamp("last_claimed_at", { withTimezone: true }),
     lastResetAt: timestamp("last_reset_at", { withTimezone: true }),
   },
   (table) => [
     uniqueIndex("demo_sandbox_slots_organization_unique").on(table.organizationId),
-    uniqueIndex("demo_sandbox_slots_lease_session_unique").on(table.leaseSessionId),
+    uniqueIndex("demo_sandbox_slots_slot_org_unique").on(table.slot, table.organizationId),
+  ],
+);
+
+export const demoDailyClaims = pgTable(
+  "demo_daily_claims",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    tokenHash: text("token_hash").notNull(),
+    slot: integer("slot").notNull(),
+    organizationId: uuid("organization_id").notNull(),
+    generation: integer("generation").notNull(),
+    poolCycle: bigint("pool_cycle", { mode: "number" }).notNull(),
+    ipHash: text("ip_hash").notNull(),
+    userAgentHash: text("user_agent_hash"),
+    claimedAt: timestamp("claimed_at", { withTimezone: true }).notNull().defaultNow(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    invalidatedAt: timestamp("invalidated_at", { withTimezone: true }),
+  },
+  (table) => [
+    uniqueIndex("demo_daily_claims_token_hash_unique").on(table.tokenHash),
+    uniqueIndex("demo_daily_claims_one_active_per_org_unique")
+      .on(table.organizationId)
+      .where(sql`${table.invalidatedAt} IS NULL`),
+    index("demo_daily_claims_ip_cycle_idx").on(table.ipHash, table.poolCycle, table.invalidatedAt),
+    foreignKey({
+      columns: [table.slot, table.organizationId],
+      foreignColumns: [demoSandboxSlots.slot, demoSandboxSlots.organizationId],
+      name: "demo_daily_claims_slot_org_fk",
+    }).onDelete("restrict"),
   ],
 );
 
@@ -52,10 +95,12 @@ export const authSessions = pgTable(
     mfaVerifiedAt: timestamp("mfa_verified_at", { withTimezone: true }),
     stepUpExpiresAt: timestamp("step_up_expires_at", { withTimezone: true }),
     demoGeneration: integer("demo_generation"),
+    demoClaimId: uuid("demo_claim_id").references(() => demoDailyClaims.id, { onDelete: "restrict" }),
   },
   (table) => [
     uniqueIndex("auth_sessions_token_hash_unique").on(table.tokenHash),
     index("auth_sessions_user_active_idx").on(table.userId, table.revokedAt, table.expiresAt),
+    index("auth_sessions_demo_claim_idx").on(table.demoClaimId, table.revokedAt, table.expiresAt),
   ],
 );
 

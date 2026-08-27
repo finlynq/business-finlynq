@@ -63,7 +63,7 @@ export async function POST(
       return NextResponse.json({ error: "Period transition fields are invalid." }, { status: 400, headers: noStoreHeaders });
     }
     if ((parsed.data.toState === "OPEN" || parsed.data.toState === "SEALED") &&
-        (principal.sessionMode === "demo" || !hasRecentStepUp(principal))) {
+        !hasRecentStepUp(principal)) {
       return NextResponse.json(
         { error: "A current MFA step-up is required to reopen or seal a period." },
         { status: 403, headers: noStoreHeaders },

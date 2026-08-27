@@ -24,11 +24,11 @@ Target hostname: `business.finlynq.com`.
 
 ## Writable demo deployment and rollback
 
-The public release permits accounting writes only inside leased synthetic sandboxes. Its normal boundary is `DEMO_LOGIN_ENABLED=true`, `DEMO_WRITES_ENABLED=true`, `ACCOUNT_LOGIN_ENABLED=false`, and `BUSINESS_WRITES_ENABLED=false`. Treat the two write flags independently: enabling demo writes must never enable a real organization or account login.
+The public release permits accounting writes only inside daily-claimed synthetic sandboxes. Treat demo and real-account write gates independently: enabling demo writes must never authorize a real organization.
 
 Deploy only a pinned commit that passed lint, type checking, unit tests, fresh migration replay, PostgreSQL integration tests, production build, and the browser checklist. Record the commit and image digest, retain the previous immutable application artifact, back up PostgreSQL off the VPS, and confirm that the separately escrowed wrapping key is recoverable before running the one-shot migrator. Keep the edge proxy running while replacing only the application release.
 
-After deployment, run a full sandbox reconciliation before accepting traffic. Verify HTTPS and HTTP redirection, security headers, health, the read-only backup role, forced tenant RLS, two-visitor isolation, every supported GL/AR/AP/tax/reporting/period workflow, and release/reset of a dirty slot. If acceptance fails, set `DEMO_LOGIN_ENABLED=false` to stop new leases, disable the maintenance timers before changing artifacts, and restore the previous application artifact when it is compatible with the migrated schema. Repair an incompatible schema with a reviewed forward migration; do not run an ad hoc down migration, delete the PostgreSQL volume, replace the wrapping key, or make a dirty/quarantined slot claimable by hand. Keep `BUSINESS_WRITES_ENABLED=false` throughout rollback.
+For a fresh install, run a full sandbox reconciliation before accepting traffic. For an ordinary forward deployment, bootstrap only additive dirty slots and preserve all assigned daily claims; schedule destructive acceptance in a maintenance window. Verify HTTPS redirection, security headers, health, the read-only backup role, forced tenant RLS, two-browser isolation, logout/re-entry continuity, every supported GL/AR/AP/tax/reporting/period workflow, and the nightly reset boundary. If acceptance fails, set `DEMO_LOGIN_ENABLED=false`, pause the maintenance scheduler before changing artifacts, and restore a compatible previous application artifact. Repair schema incompatibility with a reviewed forward migration; never run an ad hoc down migration, delete the PostgreSQL volume, replace the wrapping key, or make an assigned/dirty/quarantined slot claimable by hand.
 
 ## Initial container deployment
 
@@ -85,7 +85,7 @@ The deployment is portable because Business Finlynq does not share a database, r
 6. Verify the application, tenant isolation, audit chain, TLS, and backup restore before switching DNS. Lower DNS TTL ahead of the cutover when possible.
 7. Keep the source database and key available but offline until the destination passes the acceptance window; then retire them according to the retention policy.
 
-On a host that enables writable demo sandboxes, install the frequent reset and nightly reconciliation timers only after the current migration and full-pool bootstrap succeed. Follow [the demo sandbox maintenance runbook](../operations/demo-sandbox-maintenance.md); never reuse a dirty or quarantined slot to work around capacity pressure.
+On a host that enables writable demo sandboxes, install the single Toronto nightly reconciliation timer only after the current migration and additive pool bootstrap succeed. Follow [the demo sandbox maintenance runbook](../operations/demo-sandbox-maintenance.md); never reuse an assigned, dirty, or quarantined slot to work around capacity pressure.
 
 The named volumes are `business_finlynq_pgdata`, `business_finlynq_caddy_data`, and `business_finlynq_caddy_config`. PostgreSQL moves should use a logical backup/restore rather than copying `business_finlynq_pgdata` between hosts. Caddy state may be copied if desired, but it is not application data and can normally be recreated after DNS points to the destination.
 
@@ -97,7 +97,7 @@ Operational procedures and implemented automation are described in the [release]
 - PostgreSQL tests using a non-owner, non-`BYPASSRLS` runtime role after fresh migration replay.
 - A non-superuser schema owner/migrator distinct from the PostgreSQL bootstrap administrator, with explicit grants instead of blanket default CRUD privileges.
 - A dedicated least-privilege backup role before automated production backups are enabled.
-- A passing full demo-sandbox reconciliation, automatic dirty-slot reset, quarantine alerting, pool-exhaustion acceptance, and active maintenance timers for every writable-demo release.
+- A passing full demo-sandbox reconciliation, logout/re-entry claim continuity, nightly-only reset, quarantine/overdue alerting, pool-exhaustion acceptance, and an active maintenance scheduler for every writable-demo release.
 - TLS renewal, disk, service, database, audit, backup-age, and failed-recovery alerts.
 - Rate-limited email recovery with generic responses and step-up controls.
 - A partition/archive and retention policy for real account sessions and immutable authentication security events.

@@ -6,7 +6,7 @@ import { loadEmailDeliveryConfiguration, loadEmailDeliveryMetadata, sendEmail } 
 import { configuredAppOrigin, isSpeculativeNavigation } from "@/modules/identity/request-security";
 import { settleSensitiveResponse } from "@/modules/identity/response-timing";
 import { safeAppPath } from "@/modules/identity/safe-redirect";
-import { createOpaqueToken, hashOpaqueToken, setSessionCookie, transactionAuthMethod, type SessionPrincipal } from "@/modules/identity/session";
+import { createOpaqueToken, hashOpaqueToken, setDemoClaimCookie, setSessionCookie, transactionAuthMethod, type SessionPrincipal } from "@/modules/identity/session";
 import { decodeBase32, encodeBase32, totpCode, verifyTotp } from "@/modules/identity/totp";
 import {
   decryptAuthPayload,
@@ -179,6 +179,7 @@ describe("session and demo navigation controls", () => {
     Object.assign(process.env, { NODE_ENV: "production", SESSION_COOKIE_NAME: "__Host-business_finlynq_session" });
     const response = NextResponse.json({ ok: true });
     setSessionCookie(response, "opaque-token", 3600);
+    setDemoClaimCookie(response, "opaque-claim", new Date("2026-08-28T08:15:00Z"));
     const cookie = response.headers.get("set-cookie") ?? "";
     expect(cookie).toContain("__Host-business_finlynq_session=opaque-token");
     expect(cookie).toContain("HttpOnly");
@@ -186,6 +187,8 @@ describe("session and demo navigation controls", () => {
     expect(cookie).toContain("SameSite=lax");
     expect(cookie).toContain("Path=/");
     expect(cookie).not.toContain("Domain=");
+    expect(cookie).toContain("__Host-business_finlynq_demo_claim=opaque-claim");
+    expect(cookie).toContain("Expires=Fri, 28 Aug 2026 08:15:00 GMT");
     if (previousNodeEnv === undefined) Reflect.deleteProperty(process.env, "NODE_ENV");
     else Object.assign(process.env, { NODE_ENV: previousNodeEnv });
     if (previousName === undefined) delete process.env.SESSION_COOKIE_NAME;
@@ -201,6 +204,7 @@ describe("session and demo navigation controls", () => {
     };
     expect(transactionAuthMethod(principal, 9_999)).toBe("password+mfa");
     expect(transactionAuthMethod(principal, 10_000)).toBe("password");
-    expect(transactionAuthMethod({ ...principal, sessionMode: "demo", authMethod: "DEMO_LINK" }, 1)).toBe("demo-link");
+    expect(transactionAuthMethod({ ...principal, sessionMode: "demo", authMethod: "DEMO_LINK" }, 1)).toBe("demo-link+mfa");
+    expect(transactionAuthMethod({ ...principal, sessionMode: "demo", authMethod: "DEMO_LINK" }, 10_000)).toBe("demo-link");
   });
 });

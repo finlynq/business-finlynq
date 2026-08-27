@@ -13,15 +13,15 @@ ACCOUNT_LOGIN_ENABLED=false
 BUSINESS_WRITES_ENABLED=false
 ```
 
-`DEMO_WRITES_ENABLED` authorizes mutations only for a live `demo-link` session whose leased organization is registered as a synthetic `SANDBOX`. `BUSINESS_WRITES_ENABLED` independently controls real organizations and remains false. Do not enable account login, email recovery, or real-organization writes as part of a demo release.
+`DEMO_WRITES_ENABLED` authorizes mutations only for a live `demo-link` session whose claimed organization is registered as a synthetic `SANDBOX`. `BUSINESS_WRITES_ENABLED` independently controls real organizations. Real-account activation is a separate release gate.
 
 ## Isolation and lifecycle contract
 
-- Session issuance atomically leases one `READY` sandbox slot. The immutable public template is never leased or mutated.
+- A new browser atomically claims one `READY` sandbox slot. The opaque claim is host-only and HttpOnly; only its digest is stored. The immutable public template is never claimed or mutated.
 - Every slot has its own organization, legal entities, users, memberships, role assignments, wrapped organization DEK, and independently encrypted seed data.
 - A session expires after 15 minutes without activity and has a one-hour absolute maximum. The browser cookie cannot extend that maximum.
-- Logout or expiry revokes the session and leaves the slot `DIRTY`. A dirty, expired, resetting, or quarantined slot cannot be claimed.
-- Incremental maintenance resets released and expired slots. Nightly reconciliation revokes all remaining sandbox sessions, resets every slot to the exact seed, verifies the baseline, and returns successful slots to `READY` with an incremented generation.
+- Logout or expiry revokes only the short-lived session. Re-entry from the same browser issues a new session for the same `ASSIGNED` sandbox and preserves its changes.
+- Nightly reconciliation at 04:15 `America/Toronto` invalidates every daily claim, revokes remaining sessions, resets every slot to the exact seed, verifies the baseline, and returns successful slots to `READY` with an incremented generation. No five-minute/session-release reset exists.
 - Reset is an owner-only maintenance operation with no tenant selector. It purges tenant business data child-first while preserving the registered organization, synthetic identity, membership, role, and key envelope. Failed resets leave the slot `QUARANTINED`.
 - Synthetic accounting content belongs in PostgreSQL only. Do not put journal, party, tax, or subledger content in cookies, browser local storage, logs, or analytics.
 
@@ -56,22 +56,22 @@ Recorded receipts and supplier payments are accounting records only. The demo ha
 - Period controls reject ordinary posting in restricted periods and preserve the audit path for permitted transitions and corrections.
 - Keyboard order, visible focus, dialog focus containment, labels, status announcements, mobile layout, and zoom remain usable across writable forms and confirmation states.
 - The workspace clearly identifies synthetic, disposable data and warns visitors not to enter real or confidential information.
-- Logout revokes the current session. Re-entry receives a clean available slot, and the released slot is not claimable until incremental reset finishes.
+- Logout revokes the current session but preserves the browser claim. Re-entry returns to the same changed organization; another clean browser still receives a different organization. After nightly reset, the original browser receives a newly seeded available sandbox.
 - Pool exhaustion fails closed with a temporary-unavailable response; no fixed template, dirty slot, quarantined slot, or real organization is substituted.
 
 Run the checklist against a production build and again at `https://business.finlynq.com` after deployment.
 
-`npm run test:e2e` automates the public-route and security-header checks, GL posting, AR issue/void, the complete AP bill/payment/allocation/reversal chain, and concurrent-browser isolation. The isolation scenario keeps two visitors live at once, saves a private draft in one sandbox, proves it is absent from the other, releases the first lease, and confirms a third visitor cannot receive that dirty organization. It intentionally does not invoke owner maintenance because the same browser suite is also run against the deployed site; reset and baseline verification remain the explicit operator acceptance below.
+`npm run test:e2e` automates public-route and security-header checks, GL posting, AR issue/void, the AP bill/payment/allocation/reversal chain, concurrent-browser isolation, and logout/re-entry claim continuity. It intentionally does not invoke owner maintenance against the deployed site; reset and baseline verification remain explicit operator acceptance.
 
 ## Release and nightly reset acceptance
 
 Before enabling traffic for every release:
 
 1. Apply the current migrations and bootstrap the full sandbox pool.
-2. Run one full nightly-mode reconciliation and require every configured slot to verify as `READY` with no quarantine.
-3. Exercise one complete GL and one complete AR or AP workflow in a leased slot, release it, run incremental reset, and verify that no visitor-created tenant rows survive and the exact baseline returns.
-4. Enable both demo maintenance timers and set `MONITOR_EXPECT_DEMO_MAINTENANCE=true`.
-5. Confirm alerts for a failed reset, quarantined slot, repeated pool exhaustion, and inactive reset/reconciliation timers.
+2. In an announced destructive acceptance window, run one full nightly-mode reconciliation and require all 128 slots to verify as `READY` with no quarantine.
+3. Exercise one complete GL and one complete AR or AP workflow, log out, reopen from the same browser, and verify that the changed data remains while a clean browser cannot see it.
+4. Run nightly reconciliation, verify that visitor-created rows are gone and the exact baseline returns, then enable the single nightly scheduler and set `MONITOR_EXPECT_DEMO_MAINTENANCE=true`.
+5. Confirm alerts for a failed/overdue reset, quarantined slot, repeated pool exhaustion, and an inactive reconciliation timer.
 
 Nightly reconciliation is destructive only to registered synthetic sandbox business data. It must never select the immutable template or a real organization. Backup and restore validation still uses the separately provisioned read-only backup role; writable demo access does not broaden that role.
 

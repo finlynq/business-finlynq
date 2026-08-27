@@ -23,7 +23,8 @@ describe("runtime role reconciliation contract", () => {
   it("revokes inherited function execution and restores only reviewed app APIs", () => {
     expect(script).toContain("REVOKE EXECUTE ON ALL FUNCTIONS IN SCHEMA app FROM PUBLIC");
     expect(script).toContain("app.auth_email_delivery_readiness(integer)");
-    expect(script).toContain("app.auth_issue_demo_session(text,text,text,text)");
+    expect(script).toContain("app.auth_issue_demo_session(text,text,text,text,text,text)");
+    expect(script).toContain("app.auth_mark_demo_step_up(uuid,text)");
     expect(script).toContain("app.assert_current_demo_session_lease()");
     expect(script).toContain("app.auth_lookup_login(text)");
     expect(script).toContain("app.auth_resolve_session(text,text)");

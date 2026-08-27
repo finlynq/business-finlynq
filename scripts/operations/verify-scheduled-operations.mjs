@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 
 const targetRoot = "/home/deploy/business-finlynq";
 
@@ -30,7 +30,6 @@ requireText(notifier, "ProtectHome=read-only", "failure notifier");
 requireText(notifier, "EnvironmentFile=-/etc/business-finlynq/operations.env", "failure notifier");
 
 for (const [path, script] of [
-  ["deploy/systemd/business-finlynq-demo-reset.service", "deploy/demo-sandbox/run-dirty-reset.sh"],
   ["deploy/systemd/business-finlynq-demo-reconcile.service", "deploy/demo-sandbox/run-nightly-reconciliation.sh"],
 ]) {
   const unit = read(path);
@@ -45,20 +44,23 @@ for (const [path, script] of [
   }
 }
 
-const frequentTimer = read("deploy/systemd/business-finlynq-demo-reset.timer");
-requireText(frequentTimer, "OnUnitInactiveSec=5m", "frequent demo reset timer");
 const nightlyTimer = read("deploy/systemd/business-finlynq-demo-reconcile.timer");
 requireText(nightlyTimer, "OnCalendar=*-*-* 04:15:00 America/Toronto", "nightly demo reconciliation timer");
 requireText(nightlyTimer, "Persistent=true", "nightly demo reconciliation timer");
 
-const dirtyWrapper = read("deploy/demo-sandbox/run-dirty-reset.sh");
-requireText(dirtyWrapper, "flock --nonblock", "dirty-sandbox wrapper");
-requireText(dirtyWrapper, "run --rm --no-deps reset_demo_sandboxes", "dirty-sandbox wrapper");
 const nightlyWrapper = read("deploy/demo-sandbox/run-nightly-reconciliation.sh");
 requireText(nightlyWrapper, "flock --wait 600", "nightly-sandbox wrapper");
 requireText(nightlyWrapper, "run --rm --no-deps reconcile_demo_sandboxes", "nightly-sandbox wrapper");
 
-for (const content of [dirtyWrapper, nightlyWrapper]) {
+for (const removedPath of [
+  "deploy/demo-sandbox/run-dirty-reset.sh",
+  "deploy/systemd/business-finlynq-demo-reset.service",
+  "deploy/systemd/business-finlynq-demo-reset.timer",
+]) {
+  if (existsSync(removedPath)) throw new Error(`${removedPath} would reintroduce non-nightly demo resets`);
+}
+
+for (const content of [nightlyWrapper]) {
   if (/\$\{?1\}?/.test(content) || /--(?:organization|tenant|slot)/.test(content)) {
     throw new Error("demo-sandbox wrapper accepts a forbidden caller-selected target");
   }
@@ -66,14 +68,13 @@ for (const content of [dirtyWrapper, nightlyWrapper]) {
 
 const managedCron = read("deploy/cron/managed-crontab");
 const expectedCron = `# BEGIN BUSINESS FINLYNQ MANAGED SCHEDULE
-*/5 * * * * /bin/bash ${targetRoot}/deploy/cron/run-job.sh dirty-reset
-18 * * * * /bin/bash ${targetRoot}/deploy/cron/run-job.sh nightly-reconciliation
+15 8,9 * * * /bin/bash ${targetRoot}/deploy/cron/run-job.sh nightly-reconciliation
 29 0,6,12,18 * * * /bin/bash ${targetRoot}/deploy/cron/run-job.sh backup
 2-59/5 * * * * /bin/bash ${targetRoot}/deploy/cron/run-job.sh monitor
 # END BUSINESS FINLYNQ MANAGED SCHEDULE
 `;
 if (managedCron !== expectedCron) {
-  throw new Error("deploy/cron/managed-crontab differs from the reviewed four-job schedule");
+  throw new Error("deploy/cron/managed-crontab differs from the reviewed DST-safe three-job schedule");
 }
 
 const cronInstaller = read("deploy/cron/install.sh");
@@ -95,7 +96,7 @@ if (cronInstaller.includes("crontab -r")) {
 
 const cronRunner = read("deploy/cron/run-job.sh");
 for (const expected of [
-  "dirty-reset|nightly-reconciliation|backup|monitor",
+  "nightly-reconciliation|backup|monitor",
   'source "$operations_env"',
   "stat -c '%a'",
   'flock --shared --nonblock 7',
@@ -104,8 +105,8 @@ for (const expected of [
   'nightly_timezone="America/Toronto"',
   'nightly_stamp_file=',
   'last_reconciled_date',
-  'current_local_hour',
-  '$repository_root/deploy/demo-sandbox/run-dirty-reset.sh',
+  'nightly_due_time="04:15"',
+  'current_local_time',
   '$repository_root/deploy/demo-sandbox/run-nightly-reconciliation.sh',
   '$repository_root/deploy/backup/run-scheduled-backup.sh',
   '$repository_root/deploy/monitoring/check-production.sh',
@@ -128,7 +129,10 @@ if (cronRemover.includes("crontab -r")) {
 
 const resetImplementation = read("src/modules/onboarding/demo-bootstrap.ts");
 requireText(resetImplementation, "resetDemoSandboxes", "demo-sandbox reset implementation");
-requireText(resetImplementation, "open_item_void_events", "demo-sandbox reset table coverage");
+requireText(resetImplementation, "registeredDemoSandboxResetTables", "demo-sandbox reset registration hook");
+const dailyClaimMigration = read("migrations/drizzle/0012_daily_demo_claims.sql");
+requireText(dailyClaimMigration, "open_item_void_events", "demo-sandbox reset table coverage");
+requireText(dailyClaimMigration, "generate_series(1, 128)", "demo-sandbox pool capacity");
 if (resetImplementation.includes("command_hash = EXCLUDED.command_hash")) {
   throw new Error("demo bootstrap may not rewrite the immutable party creation fingerprint during an upgrade");
 }
@@ -145,7 +149,7 @@ for (const expected of [
   "MONITOR_MIN_DEMO_READY_SLOTS",
   'MONITOR_MAINTENANCE_SCHEDULER="${MONITOR_MAINTENANCE_SCHEDULER:-systemd}"',
   'MONITOR_MAINTENANCE_SCHEDULER" == "cron"',
-  "deploy-owned cron schedule does not match the reviewed four-job block",
+  "deploy-owned cron schedule does not match the reviewed three-job block",
   "monitor_cron_maintenance_lock_file",
   "MONITOR_MAX_BACKUP_ACTIVE_SECONDS",
   "MONITOR_BACKUP_VERIFY_TIMEOUT_SECONDS",

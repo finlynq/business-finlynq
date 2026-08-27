@@ -10,7 +10,7 @@ readonly scheduler_lock_file="$state_dir/scheduler.lock"
 readonly maintenance_lock_file="$state_dir/demo-sandbox-maintenance.lock"
 readonly nightly_stamp_file="$state_dir/nightly-reconciliation.date"
 readonly nightly_timezone="America/Toronto"
-readonly nightly_due_hour=4
+readonly nightly_due_time="04:15"
 
 fail() {
   if command -v logger >/dev/null 2>&1; then
@@ -23,7 +23,7 @@ fail() {
 (( $# == 1 )) || fail "exactly one allowlisted job name is required"
 readonly job_name="$1"
 case "$job_name" in
-  dirty-reset|nightly-reconciliation|backup|monitor) ;;
+  nightly-reconciliation|backup|monitor) ;;
   *) fail "job is not allowlisted" ;;
 esac
 
@@ -105,24 +105,21 @@ run_and_log() {
 cd -- "$repository_root"
 
 case "$job_name" in
-  dirty-reset)
-    run_and_log \
-      "incremental demo-sandbox reset" \
-      /bin/bash "$repository_root/deploy/demo-sandbox/run-dirty-reset.sh"
-    ;;
   nightly-reconciliation)
     [[ -r "/usr/share/zoneinfo/$nightly_timezone" ]] \
       || fail "timezone data is unavailable for $nightly_timezone"
 
     current_local_date="$(TZ="$nightly_timezone" date '+%F')"
-    current_local_hour="$(TZ="$nightly_timezone" date '+%H')"
+    current_local_time="$(TZ="$nightly_timezone" date '+%H:%M')"
     [[ "$current_local_date" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] \
       || fail "the Toronto calendar date could not be determined"
-    [[ "$current_local_hour" =~ ^[0-9]{2}$ ]] \
-      || fail "the Toronto local hour could not be determined"
+    [[ "$current_local_time" =~ ^[0-9]{2}:[0-9]{2}$ ]] \
+      || fail "the Toronto local time could not be determined"
 
-    if (( 10#$current_local_hour < nightly_due_hour )); then
-      log "Nightly reconciliation is not due before 04:00 $nightly_timezone."
+    # The UTC host invokes at both possible offsets. Exactly one invocation is
+    # 04:15 Toronto local time across EST/EDT; the other exits without a reset.
+    if [[ "$current_local_time" != "$nightly_due_time" ]]; then
+      log "Nightly reconciliation is not due at $current_local_time $nightly_timezone."
       exit 0
     fi
 

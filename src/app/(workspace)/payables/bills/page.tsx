@@ -26,7 +26,7 @@ export default async function BillsPage({
       />
       {workspace.demoOnly && (
         <DemoNotice>
-          This is your private writable demo business. Create, issue, allocate, and void transactions freely; the seeded company is restored automatically every night and after the sandbox expires.
+          This is your private writable demo business. Create, issue, allocate, and void transactions freely; the same browser can return after logout or session expiry, and the seeded company is restored nightly.
         </DemoNotice>
       )}
       {!ready ? (

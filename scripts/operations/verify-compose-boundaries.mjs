@@ -204,10 +204,8 @@ if (!/target: \/backups\s+read_only: true\s+bind:\s+create_host_path: false/.tes
   fail("latest-backup verifier can create a missing host backup path");
 }
 
-for (const [name, expectedMode] of [
-  ["reset_demo_sandboxes", "incremental"],
-  ["reconcile_demo_sandboxes", "nightly"],
-]) {
+if (services.reset_demo_sandboxes) fail("incremental demo reset service must not exist");
+for (const [name, expectedMode] of [["reconcile_demo_sandboxes", "nightly"]]) {
   const service = services[name];
   if (!service) fail(`${name} service is missing`);
   if (service.build?.target !== "migrator") fail(`${name} does not use the reviewed operator image`);

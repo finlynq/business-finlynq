@@ -133,7 +133,7 @@ fi
 worker_session_privilege="$(psql --no-password --tuples-only --no-align --set=ON_ERROR_STOP=1 \
   --host "$PGHOST" --port "$PGPORT" --dbname "$PGDATABASE" \
   --username "$RESTORE_AUTH_WORKER_DATABASE_USER" \
-  --command "SELECT has_function_privilege(current_user, 'app.auth_issue_demo_session(text,text,text,text)', 'EXECUTE');")"
+  --command "SELECT has_function_privilege(current_user, 'app.auth_issue_demo_session(text,text,text,text,text,text)', 'EXECUTE');")"
 [[ "$worker_session_privilege" == "f" ]] || fail "Authentication worker can issue application sessions"
 
 app_password="$(read_secret "$APP_DATABASE_PASSWORD_FILE" "Application database password")"

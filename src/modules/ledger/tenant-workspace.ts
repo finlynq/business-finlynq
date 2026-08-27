@@ -94,6 +94,7 @@ export type ManualJournalOptionsDto = Readonly<{
 }>;
 
 export type PeriodControlWorkspaceDto = Readonly<{
+  demoOnly: boolean;
   canClose: boolean;
   canReopen: boolean;
   canSeal: boolean;
@@ -557,12 +558,12 @@ export async function loadPeriodControlWorkspace(
       actorId: principal.userId,
       permission: PERMISSIONS.closePeriod,
     });
-    const canReopen = !membership.isDemo && writable && await actorHasActivePermission(client, {
+    const canReopen = writable && await actorHasActivePermission(client, {
       organizationId: principal.organizationId,
       actorId: principal.userId,
       permission: PERMISSIONS.reopenPeriod,
     });
-    const canSeal = !membership.isDemo && writable && await actorHasActivePermission(client, {
+    const canSeal = writable && await actorHasActivePermission(client, {
       organizationId: principal.organizationId,
       actorId: principal.userId,
       permission: PERMISSIONS.sealPeriod,
@@ -602,6 +603,7 @@ export async function loadPeriodControlWorkspace(
       [principal.organizationId],
     );
     return {
+      demoOnly: membership.isDemo,
       canClose,
       canReopen,
       canSeal,

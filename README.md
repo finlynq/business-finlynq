@@ -6,7 +6,9 @@ This repository is intentionally separate from personal Finlynq. It reuses prove
 
 > Release status: the public site is an isolated, writable synthetic demo—not a production bookkeeping service or a complete ERP. The demo covers manual GL, service/non-stock receivables and payables, recorded settlements, transaction tax decisions, reporting, and period controls. Real-account activation, production tax filing, banking, inventory, live payment execution, and MCP access remain gated.
 
-Public access exchanges `/try-demo` for a short-lived, revocable PostgreSQL session and an exclusive sandbox organization. The production demo boundary is `DEMO_LOGIN_ENABLED=true`, `DEMO_WRITES_ENABLED=true`, `ACCOUNT_LOGIN_ENABLED=false`, and `BUSINESS_WRITES_ENABLED=false`. Demo writes are authorized only for a live demo-link session in a `SANDBOX` organization; they do not open real-organization writes. See [docs/roadmap.md](docs/roadmap.md).
+Public access exchanges `/try-demo` for a short-lived PostgreSQL session plus a separate host-only daily claim to one exclusive sandbox organization. Only digests are stored. Logout and session expiry preserve that browser's changed business; the Toronto nightly reset invalidates claims and restores the 128-slot pool. Demo writes remain limited to a live demo-link session in a `SANDBOX` organization. See [docs/roadmap.md](docs/roadmap.md).
+
+The hosted demo keeps `ACCOUNT_LOGIN_ENABLED=false`, `ACCOUNT_SIGNUP_ENABLED=false`, and `BUSINESS_WRITES_ENABLED=false`. Self-service real-account signup is implemented behind independent login, email-delivery, and bot-protection gates; it must not be enabled as an accidental side effect of demo writes.
 
 ## P0 interactive demo
 
@@ -14,7 +16,7 @@ The public P0 release is a focused interactive product preview over synthetic da
 
 Visitors can create and post balanced manual journals according to the seeded role and posting policy; create, issue, and void service/non-stock invoices and bills; record and reverse synthetic receipt/payment allocations; exercise transaction-tax decisions and snapshots; review reporting; and test period controls. Recorded receipts and supplier payments are accounting events only—no money moves and no bank is connected.
 
-The session ends after 15 minutes idle or one hour total. Logout or expiry releases the slot as dirty; a maintenance worker purges tenant business rows child-first, restores the exact seed, increments the sandbox generation, and returns it to the pool. A nightly reconciliation revokes remaining demo sessions and reseeds the full pool. Refreshing a live session does not reset its data.
+Each session ends after 15 minutes idle or one hour total, but the browser claim survives logout and session expiry until 04:15 `America/Toronto`. Re-entry resumes the same sandbox. Nightly reconciliation invalidates claims, purges registered tenant rows child-first, restores the exact seed, increments every sandbox generation, and returns the full pool to service. Ordinary deployments prepare only additive dirty slots and never run this destructive reset.
 
 Do not enter real or confidential information. Inventory, bank feeds/reconciliation, live payments, tax returns or filing, identity/recovery administration, and MCP writes are not part of this demo.
 

@@ -32,7 +32,7 @@ export default async function JournalsPage({ searchParams }: { searchParams: Pro
         description="Posted journals are immutable; correction ownership follows the source module."
         actions={workspace.canDraft ? <Link className="primary-button" href="/app/journals/new">＋ New journal</Link> : undefined}
       />
-      {workspace.demoOnly && <DemoNotice>This is your isolated writable sandbox. Changes are private to this session and the seeded company is restored automatically after use.</DemoNotice>}
+      {workspace.demoOnly && <DemoNotice>This is your isolated writable sandbox. Changes persist for this browser until the seeded company is restored nightly.</DemoNotice>}
       <aside className="demo-notice" aria-label="Journal correction ownership">
         <span aria-hidden="true">i</span>
         <p>Manual journals can be posted or fully reversed here when your role permits. AR and AP journals remain immutable in the general ledger and must be corrected in their source module.</p>

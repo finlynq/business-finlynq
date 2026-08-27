@@ -14,29 +14,29 @@ runDatabaseTests("PostgreSQL identity controls", () => {
 
   afterAll(async () => pool.end());
 
-  it("leases, resolves, and releases an isolated writable demo sandbox", async () => {
+  it("claims, resolves, logs out, and re-enters the same isolated daily sandbox", async () => {
     const tokenHash = randomUUID().replaceAll("-", "").repeat(2);
+    const claimHash = randomUUID().replaceAll("-", "").repeat(2);
     const requestId = randomUUID();
     const issued = await pool.query(
-      "SELECT * FROM app.auth_issue_demo_session($1, $2, $3, $4)",
-      [tokenHash, "b".repeat(64), "c".repeat(64), requestId],
+      "SELECT * FROM app.auth_issue_demo_session($1,$2,$3,$4,$5,$6)",
+      [tokenHash, null, claimHash, "b".repeat(64), "c".repeat(64), requestId],
     );
-    expect(issued.rows[0]).toMatchObject({ role_label: "Demo accountant" });
+    expect(issued.rows[0]).toMatchObject({ role_label: "Demo owner", claim_created: true });
     expect(issued.rows[0].session_id).toBeTruthy();
     expect(issued.rows[0].user_id).toBeTruthy();
     expect(issued.rows[0].organization_id).toBeTruthy();
     expect(issued.rows[0].membership_id).toBeTruthy();
-    expect(issued.rows[0].organization_name).toMatch(/^Northstar Demo Sandbox \d{2}$/);
-    const leased = await pool.query(
-      `SELECT slot.state, slot.lease_session_id, organization.organization_mode
+    expect(issued.rows[0].organization_name).toMatch(/^Northstar Demo Sandbox \d{3}$/);
+    const assigned = await pool.query(
+      `SELECT slot.state, organization.organization_mode
        FROM demo_sandbox_slots slot
        JOIN organizations organization ON organization.id = slot.organization_id
        WHERE slot.organization_id = $1`,
       [issued.rows[0].organization_id],
     );
-    expect(leased.rows[0]).toMatchObject({
-      state: "LEASED",
-      lease_session_id: issued.rows[0].session_id,
+    expect(assigned.rows[0]).toMatchObject({
+      state: "ASSIGNED",
       organization_mode: "SANDBOX",
     });
 
@@ -56,22 +56,41 @@ runDatabaseTests("PostgreSQL identity controls", () => {
     expect(revoked.rows[0].revoked).toBe(true);
     const afterLogout = await pool.query("SELECT * FROM app.auth_resolve_session_v2($1, $2)", [tokenHash, "c".repeat(64)]);
     expect(afterLogout.rowCount).toBe(0);
-    const released = await pool.query(
-      "SELECT state, lease_session_id FROM demo_sandbox_slots WHERE organization_id = $1",
+    const preserved = await pool.query(
+      "SELECT state FROM demo_sandbox_slots WHERE organization_id = $1",
       [issued.rows[0].organization_id],
     );
-    expect(released.rows[0]).toMatchObject({ state: "DIRTY", lease_session_id: null });
+    expect(preserved.rows[0]).toMatchObject({ state: "ASSIGNED" });
+
+    const reentryTokenHash = randomUUID().replaceAll("-", "").repeat(2);
+    const reentered = await pool.query(
+      "SELECT * FROM app.auth_issue_demo_session($1,$2,$3,$4,$5,$6)",
+      [reentryTokenHash, claimHash, "e".repeat(64), "b".repeat(64), "c".repeat(64), randomUUID()],
+    );
+    expect(reentered.rows[0]).toMatchObject({
+      organization_id: issued.rows[0].organization_id,
+      claim_created: false,
+    });
+    expect((await pool.query(
+      "SELECT app.auth_mark_demo_step_up($1, $2) AS marked",
+      [reentered.rows[0].session_id, randomUUID()],
+    )).rows[0].marked).toBe(true);
+    expect((await pool.query(
+      "SELECT step_up_expires_at > now() AS stepped_up FROM auth_sessions WHERE id = $1",
+      [reentered.rows[0].session_id],
+    )).rows[0].stepped_up).toBe(true);
+    await pool.query("SELECT app.auth_revoke_session($1, $2)", [reentryTokenHash, randomUUID()]);
   });
 
-  it("caps concurrent live demo leases per network identity", async () => {
+  it("caps new daily claims per network identity", async () => {
     const ipHash = randomUUID().replaceAll("-", "").repeat(2);
     const attempts = Array.from({ length: 3 }, (_, index) => ({
       tokenHash: randomUUID().replaceAll("-", "").repeat(2),
       requestId: `demo-ip-cap-${index}-${randomUUID()}`,
     }));
     const issued = await Promise.all(attempts.map((attempt) => pool.query(
-      "SELECT * FROM app.auth_issue_demo_session($1, $2, $3, $4)",
-      [attempt.tokenHash, ipHash, "d".repeat(64), attempt.requestId],
+      "SELECT * FROM app.auth_issue_demo_session($1,$2,$3,$4,$5,$6)",
+      [attempt.tokenHash, null, randomUUID().replaceAll("-", "").repeat(2), ipHash, "d".repeat(64), attempt.requestId],
     )));
     expect(issued.filter((result) => result.rowCount === 1)).toHaveLength(2);
     expect(issued.filter((result) => result.rowCount === 0)).toHaveLength(1);
@@ -90,8 +109,8 @@ runDatabaseTests("PostgreSQL identity controls", () => {
   it("holds a demo lease through the tenant transaction and blocks handoff", async () => {
     const tokenHash = randomUUID().replaceAll("-", "").repeat(2);
     const issued = await pool.query(
-      "SELECT * FROM app.auth_issue_demo_session($1, $2, $3, $4)",
-      [tokenHash, randomUUID().replaceAll("-", "").repeat(2), "e".repeat(64), randomUUID()],
+      "SELECT * FROM app.auth_issue_demo_session($1,$2,$3,$4,$5,$6)",
+      [tokenHash, null, randomUUID().replaceAll("-", "").repeat(2), randomUUID().replaceAll("-", "").repeat(2), "e".repeat(64), randomUUID()],
     );
     const principal = issued.rows[0];
     expect(principal?.session_id).toBeTruthy();
@@ -468,8 +487,8 @@ runRuntimeRoleTests("PostgreSQL runtime authentication boundary", () => {
   it("executes approved auth functions without direct auth-table access", async () => {
     const tokenHash = randomUUID().replaceAll("-", "").repeat(2);
     const issued = await runtimePool.query(
-      "SELECT * FROM app.auth_issue_demo_session($1, $2, $3, $4)",
-      [tokenHash, "f".repeat(64), "a".repeat(64), randomUUID()],
+      "SELECT * FROM app.auth_issue_demo_session($1,$2,$3,$4,$5,$6)",
+      [tokenHash, null, randomUUID().replaceAll("-", "").repeat(2), "f".repeat(64), "a".repeat(64), randomUUID()],
     );
     expect(issued.rows[0]?.session_id).toBeTruthy();
     await expect(runtimePool.query("SELECT token_hash FROM auth_sessions LIMIT 1")).rejects.toThrow(/permission denied/);
@@ -514,8 +533,8 @@ runWorkerRoleTests("PostgreSQL authentication email-worker boundary", () => {
     await expect(workerPool.query("SELECT last_heartbeat_at FROM public.auth_email_worker_status LIMIT 1")).rejects.toThrow(/permission denied/);
     await expect(workerPool.query("SELECT * FROM app.auth_email_delivery_readiness(15)")).rejects.toThrow(/permission denied/);
     await expect(workerPool.query(
-      "SELECT * FROM app.auth_issue_demo_session($1,$2,$3,$4)",
-      ["x".repeat(64), "i".repeat(64), "u".repeat(64), randomUUID()],
+      "SELECT * FROM app.auth_issue_demo_session($1,$2,$3,$4,$5,$6)",
+      ["x".repeat(64), null, "c".repeat(64), "i".repeat(64), "u".repeat(64), randomUUID()],
     )).rejects.toThrow(/permission denied/);
     await expect(workerPool.query("SELECT * FROM app.auth_consume_password_reset_limits($1)", ["x".repeat(64)])).rejects.toThrow(/permission denied/);
     expect((await adminPool.query("SELECT count(*)::text AS count FROM auth_email_worker_status")).rows[0]?.count).toBe("1");

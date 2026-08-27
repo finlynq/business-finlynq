@@ -244,44 +244,6 @@ services:
         max-size: "10m"
         max-file: "3"
 
-  reset_demo_sandboxes:
-    profiles: [demo-maintenance]
-    build:
-      context: .
-      target: migrator
-    command: ["npm", "run", "demo:reset"]
-    environment:
-      BUSINESS_FINLYNQ_MIGRATION_DB_HOST: database
-      BUSINESS_FINLYNQ_MIGRATION_DB_PORT: "5432"
-      BUSINESS_FINLYNQ_MIGRATION_DB_NAME: business_finlynq
-      BUSINESS_FINLYNQ_MIGRATION_DB_USER: business_finlynq_owner
-      BUSINESS_FINLYNQ_MIGRATION_DB_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
-      ORGANIZATION_ROOT_KEK_FILE: /run/secrets/business_finlynq_root_kek
-      DEMO_RESET_MODE: incremental
-    secrets:
-      - business_finlynq_root_kek
-    group_add:
-      - ${BUSINESS_FINLYNQ_SECRET_GID:?set BUSINESS_FINLYNQ_SECRET_GID}
-    depends_on:
-      database:
-        condition: service_healthy
-    restart: "no"
-    init: true
-    read_only: true
-    tmpfs:
-      - /tmp:size=64m,mode=1777
-    security_opt:
-      - no-new-privileges:true
-    cap_drop: [ALL]
-    networks: [business_finlynq_private]
-    cpus: "0.50"
-    mem_limit: 512m
-    pids_limit: 96
-    logging:
-      options:
-        max-size: "10m"
-        max-file: "3"
-
   reconcile_demo_sandboxes:
     profiles: [demo-maintenance]
     build:
@@ -334,6 +296,7 @@ services:
       BUSINESS_FINLYNQ_DB_PASSWORD_FILE: /run/secrets/business_finlynq_app_db_password
       APP_ORIGIN: https://${BUSINESS_FINLYNQ_HOSTNAME:-business.finlynq.com}
       SESSION_COOKIE_NAME: __Host-business_finlynq_session
+      DEMO_CLAIM_COOKIE_NAME: __Host-business_finlynq_demo_claim
       DEMO_LOGIN_ENABLED: ${DEMO_LOGIN_ENABLED:-false}
       DEMO_WRITES_ENABLED: ${DEMO_WRITES_ENABLED:-false}
       ACCOUNT_LOGIN_ENABLED: ${ACCOUNT_LOGIN_ENABLED:-false}
@@ -973,6 +936,7 @@ services:
       # follows its external redirect target.
       APP_ORIGIN: https://${BUSINESS_FINLYNQ_HOSTNAME:-business.finlynq.com}
       SESSION_COOKIE_NAME: business_finlynq_restore_session
+      DEMO_CLAIM_COOKIE_NAME: business_finlynq_restore_demo_claim
       DEMO_LOGIN_ENABLED: "true"
       # Restore verification is deliberately degraded/read-only. Sandbox reset
       # operators and maintenance timers are not part of this drill surface.

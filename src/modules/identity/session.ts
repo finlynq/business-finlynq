@@ -25,6 +25,11 @@ export function sessionCookieName(): string {
     (process.env.NODE_ENV === "production" ? "__Host-business_finlynq_session" : "business_finlynq_session");
 }
 
+export function demoClaimCookieName(): string {
+  return process.env.DEMO_CLAIM_COOKIE_NAME?.trim() ||
+    (process.env.NODE_ENV === "production" ? "__Host-business_finlynq_demo_claim" : "business_finlynq_demo_claim");
+}
+
 export function createOpaqueToken(): { raw: string; hash: string } {
   const raw = randomBytes(32).toString("base64url");
   return { raw, hash: hashOpaqueToken(raw) };
@@ -39,7 +44,7 @@ function principalFromStored(stored: StoredPrincipal): SessionPrincipal {
     return {
       sessionId: stored.session_id, userId: stored.user_id, organizationId: stored.organization_id,
       membershipId: stored.membership_id, organizationName: stored.organization_name,
-      roleLabel: stored.role_label, displayName: "Demo viewer", initials: "DV", sessionMode: "demo",
+      roleLabel: stored.role_label, displayName: "Demo owner", initials: "DO", sessionMode: "demo",
       authMethod: stored.auth_method, expiresAt: new Date(stored.expires_at),
       mfaVerifiedAt: stored.mfa_verified_at ? new Date(stored.mfa_verified_at) : null,
       stepUpExpiresAt: stored.step_up_expires_at ? new Date(stored.step_up_expires_at) : null,
@@ -67,7 +72,7 @@ function principalFromStored(stored: StoredPrincipal): SessionPrincipal {
 }
 
 export function hasRecentStepUp(principal: SessionPrincipal, now = Date.now()): boolean {
-  return principal.sessionMode === "real" && Boolean(principal.stepUpExpiresAt && principal.stepUpExpiresAt.getTime() > now);
+  return Boolean(principal.stepUpExpiresAt && principal.stepUpExpiresAt.getTime() > now);
 }
 
 /**
@@ -76,7 +81,7 @@ export function hasRecentStepUp(principal: SessionPrincipal, now = Date.now()): 
  * window has expired.
  */
 export function transactionAuthMethod(principal: SessionPrincipal, now = Date.now()): string {
-  if (principal.sessionMode === "demo") return "demo-link";
+  if (principal.sessionMode === "demo") return hasRecentStepUp(principal, now) ? "demo-link+mfa" : "demo-link";
   return hasRecentStepUp(principal, now) ? "password+mfa" : "password";
 }
 
@@ -104,6 +109,17 @@ export function setSessionCookie(response: NextResponse, rawToken: string, maxAg
     sameSite: "lax",
     path: "/",
     maxAge: maxAgeSeconds,
+    priority: "high",
+  });
+}
+
+export function setDemoClaimCookie(response: NextResponse, rawToken: string, expiresAt: Date): void {
+  response.cookies.set(demoClaimCookieName(), rawToken, {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === "production",
+    sameSite: "lax",
+    path: "/",
+    expires: expiresAt,
     priority: "high",
   });
 }

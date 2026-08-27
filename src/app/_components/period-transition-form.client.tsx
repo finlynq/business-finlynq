@@ -41,6 +41,7 @@ export function PeriodTransitionForm({ workspace }: { workspace: PeriodControlWo
   );
   const [reason, setReason] = useState("");
   const [otp, setOtp] = useState("");
+  const [demoConfirmed, setDemoConfirmed] = useState(false);
   const [stepUpReady, setStepUpReady] = useState(workspace.recentStepUp);
   const [idempotencyKey, setIdempotencyKey] = useState("");
   const [busy, setBusy] = useState(false);
@@ -56,6 +57,7 @@ export function PeriodTransitionForm({ workspace }: { workspace: PeriodControlWo
     setToState(period ? targets(period, workspace)[0] ?? "" : "");
     setReason("");
     setOtp("");
+    setDemoConfirmed(false);
     changeCommand();
   };
   const needsStepUp = Boolean(selected && toState && privilegedTransition(selected.state, toState));
@@ -75,20 +77,24 @@ export function PeriodTransitionForm({ workspace }: { workspace: PeriodControlWo
     setBusy(true);
     try {
       if (needsStepUp && !stepUpReady) {
-        if (!/^\d{6}$/.test(otp)) {
+        if (workspace.demoOnly && !demoConfirmed) {
+          setMessage({ kind: "error", text: "Confirm that this privileged action is only a nightly-reset sandbox simulation." });
+          return;
+        }
+        if (!workspace.demoOnly && !/^\d{6}$/.test(otp)) {
           setMessage({ kind: "error", text: "Enter the current six-digit authenticator code for this privileged transition." });
           return;
         }
-        const stepUpResponse = await fetch("/api/auth/mfa/step-up", {
+        const stepUpResponse = await fetch(workspace.demoOnly ? "/api/auth/demo-step-up" : "/api/auth/mfa/step-up", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ otp }),
+          body: JSON.stringify(workspace.demoOnly ? { confirmed: true } : { otp }),
         });
         const stepUpPayload = await stepUpResponse.json().catch(() => ({})) as { error?: unknown };
         if (!stepUpResponse.ok) {
           setMessage({
             kind: "error",
-            text: typeof stepUpPayload.error === "string" ? stepUpPayload.error : "MFA step-up could not be completed.",
+            text: typeof stepUpPayload.error === "string" ? stepUpPayload.error : "Privileged confirmation could not be completed.",
           });
           return;
         }
@@ -125,6 +131,7 @@ export function PeriodTransitionForm({ workspace }: { workspace: PeriodControlWo
       setToState(nextTargets[0] ?? "");
       setReason("");
       setOtp("");
+      setDemoConfirmed(false);
       setIdempotencyKey("");
       setMessage({ kind: "success", text: `${updated.entityCode} ${updated.label} is now ${updated.state.replace("_", " ")}.` });
     } catch {
@@ -169,7 +176,7 @@ export function PeriodTransitionForm({ workspace }: { workspace: PeriodControlWo
           </label>
           <label>
             <span>New state</span>
-            <select value={toState} onChange={(event) => { setToState(event.target.value as PeriodState); setOtp(""); changeCommand(); }} disabled={busy || availableTargets.length === 0}>
+            <select value={toState} onChange={(event) => { setToState(event.target.value as PeriodState); setOtp(""); setDemoConfirmed(false); changeCommand(); }} disabled={busy || availableTargets.length === 0}>
               {availableTargets.length === 0 && <option value="">No permitted transition</option>}
               {availableTargets.map((state) => <option key={state} value={state}>{state.replace("_", " ")}</option>)}
             </select>
@@ -179,11 +186,18 @@ export function PeriodTransitionForm({ workspace }: { workspace: PeriodControlWo
             <textarea value={reason} onChange={(event) => { setReason(event.target.value); changeCommand(); }} rows={4} minLength={20} maxLength={500} disabled={busy} placeholder="Explain why this controlled state change is required." />
           </label>
           {needsStepUp && !stepUpReady && (
-            <label>
-              <span>Authenticator code</span>
-              <input value={otp} onChange={(event) => setOtp(event.target.value.replace(/\D/g, "").slice(0, 6))} inputMode="numeric" autoComplete="one-time-code" pattern="[0-9]{6}" maxLength={6} disabled={busy} />
-              <small>Reopening and irreversible sealing require a current MFA step-up.</small>
-            </label>
+            workspace.demoOnly ? (
+              <label className="checkbox-field">
+                <input type="checkbox" checked={demoConfirmed} onChange={(event) => setDemoConfirmed(event.target.checked)} disabled={busy} />
+                <span>This simulates privileged confirmation only inside my disposable sandbox. It is not real MFA.</span>
+              </label>
+            ) : (
+              <label>
+                <span>Authenticator code</span>
+                <input value={otp} onChange={(event) => setOtp(event.target.value.replace(/\D/g, "").slice(0, 6))} inputMode="numeric" autoComplete="one-time-code" pattern="[0-9]{6}" maxLength={6} disabled={busy} />
+                <small>Reopening and irreversible sealing require a current MFA step-up.</small>
+              </label>
+            )
           )}
           {selected?.state === "SEALED" && <p className="validation-message validation-error">A sealed period is immutable and cannot be reopened by the application.</p>}
           {blockedByDrafts && <p className="validation-message validation-error">{selected?.unpostedJournalCount} unposted journal{selected?.unpostedJournalCount === 1 ? "" : "s"} must be resolved first.</p>}

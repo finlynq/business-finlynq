@@ -52,7 +52,7 @@ export default async function TrialBalancePage() {
       />
       {principal.sessionMode === "demo" && (
         <DemoNotice>
-          This report reflects your isolated writable sandbox. Changes are private to this session and the seeded business is restored automatically after use and reconciled nightly.
+          This report reflects your isolated writable sandbox. Changes persist for this browser until the seeded business is restored nightly.
         </DemoNotice>
       )}
       {groups.size ? [...groups.values()].map((group) => {

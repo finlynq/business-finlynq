@@ -127,12 +127,34 @@ export async function issueMfaUserSession(input: {
   return result.rows[0]?.session_id ?? null;
 }
 
-export async function issueDemoSession(input: { tokenHash: string; ipHash: string; userAgentHash: string | null; requestId: string }) {
+export async function issueDemoSession(input: {
+  tokenHash: string;
+  claimTokenHash: string | null;
+  replacementClaimTokenHash: string;
+  ipHash: string;
+  userAgentHash: string | null;
+  requestId: string;
+}) {
   const result = await queryDatabase<{
     session_id: string; user_id: string; organization_id: string; membership_id: string;
-    organization_name: string; role_label: string;
-  }>("SELECT * FROM app.auth_issue_demo_session($1, $2, $3, $4)", [input.tokenHash, input.ipHash, input.userAgentHash, input.requestId]);
+    organization_name: string; role_label: string; claim_created: boolean; claim_expires_at: Date;
+  }>("SELECT * FROM app.auth_issue_demo_session($1,$2,$3,$4,$5,$6)", [
+    input.tokenHash,
+    input.claimTokenHash,
+    input.replacementClaimTokenHash,
+    input.ipHash,
+    input.userAgentHash,
+    input.requestId,
+  ]);
   return result.rows[0] ?? null;
+}
+
+export async function markDemoStepUp(sessionId: string, requestId: string): Promise<boolean> {
+  const result = await queryDatabase<{ marked: boolean }>(
+    "SELECT app.auth_mark_demo_step_up($1,$2) AS marked",
+    [sessionId, requestId],
+  );
+  return result.rows[0]?.marked ?? false;
 }
 
 export async function resolveStoredSession(tokenHash: string, userAgentHash: string | null): Promise<StoredPrincipal | null> {

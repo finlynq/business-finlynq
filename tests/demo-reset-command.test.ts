@@ -2,14 +2,14 @@ import { describe, expect, it } from "vitest";
 import { parseDemoResetMode } from "../scripts/demo-reset-mode";
 
 describe("demo reset operator contract", () => {
-  it("maps only the two scheduled modes", () => {
-    expect(parseDemoResetMode([], "incremental")).toEqual({ mode: "incremental", nightly: false });
-    expect(parseDemoResetMode([], "nightly")).toEqual({ mode: "nightly", nightly: true });
+  it("accepts only the destructive nightly reconciliation mode", () => {
+    expect(parseDemoResetMode([], "nightly")).toEqual({ mode: "nightly" });
   });
 
   it("fails closed without an explicit mode", () => {
-    expect(() => parseDemoResetMode([], undefined)).toThrow(/exactly incremental or nightly/);
-    expect(() => parseDemoResetMode([], "all")).toThrow(/exactly incremental or nightly/);
+    expect(() => parseDemoResetMode([], undefined)).toThrow(/exactly nightly/);
+    expect(() => parseDemoResetMode([], "incremental")).toThrow(/exactly nightly/);
+    expect(() => parseDemoResetMode([], "all")).toThrow(/exactly nightly/);
   });
 
   it("cannot accept a tenant, sandbox, or slot selector", () => {
@@ -19,7 +19,7 @@ describe("demo reset operator contract", () => {
       "--slot=1",
       "--all",
     ]) {
-      expect(() => parseDemoResetMode([argument], "incremental")).toThrow(/accepts no tenant/);
+      expect(() => parseDemoResetMode([argument], "nightly")).toThrow(/accepts no tenant/);
     }
   });
 });

@@ -43,7 +43,7 @@ function createSearchIndex(includeDemoRecords: boolean): readonly SearchEntry[] 
 export function WorkspaceShell({ children, principal, readOnly }: { children: React.ReactNode; principal: SessionPrincipal; readOnly: boolean }) {
   const organization = {
     name: principal.organizationName,
-    environment: principal.sessionMode === "demo" ? "Disposable sandbox" : "Private workspace",
+    environment: principal.sessionMode === "demo" ? "Nightly-reset sandbox" : "Private workspace",
   };
   const searchIndex = createSearchIndex(principal.sessionMode === "demo");
   const accountPrincipal: AccountMenuPrincipal = {
@@ -90,7 +90,7 @@ export function WorkspaceShell({ children, principal, readOnly }: { children: Re
             <span className="read-only-dot" aria-hidden="true" />
             <strong>{principal.sessionMode === "demo" ? "Public demo" : "Accounting workspace"}</strong>
             <span>{principal.sessionMode === "demo"
-              ? readOnly ? "Synthetic records · sandbox writes are disabled" : "Synthetic records · changes reset after this session"
+              ? readOnly ? "Synthetic records · sandbox writes are disabled" : "Synthetic records · changes reset nightly"
               : readOnly ? "Business writes are disabled for this deployment" : "Posting follows your assigned roles"}</span>
           </div>
           <GlobalSearch entries={searchIndex} />

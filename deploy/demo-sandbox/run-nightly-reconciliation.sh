@@ -15,7 +15,7 @@ command -v flock >/dev/null 2>&1 || {
 cd -- "$repository_root"
 exec 9>"$lock_file"
 if ! flock --wait 600 9; then
-  printf '%s\n' "Timed out waiting for incremental demo-sandbox maintenance" >&2
+  printf '%s\n' "Timed out waiting for demo-sandbox maintenance" >&2
   exit 1
 fi
 

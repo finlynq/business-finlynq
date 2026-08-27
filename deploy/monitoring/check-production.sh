@@ -26,7 +26,7 @@ readonly monitor_cron_maintenance_lock_file="/home/deploy/.local/state/business-
 : "${MONITOR_EXPECT_BUSINESS_WRITES_ENABLED:?MONITOR_EXPECT_BUSINESS_WRITES_ENABLED is required}"
 : "${MONITOR_EXPECT_DEMO_MAINTENANCE:?MONITOR_EXPECT_DEMO_MAINTENANCE is required}"
 
-MONITOR_EXPECT_DEMO_POOL_SIZE="${MONITOR_EXPECT_DEMO_POOL_SIZE:-32}"
+MONITOR_EXPECT_DEMO_POOL_SIZE="${MONITOR_EXPECT_DEMO_POOL_SIZE:-128}"
 MONITOR_MIN_DEMO_READY_SLOTS="${MONITOR_MIN_DEMO_READY_SLOTS:-4}"
 
 failures=()
@@ -212,22 +212,22 @@ if [[ "$MONITOR_MAINTENANCE_SCHEDULER" == "cron" ]]; then
     ' <<<"$cron_contents")"
     expected_cron_block="$(cat -- "$monitor_cron_schedule_file")"
     if [[ "$cron_begin_count" != "1" || "$cron_end_count" != "1" \
-      || "$cron_runner_count" != "4" || "$actual_cron_block" != "$expected_cron_block" ]]; then
-      record_failure "deploy-owned cron schedule does not match the reviewed four-job block"
+      || "$cron_runner_count" != "3" || "$actual_cron_block" != "$expected_cron_block" ]]; then
+      record_failure "deploy-owned cron schedule does not match the reviewed three-job block"
     fi
   fi
 fi
 
 if [[ "$MONITOR_EXPECT_DEMO_MAINTENANCE" == "true" \
   && "$MONITOR_MAINTENANCE_SCHEDULER" == "systemd" ]]; then
-  for timer_name in business-finlynq-demo-reset.timer business-finlynq-demo-reconcile.timer; do
+  for timer_name in business-finlynq-demo-reconcile.timer; do
     systemctl is-enabled --quiet "$timer_name" 2>/dev/null \
       || record_failure "demo maintenance timer is not enabled: $timer_name"
     systemctl is-active --quiet "$timer_name" 2>/dev/null \
       || record_failure "demo maintenance timer is not active: $timer_name"
   done
 
-  for service_name in business-finlynq-demo-reset.service business-finlynq-demo-reconcile.service; do
+  for service_name in business-finlynq-demo-reconcile.service; do
     service_state="$(systemctl show --property=ActiveState --value "$service_name" 2>/dev/null || true)"
     if [[ "$service_state" == "active" || "$service_state" == "activating" ]]; then
       maintenance_active="true"
@@ -255,17 +255,18 @@ if [[ "$MONITOR_EXPECT_DEMO_MAINTENANCE" == "true" ]]; then
     slot_counts="$(docker exec "$database_container_id" \
       psql --no-password --username business_finlynq_owner --dbname business_finlynq \
       --tuples-only --no-align --field-separator='|' --set=ON_ERROR_STOP=1 \
-      --command "SELECT count(*), count(*) FILTER (WHERE state = 'READY'), count(*) FILTER (WHERE state = 'LEASED'), count(*) FILTER (WHERE state = 'DIRTY'), count(*) FILTER (WHERE state = 'RESETTING'), count(*) FILTER (WHERE state = 'QUARANTINED') FROM demo_sandbox_slots;" \
+      --command "SELECT count(*), count(*) FILTER (WHERE state = 'READY'), count(*) FILTER (WHERE state = 'ASSIGNED'), count(*) FILTER (WHERE state = 'DIRTY'), count(*) FILTER (WHERE state = 'RESETTING'), count(*) FILTER (WHERE state = 'QUARANTINED'), (SELECT (reset_after <= now())::int FROM demo_sandbox_pool WHERE singleton) FROM demo_sandbox_slots;" \
       2>/dev/null || true)"
   fi
-  IFS='|' read -r slot_total slot_ready slot_leased slot_dirty slot_resetting slot_quarantined slot_extra <<<"$slot_counts"
+  IFS='|' read -r slot_total slot_ready slot_assigned slot_dirty slot_resetting slot_quarantined pool_reset_due slot_extra <<<"$slot_counts"
   if [[ -n "${slot_extra:-}" ]] \
     || [[ ! "${slot_total:-}" =~ ^[0-9]+$ ]] \
     || [[ ! "${slot_ready:-}" =~ ^[0-9]+$ ]] \
-    || [[ ! "${slot_leased:-}" =~ ^[0-9]+$ ]] \
+    || [[ ! "${slot_assigned:-}" =~ ^[0-9]+$ ]] \
     || [[ ! "${slot_dirty:-}" =~ ^[0-9]+$ ]] \
     || [[ ! "${slot_resetting:-}" =~ ^[0-9]+$ ]] \
-    || [[ ! "${slot_quarantined:-}" =~ ^[0-9]+$ ]]; then
+    || [[ ! "${slot_quarantined:-}" =~ ^[0-9]+$ ]] \
+    || [[ ! "${pool_reset_due:-}" =~ ^[01]$ ]]; then
     record_failure "demo sandbox pool state could not be verified"
   else
     (( slot_total == MONITOR_EXPECT_DEMO_POOL_SIZE )) \
@@ -275,6 +276,8 @@ if [[ "$MONITOR_EXPECT_DEMO_MAINTENANCE" == "true" ]]; then
     if [[ "$maintenance_active" != "true" ]]; then
       (( slot_resetting == 0 )) \
         || record_failure "demo sandbox pool has $slot_resetting stranded resetting slot(s)"
+      (( pool_reset_due == 0 )) \
+        || record_failure "demo sandbox nightly reset is overdue"
       (( slot_ready >= MONITOR_MIN_DEMO_READY_SLOTS )) \
         || record_failure "demo sandbox pool has only $slot_ready ready slot(s); minimum is $MONITOR_MIN_DEMO_READY_SLOTS"
     fi

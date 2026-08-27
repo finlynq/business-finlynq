@@ -62,7 +62,7 @@ export default async function OverviewPage() {
 
       {principal.sessionMode === "demo" && (
         <DemoNotice>
-          This is your isolated writable sandbox. Changes are private to this session and the seeded business is restored automatically after use and reconciled nightly.
+          This is your isolated writable sandbox. This browser returns to the same business after logout or session expiry; the seeded setup is restored nightly.
         </DemoNotice>
       )}
 

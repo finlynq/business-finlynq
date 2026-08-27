@@ -19,7 +19,7 @@ export default async function EntitiesPage({ searchParams }: { searchParams: Pro
       <PageHeader eyebrow="Organization setup" title="Legal entities" description="Active legal entities with their persisted accounting framework, primary ledger, functional currency, and current period state." />
       {principal.sessionMode === "demo" && (
         <DemoNotice>
-          This is your isolated writable sandbox. Transaction changes are private to this session and the seeded business is restored automatically after use and reconciled nightly.
+          This is your isolated writable sandbox. Transaction changes persist for this browser until the seeded business is restored nightly.
         </DemoNotice>
       )}
       {entities.length ? <div className="entity-grid">{entities.map((entity) => (

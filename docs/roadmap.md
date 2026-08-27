@@ -16,10 +16,10 @@ The architecture review is accepted. Delivery is intentionally sliced so an attr
 
 ## P0 writable interactive demo release
 
-- Each visitor leases an isolated, independently encrypted synthetic sandbox instead of sharing a mutable demo tenant.
-- Manual GL, service/non-stock AR/AP, recorded settlement and allocation, transaction-tax snapshot, trial-balance/reporting, and period-control workflows persist for the visitor's session.
+- Each browser claims an isolated, independently encrypted synthetic sandbox instead of sharing a mutable demo tenant.
+- Manual GL, service/non-stock AR/AP, recorded settlement and allocation, transaction-tax snapshot, trial-balance/reporting, and period-control workflows persist across logout and session expiry until nightly reset.
 - `DEMO_LOGIN_ENABLED=true` and `DEMO_WRITES_ENABLED=true` authorize sandbox-only mutations; `ACCOUNT_LOGIN_ENABLED=false` and `BUSINESS_WRITES_ENABLED=false` keep real identities and organizations fail-closed.
-- Sessions expire after 15 minutes idle or one hour total. Released/expired slots are reset to the exact seed, and nightly reconciliation revokes remaining demo sessions and rebuilds the full pool.
+- Sessions expire after 15 minutes idle or one hour total. A hash-only host claim reopens the same organization, while 04:15 Toronto nightly reconciliation invalidates all claims and rebuilds the additive 128-slot pool.
 - Inventory, bank connections/reconciliation, live payment execution, production tax returns/filing, and public MCP access remain out of scope.
 - The release passes the isolation, browser, reset, and monitoring checklist in [operations/interactive-demo.md](operations/interactive-demo.md).
 

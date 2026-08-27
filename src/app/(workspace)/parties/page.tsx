@@ -16,7 +16,7 @@ export default async function PartiesPage({ searchParams }: { searchParams: Prom
   return (
     <div className="page-content">
       <PageHeader eyebrow="Unified master data" title="Parties & roles" description="Party names and addresses use organization envelope encryption; exact-name lookup uses a keyed blind index." />
-      {directory.demoOnly && <DemoNotice>These are encrypted synthetic records in your isolated writable sandbox. Your changes reset automatically after the session.</DemoNotice>}
+      {directory.demoOnly && <DemoNotice>These are encrypted synthetic records in your isolated writable sandbox. Your changes persist for this browser and reset nightly.</DemoNotice>}
       {directory.readiness === "READY" && directory.canManage && (
         <PartyCreateForm accountOptions={accountOptions} />
       )}
