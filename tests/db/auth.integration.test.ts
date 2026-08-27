@@ -82,9 +82,9 @@ runDatabaseTests("PostgreSQL identity controls", () => {
     await pool.query("SELECT app.auth_revoke_session($1, $2)", [reentryTokenHash, randomUUID()]);
   });
 
-  it("caps new daily claims per network identity", async () => {
+  it("allows release-gate retries but caps one network at 16 daily claims", async () => {
     const ipHash = randomUUID().replaceAll("-", "").repeat(2);
-    const attempts = Array.from({ length: 3 }, (_, index) => ({
+    const attempts = Array.from({ length: 17 }, (_, index) => ({
       tokenHash: randomUUID().replaceAll("-", "").repeat(2),
       requestId: `demo-ip-cap-${index}-${randomUUID()}`,
     }));
@@ -92,14 +92,14 @@ runDatabaseTests("PostgreSQL identity controls", () => {
       "SELECT * FROM app.auth_issue_demo_session($1,$2,$3,$4,$5,$6)",
       [attempt.tokenHash, null, randomUUID().replaceAll("-", "").repeat(2), ipHash, "d".repeat(64), attempt.requestId],
     )));
-    expect(issued.filter((result) => result.rowCount === 1)).toHaveLength(2);
+    expect(issued.filter((result) => result.rowCount === 1)).toHaveLength(16);
     expect(issued.filter((result) => result.rowCount === 0)).toHaveLength(1);
     expect((await pool.query(
       `SELECT count(*)::int AS count FROM auth_sessions
        WHERE session_mode = 'DEMO' AND ip_hash = $1 AND revoked_at IS NULL
          AND expires_at > now() AND idle_expires_at > now()`,
       [ipHash],
-    )).rows[0]?.count).toBe(2);
+    )).rows[0]?.count).toBe(16);
     await Promise.all(attempts.map((attempt, index) =>
       issued[index]?.rowCount === 1
         ? pool.query("SELECT app.auth_revoke_session($1, $2)", [attempt.tokenHash, randomUUID()])

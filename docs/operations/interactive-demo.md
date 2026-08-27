@@ -19,6 +19,7 @@ BUSINESS_WRITES_ENABLED=false
 ## Isolation and lifecycle contract
 
 - A new browser atomically claims one `READY` sandbox slot. The opaque claim is host-only and HttpOnly; only its digest is stored. The immutable public template is never claimed or mutated.
+- A network identity may create at most 16 claims in one nightly pool cycle, so one address can reserve no more than 12.5% of the 128-slot pool. This supports the six-browser release gate, its CI retry allowance, and shared-network visitors over the cycle. Separate route controls still limit demo entry to 10 requests per IP and 60 requests globally per minute.
 - Every slot has its own organization, legal entities, users, memberships, role assignments, wrapped organization DEK, and independently encrypted seed data.
 - A session expires after 15 minutes without activity and has a one-hour absolute maximum. The browser cookie cannot extend that maximum.
 - Logout or expiry revokes only the short-lived session. Re-entry from the same browser issues a new session for the same `ASSIGNED` sandbox and preserves its changes.

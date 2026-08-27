@@ -4,6 +4,8 @@ The public demo uses 128 independently encrypted synthetic organizations. A brow
 
 The immutable public demo template is not part of this pool. Real organizations are never eligible for reset.
 
+New allocations are durably limited to 16 claims per IP hash in each pool cycle. A browser that presents its still-valid claim reuses the assigned sandbox instead of consuming another allocation. This leaves at least 112 slots outside any one network identity, while allowing the six-clean-browser release gate, its CI retry allowance, and shared-network visitors behind one egress address over the cycle. The `/try-demo` route independently limits bursts to 10 requests per IP and 60 requests globally per minute.
+
 ## Safety contract
 
 `npm run demo:reset` accepts no command-line selectors and fails closed unless `DEMO_RESET_MODE=nightly`. It is intentionally destructive to every registered sandbox and must not run as an ordinary deployment step.
