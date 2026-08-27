@@ -57,6 +57,7 @@ describe("organization administration database boundary", () => {
     expect(migration).toContain("ranked.keep_rank > 1");
     expect(migration).toContain("CREATE UNIQUE INDEX membership_roles_one_fixed_role_unique");
     expect(migration).toContain("current_role_count = 1");
+    expect(migration).not.toContain("current_role roles%ROWTYPE");
   });
 
   it("can reissue a cancelled invitation without deleting its retained identity", () => {

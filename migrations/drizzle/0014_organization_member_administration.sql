@@ -1474,7 +1474,7 @@ DECLARE
   administrator record;
   selected_membership organization_memberships%ROWTYPE;
   selected_role roles%ROWTYPE;
-  current_role roles%ROWTYPE;
+  existing_fixed_role roles%ROWTYPE;
   selected_role_has_recovery boolean;
   current_role_has_recovery boolean;
   current_role_has_owner boolean;
@@ -1527,7 +1527,7 @@ BEGIN
   IF selected_role.id IS NULL THEN
     RAISE EXCEPTION 'The selected fixed role is invalid' USING ERRCODE = '22023';
   END IF;
-  SELECT role.* INTO current_role
+  SELECT role.* INTO existing_fixed_role
   FROM membership_roles assignment
   JOIN roles role
     ON role.organization_id = assignment.organization_id
@@ -1548,7 +1548,7 @@ BEGIN
   FROM membership_roles assignment
   WHERE assignment.organization_id = administrator.organization_id
     AND assignment.membership_id = selected_membership.id;
-  IF current_role.id = selected_role.id AND current_role_count = 1 THEN
+  IF existing_fixed_role.id = selected_role.id AND current_role_count = 1 THEN
     RETURN selected_membership.administration_version;
   END IF;
 
@@ -1634,7 +1634,7 @@ BEGIN
     'organization_membership',
     selected_membership.id::text,
     jsonb_build_object(
-      'fromRoleId', current_role.id,
+      'fromRoleId', existing_fixed_role.id,
       'toRoleId', selected_role.id,
       'version', next_version,
       'sessionsRevoked', true
