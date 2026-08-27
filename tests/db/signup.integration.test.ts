@@ -129,7 +129,7 @@ runDatabaseTests("PostgreSQL self-service owner signup", () => {
     expect(foundation.rows[0]).toEqual({
       mode: "REAL",
       keys: 1,
-      roles: 5,
+      roles: 6,
       entities: 1,
       ledgers: 1,
       periods: 12,

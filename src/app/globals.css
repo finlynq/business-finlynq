@@ -203,6 +203,15 @@ td small { max-width:300px; margin-top:4px; color:var(--muted); font-size:11px; 
 .audit-panel ul { display:grid; gap:11px; margin:0; padding:20px 24px 22px 39px; color:var(--muted); }.audit-panel code { color:var(--ink); }
 .scope-panel ul { display:grid; gap:0; margin:0; padding:0 20px; list-style:none; }.scope-panel li { display:grid; gap:5px; padding:15px 0; border-bottom:1px solid #e8eef2; }.scope-panel code { justify-self:start; padding:4px 7px; border-radius:5px; color:#1f665d; background:#eaf5f2; font-weight:800; }.scope-panel span { color:var(--muted); font-size:12px; }.denied-scopes code { color:#7d3d3a; background:#faeceb; }
 .automation-callout { display:flex; align-items:center; gap:17px; padding:23px; border:1px solid #bdd5d1; border-radius:11px; background:linear-gradient(115deg,#eaf6f3,#f4f8fa); }.automation-mark { flex:0 0 auto; width:48px; height:48px; display:grid; place-items:center; border-radius:14px 4px 14px 4px; color:#fff; background:var(--accent); font-size:12px; font-weight:900; }.automation-callout h2 { margin:0; font-family:Georgia,serif; }.automation-callout p { margin:7px 0 0; color:var(--muted); line-height:1.55; }
+.settings-layout { display:grid; gap:14px; }
+.settings-step-up>.full-field { max-width:420px; padding:20px; }
+.settings-profile-grid { grid-template-columns:minmax(260px,1.2fr) minmax(260px,1fr); }
+.settings-member-heading { display:grid; grid-template-columns:minmax(260px,1fr) minmax(260px,.65fr); align-items:end; gap:24px; }
+.settings-member-heading h2 { margin:5px 0 0; font-family:Georgia,serif; }
+.settings-member-heading p { margin:7px 0 0; color:var(--muted); }
+.member-access-panel td:nth-child(3) select { min-width:190px; margin-bottom:7px; }
+.member-action-list { display:flex; flex-wrap:wrap; align-items:center; gap:7px; min-width:220px; }
+.member-action-list small { max-width:220px; white-space:normal; }
 
 .form-panel { padding-bottom:22px; }.journal-form,.close-form { display:grid; gap:20px; padding:22px; }.form-grid { display:grid; gap:13px; }.form-grid-three { grid-template-columns:repeat(3,minmax(0,1fr)); }
 label { color:#34475e; font-weight:750; }.full-field>span:first-child,label>span:first-child:not(.sr-only) { display:block; margin-bottom:7px; }

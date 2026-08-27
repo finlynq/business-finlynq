@@ -11,6 +11,10 @@ export const PERMISSIONS = {
   reopenPeriod: "ledger.period.reopen",
   sealPeriod: "ledger.period.seal",
   manageRoles: "organization.roles.manage",
+  readOrganizationSettings: "organization.settings.read",
+  manageOrganizationSettings: "organization.settings.manage",
+  readOrganizationMembers: "organization.members.read",
+  manageOrganizationMembers: "organization.members.manage",
   readMcpLedger: "mcp.ledger.read",
   createMcpDraft: "mcp.journal-draft.create",
   manageRecovery: "organization.recovery.manage",
@@ -33,7 +37,15 @@ export type Permission = (typeof PERMISSIONS)[keyof typeof PERMISSIONS];
 
 export const ROLE_TEMPLATES: Readonly<Record<string, readonly Permission[]>> = {
   OWNER: Object.values(PERMISSIONS),
+  ORGANIZATION_ADMIN: [
+    PERMISSIONS.readOrganizationSettings,
+    PERMISSIONS.manageOrganizationSettings,
+    PERMISSIONS.readOrganizationMembers,
+    PERMISSIONS.manageOrganizationMembers,
+    PERMISSIONS.manageRoles,
+  ],
   ACCOUNTANT_APPROVER: [
+    PERMISSIONS.readOrganizationSettings,
     PERMISSIONS.readMcpLedger,
     PERMISSIONS.draftJournal,
     PERMISSIONS.submitJournal,
@@ -59,6 +71,7 @@ export const ROLE_TEMPLATES: Readonly<Record<string, readonly Permission[]>> = {
     PERMISSIONS.readTax,
   ],
   BOOKKEEPER_MAKER: [
+    PERMISSIONS.readOrganizationSettings,
     PERMISSIONS.readMcpLedger,
     PERMISSIONS.draftJournal,
     PERMISSIONS.submitJournal,
@@ -71,13 +84,18 @@ export const ROLE_TEMPLATES: Readonly<Record<string, readonly Permission[]>> = {
     PERMISSIONS.readTax,
   ],
   VIEWER_AUDITOR: [
+    PERMISSIONS.readOrganizationSettings,
     PERMISSIONS.readMcpLedger,
     PERMISSIONS.readParties,
     PERMISSIONS.readReceivables,
     PERMISSIONS.readPayables,
     PERMISSIONS.readTax,
   ],
-  INTEGRATION_MCP: [PERMISSIONS.readMcpLedger, PERMISSIONS.createMcpDraft],
+  INTEGRATION_MCP: [
+    PERMISSIONS.readOrganizationSettings,
+    PERMISSIONS.readMcpLedger,
+    PERMISSIONS.createMcpDraft,
+  ],
 };
 
 export function permissionsForRoles(roleKeys: readonly string[]): Set<Permission> {

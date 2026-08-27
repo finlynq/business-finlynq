@@ -19,7 +19,9 @@ export const organizations = pgTable(
     active: boolean("active").notNull().default(true),
     isDemo: boolean("is_demo").notNull().default(false),
     mode: text("organization_mode").notNull().default("REAL"),
+    settingsVersion: integer("settings_version").notNull().default(1),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [uniqueIndex("organizations_slug_unique").on(table.slug)],
 );
@@ -53,6 +55,7 @@ export const organizationMemberships = pgTable(
       .notNull()
       .references(() => users.id, { onDelete: "restrict" }),
     active: boolean("active").notNull().default(true),
+    administrationVersion: integer("administration_version").notNull().default(1),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [
@@ -60,6 +63,13 @@ export const organizationMemberships = pgTable(
       table.organizationId,
       table.userId,
     ),
+    uniqueIndex("organization_memberships_org_id_unique").on(
+      table.organizationId,
+      table.id,
+    ),
+    uniqueIndex("organization_memberships_one_active_user_unique")
+      .on(table.userId)
+      .where(sql`${table.active}`),
   ],
 );
 
@@ -118,7 +128,13 @@ export const membershipRoles = pgTable(
     assignedAt: timestamp("assigned_at", { withTimezone: true }).notNull().defaultNow(),
     assignedBy: uuid("assigned_by").notNull(),
   },
-  (table) => [primaryKey({ columns: [table.organizationId, table.membershipId, table.roleId] })],
+  (table) => [
+    primaryKey({ columns: [table.organizationId, table.membershipId, table.roleId] }),
+    uniqueIndex("membership_roles_one_fixed_role_unique").on(
+      table.organizationId,
+      table.membershipId,
+    ),
+  ],
 );
 
 export const organizationKeyVersions = pgTable(

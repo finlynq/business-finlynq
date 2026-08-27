@@ -20,6 +20,7 @@ const nextConfig: NextConfig = {
       "/payables/:path*",
       "/receivables/:path*",
       "/reports/:path*",
+      "/settings",
       "/tax",
     ];
 
@@ -39,6 +40,7 @@ const nextConfig: NextConfig = {
       { source: "/app/payables/:path*", destination: "/payables/:path*" },
       { source: "/app/receivables/:path*", destination: "/receivables/:path*" },
       { source: "/app/reports/:path*", destination: "/reports/:path*" },
+      { source: "/app/settings", destination: "/settings" },
       { source: "/app/tax", destination: "/tax" },
     ];
   },

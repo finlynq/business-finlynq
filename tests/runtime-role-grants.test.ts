@@ -31,6 +31,17 @@ describe("runtime role reconciliation contract", () => {
     expect(script).toContain("app.assert_current_demo_session_lease()");
     expect(script).toContain("app.auth_lookup_login(text)");
     expect(script).toContain("app.auth_resolve_session(text,text)");
+    expect(script).toContain("app.organization_settings_read()");
+    expect(script).toContain("app.organization_members_read()");
+    expect(script).toContain("app.organization_update_settings(text,integer)");
+    expect(script).toContain("app.organization_invite_member(uuid,uuid,uuid,uuid,text,text,text,uuid,text,uuid,text)");
+    expect(script).toContain("app.organization_resend_invitation(uuid,integer,uuid,text,uuid,text)");
+    expect(script).toContain("app.organization_cancel_invitation(uuid,integer)");
+    expect(script).toContain("app.organization_assign_member_role(uuid,uuid,integer)");
+    expect(script).toContain("app.organization_set_member_active(uuid,integer,boolean)");
+    expect(script).toContain("app.organization_revoke_member_sessions(uuid)");
+    expect(script).not.toContain("app.organization_admin_authorize(text,boolean)");
+    expect(script).not.toContain("app.reset_demo_sandbox_extensions(uuid,uuid)");
     expect(script).not.toContain("'app.auth_issue_user_session(");
   });
 

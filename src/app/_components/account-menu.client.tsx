@@ -54,6 +54,7 @@ export function AccountMenu({ principal }: { principal: AccountMenuPrincipal }) 
           <span>{principal.organizationName} · {principal.roleLabel}</span>
           <p>{principal.sessionMode === "demo" ? "Public synthetic sandbox. Changes are disposable; do not enter real information or connect external systems." : "Your session is checked against active organization membership and roles."}</p>
           <div className="account-popover-actions">
+            <Link className="secondary-button compact-button" href="/app/settings" onClick={() => setOpen(false)}>Settings</Link>
             <Link className="secondary-button compact-button" href="/" onClick={() => setOpen(false)}>Website</Link>
             <form action="/api/auth/logout" method="post"><button type="submit" className="primary-button compact-button">Sign out</button></form>
           </div>

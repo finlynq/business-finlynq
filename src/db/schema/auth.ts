@@ -9,11 +9,12 @@ import {
   primaryKey,
   text,
   timestamp,
+  unique,
   uniqueIndex,
   uuid,
 } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
-import { organizationMemberships, organizations, users } from "./identity";
+import { organizationMemberships, organizations, roles, users } from "./identity";
 import {
   accountingProfile as accountingProfileEnum,
   manualPostingMode as manualPostingModeEnum,
@@ -137,6 +138,9 @@ export const authOrganizationSignups = pgTable(
     id: uuid("id").primaryKey(),
     tokenId: uuid("token_id").notNull().unique().references(() => authOneTimeTokens.id, { onDelete: "restrict" }),
     userId: uuid("user_id").notNull().unique().references(() => users.id, { onDelete: "restrict" }),
+    identityEncryptionUserId: uuid("identity_encryption_user_id").notNull(),
+    requestedEmailCiphertext: text("requested_email_ciphertext").notNull(),
+    requestedDisplayNameCiphertext: text("requested_display_name_ciphertext").notNull(),
     // The deterministic tenant identifier is reserved before the tenant is
     // provisioned, so this intentionally is not an organizations foreign key.
     organizationId: uuid("organization_id").notNull().unique(),
@@ -160,6 +164,47 @@ export const authOrganizationSignups = pgTable(
     completedAt: timestamp("completed_at", { withTimezone: true }),
   },
   (table) => [index("auth_organization_signups_status_expiry_idx").on(table.status, table.expiresAt)],
+);
+
+export const organizationInvitations = pgTable(
+  "organization_invitations",
+  {
+    id: uuid("id").primaryKey(),
+    organizationId: uuid("organization_id").notNull().references(() => organizations.id, { onDelete: "restrict" }),
+    userId: uuid("user_id").notNull().references(() => users.id, { onDelete: "restrict" }),
+    membershipId: uuid("membership_id").notNull(),
+    roleId: uuid("role_id").notNull(),
+    tokenId: uuid("token_id").references(() => authOneTimeTokens.id, { onDelete: "restrict" }),
+    status: text("status").notNull().default("PENDING"),
+    invitedByUserId: uuid("invited_by_user_id").notNull().references(() => users.id, { onDelete: "restrict" }),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    acceptedAt: timestamp("accepted_at", { withTimezone: true }),
+    cancelledAt: timestamp("cancelled_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+    version: integer("version").notNull().default(1),
+  },
+  (table) => [
+    foreignKey({
+      columns: [table.organizationId, table.membershipId],
+      foreignColumns: [organizationMemberships.organizationId, organizationMemberships.id],
+      name: "organization_invitations_membership_fk",
+    }).onDelete("restrict"),
+    foreignKey({
+      columns: [table.organizationId, table.roleId],
+      foreignColumns: [roles.organizationId, roles.id],
+      name: "organization_invitations_role_fk",
+    }).onDelete("restrict"),
+    unique("organization_invitations_membership_unique").on(table.organizationId, table.membershipId),
+    uniqueIndex("organization_invitations_one_pending_user_unique")
+      .on(table.organizationId, table.userId)
+      .where(sql`${table.status} = 'PENDING'`),
+    index("organization_invitations_org_status_idx").on(
+      table.organizationId,
+      table.status,
+      table.expiresAt,
+    ),
+  ],
 );
 
 export const authMfaFactors = pgTable(

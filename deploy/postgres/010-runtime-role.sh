@@ -209,7 +209,16 @@ BEGIN
     'app.auth_consume_password_reset_limits(text)',
     'app.auth_consume_password_reset_escalation_limits(text)',
     'app.auth_consume_recovery_approval_limits(uuid,uuid)',
-    'app.auth_consume_mfa_enrollment_limits(text)'
+    'app.auth_consume_mfa_enrollment_limits(text)',
+    'app.organization_settings_read()',
+    'app.organization_members_read()',
+    'app.organization_update_settings(text,integer)',
+    'app.organization_invite_member(uuid,uuid,uuid,uuid,text,text,text,uuid,text,uuid,text)',
+    'app.organization_resend_invitation(uuid,integer,uuid,text,uuid,text)',
+    'app.organization_cancel_invitation(uuid,integer)',
+    'app.organization_assign_member_role(uuid,uuid,integer)',
+    'app.organization_set_member_active(uuid,integer,boolean)',
+    'app.organization_revoke_member_sessions(uuid)'
   ] LOOP
     IF to_regprocedure(selected_signature) IS NOT NULL THEN
       EXECUTE format('GRANT EXECUTE ON FUNCTION %s TO business_finlynq_app', selected_signature);
