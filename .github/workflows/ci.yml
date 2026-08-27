@@ -27,6 +27,7 @@ jobs:
           --health-retries 10
 
     env:
+      POSTGRES_PASSWORD: postgres
       DATABASE_MIGRATION_URL: postgresql://postgres:postgres@127.0.0.1:5432/business_finlynq_test
       TEST_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/business_finlynq_test
       TEST_APP_DATABASE_URL: postgresql://business_finlynq_app:runtime-test-only-password-2026@127.0.0.1:5432/business_finlynq_test
