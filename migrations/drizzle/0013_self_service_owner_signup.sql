@@ -26,6 +26,11 @@ CREATE TABLE auth_organization_signups (
   id uuid PRIMARY KEY,
   token_id uuid NOT NULL UNIQUE REFERENCES auth_one_time_tokens(id) ON DELETE RESTRICT,
   user_id uuid NOT NULL UNIQUE REFERENCES users(id) ON DELETE RESTRICT,
+  -- Ciphertext AAD includes the caller-selected user id. This normally equals
+  -- user_id; retaining it separately keeps legacy random-id invitations safe.
+  identity_encryption_user_id uuid NOT NULL,
+  requested_email_ciphertext text NOT NULL,
+  requested_display_name_ciphertext text NOT NULL,
   -- This deterministic identifier exists before the organization. It is
   -- intentionally not a foreign key until provisioning has completed.
   organization_id uuid NOT NULL UNIQUE,
@@ -235,7 +240,8 @@ BEGIN
     -- Legacy invitations may predate the shared deterministic UUID. Their
     -- ciphertext remains bound to that retained id; a new deterministic
     -- placeholder can safely accept the refreshed encrypted fields.
-    IF existing_user.id = selected_user_id THEN
+    IF NOT reusing_invitation_identity
+      AND existing_user.id = selected_user_id THEN
       UPDATE users SET
         email_ciphertext = selected_email_ciphertext,
         display_name_ciphertext = selected_display_name_ciphertext
@@ -269,13 +275,17 @@ BEGIN
 
   IF existing_signup.id IS NULL THEN
     INSERT INTO auth_organization_signups(
-      id, token_id, user_id, organization_id, organization_slug,
+      id, token_id, user_id, identity_encryption_user_id,
+      requested_email_ciphertext, requested_display_name_ciphertext,
+      organization_id, organization_slug,
       organization_name, entity_code, entity_name, country_code, region_code,
       functional_currency, accounting_profile, fiscal_year,
       manual_posting_mode, key_provider, wrapped_dek, terms_version,
       status, expires_at
     ) VALUES (
       selected_signup_id, selected_token_id, effective_user_id,
+      selected_user_id, selected_email_ciphertext,
+      selected_display_name_ciphertext,
       selected_organization_id, selected_organization_slug,
       selected_organization_name, selected_entity_code, selected_entity_name,
       selected_country_code, selected_region_code, selected_functional_currency,
@@ -287,6 +297,13 @@ BEGIN
   ELSE
     UPDATE auth_organization_signups signup SET
       token_id = selected_token_id,
+      identity_encryption_user_id = CASE WHEN signup.accepted_at IS NULL
+        THEN selected_user_id ELSE signup.identity_encryption_user_id END,
+      requested_email_ciphertext = CASE WHEN signup.accepted_at IS NULL
+        THEN selected_email_ciphertext ELSE signup.requested_email_ciphertext END,
+      requested_display_name_ciphertext = CASE WHEN signup.accepted_at IS NULL
+        THEN selected_display_name_ciphertext
+        ELSE signup.requested_display_name_ciphertext END,
       organization_slug = CASE WHEN signup.accepted_at IS NULL
         THEN selected_organization_slug ELSE signup.organization_slug END,
       organization_name = CASE WHEN signup.accepted_at IS NULL
@@ -679,6 +696,13 @@ BEGIN
     password_hash = selected_password_hash,
     password_changed_at = now(),
     email_verified_at = coalesce(email_verified_at, now()),
+    email_ciphertext = CASE
+      WHEN selected_signup.identity_encryption_user_id = selected_signup.user_id
+      THEN selected_signup.requested_email_ciphertext ELSE email_ciphertext END,
+    display_name_ciphertext = CASE
+      WHEN selected_signup.identity_encryption_user_id = selected_signup.user_id
+      THEN selected_signup.requested_display_name_ciphertext
+      ELSE display_name_ciphertext END,
     mfa_required = true,
     active = false
   WHERE id = selected_signup.user_id;
@@ -705,7 +729,10 @@ BEGIN
     'ORGANIZATION_SIGNUP_ACCEPTED', 'SUCCESS', selected_request_id,
     jsonb_build_object('signupId', selected_signup.id)
   );
-  RETURN QUERY SELECT selected_signup.user_id, selected_user.email_ciphertext,
+  RETURN QUERY SELECT selected_signup.user_id,
+    CASE WHEN selected_signup.identity_encryption_user_id = selected_signup.user_id
+      THEN selected_signup.requested_email_ciphertext
+      ELSE selected_user.email_ciphertext END,
     selected_signup.organization_name, selected_factor_id;
 END
 $$;

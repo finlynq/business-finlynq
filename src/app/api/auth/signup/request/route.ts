@@ -65,21 +65,15 @@ export async function POST(request: NextRequest) {
     const { ipHash } = requestFingerprints(request);
     const email = normalizeEmail(parsed.data.email);
     const emailHash = emailLookupHash(email);
-    const [ipLimit, emailLimit] = await Promise.all([
-      consumeRateLimit("organization-signup-ip-hour", ipHash, 6, 3600),
-      consumeRateLimit(
-        "organization-signup-email-day",
-        identityLookupHash(`organization-signup|${emailHash}`),
-        4,
-        86400,
-      ),
-    ]);
-    if (!ipLimit.allowed || !emailLimit.allowed) {
-      const retryAfter = Math.max(ipLimit.retry_after_seconds, emailLimit.retry_after_seconds);
+    // Spend only the caller's coarse IP budget before bot proof. Otherwise an
+    // attacker could exhaust a victim email's daily budget with invalid
+    // challenge tokens.
+    const ipLimit = await consumeRateLimit("organization-signup-ip-hour", ipHash, 6, 3600);
+    if (!ipLimit.allowed) {
       await settleSensitiveResponse(startedAt);
       return NextResponse.json(
         { message: genericMessage },
-        { status: 429, headers: { ...headers, "Retry-After": String(retryAfter) } },
+        { status: 429, headers: { ...headers, "Retry-After": String(ipLimit.retry_after_seconds) } },
       );
     }
 
@@ -93,6 +87,20 @@ export async function POST(request: NextRequest) {
         { error: "The signup verification could not be completed. Refresh and try again." },
         { status: 400, headers },
       );
+    }
+
+    const emailLimit = await consumeRateLimit(
+      "organization-signup-email-day",
+      identityLookupHash(`organization-signup|${emailHash}`),
+      4,
+      86400,
+    );
+    if (!emailLimit.allowed) {
+      // Keep per-principal exhaustion indistinguishable from an accepted or
+      // already-existing identity. The coarse IP response above can expose a
+      // retry delay because it carries no victim-specific state.
+      await settleSensitiveResponse(startedAt);
+      return NextResponse.json({ message: genericMessage }, { status: 202, headers });
     }
 
     await requestOwnerSignup({

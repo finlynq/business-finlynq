@@ -48,6 +48,8 @@ describe("self-service signup security", () => {
     expect(signupMigration).toContain("status = 'SUPERSEDED'");
     expect(signupMigration).toContain("membership.organization_id <> selected_token.organization_id");
     expect(signupMigration).toContain("The invitation won the race and already proved the email");
+    expect(signupMigration).toContain("IF NOT reusing_invitation_identity");
+    expect(signupMigration).toContain("requested_display_name_ciphertext");
   });
 
   it("keeps operator invitations compatible with the durable invitation registry", () => {

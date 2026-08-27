@@ -91,7 +91,7 @@ describe("public owner signup routes", () => {
     expect(mocks.requestSignup).not.toHaveBeenCalled();
   });
 
-  it("consumes durable budgets before bot verification and provisioning", async () => {
+  it("consumes the coarse caller budget before bot verification and provisioning", async () => {
     mocks.limit.mockResolvedValue({ allowed: false, retry_after_seconds: 91 });
     const response = await requestSignup(request("/api/auth/signup/request", validRequest));
     expect(response.status).toBe(429);
@@ -104,6 +104,26 @@ describe("public owner signup routes", () => {
     mocks.verifyChallenge.mockResolvedValue(false);
     const response = await requestSignup(request("/api/auth/signup/request", validRequest));
     expect(response.status).toBe(400);
+    expect(mocks.limit).toHaveBeenCalledTimes(1);
+    expect(mocks.limit).toHaveBeenCalledWith("organization-signup-ip-hour", "i".repeat(64), 6, 3600);
+    expect(mocks.requestSignup).not.toHaveBeenCalled();
+  });
+
+  it("spends the victim-specific email budget only after a valid challenge", async () => {
+    mocks.limit
+      .mockResolvedValueOnce({ allowed: true, retry_after_seconds: 0 })
+      .mockResolvedValueOnce({ allowed: false, retry_after_seconds: 3600 });
+    const response = await requestSignup(request("/api/auth/signup/request", validRequest));
+    expect(response.status).toBe(202);
+    expect(response.headers.get("Retry-After")).toBeNull();
+    expect(mocks.verifyChallenge).toHaveBeenCalledOnce();
+    expect(mocks.limit).toHaveBeenNthCalledWith(
+      2,
+      "organization-signup-email-day",
+      "h".repeat(64),
+      4,
+      86400,
+    );
     expect(mocks.requestSignup).not.toHaveBeenCalled();
   });
 

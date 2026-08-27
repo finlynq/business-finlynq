@@ -122,6 +122,10 @@ runDatabaseTests("signup and invitation identity precedence", () => {
       "SELECT status FROM auth_email_outbox WHERE id=$1",
       [invitationOutboxId],
     )).rows[0]?.status).toBe("PENDING");
+    expect((await pool.query(
+      "SELECT display_name_ciphertext FROM users WHERE id=$1",
+      [userId],
+    )).rows[0]?.display_name_ciphertext).toBe(`idv1:${"n".repeat(80)}`);
 
     const passwordHash = `scrypt-v1$32768$8$1$${"s".repeat(24)}$${"h".repeat(88)}`;
     const signupFactorId = randomUUID();
@@ -131,6 +135,10 @@ runDatabaseTests("signup and invitation identity precedence", () => {
       [signupTokenHash, passwordHash, signupFactorId, `authv1:${"f".repeat(80)}`, signupSetupHash, randomUUID()],
     );
     expect(accepted.rowCount).toBe(1);
+    expect((await pool.query(
+      "SELECT display_name_ciphertext FROM users WHERE id=$1",
+      [userId],
+    )).rows[0]?.display_name_ciphertext).toBe(`idv1:${"d".repeat(80)}`);
     expect((await pool.query(
       `SELECT
          (SELECT consumed_at IS NOT NULL FROM auth_one_time_tokens WHERE id=$1) AS token_consumed,
