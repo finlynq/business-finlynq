@@ -129,6 +129,9 @@ if (cronRemover.includes("crontab -r")) {
 const resetImplementation = read("src/modules/onboarding/demo-bootstrap.ts");
 requireText(resetImplementation, "resetDemoSandboxes", "demo-sandbox reset implementation");
 requireText(resetImplementation, "open_item_void_events", "demo-sandbox reset table coverage");
+if (resetImplementation.includes("command_hash = EXCLUDED.command_hash")) {
+  throw new Error("demo bootstrap may not rewrite the immutable party creation fingerprint during an upgrade");
+}
 
 const monitor = read("deploy/monitoring/check-production.sh");
 for (const expected of [

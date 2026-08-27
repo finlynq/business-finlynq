@@ -463,7 +463,6 @@ async function seedEncryptedPartyData(
            display_name_ciphertext = EXCLUDED.display_name_ciphertext,
            display_name_key_version = EXCLUDED.display_name_key_version,
            search_token = EXCLUDED.search_token,
-           command_hash = EXCLUDED.command_hash,
            active = true`,
         [
           partyId,
