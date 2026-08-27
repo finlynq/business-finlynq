@@ -7,7 +7,7 @@ import {
   demoPeriodState,
 } from "@/modules/demo/accounting-clock";
 import { DEMO_BASELINE_DATE, DEMO_ORGANIZATION_ID, DEMO_USER_ID } from "@/modules/demo/constants";
-import { postJournalInTransaction } from "@/modules/ledger/posting-service";
+import { postJournalInTransaction } from "@/modules/ledger/posting-engine";
 import { buildIssueJournalLines } from "@/modules/subledger/journal-line-builders";
 import {
   assertSnapshotTaxDecisionsCurrent,
