@@ -38,10 +38,12 @@ jobs:
       ACCOUNT_LOGIN_ENABLED: "false"
       AUTH_EMAIL_DELIVERY_ENABLED: "false"
       BUSINESS_WRITES_ENABLED: "false"
-      ORGANIZATION_ROOT_KEK_FILE: ${{ runner.temp }}/business-finlynq-root-kek
-      IDENTITY_SECRET_FILE: ${{ runner.temp }}/business-finlynq-identity-secret
-      APP_DATABASE_PASSWORD_FILE: ${{ runner.temp }}/business-finlynq-app-db-password
-      AUTH_WORKER_DATABASE_PASSWORD_FILE: ${{ runner.temp }}/business-finlynq-auth-worker-db-password
+      # Job-level env is validated before the runner context exists. Hosted
+      # Ubuntu runners provide a private, ephemeral /tmp for these CI-only files.
+      ORGANIZATION_ROOT_KEK_FILE: /tmp/business-finlynq-root-kek
+      IDENTITY_SECRET_FILE: /tmp/business-finlynq-identity-secret
+      APP_DATABASE_PASSWORD_FILE: /tmp/business-finlynq-app-db-password
+      AUTH_WORKER_DATABASE_PASSWORD_FILE: /tmp/business-finlynq-auth-worker-db-password
       BUSINESS_FINLYNQ_SECRET_GID: "20001"
       BUSINESS_FINLYNQ_IMAGE_REVISION: ${{ github.sha }}
       PLAYWRIGHT_BASE_URL: http://127.0.0.1:3000
