@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 
 function fail(message) {
   throw new Error(`Compose security-boundary check failed: ${message}`);
@@ -191,7 +192,15 @@ const expectedMonitorBackupDirectory = process.env.MONITOR_BACKUP_DIR ?? "/var/b
 if (verifierBackupMount.source !== expectedMonitorBackupDirectory) {
   fail("latest-backup verifier does not inspect the monitored backup directory");
 }
-if (verifierBackupMount.bind?.create_host_path !== false) {
+if (verifierBackupMount.bind?.create_host_path === true) {
+  fail("latest-backup verifier can create a missing host backup path");
+}
+const composeSource = readFileSync("docker-compose.yml", "utf8").replaceAll("\r\n", "\n");
+const verifierSourceStart = composeSource.indexOf("  verify_latest_backup:\n");
+const verifierSourceEnd = composeSource.indexOf("\n  restore_database:\n", verifierSourceStart);
+if (verifierSourceStart < 0 || verifierSourceEnd < 0) fail("latest-backup verifier source block is missing");
+const verifierSource = composeSource.slice(verifierSourceStart, verifierSourceEnd);
+if (!/target: \/backups\s+read_only: true\s+bind:\s+create_host_path: false/.test(verifierSource)) {
   fail("latest-backup verifier can create a missing host backup path");
 }
 
