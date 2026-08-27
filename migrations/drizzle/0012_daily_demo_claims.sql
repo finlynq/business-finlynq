@@ -467,10 +467,11 @@ BEGIN
       USING ERRCODE = '23514';
   END IF;
 
-  UPDATE auth_sessions
-  SET revoked_at = coalesce(revoked_at, now())
-  WHERE organization_id = selected_claim.organization_id
-    AND session_mode = 'DEMO' AND revoked_at IS NULL;
+  UPDATE auth_sessions AS active_demo_session
+  SET revoked_at = coalesce(active_demo_session.revoked_at, now())
+  WHERE active_demo_session.organization_id = selected_claim.organization_id
+    AND active_demo_session.session_mode = 'DEMO'
+    AND active_demo_session.revoked_at IS NULL;
 
   INSERT INTO auth_sessions(
     token_hash, user_id, organization_id, membership_id, auth_method, session_mode,
@@ -485,12 +486,13 @@ BEGIN
     selected_claim.generation, selected_claim.id
   ) RETURNING id INTO created_session_id;
 
-  UPDATE demo_sandbox_slots
-  SET state = 'ASSIGNED', last_claimed_at = coalesce(last_claimed_at, now())
-  WHERE slot = selected_claim.slot
-    AND organization_id = selected_claim.organization_id
-    AND generation = selected_claim.generation
-    AND state IN ('READY', 'ASSIGNED');
+  UPDATE demo_sandbox_slots AS claimed_slot
+  SET state = 'ASSIGNED',
+    last_claimed_at = coalesce(claimed_slot.last_claimed_at, now())
+  WHERE claimed_slot.slot = selected_claim.slot
+    AND claimed_slot.organization_id = selected_claim.organization_id
+    AND claimed_slot.generation = selected_claim.generation
+    AND claimed_slot.state IN ('READY', 'ASSIGNED');
   IF NOT FOUND THEN
     RAISE EXCEPTION 'Daily demo claim lost its isolated sandbox'
       USING ERRCODE = '40001';
