@@ -13,6 +13,9 @@
 # testing
 /coverage
 /.tmp/
+/blob-report/
+/playwright-report/
+/test-results/
 
 # next.js
 /.next/

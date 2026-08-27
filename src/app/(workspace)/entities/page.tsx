@@ -1,7 +1,11 @@
 import { demoDashboard } from "@/modules/demo/dashboard-data";
+import { requireWorkspacePrincipal } from "@/modules/workspace/access";
+import { TenantModuleUnavailable } from "../../_components/tenant-module-unavailable";
 import { DemoNotice, EmptyState, PageHeader, StatusPill } from "../../_components/ui";
 
 export default async function EntitiesPage({ searchParams }: { searchParams: Promise<{ q?: string }> }) {
+  const principal = await requireWorkspacePrincipal("/app/entities");
+  if (principal.sessionMode !== "demo") return <TenantModuleUnavailable moduleName="Legal entities" />;
   const query = (await searchParams).q?.trim().toLocaleLowerCase() ?? "";
   const entities = demoDashboard.entities.filter((entity) => !query || `${entity.code} ${entity.name} ${entity.location}`.toLocaleLowerCase().includes(query));
   return (

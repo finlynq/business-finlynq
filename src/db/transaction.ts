@@ -1,9 +1,11 @@
 import { Pool, type PoolClient, type QueryResult, type QueryResultRow } from "pg";
+import { readFileSync } from "node:fs";
 import { z } from "zod";
 
 const tenantContextSchema = z.object({
   organizationId: z.uuid(),
   actorId: z.uuid(),
+  sessionId: z.uuid().optional(),
   requestId: z.string().trim().min(1).max(200),
   authMethod: z.string().trim().min(1).max(100),
   sourceSurface: z.enum(["UI", "API", "IMPORT", "WORKER", "MCP"]),
@@ -13,6 +15,30 @@ const tenantContextSchema = z.object({
 export type TenantTransactionContext = z.infer<typeof tenantContextSchema>;
 
 let pool: Pool | undefined;
+
+function databasePassword(): string | undefined {
+  const passwordFile = process.env.BUSINESS_FINLYNQ_DB_PASSWORD_FILE?.trim();
+  const inlinePassword = process.env.BUSINESS_FINLYNQ_DB_PASSWORD;
+  if (passwordFile && inlinePassword) throw new Error("Configure only one application database-password source");
+  if (!passwordFile) {
+    if (inlinePassword && process.env.NODE_ENV === "production") {
+      throw new Error("Production requires BUSINESS_FINLYNQ_DB_PASSWORD_FILE");
+    }
+    return inlinePassword;
+  }
+
+  let raw: string;
+  try {
+    raw = readFileSync(passwordFile, "utf8");
+  } catch (error) {
+    throw new Error("Unable to read the application database-password file", { cause: error });
+  }
+  const password = raw.endsWith("\n") ? raw.slice(0, -1) : raw;
+  if (password.length < 24 || password.length > 1024 || /[\r\n]/.test(password) || (raw !== password && raw !== `${password}\n`)) {
+    throw new Error("Application database-password file must contain one value of 24 to 1024 characters");
+  }
+  return password;
+}
 
 function getPool(): Pool {
   if (pool) return pool;
@@ -34,7 +60,7 @@ function getPool(): Pool {
           port: Number(process.env.BUSINESS_FINLYNQ_DB_PORT ?? "5432"),
           database: process.env.BUSINESS_FINLYNQ_DB_NAME,
           user: process.env.BUSINESS_FINLYNQ_DB_USER,
-          password: process.env.BUSINESS_FINLYNQ_DB_PASSWORD,
+          password: databasePassword(),
         }),
     max: 12,
     idleTimeoutMillis: 30_000,
@@ -65,6 +91,7 @@ export async function withTenantTransaction<T>(
     await client.query("SET LOCAL statement_timeout = '15s'");
     await client.query("SELECT set_config('app.organization_id', $1, true)", [context.organizationId]);
     await client.query("SELECT set_config('app.actor_id', $1, true)", [context.actorId]);
+    await client.query("SELECT set_config('app.session_id', $1, true)", [context.sessionId ?? ""]);
     await client.query("SELECT set_config('app.request_id', $1, true)", [context.requestId]);
     await client.query("SELECT set_config('app.auth_method', $1, true)", [context.authMethod]);
     await client.query("SELECT set_config('app.source_surface', $1, true)", [context.sourceSurface]);

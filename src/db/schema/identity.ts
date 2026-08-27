@@ -8,6 +8,7 @@ import {
   uniqueIndex,
   uuid,
 } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
 
 export const organizations = pgTable(
   "organizations",
@@ -32,6 +33,7 @@ export const users = pgTable(
     passwordHash: text("password_hash").notNull(),
     active: boolean("active").notNull().default(true),
     isDemo: boolean("is_demo").notNull().default(false),
+    mfaRequired: boolean("mfa_required").notNull().default(true),
     emailVerifiedAt: timestamp("email_verified_at", { withTimezone: true }),
     passwordChangedAt: timestamp("password_changed_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
@@ -137,5 +139,8 @@ export const organizationKeyVersions = pgTable(
       table.organizationId,
       table.version,
     ),
+    uniqueIndex("organization_key_versions_one_active_unique")
+      .on(table.organizationId)
+      .where(sql`${table.active}`),
   ],
 );

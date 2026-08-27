@@ -19,6 +19,7 @@ export const accountingProfile = pgEnum("accounting_profile", [
 ]);
 
 export const ledgerKind = pgEnum("ledger_kind", ["PRIMARY", "SECONDARY", "CONSOLIDATION"]);
+export const manualPostingMode = pgEnum("manual_posting_mode", ["REVIEW_REQUIRED", "AUTO_POST"]);
 export const periodState = pgEnum("period_state", [
   "OPEN",
   "ADJUSTMENT_ONLY",
@@ -154,6 +155,29 @@ export const ledgerNumberSequences = pgTable(
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [uniqueIndex("ledger_number_sequences_ledger_key_unique").on(table.ledgerId, table.key)],
+);
+
+export const ledgerPostingPolicies = pgTable(
+  "ledger_posting_policies",
+  {
+    organizationId: uuid("organization_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "restrict" }),
+    ledgerId: uuid("ledger_id")
+      .notNull()
+      .references(() => ledgers.id, { onDelete: "restrict" }),
+    manualMode: manualPostingMode("manual_mode").notNull().default("REVIEW_REQUIRED"),
+    version: integer("version").notNull().default(1),
+    updatedBy: uuid("updated_by").notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("ledger_posting_policies_ledger_unique").on(table.ledgerId),
+    uniqueIndex("ledger_posting_policies_org_ledger_unique").on(
+      table.organizationId,
+      table.ledgerId,
+    ),
+  ],
 );
 
 export const glAccounts = pgTable(

@@ -12,6 +12,12 @@ export async function GET(request: NextRequest) {
     login.searchParams.set("reason", "expired");
     return NextResponse.redirect(login, 303);
   }
+  if (principal.sessionMode !== "demo") {
+    return NextResponse.json(
+      { error: "Tenant-scoped trial balance export is not enabled yet." },
+      { status: 501, headers: { "Cache-Control": "private, no-store", "X-Robots-Tag": "noindex" } },
+    );
+  }
   const csv = `${generateDemoTrialBalanceCsv()}\r\n`;
   return new Response(csv, {
     headers: {

@@ -1,0 +1,25 @@
+name: business-finlynq-ops-test
+
+services:
+  app:
+    environment:
+      APP_ORIGIN: http://127.0.0.1:3100
+      SESSION_COOKIE_NAME: business_finlynq_session
+
+volumes:
+  business_finlynq_pgdata:
+    name: business_finlynq_ops_test_pgdata
+  business_finlynq_caddy_data:
+    name: business_finlynq_ops_test_caddy_data
+  business_finlynq_caddy_config:
+    name: business_finlynq_ops_test_caddy_config
+
+networks:
+  business_finlynq_private:
+    name: business_finlynq_ops_test_private
+  business_finlynq_egress:
+    name: business_finlynq_ops_test_egress
+  business_finlynq_edge:
+    name: business_finlynq_ops_test_edge
+  business_finlynq_restore_drill:
+    name: business_finlynq_ops_test_restore_drill

@@ -43,6 +43,41 @@
       "when": 1787755000000,
       "tag": "0005_identity_sessions_recovery",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1787770000000,
+      "tag": "0006_tenant_workflows",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1787771000000,
+      "tag": "0007_auth_delivery_invites",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1787772000000,
+      "tag": "0008_auth_email_worker_readiness",
+      "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1787773000000,
+      "tag": "0009_runtime_workflow_hardening",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1787774000000,
+      "tag": "0010_auth_principal_rate_limits",
+      "breakpoints": true
     }
   ]
 }

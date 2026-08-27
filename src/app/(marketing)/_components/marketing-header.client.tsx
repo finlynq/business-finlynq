@@ -29,7 +29,9 @@ export function MarketingHeader() {
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
         setOpen(false);
-        triggerRef.current?.focus();
+        // The trigger is inside an inert container until the effect cleanup runs.
+        // Restore focus on the next frame, after React has removed inert.
+        window.requestAnimationFrame(() => triggerRef.current?.focus());
         return;
       }
       if (event.key !== "Tab" || !panel) return;

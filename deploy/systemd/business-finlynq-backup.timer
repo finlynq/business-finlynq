@@ -1,0 +1,11 @@
+[Unit]
+Description=Run the Business Finlynq encrypted backup every six hours
+
+[Timer]
+OnCalendar=*-*-* 00,06,12,18:17:00 UTC
+RandomizedDelaySec=10m
+Persistent=true
+Unit=business-finlynq-backup.service
+
+[Install]
+WantedBy=timers.target

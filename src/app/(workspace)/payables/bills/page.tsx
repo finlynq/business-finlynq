@@ -1,7 +1,11 @@
 import { demoPayableBills } from "@/modules/demo/dashboard-data";
+import { requireWorkspacePrincipal } from "@/modules/workspace/access";
+import { TenantModuleUnavailable } from "../../../_components/tenant-module-unavailable";
 import { DemoNotice, EmptyState, PageHeader, StatusPill } from "../../../_components/ui";
 
 export default async function BillsPage({ searchParams }: { searchParams: Promise<{ q?: string }> }) {
+  const principal = await requireWorkspacePrincipal("/app/payables/bills");
+  if (principal.sessionMode !== "demo") return <TenantModuleUnavailable moduleName="Accounts payable" />;
   const query = (await searchParams).q?.trim().toLocaleLowerCase() ?? "";
   const bills = demoPayableBills.filter((bill) => !query || Object.values(bill).join(" ").toLocaleLowerCase().includes(query));
   return (

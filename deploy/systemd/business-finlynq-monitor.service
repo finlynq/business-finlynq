@@ -1,0 +1,18 @@
+[Unit]
+Description=Business Finlynq production readiness monitor
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+OnFailure=business-finlynq-monitor-notify@%n.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/business-finlynq/current
+EnvironmentFile=-/etc/business-finlynq/operations.env
+ExecStart=/opt/business-finlynq/current/deploy/monitoring/check-production.sh
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=read-only
+TimeoutStartSec=2m

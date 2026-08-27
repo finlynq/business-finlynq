@@ -5,13 +5,17 @@ export const PERMISSIONS = {
   postJournal: "ledger.journal.post",
   postAdjustment: "ledger.journal.post_adjustment",
   reverseJournal: "ledger.journal.reverse",
+  managePostingPolicy: "ledger.posting_policy.manage",
   manageSegments: "ledger.segments.manage",
   closePeriod: "ledger.period.close",
   reopenPeriod: "ledger.period.reopen",
+  sealPeriod: "ledger.period.seal",
   manageRoles: "organization.roles.manage",
   readMcpLedger: "mcp.ledger.read",
   createMcpDraft: "mcp.journal-draft.create",
   manageRecovery: "organization.recovery.manage",
+  readParties: "parties.read",
+  manageParties: "parties.manage",
 } as const;
 
 export type Permission = (typeof PERMISSIONS)[keyof typeof PERMISSIONS];
@@ -25,11 +29,19 @@ export const ROLE_TEMPLATES: Readonly<Record<string, readonly Permission[]>> = {
     PERMISSIONS.postJournal,
     PERMISSIONS.postAdjustment,
     PERMISSIONS.reverseJournal,
+    PERMISSIONS.managePostingPolicy,
     PERMISSIONS.closePeriod,
     PERMISSIONS.reopenPeriod,
+    PERMISSIONS.readParties,
+    PERMISSIONS.manageParties,
   ],
-  BOOKKEEPER_MAKER: [PERMISSIONS.draftJournal, PERMISSIONS.submitJournal],
-  VIEWER_AUDITOR: [],
+  BOOKKEEPER_MAKER: [
+    PERMISSIONS.draftJournal,
+    PERMISSIONS.submitJournal,
+    PERMISSIONS.readParties,
+    PERMISSIONS.manageParties,
+  ],
+  VIEWER_AUDITOR: [PERMISSIONS.readParties],
   INTEGRATION_MCP: [PERMISSIONS.readMcpLedger, PERMISSIONS.createMcpDraft],
 };
 

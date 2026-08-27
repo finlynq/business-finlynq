@@ -10,7 +10,7 @@ permissions:
 jobs:
   verify:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     services:
       postgres:
         image: postgres:16
@@ -29,15 +29,52 @@ jobs:
     env:
       DATABASE_MIGRATION_URL: postgresql://postgres:postgres@127.0.0.1:5432/business_finlynq_test
       TEST_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/business_finlynq_test
-      TEST_APP_DATABASE_URL: postgresql://business_finlynq_app:runtime-test-only@127.0.0.1:5432/business_finlynq_test
+      TEST_APP_DATABASE_URL: postgresql://business_finlynq_app:runtime-test-only-password-2026@127.0.0.1:5432/business_finlynq_test
+      TEST_AUTH_WORKER_DATABASE_URL: postgresql://business_finlynq_auth_worker:auth-worker-test-only-2026@127.0.0.1:5432/business_finlynq_test
+      DATABASE_URL: postgresql://business_finlynq_app:runtime-test-only-password-2026@127.0.0.1:5432/business_finlynq_test
+      APP_ORIGIN: http://127.0.0.1:3000
+      SESSION_COOKIE_NAME: business_finlynq_session
+      DEMO_LOGIN_ENABLED: "true"
+      ACCOUNT_LOGIN_ENABLED: "false"
+      AUTH_EMAIL_DELIVERY_ENABLED: "false"
+      BUSINESS_WRITES_ENABLED: "false"
+      ORGANIZATION_ROOT_KEK_FILE: ${{ runner.temp }}/business-finlynq-root-kek
+      IDENTITY_SECRET_FILE: ${{ runner.temp }}/business-finlynq-identity-secret
+      APP_DATABASE_PASSWORD_FILE: ${{ runner.temp }}/business-finlynq-app-db-password
+      AUTH_WORKER_DATABASE_PASSWORD_FILE: ${{ runner.temp }}/business-finlynq-auth-worker-db-password
+      BUSINESS_FINLYNQ_SECRET_GID: "20001"
+      BUSINESS_FINLYNQ_IMAGE_REVISION: ${{ github.sha }}
+      PLAYWRIGHT_BASE_URL: http://127.0.0.1:3000
 
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
         with:
           node-version: 24
           cache: npm
       - run: npm ci
+      - name: Create ephemeral CI encryption secrets
+        run: node -e "const fs=require('node:fs'),c=require('node:crypto');fs.writeFileSync(process.env.ORGANIZATION_ROOT_KEK_FILE,c.randomBytes(32).toString('base64')+'\n',{mode:0o600});fs.writeFileSync(process.env.IDENTITY_SECRET_FILE,c.randomBytes(64).toString('base64')+'\n',{mode:0o600});fs.writeFileSync(process.env.APP_DATABASE_PASSWORD_FILE,'runtime-test-only-password-2026\n',{mode:0o600});fs.writeFileSync(process.env.AUTH_WORKER_DATABASE_PASSWORD_FILE,'auth-worker-test-only-2026\n',{mode:0o600})"
+      - name: Validate operations shell syntax
+        run: find deploy -type f -name '*.sh' -print0 | xargs -0 -n1 bash -n
+      - name: Verify fail-safe deployment-secret bootstrap
+        run: |
+          bootstrap_root="$(mktemp -d)"
+          trap 'rm -rf -- "$bootstrap_root"' EXIT
+          mkdir -p "$bootstrap_root/project"
+          BUSINESS_FINLYNQ_SECRET_DIR="$bootstrap_root/secrets" sh deploy/bootstrap-demo-secrets.sh "$bootstrap_root/project"
+          grep -q '^APP_DATABASE_PASSWORD_FILE=' "$bootstrap_root/project/.env"
+          grep -q '^AUTH_WORKER_DATABASE_PASSWORD_FILE=' "$bootstrap_root/project/.env"
+          test -s "$bootstrap_root/secrets/app-db-password"
+          test -s "$bootstrap_root/secrets/auth-worker-db-password"
+          test "$(stat -c '%a' "$bootstrap_root/secrets/app-db-password")" = "440"
+          test "$(stat -c '%a' "$bootstrap_root/secrets/auth-worker-db-password")" = "440"
+          if BUSINESS_FINLYNQ_SECRET_DIR="$bootstrap_root/secrets" sh deploy/bootstrap-demo-secrets.sh "$bootstrap_root/project"; then
+            echo 'secret bootstrap overwrote existing material' >&2
+            exit 1
+          fi
+      - name: Verify Compose credential and network boundaries
+        run: node scripts/operations/verify-compose-boundaries.mjs
       - run: npm run lint
       - run: npm run typecheck
       - name: Provision non-owner runtime role
@@ -46,11 +83,42 @@ jobs:
           POSTGRES_DB: business_finlynq_test
           PGHOST: 127.0.0.1
           PGPASSWORD: postgres
-          APP_DATABASE_PASSWORD: runtime-test-only
         run: sh deploy/postgres/010-runtime-role.sh
+      - name: Provision least-privilege authentication worker role
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_DB: business_finlynq_test
+          PGHOST: 127.0.0.1
+          PGPASSWORD: postgres
+        run: sh deploy/postgres/015-auth-worker-role.sh
       - run: npm run db:migrate
+      - name: Reconcile reviewed runtime grants after migrations
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_DB: business_finlynq_test
+          PGHOST: 127.0.0.1
+          PGPASSWORD: postgres
+        run: sh deploy/postgres/010-runtime-role.sh
+      - name: Reconcile authentication-worker grants after migrations
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_DB: business_finlynq_test
+          PGHOST: 127.0.0.1
+          PGPASSWORD: postgres
+        run: sh deploy/postgres/015-auth-worker-role.sh
       # TEST_DATABASE_URL enables the PostgreSQL integration suite inside the
       # normal Vitest run. Run it once, after replaying the canonical migrations.
+      - name: Bootstrap the fixed synthetic demo tenant
+        run: npm run demo:bootstrap
       - run: npm run test
       - run: npm run build
+      - name: Build hardened operations and email-worker images
+        run: |
+          docker build --target operations --tag business-finlynq-operations-ci .
+          docker build --target worker --tag business-finlynq-auth-worker-ci .
+          docker run --rm --entrypoint sh business-finlynq-auth-worker-ci -c 'test -f /app/auth-email-worker.mjs && test ! -e /app/src && test ! -e /app/tests && ! node -e "require.resolve(\"tsx\")"'
+      - name: Install release-gate browser
+        run: npx playwright install --with-deps chromium
+      - name: Run browser release gate
+        run: npm run test:e2e
       - run: npm audit --omit=dev --audit-level=high

@@ -1,8 +1,12 @@
 import Link from "next/link";
 import { demoDashboard } from "@/modules/demo/dashboard-data";
+import { requireWorkspacePrincipal } from "@/modules/workspace/access";
+import { TenantModuleUnavailable } from "../../_components/tenant-module-unavailable";
 import { PageHeader, StatusPill } from "../../_components/ui";
 
-export default function OverviewPage() {
+export default async function OverviewPage() {
+  const principal = await requireWorkspacePrincipal("/app");
+  if (principal.sessionMode !== "demo") return <TenantModuleUnavailable moduleName="Overview" />;
   return (
     <div className="page-content">
       <PageHeader

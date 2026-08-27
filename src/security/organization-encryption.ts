@@ -1,6 +1,8 @@
 import {
   createCipheriv,
   createDecipheriv,
+  createHmac,
+  hkdfSync,
   randomBytes,
   timingSafeEqual,
 } from "node:crypto";
@@ -32,6 +34,9 @@ export type FieldEncryptionContext = Readonly<{
   recordId: string;
   keyVersion: number;
 }>;
+
+const ENVELOPE_FORMAT = "business-finlynq-wrapped-key-v1";
+const FIELD_FORMAT = "business-finlynq-encrypted-field-v1";
 
 export interface KeyProvider {
   readonly name: string;
@@ -165,4 +170,93 @@ export function decryptField(
 
 export function sameKey(left: Buffer, right: Buffer): boolean {
   return left.length === right.length && timingSafeEqual(left, right);
+}
+
+export function serializeWrappedKey(wrapped: WrappedKey): string {
+  return JSON.stringify({ format: ENVELOPE_FORMAT, ...wrapped });
+}
+
+export function parseWrappedKey(value: string): WrappedKey {
+  const parsed: unknown = JSON.parse(value);
+  if (!parsed || typeof parsed !== "object") throw new Error("Wrapped organization key is invalid");
+  const candidate = parsed as Record<string, unknown>;
+  if (
+    candidate.format !== ENVELOPE_FORMAT ||
+    typeof candidate.provider !== "string" ||
+    !Number.isSafeInteger(candidate.keyVersion) ||
+    typeof candidate.iv !== "string" ||
+    typeof candidate.ciphertext !== "string" ||
+    typeof candidate.authTag !== "string"
+  ) {
+    throw new Error("Wrapped organization key metadata is invalid");
+  }
+  return {
+    provider: candidate.provider,
+    keyVersion: candidate.keyVersion as number,
+    iv: candidate.iv,
+    ciphertext: candidate.ciphertext,
+    authTag: candidate.authTag,
+  };
+}
+
+export function serializeEncryptedField(encrypted: EncryptedField): string {
+  return JSON.stringify({ format: FIELD_FORMAT, ...encrypted });
+}
+
+export function parseEncryptedField(value: string): EncryptedField {
+  const parsed: unknown = JSON.parse(value);
+  if (!parsed || typeof parsed !== "object") throw new Error("Encrypted field is invalid");
+  const candidate = parsed as Record<string, unknown>;
+  if (
+    candidate.format !== FIELD_FORMAT ||
+    candidate.algorithm !== "AES-256-GCM" ||
+    !Number.isSafeInteger(candidate.keyVersion) ||
+    typeof candidate.iv !== "string" ||
+    typeof candidate.ciphertext !== "string" ||
+    typeof candidate.authTag !== "string"
+  ) {
+    throw new Error("Encrypted field metadata is invalid");
+  }
+  return {
+    algorithm: "AES-256-GCM",
+    keyVersion: candidate.keyVersion as number,
+    iv: candidate.iv,
+    ciphertext: candidate.ciphertext,
+    authTag: candidate.authTag,
+  };
+}
+
+export function normalizeBlindIndexValue(value: string): string {
+  const normalized = value.normalize("NFKC").trim().replace(/\s+/g, " ").toLocaleLowerCase("en-US");
+  if (!normalized) throw new Error("Blind-indexed values cannot be blank");
+  return normalized;
+}
+
+/**
+ * Creates an equality-search token using a purpose-specific key derived from
+ * the organization DEK. The token cannot be used to decrypt the source value.
+ */
+export function createBlindIndex(
+  value: string,
+  organizationDek: Buffer,
+  organizationId: string,
+  purpose: string,
+): string {
+  assertKey(organizationDek, "Organization DEK");
+  const normalizedPurpose = purpose.trim().toLocaleLowerCase("en-US");
+  if (!/^[a-z0-9][a-z0-9._-]{0,99}$/.test(normalizedPurpose)) {
+    throw new Error("Blind-index purpose must be a canonical application key");
+  }
+  const searchKey = Buffer.from(hkdfSync(
+    "sha256",
+    organizationDek,
+    Buffer.from(organizationId, "utf8"),
+    Buffer.from(`business-finlynq|blind-index|${normalizedPurpose}`, "utf8"),
+    32,
+  ));
+  const digest = createHmac("sha256", searchKey)
+    .update(normalizeBlindIndexValue(value), "utf8")
+    .digest("hex");
+  searchKey.fill(0);
+  return `hmac-sha256-v1:${digest}`;
 }

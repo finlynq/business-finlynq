@@ -1,7 +1,11 @@
 import { demoDashboard, demoTaxExceptions } from "@/modules/demo/dashboard-data";
+import { requireWorkspacePrincipal } from "@/modules/workspace/access";
+import { TenantModuleUnavailable } from "../../_components/tenant-module-unavailable";
 import { DemoNotice, PageHeader, StatusPill } from "../../_components/ui";
 
 export default async function TaxPage({ searchParams }: { searchParams: Promise<{ status?: string }> }) {
+  const principal = await requireWorkspacePrincipal("/app/tax");
+  if (principal.sessionMode !== "demo") return <TenantModuleUnavailable moduleName="Tax" />;
   const reviewOnly = (await searchParams).status === "review";
   const appliedTaxDecisions = demoDashboard.taxDecisions.filter((tax) => tax.status === "APPLIED");
   return (

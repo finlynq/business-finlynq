@@ -24,7 +24,7 @@ The architecture review is accepted. Delivery is intentionally sliced so an attr
 
 P0 demonstrates the workflow and design; it does not satisfy or bypass any later milestone exit gate.
 
-## Milestone 1 — identity, recovery, and encrypted master data
+## Milestone 1 — identity, recovery, and encrypted master data (implemented; activation gated)
 
 - Signed session/OIDC identity resolver that produces tenant context server-side.
 - Invitations, memberships, custom roles, MFA step-up, session revocation, and security notifications.
@@ -35,11 +35,15 @@ P0 demonstrates the workflow and design; it does not satisfy or bypass any later
 
 Exit gate: recovery and encrypted persistence pass end-to-end tests; only then may `BUSINESS_WRITES_ENABLED` be enabled in a non-production test environment.
 
-## Milestone 2 — usable general ledger
+The application paths and automated tests for this milestone are present. Public activation still requires a verified sending domain/provider credential, a running isolated email worker, separately escrowed recovery material, and an operator-observed acceptance exercise. Online organization-key rotation is deliberately unavailable until record re-encryption and blind-index rebuilding can be made atomic.
+
+## Milestone 2 — usable general ledger (core workflow implemented)
 
 - Organization/entity onboarding, ASPE or U.S. GAAP profile, functional currency, fiscal calendar, and demo chart creation.
 - Segment configuration/rendering, journal draft/submit/approve/post, reversal/replacement, recurring journals, trial balance, general ledger, and period close/reopen UI.
 - Audit explorer, CSV import to draft, attachments, and financial statements.
+
+Tenant onboarding, encrypted master data, manual journal draft/role-based auto-post, explicit posting, full linked reversal, source-module ownership, and period close/reopen/seal services are implemented. Posting-policy administration UI, interactive reversal controls, recurring journals, CSV import, attachments, and the complete reporting set remain gated work.
 
 ## Milestone 3 — receivables and payables
 

@@ -1,14 +1,32 @@
-import { demoDashboard } from "@/modules/demo/dashboard-data";
+import { redirect } from "next/navigation";
+import { currentPrincipal } from "@/modules/identity/session";
+import { loadTenantPartyDirectory } from "@/modules/ledger/tenant-workspace";
+import { PartyCreateForm } from "../../_components/party-create-form.client";
 import { DemoNotice, EmptyState, PageHeader } from "../../_components/ui";
 
 export default async function PartiesPage({ searchParams }: { searchParams: Promise<{ q?: string }> }) {
-  const query = (await searchParams).q?.trim().toLocaleLowerCase() ?? "";
-  const parties = demoDashboard.parties.filter((party) => !query || `${party.party} ${party.name} ${party.roles.join(" ")} ${party.entity}`.toLocaleLowerCase().includes(query));
+  const principal = await currentPrincipal();
+  if (!principal) redirect("/login?next=%2Fapp%2Fparties&reason=expired");
+  const query = (await searchParams).q?.trim() ?? "";
+  const directory = await loadTenantPartyDirectory(principal, query);
   return (
     <div className="page-content">
-      <PageHeader eyebrow="Unified master data" title="Parties & roles" description="A party can hold independent customer, supplier, and intercompany relationships without entering the chart-of-account key." />
-      <DemoNotice>Names shown here are sample data. Production names, addresses, tax IDs, and bank details require organization envelope encryption and blind-index search.</DemoNotice>
-      {parties.length ? <ul className="party-directory">{parties.map((party) => <li key={party.party}><span className="party-avatar" aria-hidden="true">{party.name.slice(0, 2).toUpperCase()}</span><div><h2>{party.name}</h2><p>{party.party} · {party.entity}</p><div className="role-list">{party.roles.map((role) => <span key={role}>{role}</span>)}</div></div><strong>{party.balance}</strong></li>)}</ul> : <EmptyState title="No party found">Try another party, customer, supplier, or intercompany number.</EmptyState>}
+      <PageHeader eyebrow="Unified master data" title="Parties & roles" description="Party names and addresses use organization envelope encryption; exact-name lookup uses a keyed blind index." />
+      {directory.demoOnly && <DemoNotice>These names are encrypted synthetic records in the isolated demo organization. The demo remains read-only.</DemoNotice>}
+      {!directory.demoOnly && directory.readiness === "READY" && directory.canManage && <PartyCreateForm />}
+      {query && <p className="form-footnote">Encrypted names use exact-match search. Party numbers support prefix search.</p>}
+      {directory.readiness === "ENCRYPTION_SETUP_REQUIRED" ? (
+        <EmptyState title="Encryption setup is required">Provision the organization data-encryption key before saving or reading party master data.</EmptyState>
+      ) : directory.parties.length ? (
+        <ul className="party-directory">{directory.parties.map((party) => (
+          <li key={party.id}>
+            <span className="party-avatar" aria-hidden="true">{party.displayName.slice(0, 2).toUpperCase()}</span>
+            <div><h2>{party.displayName}</h2><p>{party.partyNumber}</p><div className="role-list"><span>{party.active ? "Active" : "Inactive"}</span></div></div>
+          </li>
+        ))}</ul>
+      ) : (
+        <EmptyState title="No party found">{query ? "Try an exact encrypted name or a party-number prefix." : "Create the first encrypted customer or supplier party."}</EmptyState>
+      )}
     </div>
   );
 }

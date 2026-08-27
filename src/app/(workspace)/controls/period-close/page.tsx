@@ -1,11 +1,31 @@
 import Link from "next/link";
 import { demoClosePackages } from "@/modules/demo/dashboard-data";
+import { loadPeriodControlWorkspace } from "@/modules/ledger/tenant-workspace";
+import { requireWorkspacePrincipal } from "@/modules/workspace/access";
 import { CloseReadinessForm } from "../../../_components/close-readiness-form.client";
+import { PeriodTransitionForm } from "../../../_components/period-transition-form.client";
 import { DemoNotice, PageHeader, StatusPill } from "../../../_components/ui";
 
-const blockers = demoClosePackages.flatMap((closePackage) => closePackage.blockers.map((blocker) => `${closePackage.entityCode} · ${blocker.label}: ${blocker.detail}`));
-
-export default function PeriodClosePage() {
+export default async function PeriodClosePage() {
+  const principal = await requireWorkspacePrincipal("/app/controls/period-close");
+  if (principal.sessionMode === "real") {
+    const workspace = await loadPeriodControlWorkspace(principal);
+    return (
+      <div className="page-content">
+        <PageHeader
+          eyebrow="Controls · Fiscal periods"
+          title="Period controls"
+          description="Move periods through controlled close states. Reopening and irreversible sealing require current MFA, permission, a reason, and an optimistic version check."
+        />
+        <aside className="demo-notice" aria-label="Period control warning">
+          <span aria-hidden="true">i</span>
+          <p>OPEN moves to ADJUSTMENT ONLY before HARD CLOSED. SEALED is irreversible, and unposted journals block hard close and seal.</p>
+        </aside>
+        <PeriodTransitionForm workspace={workspace} />
+      </div>
+    );
+  }
+  const blockers = demoClosePackages.flatMap((closePackage) => closePackage.blockers.map((blocker) => `${closePackage.entityCode} · ${blocker.label}: ${blocker.detail}`));
   return (
     <div className="page-content">
       <PageHeader eyebrow="Controls · August 2026" title="Period-close package" description="Review readiness evidence and preview the hard-close request requirements. No period state can change in this demo." actions={<Link className="secondary-button" href="/app/tax?status=review">Review tax blockers</Link>} />

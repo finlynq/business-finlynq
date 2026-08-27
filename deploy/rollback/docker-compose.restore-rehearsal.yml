@@ -1,0 +1,89 @@
+services:
+  rollback_rehearsal_app:
+    profiles: [restore-drill]
+    image: sha256:2135e8e936bf8befdc44132771698dfb942fc97dccb19b71eeb3db9f3e5b66b5
+    pull_policy: never
+    entrypoint:
+      - /bin/sh
+      - /usr/local/bin/business-finlynq-legacy-db-password
+    command: ["node", "server.js"]
+    environment:
+      BUSINESS_FINLYNQ_DB_HOST: restore_database
+      BUSINESS_FINLYNQ_DB_PORT: "5432"
+      BUSINESS_FINLYNQ_DB_NAME: business_finlynq_restore_drill
+      BUSINESS_FINLYNQ_DB_USER: business_finlynq_app
+      BUSINESS_FINLYNQ_DB_PASSWORD_FILE: /run/secrets/business_finlynq_app_db_password
+      APP_ORIGIN: https://${BUSINESS_FINLYNQ_HOSTNAME:-business.finlynq.com}
+      SESSION_COOKIE_NAME: __Host-business_finlynq_session
+      DEMO_LOGIN_ENABLED: "true"
+      ACCOUNT_LOGIN_ENABLED: "false"
+      AUTH_EMAIL_DELIVERY_ENABLED: "false"
+      BUSINESS_WRITES_ENABLED: "false"
+      BUSINESS_FINLYNQ_IMAGE_REVISION: f8485ca86fef5b5fb4a38be9cb4cf3bea5ac2107
+      ROLLBACK_COMPATIBILITY_ACK: ${ROLLBACK_COMPATIBILITY_ACK:?set ROLLBACK_COMPATIBILITY_ACK=f8485-one-release-only}
+      ORGANIZATION_ROOT_KEK_FILE: /run/secrets/business_finlynq_root_kek
+      IDENTITY_SECRET_FILE: /run/secrets/business_finlynq_identity_secret
+    secrets:
+      - business_finlynq_root_kek
+      - business_finlynq_identity_secret
+      - business_finlynq_app_db_password
+    group_add:
+      - ${BUSINESS_FINLYNQ_SECRET_GID:?set BUSINESS_FINLYNQ_SECRET_GID}
+    volumes:
+      - type: bind
+        source: ./deploy/rollback/legacy-inline-db-password-entrypoint.sh
+        target: /usr/local/bin/business-finlynq-legacy-db-password
+        read_only: true
+    depends_on:
+      restore_key_verify:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:3000/api/health"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+    read_only: true
+    init: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    security_opt:
+      - no-new-privileges:true
+    cap_drop: [ALL]
+    restart: "no"
+    networks: [business_finlynq_restore_drill]
+    cpus: "0.75"
+    mem_limit: 768m
+    pids_limit: 128
+    logging:
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  rollback_rehearsal_verify:
+    profiles: [restore-drill]
+    build:
+      context: .
+      target: operations
+    command: ["/usr/local/bin/business-finlynq-verify-legacy-app"]
+    environment:
+      ROLLBACK_APP_URL: http://rollback_rehearsal_app:3000
+    depends_on:
+      rollback_rehearsal_app:
+        condition: service_healthy
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp:size=32m,mode=1777
+    security_opt:
+      - no-new-privileges:true
+    cap_drop: [ALL]
+    restart: "no"
+    networks: [business_finlynq_restore_drill]
+    cpus: "0.25"
+    mem_limit: 128m
+    pids_limit: 64
+    logging:
+      options:
+        max-size: "10m"
+        max-file: "3"

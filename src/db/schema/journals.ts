@@ -113,6 +113,7 @@ export const journalEntries = pgTable(
     }),
     sourceEventKey: text("source_event_key").notNull(),
     idempotencyKey: text("idempotency_key").notNull(),
+    commandHash: text("command_hash").notNull().default("0000000000000000000000000000000000000000000000000000000000000000"),
     origin: journalOrigin("origin").notNull(),
     purpose: journalPurpose("purpose").notNull(),
     status: journalStatus("status").notNull().default("DRAFT"),

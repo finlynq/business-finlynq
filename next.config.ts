@@ -79,7 +79,7 @@ const nextConfig: NextConfig = {
         ],
       },
       {
-        source: "/(login|forgot-password|reset-password|try-demo)",
+        source: "/(login|forgot-password|reset-password|accept-invitation|try-demo)",
         headers: [
           { key: "Cache-Control", value: "private, no-store" },
           { key: "X-Robots-Tag", value: "noindex, nofollow, noarchive" },

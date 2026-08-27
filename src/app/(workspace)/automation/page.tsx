@@ -1,9 +1,13 @@
 import { DemoNotice, PageHeader } from "../../_components/ui";
+import { requireWorkspacePrincipal } from "@/modules/workspace/access";
+import { TenantModuleUnavailable } from "../../_components/tenant-module-unavailable";
 
 const allowed = ["ledger:read", "open-items:read", "journal-draft:create"] as const;
 const denied = ["journal:post", "approval:self", "period:reopen", "role:change", "history:delete", "key:recover"] as const;
 
-export default function AutomationPage() {
+export default async function AutomationPage() {
+  const principal = await requireWorkspacePrincipal("/app/automation");
+  if (principal.sessionMode !== "demo") return <TenantModuleUnavailable moduleName="AI and MCP" />;
   return (
     <div className="page-content">
       <PageHeader eyebrow="Controlled automation" title="AI & MCP access" description="The future MCP surface uses the same tenant authorization, RLS transaction context, idempotency, and audit path as the UI." />

@@ -1,0 +1,66 @@
+# Monitoring and alerting runbook
+
+Business Finlynq exposes two deliberately different probes:
+
+- `/api/live` confirms that the Node process can answer HTTP. It does not touch secrets or PostgreSQL and is used by the container health check that gates Caddy startup.
+- `/api/health` is readiness. It returns `503` unless PostgreSQL, the organization root wrapping key, and the independent identity secret are available and valid. When real accounts are enabled it also requires valid non-secret delivery metadata and a fresh database heartbeat from the authentication email worker, with no expired lease or seriously delayed due item.
+
+Both endpoints are non-cacheable and excluded from indexing. Readiness returns only component state and the configured release revision; it does not expose credentials, host details, database timings, or exception messages.
+
+## Host monitor
+
+`deploy/monitoring/check-production.sh` is a five-minute synthetic/host check. It validates:
+
+- public HTTPS readiness and required no-store/HSTS headers;
+- certificate validity beyond the configured threshold;
+- expected app, database, and edge container state;
+- the externally served revision when `MONITOR_EXPECT_REVISION` is set;
+- backup filesystem utilization;
+- newest backup age, internally consistent manifest/artifact/checksum, and verified off-site marker.
+
+Install the committed service and timer:
+
+```bash
+install -m 0555 deploy/monitoring/check-production.sh /usr/local/sbin/business-finlynq-check-production
+install -m 0555 deploy/monitoring/notify-failure.sh /usr/local/sbin/business-finlynq-notify-failure
+install -m 0644 deploy/systemd/business-finlynq-monitor.service /etc/systemd/system/
+install -m 0644 deploy/systemd/business-finlynq-monitor.timer /etc/systemd/system/
+install -m 0644 deploy/systemd/business-finlynq-monitor-notify@.service /etc/systemd/system/
+systemctl daemon-reload
+systemctl enable --now business-finlynq-monitor.timer
+systemctl start business-finlynq-monitor.service
+```
+
+The unit files invoke the scripts from `/opt/business-finlynq/current`; the optional `/usr/local/sbin` copies above are useful for administrators but are not used unless the unit is customized.
+
+Configure `/etc/business-finlynq/operations.env` with thresholds from `.env.example`. For webhook delivery, put one HTTPS URL in `/etc/business-finlynq/secrets/monitor-webhook-url`, mode `0400`. The notification contains only the failed unit and host name. If no webhook exists, the failure remains in journald, which is safe but is **not** an external alert.
+
+Set `MONITOR_EXPECT_REVISION` to the same reviewed Git SHA as `BUSINESS_FINLYNQ_IMAGE_REVISION` during each release. A mismatch then fails the host check instead of silently monitoring an older container.
+
+Set `MONITOR_EXPECT_AUTH_EMAIL_WORKER=true` at the same cutover that enables real account email delivery. Before that cutover it stays false so the intentionally absent profile is not reported as an outage.
+
+The database readiness contract intentionally reports dead-letter count separately from worker availability: one permanently failed address must not disable every account login. Configure centralized worker-log/provider telemetry to page on any transition to `DEAD`, and retain a metric for oldest pending age. The public readiness endpoint catches a stopped worker, stuck lease, or materially delayed due queue without exposing counts or recipients.
+
+Production requires an independent external uptime/alerting service that calls `https://business.finlynq.com/api/health` from outside the VPS and pages at least two operators. A local timer cannot report a total VPS, network, or provider failure. Configure alerts for:
+
+- two consecutive readiness failures;
+- TLS expiry below 21 days;
+- disk use at or above 85%;
+- backup older than 8 hours or without off-site verification;
+- database/container unhealthy or restart loop;
+- auth email worker stopped, repeated delivery failures, and password-recovery abuse rate;
+- sustained 5xx responses and abnormal latency;
+- audit-chain verification failure.
+
+The first five are implemented by the host script. Provider delivery telemetry, centralized log alerting, audit-chain scheduling, and off-host uptime paging require the selected monitoring vendor and must be tested with a real notification before account login or writes are enabled.
+
+## Incident triage
+
+1. Acknowledge the page and record UTC time, hostname, release SHA, and failing check.
+2. Inspect `systemctl status` for monitor/backup and `docker compose --profile edge --profile auth-email ps`.
+3. Read bounded logs with `docker compose logs --since 30m <service>`; never paste secret files or full identity/accounting records into a ticket.
+4. If readiness fails but liveness passes, check database health and secret mounts before restarting the app. Do not rotate or replace encryption keys as a troubleshooting step.
+5. If backup freshness/checksum fails, preserve the newest artifacts, repair the destination or credentials, rerun a backup, and verify off-site checksum. Do not prune the only recoverable set.
+6. Escalate suspected data exposure, unauthorized posting, audit mismatch, or key loss through the security incident process in `SECURITY.md`.
+
+After resolution, attach monitor output, the relevant backup/restore report, and corrective action to the incident record.

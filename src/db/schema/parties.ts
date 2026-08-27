@@ -1,6 +1,7 @@
 import {
   boolean,
   date,
+  integer,
   numeric,
   pgEnum,
   pgTable,
@@ -24,7 +25,9 @@ export const parties = pgTable(
       .references(() => organizations.id, { onDelete: "restrict" }),
     partyNumber: text("party_number").notNull(),
     displayNameCiphertext: text("display_name_ciphertext").notNull(),
+    displayNameKeyVersion: integer("display_name_key_version").notNull().default(1),
     searchToken: text("search_token").notNull(),
+    commandHash: text("command_hash").notNull().default("0000000000000000000000000000000000000000000000000000000000000000"),
     internalLegalEntityId: uuid("internal_legal_entity_id").references(() => legalEntities.id, {
       onDelete: "restrict",
     }),

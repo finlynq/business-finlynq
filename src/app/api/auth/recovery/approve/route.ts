@@ -1,0 +1,48 @@
+import { randomUUID } from "node:crypto";
+import { NextRequest, NextResponse } from "next/server";
+import { z } from "zod";
+import { approveRecovery, consumeRateLimit, consumeRecoveryApprovalLimits, totpForSession } from "@/modules/identity/auth-store";
+import { requestFingerprints, validateSameOriginMutation } from "@/modules/identity/request-security";
+import { requestPrincipal } from "@/modules/identity/session";
+import { verifyTotp } from "@/modules/identity/totp";
+import { decryptAuthPayload } from "@/security/identity-secret";
+
+const schema = z.object({ recoveryRequestId: z.uuid(), otp: z.string().regex(/^\d{6}$/) });
+const headers = { "Cache-Control": "private, no-store", "X-Robots-Tag": "noindex" };
+
+export async function POST(request: NextRequest) {
+  if (!validateSameOriginMutation(request)) return NextResponse.json({ error: "The request could not be verified." }, { status: 403, headers });
+  const principal = await requestPrincipal(request);
+  if (!principal || principal.sessionMode !== "real") return NextResponse.json({ error: "Sign in to continue." }, { status: 401, headers });
+  try {
+    const parsed = schema.safeParse(await request.json());
+    if (!parsed.success) return NextResponse.json({ error: "Enter a valid recovery request and authenticator code." }, { status: 400, headers });
+    const { ipHash } = requestFingerprints(request);
+    const [ipLimit, principalLimit] = await Promise.all([
+      consumeRateLimit("recovery-approval-ip-hour", ipHash, 10, 3600),
+      consumeRecoveryApprovalLimits(principal.sessionId, parsed.data.recoveryRequestId),
+    ]);
+    if (!ipLimit.allowed || !principalLimit.allowed) {
+      return NextResponse.json(
+        { error: "Too many attempts. Try again later." },
+        { status: 429, headers: { ...headers, "Retry-After": String(Math.max(ipLimit.retry_after_seconds, principalLimit.retry_after_seconds)) } },
+      );
+    }
+    const factor = await totpForSession(principal.sessionId);
+    if (!factor) return NextResponse.json({ error: "An active authenticator is required to approve recovery." }, { status: 403, headers });
+    const secret = decryptAuthPayload(factor.factor_secret_ciphertext, "totp-secret", factor.factor_id);
+    const counter = verifyTotp(secret, parsed.data.otp);
+    const approved = counter !== null && await approveRecovery({
+      recoveryRequestId: parsed.data.recoveryRequestId,
+      actorSessionId: principal.sessionId,
+      factorId: factor.factor_id,
+      counter,
+      requestId: randomUUID(),
+    });
+    if (!approved) return NextResponse.json({ error: "The request cannot be approved, or the authenticator code was already used." }, { status: 403, headers });
+    return NextResponse.json({ success: true }, { headers });
+  } catch (error) {
+    console.error("Business Finlynq recovery approval failed", { error: error instanceof Error ? error.message : "unknown error" });
+    return NextResponse.json({ error: "Recovery approval is temporarily unavailable." }, { status: 503, headers });
+  }
+}

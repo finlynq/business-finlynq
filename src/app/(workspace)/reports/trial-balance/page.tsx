@@ -1,9 +1,13 @@
 import Link from "next/link";
 import { demoEntityDetails, demoTrialBalanceRows } from "@/modules/demo/dashboard-data";
 import { getDemoTrialBalance } from "@/modules/demo/workspace";
+import { requireWorkspacePrincipal } from "@/modules/workspace/access";
+import { TenantModuleUnavailable } from "../../../_components/tenant-module-unavailable";
 import { DemoNotice, PageHeader } from "../../../_components/ui";
 
-export default function TrialBalancePage() {
+export default async function TrialBalancePage() {
+  const principal = await requireWorkspacePrincipal("/app/reports/trial-balance");
+  if (principal.sessionMode !== "demo") return <TenantModuleUnavailable moduleName="Trial balance" />;
   const reports = demoEntityDetails.map((entity) => ({ entity, report: getDemoTrialBalance(entity.code) }));
   return (
     <div className="page-content">

@@ -27,13 +27,17 @@ type LockedJournal = {
   journal_number: number | null;
 };
 
-async function lockJournal(client: PoolClient, journalId: string): Promise<LockedJournal> {
+async function lockJournal(
+  client: PoolClient,
+  organizationId: string,
+  journalId: string,
+): Promise<LockedJournal> {
   const result = await client.query<LockedJournal>(
     `SELECT id, organization_id, ledger_id, status, content_hash, journal_number
      FROM journal_entries
-     WHERE id = $1
+     WHERE organization_id = $1 AND id = $2
      FOR UPDATE`,
-    [journalId],
+    [organizationId, journalId],
   );
 
   const journal = result.rows[0];
@@ -72,72 +76,78 @@ async function computeCanonicalContentHash(client: PoolClient, journalId: string
   return contentHash.toLowerCase();
 }
 
-export async function postJournal(command: PostJournalCommand): Promise<PostJournalResult> {
-  assertBusinessWritesEnabled();
+export async function postJournalInTransaction(
+  client: PoolClient,
+  command: PostJournalCommand,
+): Promise<PostJournalResult> {
   const expectedContentHash = normalizeExpectedContentHash(command.expectedContentHash);
+  await assertActorHasActivePermission(client, {
+    organizationId: command.context.organizationId,
+    actorId: command.context.actorId,
+    permission: PERMISSIONS.postJournal,
+  });
 
-  return withTenantTransaction(command.context, async (client) => {
-    await assertActorHasActivePermission(client, {
-      organizationId: command.context.organizationId,
-      actorId: command.context.actorId,
-      permission: PERMISSIONS.postJournal,
-    });
+  const journal = await lockJournal(client, command.context.organizationId, command.journalId);
 
-    const journal = await lockJournal(client, command.journalId);
+  if (!new Set(["DRAFT", "SUBMITTED", "APPROVED", "POSTED"]).has(journal.status)) {
+    throw new Error(`Journal cannot post from status ${journal.status}`);
+  }
 
-    if (!new Set(["DRAFT", "SUBMITTED", "APPROVED", "POSTED"]).has(journal.status)) {
-      throw new Error(`Journal cannot post from status ${journal.status}`);
-    }
+  const contentHash = await computeCanonicalContentHash(client, journal.id);
+  if (expectedContentHash !== undefined && expectedContentHash !== contentHash) {
+    throw new Error("Journal content changed after the expected hash was calculated");
+  }
 
-    const contentHash = await computeCanonicalContentHash(client, journal.id);
-    if (expectedContentHash !== undefined && expectedContentHash !== contentHash) {
-      throw new Error("Journal content changed after the expected hash was calculated");
-    }
-
-    if (journal.status === "POSTED") {
-      if (
-        journal.content_hash?.toLowerCase() !== contentHash ||
-        journal.journal_number === null
-      ) {
-        throw new Error("Posted journal metadata does not match its canonical content");
-      }
-
-      return {
-        journalId: journal.id,
-        journalNumber: journal.journal_number,
-        status: "POSTED",
-        idempotentReplay: true,
-      };
-    }
-
-    const posted = await client.query<{ id: string; journal_number: number }>(
-      `UPDATE journal_entries
-       SET status = 'POSTED',
-           content_hash = $1
-       WHERE id = $2 AND organization_id = $3 AND status = $4
-       RETURNING id, journal_number`,
-      [
-        contentHash,
-        journal.id,
-        command.context.organizationId,
-        journal.status,
-      ],
-    );
-
-    if (!posted.rows[0]) {
-      throw new Error("Journal posting did not update an authorized row");
-    }
-
-    const journalNumber = Number(posted.rows[0].journal_number);
-    if (!Number.isSafeInteger(journalNumber) || journalNumber <= 0) {
-      throw new Error("Database journal number allocation failed");
+  if (journal.status === "POSTED") {
+    if (
+      journal.content_hash?.toLowerCase() !== contentHash ||
+      journal.journal_number === null
+    ) {
+      throw new Error("Posted journal metadata does not match its canonical content");
     }
 
     return {
       journalId: journal.id,
-      journalNumber,
+      journalNumber: journal.journal_number,
       status: "POSTED",
-      idempotentReplay: false,
+      idempotentReplay: true,
     };
+  }
+
+  const posted = await client.query<{ id: string; journal_number: number }>(
+    `UPDATE journal_entries
+     SET status = 'POSTED',
+         content_hash = $1
+     WHERE id = $2 AND organization_id = $3 AND status = $4
+     RETURNING id, journal_number`,
+    [
+      contentHash,
+      journal.id,
+      command.context.organizationId,
+      journal.status,
+    ],
+  );
+
+  if (!posted.rows[0]) {
+    throw new Error("Journal posting did not update an authorized row");
+  }
+
+  const journalNumber = Number(posted.rows[0].journal_number);
+  if (!Number.isSafeInteger(journalNumber) || journalNumber <= 0) {
+    throw new Error("Database journal number allocation failed");
+  }
+
+  return {
+    journalId: journal.id,
+    journalNumber,
+    status: "POSTED",
+    idempotentReplay: false,
+  };
+}
+
+export async function postJournal(command: PostJournalCommand): Promise<PostJournalResult> {
+  assertBusinessWritesEnabled();
+  return withTenantTransaction(command.context, async (client) => {
+    return postJournalInTransaction(client, command);
   });
 }

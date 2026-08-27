@@ -1,9 +1,5 @@
 import Link from "next/link";
-import {
-  demoDashboard,
-  demoSearchIndex,
-  demoWriteState,
-} from "@/modules/demo/dashboard-data";
+import { demoSearchIndex } from "@/modules/demo/dashboard-data";
 import type { SessionPrincipal } from "@/modules/identity/session";
 import { AccountMenu, type AccountMenuPrincipal } from "./account-menu.client";
 import { GlobalSearch, type SearchEntry } from "./global-search.client";
@@ -27,14 +23,14 @@ const connectionItems: readonly NavigationItem[] = [
   { abbreviation: "AI", label: "AI & MCP", href: "/app/automation" },
 ];
 
-function createSearchIndex(): readonly SearchEntry[] {
+function createSearchIndex(includeDemoRecords: boolean): readonly SearchEntry[] {
   const routes: SearchEntry[] = [...workspaceItems, ...connectionItems].map((item) => ({
     label: item.label,
     detail: "Workspace page",
     href: item.href,
     keywords: item.abbreviation,
   }));
-  const records: SearchEntry[] = demoSearchIndex.map((entry) => ({
+  const records: SearchEntry[] = (includeDemoRecords ? demoSearchIndex : []).map((entry) => ({
       label: entry.title,
       detail: entry.subtitle,
       href: `/app${entry.href}`,
@@ -44,8 +40,11 @@ function createSearchIndex(): readonly SearchEntry[] {
 }
 
 export function WorkspaceShell({ children, principal, readOnly }: { children: React.ReactNode; principal: SessionPrincipal; readOnly: boolean }) {
-  const organization = { ...demoDashboard.organization, name: principal.organizationName };
-  const searchIndex = createSearchIndex();
+  const organization = {
+    name: principal.organizationName,
+    environment: principal.sessionMode === "demo" ? "Public preview" : "Private workspace",
+  };
+  const searchIndex = createSearchIndex(principal.sessionMode === "demo");
   const accountPrincipal: AccountMenuPrincipal = {
     displayName: principal.displayName,
     organizationName: principal.organizationName,
@@ -89,7 +88,7 @@ export function WorkspaceShell({ children, principal, readOnly }: { children: Re
           <div>
             <span className="read-only-dot" aria-hidden="true" />
             <strong>{principal.sessionMode === "demo" ? "Public demo" : "Accounting workspace"}</strong>
-            <span>{principal.sessionMode === "demo" ? "Synthetic records · changes are not saved" : readOnly ? demoWriteState.message : "Posting follows your assigned roles"}</span>
+            <span>{principal.sessionMode === "demo" ? "Synthetic records · changes are not saved" : readOnly ? "Business writes are disabled for this deployment" : "Posting follows your assigned roles"}</span>
           </div>
           <GlobalSearch entries={searchIndex} />
         </div>

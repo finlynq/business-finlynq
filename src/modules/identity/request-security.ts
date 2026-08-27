@@ -1,12 +1,26 @@
 import type { NextRequest } from "next/server";
 import { identityLookupHash } from "@/security/identity-secret";
 
-export function configuredAppOrigin(): URL {
-  const raw = process.env.APP_ORIGIN?.trim() ?? (process.env.NODE_ENV === "production" ? "" : "http://localhost:3000");
+type RequestSecurityEnvironment = Readonly<Record<string, string | undefined>>;
+
+function allowsInsecureLoopbackTestOrigin(environment: RequestSecurityEnvironment, origin: URL): boolean {
+  return environment.ALLOW_INSECURE_TEST_ORIGIN === "true" &&
+    environment.BUSINESS_FINLYNQ_TEST_CONTEXT === "playwright" &&
+    origin.protocol === "http:" &&
+    (origin.hostname === "127.0.0.1" || origin.hostname === "localhost");
+}
+
+export function configuredAppOrigin(environment: RequestSecurityEnvironment = process.env): URL {
+  const raw = environment.APP_ORIGIN?.trim() ?? (environment.NODE_ENV === "production" ? "" : "http://localhost:3000");
   if (!raw) throw new Error("APP_ORIGIN is required in production");
   const origin = new URL(raw);
-  if (origin.pathname !== "/" || origin.search || origin.hash) throw new Error("APP_ORIGIN must contain only an origin");
-  if (process.env.NODE_ENV === "production" && origin.protocol !== "https:") throw new Error("Production APP_ORIGIN must use HTTPS");
+  if (origin.pathname !== "/" || origin.search || origin.hash || origin.username || origin.password) {
+    throw new Error("APP_ORIGIN must contain only an origin");
+  }
+  if (environment.NODE_ENV === "production" && origin.protocol !== "https:" &&
+      !allowsInsecureLoopbackTestOrigin(environment, origin)) {
+    throw new Error("Production APP_ORIGIN must use HTTPS");
+  }
   return origin;
 }
 

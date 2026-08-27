@@ -3,22 +3,75 @@ set -eu
 
 : "${POSTGRES_USER:?POSTGRES_USER is required}"
 : "${POSTGRES_DB:?POSTGRES_DB is required}"
-: "${APP_DATABASE_PASSWORD:?APP_DATABASE_PASSWORD is required}"
 
+if [ -n "${APP_DATABASE_PASSWORD_FILE:-}" ]; then
+  if [ ! -r "$APP_DATABASE_PASSWORD_FILE" ]; then
+    echo "APP_DATABASE_PASSWORD_FILE must name a readable secret file" >&2
+    exit 1
+  fi
+  password_line_count="$(awk 'END { print NR }' "$APP_DATABASE_PASSWORD_FILE")"
+  if [ "$password_line_count" -ne 1 ]; then
+    echo "APP_DATABASE_PASSWORD_FILE must contain exactly one line" >&2
+    exit 1
+  fi
+  APP_DATABASE_PASSWORD=""
+  IFS= read -r APP_DATABASE_PASSWORD < "$APP_DATABASE_PASSWORD_FILE" || [ -n "$APP_DATABASE_PASSWORD" ]
+else
+  : "${APP_DATABASE_PASSWORD:?APP_DATABASE_PASSWORD or APP_DATABASE_PASSWORD_FILE is required}"
+fi
+
+carriage_return="$(printf '\r')"
+case "$APP_DATABASE_PASSWORD" in
+  *'
+'*|*"$carriage_return"*)
+    echo "The application database password must be a single line" >&2
+    exit 1
+    ;;
+esac
+password_length=${#APP_DATABASE_PASSWORD}
+if [ "$password_length" -lt 24 ] || [ "$password_length" -gt 1024 ]; then
+  echo "The application database password must contain 24 to 1024 characters" >&2
+  exit 1
+fi
+
+# Keep the password out of the psql command line. psql imports it into an
+# escaped SQL variable from this short-lived process environment.
+BUSINESS_FINLYNQ_RECONCILE_PASSWORD="$APP_DATABASE_PASSWORD"
+export BUSINESS_FINLYNQ_RECONCILE_PASSWORD
+unset APP_DATABASE_PASSWORD
+trap 'unset BUSINESS_FINLYNQ_RECONCILE_PASSWORD' EXIT HUP INT TERM
+
+# Safe to rerun after migrations or an ACL-free restore. Future objects get no
+# implicit app access; every new grant must be reviewed and listed below.
 psql --set=ON_ERROR_STOP=1 \
   --username "$POSTGRES_USER" \
   --dbname "$POSTGRES_DB" \
   --set=db_name="$POSTGRES_DB" \
   --set=owner_role="$POSTGRES_USER" \
-  --set=app_password="$APP_DATABASE_PASSWORD" <<-'SQL'
-CREATE ROLE business_finlynq_app
-  LOGIN
-  PASSWORD :'app_password'
-  NOSUPERUSER
-  NOCREATEDB
-  NOCREATEROLE
-  NOINHERIT
-  NOBYPASSRLS
+  <<-'SQL'
+\getenv app_password BUSINESS_FINLYNQ_RECONCILE_PASSWORD
+DO $owner_check$
+BEGIN
+  IF current_user <> (
+    SELECT pg_get_userbyid(database.datdba)
+    FROM pg_database database
+    WHERE database.datname = current_database()
+  ) THEN
+    RAISE EXCEPTION 'Runtime grant reconciliation must run as the database owner';
+  END IF;
+END
+$owner_check$;
+
+SELECT format(
+  'CREATE ROLE business_finlynq_app LOGIN PASSWORD %L NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOBYPASSRLS CONNECTION LIMIT 20',
+  :'app_password'
+)
+WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'business_finlynq_app')
+\gexec
+
+ALTER ROLE business_finlynq_app
+  LOGIN PASSWORD :'app_password'
+  NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOBYPASSRLS
   CONNECTION LIMIT 20;
 
 REVOKE ALL ON DATABASE :"db_name" FROM PUBLIC;
@@ -31,8 +84,123 @@ ALTER ROLE business_finlynq_app SET lock_timeout = '5s';
 ALTER ROLE business_finlynq_app SET idle_in_transaction_session_timeout = '30s';
 ALTER ROLE business_finlynq_app SET search_path = public, app;
 
+-- Remove the former blanket future-object CRUD grants. New objects fail
+-- closed until this reviewed reconciliation list is deliberately extended.
 ALTER DEFAULT PRIVILEGES FOR ROLE :"owner_role" IN SCHEMA public
-  GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO business_finlynq_app;
+  REVOKE ALL ON TABLES FROM business_finlynq_app;
 ALTER DEFAULT PRIVILEGES FOR ROLE :"owner_role" IN SCHEMA public
-  GRANT USAGE, SELECT ON SEQUENCES TO business_finlynq_app;
+  REVOKE ALL ON SEQUENCES FROM business_finlynq_app;
+
+REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA public FROM business_finlynq_app;
+REVOKE ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public FROM business_finlynq_app;
+
+DO $reconcile$
+DECLARE
+  selected_name text;
+  selected_signature text;
+BEGIN
+  IF EXISTS (SELECT 1 FROM pg_namespace WHERE nspname = 'app') THEN
+    REVOKE ALL ON SCHEMA app FROM PUBLIC;
+    GRANT USAGE ON SCHEMA app TO business_finlynq_app;
+    REVOKE EXECUTE ON ALL FUNCTIONS IN SCHEMA app FROM PUBLIC;
+    REVOKE ALL PRIVILEGES ON ALL FUNCTIONS IN SCHEMA app FROM business_finlynq_app;
+    EXECUTE format(
+      'ALTER DEFAULT PRIVILEGES FOR ROLE %I IN SCHEMA app REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC',
+      current_user
+    );
+    EXECUTE format(
+      'ALTER DEFAULT PRIVILEGES FOR ROLE %I IN SCHEMA app REVOKE ALL ON FUNCTIONS FROM business_finlynq_app',
+      current_user
+    );
+  END IF;
+
+  -- Reads needed by the tenant DAL and invoker-security validators. Sensitive
+  -- user/auth, audit-outbox, and email-delivery tables are absent.
+  FOREACH selected_name IN ARRAY ARRAY[
+    'organizations', 'organization_memberships', 'roles',
+    'membership_roles', 'role_permissions', 'permissions',
+    'organization_key_versions', 'legal_entities', 'ledgers',
+    'fiscal_periods', 'period_events', 'ledger_number_sequences',
+    'ledger_posting_policies', 'gl_accounts', 'segment_definitions',
+    'segment_values', 'account_combinations', 'journal_type_definitions',
+    'source_documents', 'journal_entries', 'journal_approvals',
+    'journal_lines', 'journal_entry_relations', 'parties',
+    'party_addresses', 'party_accounts', 'subledger_events', 'open_items',
+    'tax_pack_versions', 'entity_tax_registrations',
+    'tax_determination_snapshots'
+  ] LOOP
+    IF to_regclass(format('public.%I', selected_name)) IS NOT NULL THEN
+      EXECUTE format('GRANT SELECT ON TABLE public.%I TO business_finlynq_app', selected_name);
+    END IF;
+  END LOOP;
+
+  -- Only controlled transactional paths receive direct mutation privileges.
+  -- No application table receives DELETE.
+  FOREACH selected_name IN ARRAY ARRAY[
+    'journal_entries', 'journal_lines', 'parties', 'party_addresses',
+    'ledger_posting_policies', 'ledger_number_sequences'
+  ] LOOP
+    IF to_regclass(format('public.%I', selected_name)) IS NOT NULL THEN
+      EXECUTE format('GRANT INSERT, UPDATE ON TABLE public.%I TO business_finlynq_app', selected_name);
+    END IF;
+  END LOOP;
+
+  FOREACH selected_name IN ARRAY ARRAY[
+    'journal_approvals', 'journal_entry_relations'
+  ] LOOP
+    IF to_regclass(format('public.%I', selected_name)) IS NOT NULL THEN
+      EXECUTE format('GRANT INSERT ON TABLE public.%I TO business_finlynq_app', selected_name);
+    END IF;
+  END LOOP;
+
+  IF to_regclass('public.fiscal_periods') IS NOT NULL THEN
+    GRANT UPDATE ON TABLE public.fiscal_periods TO business_finlynq_app;
+  END IF;
+
+  -- Directly called and invoker-security helper APIs only. Trigger-only and
+  -- worker-only functions remain non-executable by the web application.
+  FOREACH selected_signature IN ARRAY ARRAY[
+    'app.current_organization_id()',
+    'app.current_actor_id()',
+    'app.current_actor_has_permission(text)',
+    'app.segment_value_is_valid(uuid,uuid,text,date)',
+    'app.currency_minor_units(text)',
+    'app.allocate_journal_number(uuid,uuid,text)',
+    'app.compute_journal_content_hash(uuid)',
+    'app.install_initial_organization_key(text,text)',
+    'app.auth_consume_rate_limit(text,text,integer,integer)',
+    'app.auth_lookup_login(text)',
+    'app.auth_lookup_login_v2(text)',
+    'app.auth_issue_demo_session(text,text,text,text)',
+    'app.auth_issue_mfa_user_session(uuid,uuid,uuid,uuid,bigint,text,text,text,text)',
+    'app.auth_resolve_session(text,text)',
+    'app.auth_resolve_session_v2(text,text)',
+    'app.auth_revoke_session(text,text)',
+    'app.auth_queue_password_reset(text,text,text,uuid,text,text)',
+    'app.auth_finish_password_reset(text,text,text)',
+    'app.auth_record_login_failure(text)',
+    'app.auth_password_reset_challenge(text)',
+    'app.auth_prepare_recovery_mfa(text,uuid,text,text)',
+    'app.auth_authorize_password_reset_totp(text,uuid,bigint,text)',
+    'app.auth_finish_password_reset_with_mfa(text,text,uuid,bigint,text)',
+    'app.auth_escalate_password_reset(text,text)',
+    'app.auth_approve_recovery(uuid,uuid,uuid,bigint,text)',
+    'app.auth_accept_invitation(text,text,uuid,text,text,text)',
+    'app.auth_mfa_setup_challenge(text)',
+    'app.auth_finish_mfa_enrollment(text,uuid,bigint,text)',
+    'app.auth_totp_for_session(uuid)',
+    'app.auth_mark_step_up(uuid,uuid,bigint,text)',
+    'app.auth_email_delivery_readiness(integer)',
+    'app.auth_consume_mfa_step_up_limits(uuid)',
+    'app.auth_consume_password_reset_limits(text)',
+    'app.auth_consume_password_reset_escalation_limits(text)',
+    'app.auth_consume_recovery_approval_limits(uuid,uuid)',
+    'app.auth_consume_mfa_enrollment_limits(text)'
+  ] LOOP
+    IF to_regprocedure(selected_signature) IS NOT NULL THEN
+      EXECUTE format('GRANT EXECUTE ON FUNCTION %s TO business_finlynq_app', selected_signature);
+    END IF;
+  END LOOP;
+END
+$reconcile$;
 SQL

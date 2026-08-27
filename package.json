@@ -11,9 +11,14 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:db": "vitest run tests/db",
+    "test:e2e": "playwright test",
     "test:watch": "vitest",
+    "auth:email-worker": "tsx src/workers/auth-email-worker.ts",
+    "auth:invite": "tsx scripts/invite-account.ts",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
+    "org:onboard": "tsx scripts/onboard-organization.ts",
+    "demo:bootstrap": "tsx scripts/bootstrap-demo.ts",
     "check": "npm run lint && npm run typecheck && npm run test"
   },
   "dependencies": {
@@ -26,6 +31,7 @@
     "zod": "4.3.6"
   },
   "devDependencies": {
+    "@playwright/test": "1.62.1",
     "@tailwindcss/postcss": "^4",
     "@types/node": "^20",
     "@types/pg": "8.20.0",

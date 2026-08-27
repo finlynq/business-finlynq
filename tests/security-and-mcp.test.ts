@@ -5,10 +5,15 @@ import { decideSynchronousPost } from "@/modules/ledger/auto-post-policy";
 import { authorizeMcpTool } from "@/modules/mcp/policy";
 import {
   LocalRootKeyProvider,
+  createBlindIndex,
   decryptField,
   encryptField,
   generateOrganizationDek,
+  parseEncryptedField,
+  parseWrappedKey,
   sameKey,
+  serializeEncryptedField,
+  serializeWrappedKey,
 } from "@/security/organization-encryption";
 
 describe("organization encryption and recovery boundary", () => {
@@ -34,6 +39,26 @@ describe("organization encryption and recovery boundary", () => {
 
     expect(decryptField(encrypted, dek, context)).toBe("100 King Street");
     expect(() => decryptField(encrypted, dek, { ...context, recordId: "address-2" })).toThrow();
+  });
+
+  it("round-trips versioned envelopes and encrypted-field serialization", () => {
+    const provider = new LocalRootKeyProvider(randomBytes(32));
+    const dek = generateOrganizationDek();
+    const wrapped = provider.wrapOrganizationKey("org-a", 1, dek);
+    expect(sameKey(provider.unwrapOrganizationKey("org-a", parseWrappedKey(serializeWrappedKey(wrapped))), dek)).toBe(true);
+
+    const context = { organizationId: "org-a", table: "parties", column: "display_name_ciphertext", recordId: "party-a", keyVersion: 1 };
+    const encrypted = parseEncryptedField(serializeEncryptedField(encryptField("Acme Corp", dek, context)));
+    expect(decryptField(encrypted, dek, context)).toBe("Acme Corp");
+  });
+
+  it("creates deterministic organization-bound blind indexes without exposing plaintext", () => {
+    const dek = generateOrganizationDek();
+    const equivalent = createBlindIndex("  Acme   Corp  ", dek, "org-a", "parties.display-name");
+    expect(createBlindIndex("acme corp", dek, "org-a", "parties.display-name")).toBe(equivalent);
+    expect(createBlindIndex("acme corp", dek, "org-b", "parties.display-name")).not.toBe(equivalent);
+    expect(equivalent).toMatch(/^hmac-sha256-v1:[0-9a-f]{64}$/);
+    expect(equivalent).not.toContain("acme");
   });
 });
 

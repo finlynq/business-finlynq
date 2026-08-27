@@ -16,6 +16,8 @@ export type SessionPrincipal = Readonly<{
   sessionMode: "real" | "demo";
   authMethod: "PASSWORD" | "DEMO_LINK" | "PASSWORD_RESET";
   expiresAt: Date;
+  mfaVerifiedAt: Date | null;
+  stepUpExpiresAt: Date | null;
 }>;
 
 export function sessionCookieName(): string {
@@ -39,6 +41,8 @@ function principalFromStored(stored: StoredPrincipal): SessionPrincipal {
       membershipId: stored.membership_id, organizationName: stored.organization_name,
       roleLabel: stored.role_label, displayName: "Demo viewer", initials: "DV", sessionMode: "demo",
       authMethod: stored.auth_method, expiresAt: new Date(stored.expires_at),
+      mfaVerifiedAt: stored.mfa_verified_at ? new Date(stored.mfa_verified_at) : null,
+      stepUpExpiresAt: stored.step_up_expires_at ? new Date(stored.step_up_expires_at) : null,
     };
   }
 
@@ -57,7 +61,23 @@ function principalFromStored(stored: StoredPrincipal): SessionPrincipal {
     membershipId: stored.membership_id, organizationName: stored.organization_name,
     roleLabel: stored.role_label, displayName, initials, sessionMode: "real",
     authMethod: stored.auth_method, expiresAt: new Date(stored.expires_at),
+    mfaVerifiedAt: stored.mfa_verified_at ? new Date(stored.mfa_verified_at) : null,
+    stepUpExpiresAt: stored.step_up_expires_at ? new Date(stored.step_up_expires_at) : null,
   };
+}
+
+export function hasRecentStepUp(principal: SessionPrincipal, now = Date.now()): boolean {
+  return principal.sessionMode === "real" && Boolean(principal.stepUpExpiresAt && principal.stepUpExpiresAt.getTime() > now);
+}
+
+/**
+ * Authentication provenance for database transaction context. A historical
+ * MFA verification never counts as current step-up after its ten-minute
+ * window has expired.
+ */
+export function transactionAuthMethod(principal: SessionPrincipal, now = Date.now()): string {
+  if (principal.sessionMode === "demo") return "demo-link";
+  return hasRecentStepUp(principal, now) ? "password+mfa" : "password";
 }
 
 export async function resolveSession(rawToken: string | undefined, userAgent: string | null): Promise<SessionPrincipal | null> {

@@ -1,7 +1,11 @@
 import { demoReceivableInvoices } from "@/modules/demo/dashboard-data";
+import { requireWorkspacePrincipal } from "@/modules/workspace/access";
+import { TenantModuleUnavailable } from "../../../_components/tenant-module-unavailable";
 import { DemoNotice, EmptyState, PageHeader, StatusPill } from "../../../_components/ui";
 
 export default async function InvoicesPage({ searchParams }: { searchParams: Promise<{ q?: string }> }) {
+  const principal = await requireWorkspacePrincipal("/app/receivables/invoices");
+  if (principal.sessionMode !== "demo") return <TenantModuleUnavailable moduleName="Accounts receivable" />;
   const query = (await searchParams).q?.trim().toLocaleLowerCase() ?? "";
   const invoices = demoReceivableInvoices.filter((invoice) => !query || Object.values(invoice).join(" ").toLocaleLowerCase().includes(query));
   return (
