@@ -63,6 +63,7 @@ IFS= read -r PGPASSWORD < "$BACKUP_DATABASE_PASSWORD_FILE" || true
 export PGPASSWORD
 
 timestamp="$(date -u +%Y%m%dT%H%M%SZ)"
+created_at="${timestamp:0:4}-${timestamp:4:2}-${timestamp:6:2}T${timestamp:9:2}:${timestamp:11:2}:${timestamp:13:2}Z"
 safe_database="${PGDATABASE//[^A-Za-z0-9_.-]/_}"
 prefix="business_finlynq_${timestamp}_${safe_database}"
 archive_name="${prefix}.dump.age"
@@ -102,7 +103,6 @@ pg_dump \
 [[ -s "$partial_archive" ]] || fail "Encrypted backup output is empty"
 archive_sha256="$(sha256sum "$partial_archive" | awk '{print $1}')"
 archive_bytes="$(wc -c < "$partial_archive" | tr -d '[:space:]')"
-created_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 pg_dump_version="$(pg_dump --version)"
 
 jq -n \

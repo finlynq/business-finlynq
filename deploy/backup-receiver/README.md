@@ -76,7 +76,8 @@ The five-minute root service waits at least 60 seconds after a manifest appears 
 
 - exactly three regular, single-link files owned by the upload account;
 - the age v1 header and bounded checksum/manifest files;
-- the exact JSON schema, product, timestamp, database, formats, archive name, byte count, SHA-256, and full application revision;
+- the exact JSON schema, product, database, formats, archive name, byte count, SHA-256, and full application revision;
+- a valid UTC completion timestamp from the filename's backup-start time through a bounded 24-hour compatibility window;
 - the independent checksum line; and
 - membership of the application revision in the root-managed allowlist.
 

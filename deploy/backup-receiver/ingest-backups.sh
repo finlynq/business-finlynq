@@ -11,6 +11,7 @@ readonly VAULT_DIRECTORY="$RECEIVER_ROOT/vault"
 readonly QUARANTINE_DIRECTORY="$RECEIVER_ROOT/quarantine"
 readonly STATE_DIRECTORY="/var/lib/business-finlynq-backup-receiver"
 readonly CONFIG_FILE="/etc/business-finlynq/backup-receiver.conf"
+readonly MAX_BACKUP_DURATION_SECONDS="86400"
 
 log() {
   printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*"
@@ -92,7 +93,8 @@ validate_set() {
   local database="$4"
   local archive_name checksum_name manifest_name archive_path checksum_path manifest_path
   local entry_count entry_path file_uid file_gid file_links
-  local expected_created_at manifest_database manifest_archive manifest_bytes manifest_hash manifest_revision
+  local prefix_created_at prefix_epoch manifest_created_at manifest_epoch
+  local manifest_database manifest_archive manifest_bytes manifest_hash manifest_revision
   local archive_bytes archive_hash expected_checksum_line
   local -a checksum_lines
 
@@ -142,9 +144,13 @@ validate_set() {
     (.localRetentionDays | type == "number" and floor == . and . >= 0)
   ' "$manifest_path" >/dev/null || { reject "invalid_manifest"; return 1; }
 
-  expected_created_at="${timestamp:0:4}-${timestamp:4:2}-${timestamp:6:2}T${timestamp:9:2}:${timestamp:11:2}:${timestamp:13:2}Z"
-  [[ "$(date -u -d "$expected_created_at" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null)" == "$expected_created_at" ]] || { reject "invalid_timestamp"; return 1; }
-  [[ "$(jq -r '.createdAt' "$manifest_path")" == "$expected_created_at" ]] || { reject "timestamp_mismatch"; return 1; }
+  prefix_created_at="${timestamp:0:4}-${timestamp:4:2}-${timestamp:6:2}T${timestamp:9:2}:${timestamp:11:2}:${timestamp:13:2}Z"
+  [[ "$(date -u -d "$prefix_created_at" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null)" == "$prefix_created_at" ]] || { reject "invalid_timestamp"; return 1; }
+  manifest_created_at="$(jq -r '.createdAt' "$manifest_path")"
+  [[ "$(date -u -d "$manifest_created_at" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null)" == "$manifest_created_at" ]] || { reject "invalid_manifest_timestamp"; return 1; }
+  prefix_epoch="$(date -u -d "$prefix_created_at" +%s)"
+  manifest_epoch="$(date -u -d "$manifest_created_at" +%s)"
+  (( manifest_epoch >= prefix_epoch && manifest_epoch - prefix_epoch <= MAX_BACKUP_DURATION_SECONDS )) || { reject "timestamp_mismatch"; return 1; }
   manifest_database="$(jq -r '.database' "$manifest_path")"
   manifest_archive="$(jq -r '.encryptedArchive' "$manifest_path")"
   manifest_bytes="$(jq -r '.encryptedBytes' "$manifest_path")"

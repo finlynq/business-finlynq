@@ -7,6 +7,7 @@ ingester="$script_directory/ingest-backups.sh"
 verifier="$script_directory/verify-receiver.sh"
 service="$script_directory/business-finlynq-backup-receiver.service"
 timer="$script_directory/business-finlynq-backup-receiver.timer"
+backup_source="$script_directory/../backup/run-backup.sh"
 
 for script_path in "$provisioner" "$ingester" "$verifier" "$script_directory/test-static.sh"; do
   bash -n "$script_path"
@@ -34,7 +35,10 @@ require_text "$provisioner" 'systemctl reload ssh.service'
 require_text "$ingester" 'Moving the manifest first'
 require_text "$ingester" 'grep -Fxq -- "$manifest_revision" "$RECEIVER_ALLOWED_REVISIONS_FILE"'
 require_text "$ingester" 'archive_hash="$(sha256sum "$archive_path"'
+require_text "$ingester" 'readonly MAX_BACKUP_DURATION_SECONDS="86400"'
+require_text "$ingester" 'manifest_epoch - prefix_epoch <= MAX_BACKUP_DURATION_SECONDS'
 require_text "$ingester" 'RECEIVER_RETENTION_DAYS" == "60"'
+require_text "$backup_source" 'created_at="${timestamp:0:4}-${timestamp:4:2}-${timestamp:6:2}T${timestamp:9:2}:${timestamp:11:2}:${timestamp:13:2}Z"'
 require_text "$service" 'ReadWritePaths=/srv/business-finlynq-backup /var/lib/business-finlynq-backup-receiver'
 require_text "$service" 'RestrictAddressFamilies=AF_UNIX'
 require_text "$timer" 'OnUnitInactiveSec=5m'
