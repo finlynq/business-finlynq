@@ -26,7 +26,7 @@ async function readSandboxName(page: Page): Promise<string> {
   await accountButton.click();
   const details = page.getByRole("region", { name: "Account details" });
   await expect(details).toBeVisible();
-  const match = (await details.textContent())?.match(/Northstar Demo Sandbox \d{2}/);
+  const match = (await details.textContent())?.match(/Northstar Demo Sandbox \d{3}/);
   expect(match, "The account menu must expose the leased synthetic organization name").not.toBeNull();
   await accountButton.click();
   return match?.[0] ?? "";
