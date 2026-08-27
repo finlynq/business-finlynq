@@ -36,20 +36,20 @@ Use this checklist for every Business Finlynq release. Releases are commit-addre
 
 ### One-release f8485 credential adapter
 
-The immediately previous reviewed app (`f8485ca86fef5b5fb4a38be9cb4cf3bea5ac2107`) predates the file-based app database password contract. Its deployed image ID was recorded before release as `sha256:2135e8e936bf8befdc44132771698dfb942fc97dccb19b71eeb3db9f3e5b66b5`; the one-release override hard-pins that retained local image and uses `pull_policy: never`. This override is deliberately target-server-specific: it works only while that exact recorded image remains in the target server's local image store. `deploy/rollback/docker-compose.legacy-inline-password.yml` mounts the normal app password file and replaces only the old container entrypoint with a restricted adapter. The adapter validates the file and exact revision, exports the legacy variable only inside that container, and may execute only `node server.js`. The password is never rendered into Compose, a command argument, or the new app container.
+The retained pre-file-secret app (`f8485ca86fef5b5fb4a38be9cb4cf3bea5ac2107`) predates the file-based app database password contract. Its deployed image ID was recorded as `sha256:2135e8e936bf8befdc44132771698dfb942fc97dccb19b71eeb3db9f3e5b66b5`; the one-release override hard-pins that retained local image and uses `pull_policy: never`. This override is deliberately target-server-specific: it works only while that exact recorded image remains in the target server's local image store. `deploy/rollback/docker-compose.legacy-inline-password.yml` mounts the normal app password file and replaces only the old container entrypoint with a restricted adapter. The adapter validates the file and exact revision, exports the legacy variable only inside that container, and may execute only `node server.js`. The password is never rendered into Compose, a command argument, or the new app container.
 
-This rollback is intentionally degraded and read-only: the override forces real account login, email delivery, and business writes off, while leaving only the synthetic demo available. Migration `0010` is additive and the current grant reconciler preserves the old demo/session read functions needed by f8485, but its superseded real-account path is not re-enabled.
+This rollback is intentionally a degraded availability mode: the override forces demo login, demo writes, real account login and signup, email delivery, Turnstile, and business writes off. It can keep readiness and the public informational surface available while a forward repair is prepared, but it cannot provide an authenticated workspace. Migration `0012` replaced the legacy demo-session function, so neither the synthetic demo nor any account workflow is compatible with f8485 after the current forward migrations.
 
-Before the release, rehearse the retained target-server image against an isolated current-schema restore and archive the readiness/demo-session result. On that target server, with the restore secrets and backup manifest configured, run:
+Before the release, rehearse the retained target-server image against an isolated current-schema restore and archive the degraded readiness/disabled-login result. On that target server, with the restore secrets and backup manifest configured, run:
 
 ```bash
 export ROLLBACK_COMPATIBILITY_ACK='f8485-one-release-only'
 ./deploy/rollback/run-legacy-restore-rehearsal.sh
 ```
 
-The command restores only into the tmpfs-backed `restore_database`, runs current forward migrations plus all three role reconcilers, verifies restored key recovery before creating any new demo key, recreates the demo-sandbox baseline, starts the hard-pinned image as `rollback_rehearsal_app` on only the internal restore network, and runs `verify-legacy-app.sh`. It publishes no port and cleans up only the explicitly named disposable restore/rehearsal containers. A missing recorded local image fails closed because pulling and rebuilding are disabled.
+The command restores only into the tmpfs-backed `restore_database`, runs current forward migrations plus all three role reconcilers, verifies restored key recovery before creating any new demo key, recreates the demo-sandbox baseline for the current release, starts the hard-pinned image as `rollback_rehearsal_app` on only the internal restore network, and runs `verify-legacy-app.sh`. That verifier proves readiness and that demo login remains disabled without issuing a session. It publishes no port and cleans up only the explicitly named disposable restore/rehearsal containers. A missing recorded local image fails closed because pulling and rebuilding are disabled.
 
-During an actual rollback, first keep writes disabled and confirm schema compatibility, then set the acknowledgement:
+During an actual rollback, first keep every login and write gate disabled and confirm the availability-only limitation, then set the acknowledgement:
 
 ```bash
 export ROLLBACK_COMPATIBILITY_ACK='f8485-one-release-only'
@@ -64,7 +64,7 @@ docker compose \
 ROLLBACK_APP_URL=http://127.0.0.1:3100 ./deploy/rollback/verify-legacy-app.sh
 ```
 
-Record the old image digest and acceptance output, then move forward to a fixed current artifact. Do not reuse this adapter for any other revision or retain it beyond the next successful release.
+Record the old image digest and acceptance output, then move forward to a fixed current artifact. Do not advertise or enable the demo/account workspace on this fallback, reuse the adapter for another revision, or retain it beyond the next successful release.
 
 ## Account/login enablement
 

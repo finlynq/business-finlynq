@@ -37,4 +37,4 @@ cleanup
 "${compose[@]}" up --detach --wait --no-deps rollback_rehearsal_app
 "${compose[@]}" run --rm --no-deps rollback_rehearsal_verify
 
-printf '%s\n' "Hard-pinned f8485 image passed the current-schema isolated restore rehearsal"
+printf '%s\n' "Hard-pinned f8485 image passed the degraded current-schema availability rehearsal"

@@ -22,6 +22,7 @@ const rendered = execFileSync(
 const configuration = JSON.parse(rendered);
 const services = configuration.services ?? {};
 const providerSecret = "business_finlynq_resend_api_key";
+const turnstileSecret = "business_finlynq_turnstile_secret_key";
 const appDatabaseSecret = "business_finlynq_app_db_password";
 const workerDatabaseSecret = "business_finlynq_auth_worker_db_password";
 const backupDatabaseSecret = "business_finlynq_backup_db_password";
@@ -48,6 +49,14 @@ const providerSecretConsumers = Object.entries(services)
 
 if (providerSecretConsumers.join(",") !== "auth_email_worker") {
   fail(`Resend secret consumers must be only auth_email_worker; found ${providerSecretConsumers.join(",") || "none"}`);
+}
+
+const turnstileSecretConsumers = Object.entries(services)
+  .filter(([, service]) => secretSources(service).includes(turnstileSecret))
+  .map(([name]) => name)
+  .sort();
+if (turnstileSecretConsumers.join(",") !== "app") {
+  fail(`Turnstile secret consumers must be only app; found ${turnstileSecretConsumers.join(",") || "none"}`);
 }
 
 for (const [name, service] of Object.entries(services)) {
@@ -86,6 +95,7 @@ for (const [gate, expected] of [
   ["DEMO_LOGIN_ENABLED", "true"],
   ["DEMO_WRITES_ENABLED", "true"],
   ["ACCOUNT_LOGIN_ENABLED", "false"],
+  ["ACCOUNT_SIGNUP_ENABLED", "false"],
   ["BUSINESS_WRITES_ENABLED", "false"],
 ]) {
   if (app.environment?.[gate] !== expected) fail(`app release gate ${gate} must render as ${expected}`);
@@ -286,7 +296,7 @@ if (dependencyCondition(services.restore_key_verify, "restore_backup_grants") !=
 if (dependencyCondition(services.restore_runtime_verify, "restore_app") !== "service_healthy") {
   fail("restored runtime acceptance can run before the restored app is healthy");
 }
-for (const disabledGate of ["DEMO_WRITES_ENABLED", "ACCOUNT_LOGIN_ENABLED", "BUSINESS_WRITES_ENABLED"]) {
+for (const disabledGate of ["DEMO_WRITES_ENABLED", "ACCOUNT_LOGIN_ENABLED", "ACCOUNT_SIGNUP_ENABLED", "SIGNUP_TURNSTILE_ENABLED", "BUSINESS_WRITES_ENABLED"]) {
   if (services.restore_app?.environment?.[disabledGate] !== "false") {
     fail(`restored app does not force ${disabledGate} off`);
   }
@@ -332,7 +342,7 @@ if (rollbackApp.environment?.BUSINESS_FINLYNQ_DB_PASSWORD_FILE !== "/run/secrets
 if (rollbackApp.environment?.BUSINESS_FINLYNQ_IMAGE_REVISION !== "f8485ca86fef5b5fb4a38be9cb4cf3bea5ac2107") {
   fail("legacy rollback override is not pinned to the reviewed prior revision");
 }
-for (const disabledFlag of ["ACCOUNT_LOGIN_ENABLED", "AUTH_EMAIL_DELIVERY_ENABLED", "BUSINESS_WRITES_ENABLED"]) {
+for (const disabledFlag of ["DEMO_LOGIN_ENABLED", "DEMO_WRITES_ENABLED", "ACCOUNT_LOGIN_ENABLED", "ACCOUNT_SIGNUP_ENABLED", "SIGNUP_TURNSTILE_ENABLED", "AUTH_EMAIL_DELIVERY_ENABLED", "BUSINESS_WRITES_ENABLED"]) {
   if (rollbackApp.environment?.[disabledFlag] !== "false") fail(`legacy rollback override does not force ${disabledFlag} off`);
 }
 if ((rollbackApp.entrypoint ?? []).join(" ") !== "/bin/sh /usr/local/bin/business-finlynq-legacy-db-password") {
@@ -370,8 +380,11 @@ for (const [name, service] of [["rollback_rehearsal_app", rehearsalApp], ["rollb
   if ((service.ports ?? []).length > 0) fail(`${name} publishes a port`);
 }
 if (!secretSources(rehearsalApp).includes(appDatabaseSecret)) fail("restore rehearsal does not mount the app password file");
-if (secretSources(rehearsalApp).includes(providerSecret) || secretSources(rehearsalApp).includes(workerDatabaseSecret)) {
-  fail("restore rehearsal receives an unrelated provider or worker credential");
+if (secretSources(rehearsalApp).includes(providerSecret) || secretSources(rehearsalApp).includes(turnstileSecret) || secretSources(rehearsalApp).includes(workerDatabaseSecret)) {
+  fail("restore rehearsal receives an unrelated provider, challenge, or worker credential");
+}
+for (const disabledFlag of ["DEMO_LOGIN_ENABLED", "DEMO_WRITES_ENABLED", "ACCOUNT_LOGIN_ENABLED", "ACCOUNT_SIGNUP_ENABLED", "SIGNUP_TURNSTILE_ENABLED", "AUTH_EMAIL_DELIVERY_ENABLED", "BUSINESS_WRITES_ENABLED"]) {
+  if (rehearsalApp.environment?.[disabledFlag] !== "false") fail(`restore rehearsal does not force ${disabledFlag} off`);
 }
 if ((rehearsalVerify.secrets ?? []).length > 0) fail("legacy restore verifier receives a secret");
 if (dependencyCondition(rehearsalVerify, "rollback_rehearsal_app") !== "service_healthy") {

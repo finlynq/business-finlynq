@@ -119,7 +119,7 @@ The verifier refuses any database name outside the `business_finlynq_restore_dri
 
 After the drill, securely remove the temporary key copies from the recovery host according to the escrow procedure. Keep the JSON report and operator/ticket reference as evidence. Never copy the age identity into the normal production backup configuration.
 
-For the one-release rollback window, the target server also has a separate hard-pinned prior-image rehearsal. Follow the release runbook and run `deploy/rollback/run-legacy-restore-rehearsal.sh`; it repeats the tmpfs restore/current-migration/role-reconciliation sequence, then proves the retained f8485 image can become ready and resolve a demo session through its restricted credential adapter. It must pass before the live migration and does not replace the current-image restore drill above.
+For the one-release rollback window, the target server also has a separate hard-pinned prior-image rehearsal. Follow the release runbook and run `deploy/rollback/run-legacy-restore-rehearsal.sh`; it repeats the tmpfs restore/current-migration/role-reconciliation sequence, then proves the retained f8485 image can become ready through its restricted credential adapter while every login and write gate remains disabled. It must pass before the live migration and does not replace the current-image restore drill above.
 
 ## Full disaster recovery sequence
 

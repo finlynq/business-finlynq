@@ -15,8 +15,11 @@ services:
       BUSINESS_FINLYNQ_DB_PASSWORD_FILE: /run/secrets/business_finlynq_app_db_password
       APP_ORIGIN: https://${BUSINESS_FINLYNQ_HOSTNAME:-business.finlynq.com}
       SESSION_COOKIE_NAME: __Host-business_finlynq_session
-      DEMO_LOGIN_ENABLED: "true"
+      DEMO_LOGIN_ENABLED: "false"
+      DEMO_WRITES_ENABLED: "false"
       ACCOUNT_LOGIN_ENABLED: "false"
+      ACCOUNT_SIGNUP_ENABLED: "false"
+      SIGNUP_TURNSTILE_ENABLED: "false"
       AUTH_EMAIL_DELIVERY_ENABLED: "false"
       BUSINESS_WRITES_ENABLED: "false"
       BUSINESS_FINLYNQ_IMAGE_REVISION: f8485ca86fef5b5fb4a38be9cb4cf3bea5ac2107

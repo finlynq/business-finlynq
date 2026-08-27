@@ -175,10 +175,8 @@ jobs:
       # normal Vitest run. Run it once, after replaying the canonical migrations.
       - name: Bootstrap the fixed public demo and sandbox pool
         run: npm run demo:bootstrap
-      - name: Exercise incremental and nightly demo-sandbox maintenance
-        run: |
-          DEMO_RESET_MODE=incremental npm run demo:reset
-          DEMO_RESET_MODE=nightly npm run demo:reset
+      - name: Exercise nightly demo-sandbox reconciliation
+        run: DEMO_RESET_MODE=nightly npm run demo:reset
       - run: npm run test
       - run: npm run build
       - name: Build hardened operations and email-worker images

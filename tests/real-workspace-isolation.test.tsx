@@ -205,7 +205,8 @@ describe("real organization workspace isolation", () => {
       expect(output).not.toContain("Harbour Dental");
     }
     expect(serialized(pages[0])).toContain("Accounting overview");
-    expect(serialized(pages[1])).toContain("AI and MCP");
+    expect(serialized(pages[1])).toContain("AI & MCP access");
+    expect(serialized(pages[1])).toContain("demo and standard accounts");
     expect(serialized(pages[2])).toContain("Second Organization LLC");
     expect(serialized(pages[3])).toContain("Accounts payable");
     expect(serialized(pages[4])).toContain("Accounts receivable");

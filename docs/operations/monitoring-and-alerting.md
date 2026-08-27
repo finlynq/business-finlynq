@@ -65,7 +65,7 @@ Readiness, TLS, disk, backup, container, revision, app-gate, demo-timer, quarant
 ## Incident triage
 
 1. Acknowledge the page and record UTC time, hostname, release SHA, and failing check.
-2. Inspect `systemctl status` for monitor, backup, and both demo-maintenance timers, then run `docker compose --profile edge --profile auth-email ps`.
+2. Inspect `systemctl status` for the monitor, backup, and single nightly demo-reconciliation timers, then run `docker compose --profile edge --profile auth-email ps`.
 3. Read bounded logs with `docker compose logs --since 30m <service>`; never paste secret files or full identity/accounting records into a ticket.
 4. If readiness fails but liveness passes, check database health and secret mounts before restarting the app. Do not rotate or replace encryption keys as a troubleshooting step.
 5. If backup freshness/checksum fails, preserve the newest artifacts, repair the destination or credentials, rerun a backup, and verify off-site checksum. Do not prune the only recoverable set.
