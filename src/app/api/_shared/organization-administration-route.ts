@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import type { ZodType } from "zod";
+import { demoSessionLeaseLostResponse } from "@/app/api/_shared/demo-session-error-response";
 import { consumeRateLimit } from "@/modules/identity/auth-store";
 import { organizationAdministrationFailure } from "@/modules/identity/organization-administration";
 import {
@@ -102,6 +103,8 @@ export async function readOrganizationAdminJson<Output>(
 }
 
 export function organizationAdminErrorResponse(error: unknown, operation: string): NextResponse {
+  const expiredSession = demoSessionLeaseLostResponse(error);
+  if (expiredSession) return expiredSession;
   const failure = organizationAdministrationFailure(error);
   console.error("Business Finlynq organization administration failed", {
     operation,

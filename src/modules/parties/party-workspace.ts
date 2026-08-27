@@ -1,7 +1,6 @@
 import "server-only";
 
 import { randomUUID } from "node:crypto";
-import { withTenantTransaction } from "@/db/transaction";
 import { actorHasActivePermission } from "@/modules/identity/authorization";
 import { PERMISSIONS } from "@/modules/identity/permissions";
 import {
@@ -9,6 +8,7 @@ import {
   type SessionPrincipal,
 } from "@/modules/identity/session";
 import { principalCanWrite } from "@/modules/workspace/write-policy";
+import { withWorkspaceTenantRead } from "@/modules/workspace/tenant-read";
 
 export type PartyAccountCreationOptionDto = Readonly<{
   legalEntityId: string;
@@ -25,7 +25,7 @@ export type PartyAccountCreationOptionDto = Readonly<{
 export async function loadPartyAccountCreationOptions(
   principal: SessionPrincipal,
 ): Promise<readonly PartyAccountCreationOptionDto[]> {
-  return withTenantTransaction({
+  return withWorkspaceTenantRead({
     organizationId: principal.organizationId,
     actorId: principal.userId,
     sessionId: principal.sessionId,
@@ -33,7 +33,7 @@ export async function loadPartyAccountCreationOptions(
     requestId: `party-account-options:${randomUUID()}`,
     authMethod: transactionAuthMethod(principal),
     sourceSurface: "UI",
-  }, async (client) => {
+  }, "/app/parties", async (client) => {
     const membership = await client.query(
       `SELECT 1
        FROM organization_memberships membership

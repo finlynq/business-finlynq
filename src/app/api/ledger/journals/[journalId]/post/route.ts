@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
+import { demoSessionLeaseLostResponse } from "@/app/api/_shared/demo-session-error-response";
 import { validateSameOriginMutation } from "@/modules/identity/request-security";
 import { requestPrincipal } from "@/modules/identity/session";
 import { consumeLedgerMutationRateLimit } from "@/modules/ledger/mutation-rate-limit";
@@ -52,6 +53,8 @@ export async function POST(
     });
     return NextResponse.json(result, { headers: noStoreHeaders });
   } catch (error) {
+    const expiredSession = demoSessionLeaseLostResponse(error);
+    if (expiredSession) return expiredSession;
     console.error("Business Finlynq journal posting failed", { requestId, error });
     return NextResponse.json(
       { error: "The journal could not be posted. Verify its period, balance, approval state, and your posting role.", requestId },

@@ -146,7 +146,10 @@ runDatabaseTests("PostgreSQL identity controls", () => {
       await tenant.query("SELECT set_config('app.session_mode', 'demo', true)");
       await tenant.query("SELECT set_config('app.auth_method', 'demo-link', true)");
       await expect(tenant.query("SELECT app.assert_current_demo_session_lease()"))
-        .rejects.toThrow(/not live/i);
+        .rejects.toMatchObject({
+          code: "28000",
+          message: "Demo session claim is not live",
+        });
       await tenant.query("ROLLBACK");
     } finally {
       await tenant.query("ROLLBACK").catch(() => undefined);

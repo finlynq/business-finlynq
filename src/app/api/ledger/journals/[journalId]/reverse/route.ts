@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
+import { demoSessionLeaseLostResponse } from "@/app/api/_shared/demo-session-error-response";
 import { validateSameOriginMutation } from "@/modules/identity/request-security";
 import { requestPrincipal } from "@/modules/identity/session";
 import { reversePostedJournal } from "@/modules/ledger/journal-service";
@@ -58,6 +59,8 @@ export async function POST(
     });
     return NextResponse.json(result, { status: result.idempotentReplay ? 200 : 201, headers: noStoreHeaders });
   } catch (error) {
+    const expiredSession = demoSessionLeaseLostResponse(error);
+    if (expiredSession) return expiredSession;
     console.error("Business Finlynq journal reversal failed", { requestId, error });
     return NextResponse.json(
       { error: "The journal could not be reversed. Verify ownership, the target period, and your reversal/posting roles.", requestId },

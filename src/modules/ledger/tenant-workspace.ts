@@ -2,7 +2,7 @@ import "server-only";
 
 import { randomUUID } from "node:crypto";
 import type { PoolClient } from "pg";
-import { withTenantTransaction, type TenantTransactionContext } from "@/db/transaction";
+import type { TenantTransactionContext } from "@/db/transaction";
 import { demoAccountingDate } from "@/modules/demo/accounting-clock";
 import {
   hasRecentStepUp,
@@ -18,6 +18,7 @@ import {
 } from "@/security/organization-encryption";
 import { loadActiveOrganizationKey } from "@/security/organization-key-store";
 import { principalCanWrite } from "@/modules/workspace/write-policy";
+import { withWorkspaceTenantRead } from "@/modules/workspace/tenant-read";
 
 export type TenantReadiness = "EMPTY_ORGANIZATION" | "ENCRYPTION_SETUP_REQUIRED" | "READY";
 
@@ -168,7 +169,7 @@ export async function loadTenantJournalWorkspace(
   search = "",
 ): Promise<TenantJournalWorkspaceDto> {
   const normalizedSearch = search.trim().slice(0, 100);
-  return withTenantTransaction(readContext(principal), async (client) => {
+  return withWorkspaceTenantRead(readContext(principal), "/app/journals", async (client) => {
     const membership = await assertActiveSessionMembership(client, principal);
     const canReadLedger = await actorHasActivePermission(client, {
       organizationId: principal.organizationId,
@@ -369,7 +370,7 @@ export async function loadTenantPartyDirectory(
   search = "",
 ): Promise<Readonly<{ demoOnly: boolean; readiness: TenantReadiness; canManage: boolean; parties: readonly TenantPartyDto[] }>> {
   const normalizedSearch = search.trim().slice(0, 200);
-  return withTenantTransaction(readContext(principal), async (client) => {
+  return withWorkspaceTenantRead(readContext(principal), "/app/parties", async (client) => {
     const membership = await assertActiveSessionMembership(client, principal);
     const readiness = await tenantReadiness(client, principal.organizationId);
     const canManage = principalCanWrite(principal) && await actorHasActivePermission(client, {
@@ -440,7 +441,7 @@ export async function loadTenantPartyDirectory(
 export async function loadManualJournalOptions(
   principal: SessionPrincipal,
 ): Promise<ManualJournalOptionsDto> {
-  return withTenantTransaction(readContext(principal), async (client) => {
+  return withWorkspaceTenantRead(readContext(principal), "/app/journals/new", async (client) => {
     await assertActiveSessionMembership(client, principal);
     const canReadLedger = await actorHasActivePermission(client, {
       organizationId: principal.organizationId,
@@ -550,7 +551,7 @@ export async function loadManualJournalOptions(
 export async function loadPeriodControlWorkspace(
   principal: SessionPrincipal,
 ): Promise<PeriodControlWorkspaceDto> {
-  return withTenantTransaction(readContext(principal), async (client) => {
+  return withWorkspaceTenantRead(readContext(principal), "/app/controls/period-close", async (client) => {
     const membership = await assertActiveSessionMembership(client, principal);
     const writable = principalCanWrite(principal);
     const canClose = writable && await actorHasActivePermission(client, {

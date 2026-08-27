@@ -178,6 +178,23 @@ function findSearchEntries(value: unknown): readonly { label: string }[] {
   return findSearchEntries(candidate.props?.children);
 }
 
+type RenderedElement = Readonly<{
+  type?: unknown;
+  props?: Readonly<Record<string, unknown>>;
+}>;
+
+function findElementsByHref(value: unknown, href: string): RenderedElement[] {
+  if (!value || typeof value !== "object") return [];
+  if (Array.isArray(value)) return value.flatMap((child) => findElementsByHref(child, href));
+
+  const candidate = value as RenderedElement;
+  const matches = candidate.props?.href === href ? [candidate] : [];
+  return [
+    ...matches,
+    ...Object.values(candidate.props ?? {}).flatMap((child) => findElementsByHref(child, href)),
+  ];
+}
+
 describe("real organization workspace isolation", () => {
   const previousBusinessWrites = process.env.BUSINESS_WRITES_ENABLED;
 
@@ -219,6 +236,21 @@ describe("real organization workspace isolation", () => {
     expect(mocks.loadTaxDeterminations).toHaveBeenCalledWith(mocks.principal, { reviewOnly: false });
     expect(mocks.loadSubledgerWorkspace).toHaveBeenCalledWith(mocks.principal, "payables", "");
     expect(mocks.loadSubledgerWorkspace).toHaveBeenCalledWith(mocks.principal, "receivables", "");
+  });
+
+  it("renders CSV exports as native downloads outside Next App Router prefetching", async () => {
+    const pages = await Promise.all([OverviewPage(), TrialBalancePage()]);
+    const exports = pages.flatMap((page) => findElementsByHref(
+      page,
+      "/app/reports/trial-balance.csv",
+    ));
+
+    expect(exports).toHaveLength(2);
+    for (const exportLink of exports) {
+      expect(exportLink.type).toBe("a");
+      expect(exportLink.props).not.toHaveProperty("download");
+      expect(exportLink.props).not.toHaveProperty("prefetch");
+    }
   });
 
   it("executes the real journal and period-control pages only with tenant-scoped DTOs", async () => {

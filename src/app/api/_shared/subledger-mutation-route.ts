@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
 import type { z } from "zod";
+import { demoSessionLeaseLostResponse } from "@/app/api/_shared/demo-session-error-response";
 import type { TenantTransactionContext } from "@/db/transaction";
 import { validateSameOriginMutation } from "@/modules/identity/request-security";
 import { requestPrincipal } from "@/modules/identity/session";
@@ -103,6 +104,8 @@ export function createSubledgerMutationRoute<
         headers: noStoreHeaders,
       });
     } catch (error) {
+      const expiredSession = demoSessionLeaseLostResponse(error);
+      if (expiredSession) return expiredSession;
       // Command bodies can contain accounting and party facts. Keep logs and
       // responses free from the body and the domain error's potentially
       // sensitive details while retaining a correlation ID for operations.

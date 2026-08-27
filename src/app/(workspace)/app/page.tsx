@@ -57,7 +57,12 @@ export default async function OverviewPage() {
         description="Live balances and workflow counts from your organization ledger and subledgers. Currencies are never combined implicitly."
         actions={overview.access.ledger ? (
           <>
-            <Link className="secondary-button" href="/app/reports/trial-balance.csv">Export trial balance</Link>
+            <a
+              className="secondary-button"
+              href="/app/reports/trial-balance.csv"
+            >
+              Export trial balance
+            </a>
             <Link className="primary-button" href="/app/journals/new">＋ New journal</Link>
           </>
         ) : undefined}

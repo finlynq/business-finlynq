@@ -1,4 +1,3 @@
-import Link from "next/link";
 import { exact, formatMoney } from "@/kernel/money";
 import {
   loadTrialBalance,
@@ -48,7 +47,14 @@ export default async function TrialBalancePage() {
         eyebrow="Reports"
         title="Trial balance"
         description="Posted functional-currency balances from the tenant ledger, grouped independently by legal entity, ledger, and currency."
-        actions={<Link className="primary-button" href="/app/reports/trial-balance.csv">Download CSV</Link>}
+        actions={(
+          <a
+            className="primary-button"
+            href="/app/reports/trial-balance.csv"
+          >
+            Download CSV
+          </a>
+        )}
       />
       {principal.sessionMode === "demo" && (
         <DemoNotice>

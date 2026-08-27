@@ -2,6 +2,9 @@ import { Pool, type PoolClient, type QueryResult, type QueryResultRow } from "pg
 import { readFileSync } from "node:fs";
 import { z } from "zod";
 import { isDemoTransactionAuthMethod } from "@/modules/identity/auth-provenance";
+import { DemoSessionLeaseLostError } from "./errors";
+
+export { DemoSessionLeaseLostError, isDemoSessionLeaseLostError } from "./errors";
 
 const tenantContextInputSchema = z.object({
   organizationId: z.uuid(),
@@ -46,6 +49,12 @@ const tenantContextSchema = tenantContextInputSchema.transform((context, issueCo
 });
 
 export type TenantTransactionContext = z.input<typeof tenantContextSchema>;
+
+function isRevokedDemoLeaseDatabaseError(error: unknown): boolean {
+  if (typeof error !== "object" || error === null) return false;
+  const candidate = error as { code?: unknown; message?: unknown };
+  return candidate.code === "28000" && candidate.message === "Demo session claim is not live";
+}
 
 export function validateTenantTransactionContext(context: TenantTransactionContext) {
   return tenantContextSchema.parse(context);
@@ -141,7 +150,17 @@ export async function withTenantTransaction<T>(
       // The SECURITY DEFINER assertion locks the authentication row first and
       // its sandbox slot second for this transaction's full lifetime. Reset,
       // logout, and lease handoff take those rows in the same order.
-      await client.query("SELECT app.assert_current_demo_session_lease()");
+      try {
+        await client.query("SELECT app.assert_current_demo_session_lease()");
+      } catch (error) {
+        // Translate only the assertion's exact revoked-lease result. Other
+        // SQLSTATE 28000 failures (invalid context, reset due, MFA, etc.) must
+        // retain their original fail-closed behavior.
+        if (isRevokedDemoLeaseDatabaseError(error)) {
+          throw new DemoSessionLeaseLostError({ cause: error });
+        }
+        throw error;
+      }
     }
 
     const result = await work(client);

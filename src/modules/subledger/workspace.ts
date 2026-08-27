@@ -2,7 +2,7 @@ import "server-only";
 
 import { randomUUID } from "node:crypto";
 import type { PoolClient } from "pg";
-import { withTenantTransaction, type TenantTransactionContext } from "@/db/transaction";
+import type { TenantTransactionContext } from "@/db/transaction";
 import { demoAccountingDate } from "@/modules/demo/accounting-clock";
 import { actorHasActivePermission } from "@/modules/identity/authorization";
 import { PERMISSIONS, type Permission } from "@/modules/identity/permissions";
@@ -16,6 +16,7 @@ import {
 } from "@/security/organization-encryption";
 import { loadActiveOrganizationKey } from "@/security/organization-key-store";
 import { principalCanWrite } from "@/modules/workspace/write-policy";
+import { withWorkspaceTenantRead } from "@/modules/workspace/tenant-read";
 import {
   subledgerSourceSnapshotSchema,
   type BusinessDocumentKind,
@@ -308,7 +309,10 @@ export async function loadSubledgerWorkspace(
     ? demoAccountingDate()
     : new Date().toISOString().slice(0, 10);
 
-  return withTenantTransaction(readContext(principal), async (client) => {
+  const nextPath = ownerModule === "receivables"
+    ? "/app/receivables/invoices"
+    : "/app/payables/bills";
+  return withWorkspaceTenantRead(readContext(principal), nextPath, async (client) => {
     const demoOnly = await assertMembership(client, principal);
     const canRead = await actorHasActivePermission(client, {
       organizationId: principal.organizationId,

@@ -31,6 +31,11 @@ function collectBrowserErrors(page: Page): string[] {
     if (message.type() === "error") errors.push(`console: ${message.text()}`);
   });
   page.on("pageerror", (error) => errors.push(`page: ${error.message}`));
+  page.on("response", (response) => {
+    if (response.status() >= 500) {
+      errors.push(`response: ${response.status()} ${new URL(response.url()).pathname}`);
+    }
+  });
   return errors;
 }
 

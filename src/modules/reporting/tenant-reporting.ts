@@ -3,13 +3,14 @@ import { demoAccountingDate } from "@/modules/demo/accounting-clock";
 
 import { randomUUID } from "node:crypto";
 import type { PoolClient } from "pg";
-import { withTenantTransaction, type TenantTransactionContext } from "@/db/transaction";
+import type { TenantTransactionContext } from "@/db/transaction";
 import {
   actorHasActivePermission,
   assertActorHasActivePermission,
 } from "@/modules/identity/authorization";
 import { PERMISSIONS, type Permission } from "@/modules/identity/permissions";
 import { transactionAuthMethod, type SessionPrincipal } from "@/modules/identity/session";
+import { withWorkspaceTenantRead } from "@/modules/workspace/tenant-read";
 
 function readContext(principal: SessionPrincipal): TenantTransactionContext {
   return {
@@ -50,7 +51,7 @@ export type EntitySummary = Readonly<{
 }>;
 
 export async function loadEntitySummaries(principal: SessionPrincipal): Promise<readonly EntitySummary[]> {
-  return withTenantTransaction(readContext(principal), async (client) => {
+  return withWorkspaceTenantRead(readContext(principal), "/app/entities", async (client) => {
     await assertReportPermission(client, principal, PERMISSIONS.readMcpLedger);
     const asOfDate = principal.sessionMode === "demo"
       ? demoAccountingDate()
@@ -101,7 +102,7 @@ export type TrialBalanceRow = Readonly<{
 }>;
 
 export async function loadTrialBalance(principal: SessionPrincipal): Promise<readonly TrialBalanceRow[]> {
-  return withTenantTransaction(readContext(principal), async (client) => {
+  return withWorkspaceTenantRead(readContext(principal), "/app/reports/trial-balance", async (client) => {
     await assertReportPermission(client, principal, PERMISSIONS.readMcpLedger);
     const result = await client.query<{
       entity_code: string; ledger_code: string; functional_currency: string;
@@ -182,7 +183,7 @@ export type AccountingOverview = Readonly<{
 }>;
 
 export async function loadAccountingOverview(principal: SessionPrincipal): Promise<AccountingOverview> {
-  return withTenantTransaction(readContext(principal), async (client) => {
+  return withWorkspaceTenantRead(readContext(principal), "/app", async (client) => {
     const canReadLedger = await actorHasActivePermission(client, {
       organizationId: principal.organizationId,
       actorId: principal.userId,
@@ -324,7 +325,7 @@ export async function loadTaxDeterminations(
   principal: SessionPrincipal,
   options: Readonly<{ reviewOnly?: boolean }> = {},
 ): Promise<readonly TaxDeterminationSummary[]> {
-  return withTenantTransaction(readContext(principal), async (client) => {
+  return withWorkspaceTenantRead(readContext(principal), "/app/tax", async (client) => {
     await assertReportPermission(client, principal, PERMISSIONS.readTax);
     const result = await client.query<TaxDeterminationRow>(
       `WITH determinations AS (

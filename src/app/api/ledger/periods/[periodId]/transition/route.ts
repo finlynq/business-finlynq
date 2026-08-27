@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
+import { demoSessionLeaseLostResponse } from "@/app/api/_shared/demo-session-error-response";
 import { validateSameOriginMutation } from "@/modules/identity/request-security";
 import {
   hasRecentStepUp,
@@ -78,6 +79,8 @@ export async function POST(
     });
     return NextResponse.json(result, { headers: noStoreHeaders });
   } catch (error) {
+    const expiredSession = demoSessionLeaseLostResponse(error);
+    if (expiredSession) return expiredSession;
     console.error("Business Finlynq period transition failed", { requestId, error });
     return NextResponse.json(
       {

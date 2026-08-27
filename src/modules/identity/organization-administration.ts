@@ -20,6 +20,7 @@ import {
   type SessionPrincipal,
 } from "@/modules/identity/session";
 import { mutationContext, demoWritesEnabled } from "@/modules/workspace/write-policy";
+import { withWorkspaceSessionExpiryRedirect } from "@/modules/workspace/tenant-read";
 import {
   decryptIdentityField,
   emailLookupHash,
@@ -134,7 +135,10 @@ export async function loadOrganizationAdministration(
   principal: SessionPrincipal,
 ): Promise<OrganizationAdministrationDto> {
   const readContext = context(principal, randomUUID());
-  const settings = await readOrganizationSettingsRecord(readContext);
+  const settings = await withWorkspaceSessionExpiryRedirect(
+    "/app/settings",
+    () => readOrganizationSettingsRecord(readContext),
+  );
   if (!settings) {
     throw new OrganizationAdministrationError(
       "Organization settings are unavailable.",
@@ -144,7 +148,10 @@ export async function loadOrganizationAdministration(
   }
   const assignableRoles = roleCatalogSchema.parse(settings.assignable_roles);
   const records = settings.can_read_members
-    ? await readOrganizationMemberRecords(readContext)
+    ? await withWorkspaceSessionExpiryRedirect(
+        "/app/settings",
+        () => readOrganizationMemberRecords(readContext),
+      )
     : [];
   const members = records.map((record, index): OrganizationMemberDto => {
     const syntheticEmail = `demo-member-${index + 1}@example.invalid`;
