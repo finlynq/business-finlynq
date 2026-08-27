@@ -205,6 +205,7 @@ function defaultDocumentDraft(
 function defaultSettlementDraft(
   workspace: SubledgerWorkspaceDto,
   requestedPartyAccountId?: string,
+  requestedCurrency?: string,
 ): SettlementDraft {
   const requestedEntity = requestedPartyAccountId
     ? workspace.entities.find((entity) => entity.partyAccounts.some((party) => party.id === requestedPartyAccountId))
@@ -222,7 +223,11 @@ function defaultSettlementDraft(
     period.startsOn <= workspace.currentDate && period.endsOn >= workspace.currentDate)
     ? workspace.currentDate
     : entity?.periods[0]?.startsOn ?? workspace.currentDate;
-  const currency = party?.transactionCurrency ?? item?.currency ?? entity?.functionalCurrency ?? "USD";
+  const currency = party?.transactionCurrency
+    ?? requestedCurrency
+    ?? item?.currency
+    ?? entity?.functionalCurrency
+    ?? "USD";
   return {
     sourceNumber: "",
     legalEntityId: entity?.id ?? "",
@@ -342,8 +347,8 @@ export function ArApWorkspace({ workspace }: Readonly<{ workspace: SubledgerWork
     focusComposer();
   }
 
-  function openSettlement(partyAccountId?: string): void {
-    setSettlementDraft(defaultSettlementDraft(workspace, partyAccountId));
+  function openSettlement(partyAccountId?: string, currency?: string): void {
+    setSettlementDraft(defaultSettlementDraft(workspace, partyAccountId, currency));
     setComposer("SETTLEMENT");
     setVoidDraft(null);
     setError(null);
@@ -923,7 +928,7 @@ export function ArApWorkspace({ workspace }: Readonly<{ workspace: SubledgerWork
                 <div className="record-actions">
                   {business && document.status === "DRAFT" && workspace.canManage && <button className="secondary-button compact-button" type="button" onClick={() => openDocument(document)} disabled={busy || pending}>Edit draft</button>}
                   {business && document.status === "DRAFT" && workspace.canPost && <button className="primary-button compact-button" type="button" onClick={() => void issueDocument(document)} disabled={busy || pending}>Issue</button>}
-                  {business && document.status === "POSTED" && workspace.canSettle && document.openAmount && isPositiveExactAmount(document.openAmount) && <button className="secondary-button compact-button" type="button" onClick={() => openSettlement(document.snapshot.partyAccountId)} disabled={busy || pending}>Record {settlementLabel}</button>}
+                  {business && document.status === "POSTED" && workspace.canSettle && document.openAmount && isPositiveExactAmount(document.openAmount) && <button className="secondary-button compact-button" type="button" onClick={() => openSettlement(document.snapshot.partyAccountId, document.snapshot.currency)} disabled={busy || pending}>Record {settlementLabel}</button>}
                   {document.status === "POSTED" && workspace.canVoid && <button className="text-danger-button" type="button" onClick={() => prepareVoid(document)} disabled={busy || pending || (business && partiallySettled)}>{business && partiallySettled ? `Reverse ${settlementLabel} first` : "Void"}</button>}
                 </div>
               </article>
