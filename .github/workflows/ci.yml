@@ -183,7 +183,9 @@ jobs:
       - run: npm run build
       - name: Build hardened operations and email-worker images
         run: |
-          docker build --target operations --tag business-finlynq-operations-ci .
+          docker build --target operations --build-arg BUSINESS_FINLYNQ_IMAGE_REVISION="$BUSINESS_FINLYNQ_IMAGE_REVISION" --tag business-finlynq-operations-ci .
+          test "$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' business-finlynq-operations-ci)" = "$BUSINESS_FINLYNQ_IMAGE_REVISION"
+          docker run --rm --network none --read-only --tmpfs /tmp:rw,noexec,nosuid,nodev,size=16m --cap-drop ALL --security-opt no-new-privileges --pids-limit 32 --memory 128m --cpus 0.25 --mount "type=bind,source=$PWD/deploy/backup,target=/tests,readonly" --entrypoint /bin/bash business-finlynq-operations-ci /tests/test-latest-backup-verifier.sh
           docker build --target worker --tag business-finlynq-auth-worker-ci .
           docker run --rm --entrypoint sh business-finlynq-auth-worker-ci -c 'test -f /app/auth-email-worker.mjs && test ! -e /app/src && test ! -e /app/tests && ! node -e "require.resolve(\"tsx\")"'
       - name: Install release-gate browser

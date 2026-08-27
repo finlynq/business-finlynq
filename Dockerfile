@@ -50,8 +50,12 @@ CMD ["node", "auth-email-worker.mjs"]
 
 FROM postgres:16-alpine AS operations
 
+ARG BUSINESS_FINLYNQ_IMAGE_REVISION=unknown
+LABEL org.opencontainers.image.revision=$BUSINESS_FINLYNQ_IMAGE_REVISION
+
 RUN apk add --no-cache age bash coreutils curl jq openssl rclone util-linux
 COPY --chmod=0555 deploy/backup/run-backup.sh /usr/local/bin/business-finlynq-backup
+COPY --chmod=0555 deploy/backup/check-latest-backup.sh /usr/local/bin/business-finlynq-check-latest-backup
 COPY --chmod=0555 deploy/backup/verify-restore.sh /usr/local/bin/business-finlynq-verify-restore
 COPY --chmod=0555 deploy/backup/verify-restored-runtime.sh /usr/local/bin/business-finlynq-verify-restored-runtime
 COPY --chmod=0555 deploy/rollback/verify-legacy-app.sh /usr/local/bin/business-finlynq-verify-legacy-app

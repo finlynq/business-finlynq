@@ -7,6 +7,8 @@ MONITOR_HOSTNAME="${MONITOR_HOSTNAME:-business.finlynq.com}"
 MONITOR_BASE_URL="${MONITOR_BASE_URL:-https://$MONITOR_HOSTNAME}"
 MONITOR_BACKUP_DIR="${MONITOR_BACKUP_DIR:-/var/backups/business-finlynq}"
 MONITOR_MAX_BACKUP_AGE_HOURS="${MONITOR_MAX_BACKUP_AGE_HOURS:-8}"
+MONITOR_MAX_BACKUP_ACTIVE_SECONDS="${MONITOR_MAX_BACKUP_ACTIVE_SECONDS:-7200}"
+MONITOR_BACKUP_VERIFY_TIMEOUT_SECONDS="${MONITOR_BACKUP_VERIFY_TIMEOUT_SECONDS:-90}"
 MONITOR_MIN_TLS_DAYS="${MONITOR_MIN_TLS_DAYS:-21}"
 MONITOR_MAX_DISK_PERCENT="${MONITOR_MAX_DISK_PERCENT:-85}"
 MONITOR_EXPECT_EDGE="${MONITOR_EXPECT_EDGE:-true}"
@@ -34,7 +36,8 @@ record_failure() {
 }
 
 for numeric_value in \
-  MONITOR_MAX_BACKUP_AGE_HOURS MONITOR_MIN_TLS_DAYS MONITOR_MAX_DISK_PERCENT \
+  MONITOR_MAX_BACKUP_AGE_HOURS MONITOR_MAX_BACKUP_ACTIVE_SECONDS MONITOR_BACKUP_VERIFY_TIMEOUT_SECONDS \
+  MONITOR_MIN_TLS_DAYS MONITOR_MAX_DISK_PERCENT \
   MONITOR_EXPECT_DEMO_POOL_SIZE MONITOR_MIN_DEMO_READY_SLOTS; do
   [[ "${!numeric_value}" =~ ^[0-9]+$ ]] || {
     printf 'Invalid numeric monitoring setting: %s\n' "$numeric_value" >&2
@@ -61,6 +64,10 @@ done
   printf '%s\n' "MONITOR_EXPECT_DEMO_POOL_SIZE must be greater than zero" >&2
   exit 2
 }
+(( MONITOR_MAX_BACKUP_ACTIVE_SECONDS > 0 && MONITOR_BACKUP_VERIFY_TIMEOUT_SECONDS > 0 )) || {
+  printf '%s\n' "Backup active and verification timeout settings must be greater than zero" >&2
+  exit 2
+}
 (( MONITOR_MIN_DEMO_READY_SLOTS >= 0 && MONITOR_MIN_DEMO_READY_SLOTS <= MONITOR_EXPECT_DEMO_POOL_SIZE )) || {
   printf '%s\n' "MONITOR_MIN_DEMO_READY_SLOTS must be between zero and the expected pool size" >&2
   exit 2
@@ -79,7 +86,7 @@ if [[ "$MONITOR_EXPECT_REVISION" != "$BUSINESS_FINLYNQ_IMAGE_REVISION" ]]; then
   exit 2
 fi
 
-for command_name in curl docker jq openssl sha256sum; do
+for command_name in curl docker jq openssl timeout; do
   command -v "$command_name" >/dev/null 2>&1 || {
     printf 'Required monitoring command is unavailable: %s\n' "$command_name" >&2
     exit 2
@@ -102,8 +109,9 @@ fi
 
 response_body="$(mktemp)"
 response_headers="$(mktemp)"
+backup_verification_output="$(mktemp)"
 cleanup() {
-  rm -f -- "$response_body" "$response_headers"
+  rm -f -- "$response_body" "$response_headers" "$backup_verification_output"
 }
 trap cleanup EXIT INT TERM
 
@@ -281,43 +289,19 @@ else
     record_failure "backup filesystem utilization is ${disk_percent:-unknown}% (limit $MONITOR_MAX_DISK_PERCENT%)"
   fi
 
-  latest_manifest=""
-  for candidate in "$MONITOR_BACKUP_DIR"/business_finlynq_*.manifest.json; do
-    [[ -f "$candidate" ]] || continue
-    if [[ -z "$latest_manifest" || "$candidate" -nt "$latest_manifest" ]]; then
-      latest_manifest="$candidate"
-    fi
-  done
-
-  if [[ -z "$latest_manifest" ]]; then
-    record_failure "no completed backup manifest exists"
+  backup_verification_status=0
+  timeout --signal=TERM --kill-after=5 "${MONITOR_BACKUP_VERIFY_TIMEOUT_SECONDS}s" \
+    docker compose --profile operations run --rm --no-deps -T verify_latest_backup \
+    </dev/null >"$backup_verification_output" 2>&1 \
+    || backup_verification_status=$?
+  if [[ "$backup_verification_status" == "0" ]]; then
+    grep -Fqx -- "Business Finlynq encrypted backup verification passed" "$backup_verification_output" \
+      || record_failure "isolated backup verifier returned an unexpected success response"
+  elif [[ "$backup_verification_status" == "75" ]]; then
+    grep -Fqx -- "Backup verification deferred while an encrypted backup is active" "$backup_verification_output" \
+      || record_failure "isolated backup verifier returned an invalid deferral response"
   else
-    manifest_epoch="$(stat -c '%Y' "$latest_manifest" 2>/dev/null || printf 0)"
-    age_hours=$(( ( $(date +%s) - manifest_epoch ) / 3600 ))
-    (( age_hours <= MONITOR_MAX_BACKUP_AGE_HOURS )) || record_failure "newest backup is $age_hours hours old"
-
-    manifest_basename="$(basename -- "$latest_manifest")"
-    backup_prefix="${manifest_basename%.manifest.json}"
-    archive_path="$MONITOR_BACKUP_DIR/${backup_prefix}.dump.age"
-    checksum_path="$MONITOR_BACKUP_DIR/${backup_prefix}.sha256"
-    uploaded_path="$MONITOR_BACKUP_DIR/${backup_prefix}.uploaded"
-    manifest_archive="$(jq -r '.encryptedArchive // empty' "$latest_manifest" 2>/dev/null || true)"
-    manifest_sha256="$(jq -r '.sha256 // empty' "$latest_manifest" 2>/dev/null || true)"
-    if [[ "$manifest_archive" != "${backup_prefix}.dump.age" || ! "$manifest_sha256" =~ ^[a-f0-9]{64}$ ]]; then
-      record_failure "newest backup manifest is invalid or inconsistent"
-    fi
-    if [[ ! -s "$archive_path" || ! -s "$checksum_path" ]]; then
-      record_failure "newest backup set is incomplete"
-    else
-      expected_sha256="$(awk 'NR == 1 {print $1}' "$checksum_path")"
-      actual_sha256="$(sha256sum "$archive_path" | awk '{print $1}')"
-      if [[ ! "$expected_sha256" =~ ^[a-f0-9]{64}$ || "$expected_sha256" != "$actual_sha256" || "$manifest_sha256" != "$actual_sha256" ]]; then
-        record_failure "newest encrypted backup checksum is invalid"
-      fi
-    fi
-    if [[ "$MONITOR_REQUIRE_OFFSITE" == "true" && ! -s "$uploaded_path" ]]; then
-      record_failure "newest backup has no verified off-site upload marker"
-    fi
+    record_failure "newest encrypted backup failed isolated container verification"
   fi
 fi
 

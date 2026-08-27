@@ -54,8 +54,11 @@ mkdir -p -- "$BACKUP_OUTPUT_DIR"
 BACKUP_OUTPUT_DIR="$(cd -- "$BACKUP_OUTPUT_DIR" && pwd -P)"
 [[ "$BACKUP_OUTPUT_DIR" != "/" ]] || fail "Refusing to use the filesystem root as a backup directory"
 
-exec 9>"$BACKUP_OUTPUT_DIR/.backup.lock"
-flock -n 9 || fail "Another backup process already holds the backup lock"
+backup_lock_file="$BACKUP_OUTPUT_DIR/.backup.lock"
+exec 9<>"$backup_lock_file"
+flock --exclusive --wait 600 9 \
+  || fail "Timed out waiting for backup verification or another backup process"
+printf '%s\n' "$(date +%s)" >"$backup_lock_file"
 
 IFS= read -r PGPASSWORD < "$BACKUP_DATABASE_PASSWORD_FILE" || true
 [[ -n "${PGPASSWORD:-}" ]] || fail "Backup database password file does not contain a password"

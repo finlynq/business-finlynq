@@ -545,9 +545,13 @@ services:
 
   backup:
     profiles: [operations]
+    image: business-finlynq-operations:${BUSINESS_FINLYNQ_IMAGE_REVISION:?set BUSINESS_FINLYNQ_IMAGE_REVISION}
+    pull_policy: never
     build:
       context: .
       target: operations
+      args:
+        BUSINESS_FINLYNQ_IMAGE_REVISION: ${BUSINESS_FINLYNQ_IMAGE_REVISION:?set BUSINESS_FINLYNQ_IMAGE_REVISION}
     command: ["/usr/local/bin/business-finlynq-backup"]
     environment:
       PGHOST: database
@@ -591,6 +595,43 @@ services:
     cpus: "0.75"
     mem_limit: 512m
     pids_limit: 128
+    logging:
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  verify_latest_backup:
+    profiles: [operations]
+    image: business-finlynq-operations:${BUSINESS_FINLYNQ_IMAGE_REVISION:?set BUSINESS_FINLYNQ_IMAGE_REVISION}
+    pull_policy: never
+    command: ["/usr/local/bin/business-finlynq-check-latest-backup"]
+    environment:
+      BACKUP_OUTPUT_DIR: /backups
+      BACKUP_MAX_AGE_HOURS: ${MONITOR_MAX_BACKUP_AGE_HOURS:-8}
+      BACKUP_MAX_ACTIVE_SECONDS: ${MONITOR_MAX_BACKUP_ACTIVE_SECONDS:-7200}
+      BACKUP_REQUIRE_OFFSITE_MARKER: ${MONITOR_REQUIRE_OFFSITE:-true}
+    volumes:
+      - type: bind
+        source: ${MONITOR_BACKUP_DIR:-/var/backups/business-finlynq}
+        target: /backups
+        read_only: true
+        bind:
+          create_host_path: false
+    network_mode: none
+    user: "70:70"
+    group_add:
+      - ${BUSINESS_FINLYNQ_SECRET_GID:?set BUSINESS_FINLYNQ_SECRET_GID}
+    stdin_open: false
+    tty: false
+    init: true
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop: [ALL]
+    restart: "no"
+    cpus: "0.25"
+    mem_limit: 128m
+    pids_limit: 32
     logging:
       options:
         max-size: "10m"

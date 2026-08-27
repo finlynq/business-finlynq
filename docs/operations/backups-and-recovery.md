@@ -42,6 +42,8 @@ The local script never deletes remote objects. Remote retention and immutability
 
 The first step provisions a dedicated login role with `SELECT`, `CONNECT`, and schema usage only. It has `BYPASSRLS` because a complete logical database dump must include every tenant; it is not a superuser and cannot create databases, roles, or replication slots. It has no inherited roles, is capped at two connections, defaults every transaction to read-only, and the reconciler first removes stale direct grants before restoring the reviewed `SELECT` matrix. Normal Compose startup also runs this reconciler after every migration and refuses to bootstrap the demo or start the app when the backup credential or grant reconciliation is unavailable.
 
+The `backup` build also tags the exact-release operations image used by `verify_latest_backup`. The production monitor runs that no-network, no-secret UID-70 service with the backup directory mounted read-only; the host deploy account never needs permission to read encrypted archives, manifests, checksums, or upload markers. Host execution is noninteractive and bounded by `MONITOR_BACKUP_VERIFY_TIMEOUT_SECONDS` (90 seconds by default), below the two-minute systemd monitor limit.
+
 ## Backup completion criteria
 
 Every successful run produces one atomic set:

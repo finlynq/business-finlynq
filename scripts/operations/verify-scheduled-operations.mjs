@@ -147,14 +147,51 @@ for (const expected of [
   'MONITOR_MAINTENANCE_SCHEDULER" == "cron"',
   "deploy-owned cron schedule does not match the reviewed four-job block",
   "monitor_cron_maintenance_lock_file",
+  "MONITOR_MAX_BACKUP_ACTIVE_SECONDS",
+  "MONITOR_BACKUP_VERIFY_TIMEOUT_SECONDS",
+  'timeout --signal=TERM --kill-after=5 "${MONITOR_BACKUP_VERIFY_TIMEOUT_SECONDS}s"',
+  "docker compose --profile operations run --rm --no-deps -T verify_latest_backup",
+  '</dev/null >"$backup_verification_output" 2>&1',
+  'backup_verification_status" == "75"',
+  "Backup verification deferred while an encrypted backup is active",
+  "newest encrypted backup failed isolated container verification",
   "FROM demo_sandbox_slots",
   "quarantined slot(s)",
   "stranded resetting slot(s)",
   "app image OCI revision label does not match the monitored release",
 ]) requireText(monitor, expected, "production monitor");
+for (const forbidden of [
+  'sha256sum "$archive_path"',
+  '"$MONITOR_BACKUP_DIR"/business_finlynq_*.manifest.json',
+  'jq -r \'.encryptedArchive // empty\' "$latest_manifest"',
+]) {
+  if (monitor.includes(forbidden)) {
+    throw new Error(`production monitor reads a UID-70 backup artifact on the host: ${forbidden}`);
+  }
+}
 
 const dockerfile = read("Dockerfile");
 requireText(dockerfile, "org.opencontainers.image.revision=$BUSINESS_FINLYNQ_IMAGE_REVISION", "application image");
+requireText(
+  dockerfile,
+  "COPY --chmod=0555 deploy/backup/check-latest-backup.sh /usr/local/bin/business-finlynq-check-latest-backup",
+  "operations image",
+);
+
+const latestBackupChecker = read("deploy/backup/check-latest-backup.sh");
+for (const expected of [
+  "flock --shared --nonblock 9",
+  "exit 75",
+  "BACKUP_MAX_ACTIVE_SECONDS",
+  "BACKUP_REQUIRE_OFFSITE_MARKER",
+  "sha256sum",
+  "encryptedBytes",
+  "applicationRevision",
+  "newest backup off-site upload marker is invalid",
+]) requireText(latestBackupChecker, expected, "isolated latest-backup checker");
+if (latestBackupChecker.includes("flock --unlock 9")) {
+  throw new Error("isolated latest-backup checker releases its shared lock before verification completes");
+}
 
 const scheduledBackup = read("deploy/backup/run-scheduled-backup.sh");
 requireText(scheduledBackup, "BUSINESS_FINLYNQ_IMAGE_REVISION is required", "scheduled backup wrapper");
@@ -163,6 +200,9 @@ if (scheduledBackup.includes("git rev-parse") || scheduledBackup.includes("print
 }
 const backupImplementation = read("deploy/backup/run-backup.sh");
 requireText(backupImplementation, "BUSINESS_FINLYNQ_IMAGE_REVISION is required", "backup implementation");
+requireText(backupImplementation, 'exec 9<>"$backup_lock_file"', "backup implementation");
+requireText(backupImplementation, "flock --exclusive --wait 600 9", "backup implementation");
+requireText(backupImplementation, 'printf \'%s\\n\' "$(date +%s)" >"$backup_lock_file"', "backup implementation");
 if (backupImplementation.includes("BACKUP_GIT_COMMIT") || backupImplementation.includes(":-unknown")) {
   throw new Error("backup implementation can record an unreviewed revision fallback");
 }

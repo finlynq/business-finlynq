@@ -125,6 +125,12 @@ if (dependencyCondition(services.bootstrap_demo, "reconcile_backup_grants") !== 
 
 const backup = services.backup;
 if (!backup) fail("backup service is missing");
+const expectedOperationsImage = `business-finlynq-operations:${process.env.BUSINESS_FINLYNQ_IMAGE_REVISION}`;
+if (backup.image !== expectedOperationsImage) fail("backup image is not pinned to the release operations image");
+if (backup.pull_policy !== "never") fail("backup may pull an unreviewed release operations image");
+if (backup.build?.args?.BUSINESS_FINLYNQ_IMAGE_REVISION !== process.env.BUSINESS_FINLYNQ_IMAGE_REVISION) {
+  fail("backup image build does not embed the configured release revision");
+}
 if (backup.environment?.PGUSER !== "business_finlynq_backup") fail("backup does not use its dedicated role");
 if (backup.environment?.PGPASSWORD) fail("backup exposes its database password inline");
 if (backup.environment?.BACKUP_DATABASE_PASSWORD_FILE !== "/run/secrets/business_finlynq_backup_db_password") {
@@ -145,6 +151,48 @@ for (const receiverSecret of [backupReceiverPrivateKeySecret, backupReceiverKnow
   if (consumers.join(",") !== "backup") {
     fail(`receiver transport secret ${receiverSecret} must be mounted only by backup; found ${consumers.join(",") || "none"}`);
   }
+}
+
+const latestBackupVerifier = services.verify_latest_backup;
+if (!latestBackupVerifier) fail("isolated latest-backup verifier service is missing");
+if (latestBackupVerifier.image !== expectedOperationsImage || latestBackupVerifier.image !== backup.image) {
+  fail("latest-backup verifier does not use the exact release backup image");
+}
+if (latestBackupVerifier.build) fail("latest-backup verifier may not build an image during monitoring");
+if (latestBackupVerifier.pull_policy !== "never") fail("latest-backup verifier may pull an unreviewed image");
+if ((latestBackupVerifier.command ?? []).join(" ") !== "/usr/local/bin/business-finlynq-check-latest-backup") {
+  fail("latest-backup verifier does not run the reviewed checker");
+}
+if ((latestBackupVerifier.secrets ?? []).length > 0) fail("latest-backup verifier receives a secret");
+if (latestBackupVerifier.network_mode !== "none" || Object.keys(latestBackupVerifier.networks ?? {}).length > 0) {
+  fail("latest-backup verifier has network access");
+}
+if ((latestBackupVerifier.ports ?? []).length > 0) fail("latest-backup verifier publishes a port");
+if (latestBackupVerifier.user !== "70:70") fail("latest-backup verifier does not run as backup UID 70");
+if ((latestBackupVerifier.group_add ?? []).join(",") !== process.env.BUSINESS_FINLYNQ_SECRET_GID) {
+  fail("latest-backup verifier lacks the sole supplemental group needed to traverse the backup directory");
+}
+if (latestBackupVerifier.read_only !== true || latestBackupVerifier.restart !== "no") {
+  fail("latest-backup verifier is not a read-only one-shot");
+}
+if (!(latestBackupVerifier.cap_drop ?? []).includes("ALL")) fail("latest-backup verifier retains Linux capabilities");
+if (!(latestBackupVerifier.security_opt ?? []).includes("no-new-privileges:true")) {
+  fail("latest-backup verifier can gain privileges");
+}
+if (latestBackupVerifier.stdin_open === true || latestBackupVerifier.tty === true) {
+  fail("latest-backup verifier enables interactive input or a TTY");
+}
+const verifierBackupMount = (latestBackupVerifier.volumes ?? [])
+  .find((volume) => typeof volume === "object" && volume.target === "/backups");
+if (!verifierBackupMount || verifierBackupMount.type !== "bind" || verifierBackupMount.read_only !== true) {
+  fail("latest-backup verifier does not mount backup artifacts read-only");
+}
+const expectedMonitorBackupDirectory = process.env.MONITOR_BACKUP_DIR ?? "/var/backups/business-finlynq";
+if (verifierBackupMount.source !== expectedMonitorBackupDirectory) {
+  fail("latest-backup verifier does not inspect the monitored backup directory");
+}
+if (verifierBackupMount.bind?.create_host_path !== false) {
+  fail("latest-backup verifier can create a missing host backup path");
 }
 
 for (const [name, expectedMode] of [
