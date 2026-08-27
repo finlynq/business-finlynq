@@ -11,7 +11,7 @@ Use this checklist for every Business Finlynq release. Releases are commit-addre
 - Database capacity, disk, TLS, external uptime monitor, alert delivery, and auth email worker health are green.
 - Any migration was reviewed for locks, runtime-role grants, backup-role grants, rollback compatibility, and required forward repair.
 - The last demo-sandbox nightly reconciliation passed, no slot is unexpectedly quarantined or overdue, and the single nightly scheduler is enabled on hosts that allow writable demos.
-- The mandatory operations environment contains the full release SHA, matching monitor revision, exact four app-gate expectations, and reviewed demo-pool thresholds.
+- The mandatory operations environment contains the full release SHA, matching monitor revision, exact five app-gate expectations, and reviewed demo-pool thresholds.
 - A named operator owns the release and another owns rollback/acceptance.
 
 ## Deployment

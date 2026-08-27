@@ -14,6 +14,10 @@ import {
 } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 import { organizationMemberships, organizations, users } from "./identity";
+import {
+  accountingProfile as accountingProfileEnum,
+  manualPostingMode as manualPostingModeEnum,
+} from "./ledger";
 
 export const demoSandboxPool = pgTable("demo_sandbox_pool", {
   singleton: boolean("singleton").primaryKey().default(true),
@@ -125,6 +129,37 @@ export const authOneTimeTokens = pgTable(
     uniqueIndex("auth_one_time_tokens_hash_unique").on(table.tokenHash),
     index("auth_one_time_tokens_user_purpose_idx").on(table.userId, table.purpose, table.expiresAt),
   ],
+);
+
+export const authOrganizationSignups = pgTable(
+  "auth_organization_signups",
+  {
+    id: uuid("id").primaryKey(),
+    tokenId: uuid("token_id").notNull().unique().references(() => authOneTimeTokens.id, { onDelete: "restrict" }),
+    userId: uuid("user_id").notNull().unique().references(() => users.id, { onDelete: "restrict" }),
+    // The deterministic tenant identifier is reserved before the tenant is
+    // provisioned, so this intentionally is not an organizations foreign key.
+    organizationId: uuid("organization_id").notNull().unique(),
+    organizationSlug: text("organization_slug").notNull().unique(),
+    organizationName: text("organization_name").notNull(),
+    entityCode: text("entity_code").notNull(),
+    entityName: text("entity_name").notNull(),
+    countryCode: text("country_code").notNull(),
+    regionCode: text("region_code").notNull(),
+    functionalCurrency: text("functional_currency").notNull(),
+    accountingProfile: accountingProfileEnum("accounting_profile").notNull(),
+    fiscalYear: integer("fiscal_year").notNull(),
+    manualPostingMode: manualPostingModeEnum("manual_posting_mode").notNull(),
+    keyProvider: text("key_provider").notNull(),
+    wrappedDek: text("wrapped_dek").notNull(),
+    termsVersion: text("terms_version").notNull(),
+    status: text("status").notNull().default("PENDING"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    acceptedAt: timestamp("accepted_at", { withTimezone: true }),
+    completedAt: timestamp("completed_at", { withTimezone: true }),
+  },
+  (table) => [index("auth_organization_signups_status_expiry_idx").on(table.status, table.expiresAt)],
 );
 
 export const authMfaFactors = pgTable(

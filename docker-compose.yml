@@ -300,6 +300,10 @@ services:
       DEMO_LOGIN_ENABLED: ${DEMO_LOGIN_ENABLED:-false}
       DEMO_WRITES_ENABLED: ${DEMO_WRITES_ENABLED:-false}
       ACCOUNT_LOGIN_ENABLED: ${ACCOUNT_LOGIN_ENABLED:-false}
+      ACCOUNT_SIGNUP_ENABLED: ${ACCOUNT_SIGNUP_ENABLED:-false}
+      SIGNUP_TURNSTILE_ENABLED: ${SIGNUP_TURNSTILE_ENABLED:-false}
+      SIGNUP_TURNSTILE_SITE_KEY: ${SIGNUP_TURNSTILE_SITE_KEY:-}
+      TURNSTILE_SECRET_KEY_FILE: /run/secrets/business_finlynq_turnstile_secret_key
       AUTH_EMAIL_DELIVERY_ENABLED: ${AUTH_EMAIL_DELIVERY_ENABLED:-false}
       AUTH_EMAIL_PROVIDER: ${AUTH_EMAIL_PROVIDER:-resend}
       AUTH_EMAIL_FROM: ${AUTH_EMAIL_FROM:-}
@@ -312,6 +316,7 @@ services:
       - business_finlynq_root_kek
       - business_finlynq_identity_secret
       - business_finlynq_app_db_password
+      - business_finlynq_turnstile_secret_key
     group_add:
       - ${BUSINESS_FINLYNQ_SECRET_GID:?set BUSINESS_FINLYNQ_SECRET_GID}
     ports:
@@ -942,6 +947,8 @@ services:
       # operators and maintenance timers are not part of this drill surface.
       DEMO_WRITES_ENABLED: "false"
       ACCOUNT_LOGIN_ENABLED: "false"
+      ACCOUNT_SIGNUP_ENABLED: "false"
+      SIGNUP_TURNSTILE_ENABLED: "false"
       AUTH_EMAIL_DELIVERY_ENABLED: "false"
       BUSINESS_WRITES_ENABLED: "false"
       BUSINESS_FINLYNQ_IMAGE_REVISION: ${BUSINESS_FINLYNQ_IMAGE_REVISION:-unknown}
@@ -1039,6 +1046,8 @@ secrets:
     file: ${IDENTITY_SECRET_FILE:?set IDENTITY_SECRET_FILE}
   business_finlynq_resend_api_key:
     file: ${AUTH_RESEND_API_KEY_FILE:-./deploy/backup/not-configured}
+  business_finlynq_turnstile_secret_key:
+    file: ${TURNSTILE_SECRET_KEY_FILE:-./deploy/backup/not-configured}
   business_finlynq_auth_worker_db_password:
     file: ${AUTH_WORKER_DATABASE_PASSWORD_FILE:-./deploy/backup/not-configured}
   business_finlynq_backup_db_password:

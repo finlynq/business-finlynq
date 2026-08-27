@@ -4,16 +4,17 @@ The public demo is a bounded, writable accounting sandbox over synthetic data. E
 
 ## Production release boundary
 
-The hosted demo uses this exact four-gate boundary:
+The hosted demo uses this exact five-gate boundary:
 
 ```dotenv
 DEMO_LOGIN_ENABLED=true
 DEMO_WRITES_ENABLED=true
 ACCOUNT_LOGIN_ENABLED=false
+ACCOUNT_SIGNUP_ENABLED=false
 BUSINESS_WRITES_ENABLED=false
 ```
 
-`DEMO_WRITES_ENABLED` authorizes mutations only for a live `demo-link` session whose claimed organization is registered as a synthetic `SANDBOX`. `BUSINESS_WRITES_ENABLED` independently controls real organizations. Real-account activation is a separate release gate.
+`DEMO_WRITES_ENABLED` authorizes mutations only for a live `demo-link` session whose claimed organization is registered as a synthetic `SANDBOX`. `ACCOUNT_SIGNUP_ENABLED` independently controls owner acquisition, and `BUSINESS_WRITES_ENABLED` independently controls real organizations. Real-account activation is a separate release gate.
 
 ## Isolation and lifecycle contract
 
