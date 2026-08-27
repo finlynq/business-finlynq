@@ -252,7 +252,19 @@ runDatabaseTests("signup and invitation identity precedence", () => {
 
     const secondTokenId = randomUUID();
     const secondTokenHash = randomUUID().replaceAll("-", "").repeat(2);
-    expect((await queueSignup(secondTokenId, secondTokenHash, randomUUID())).rows[0]?.queued).toBe(true);
+    const secondOutboxId = randomUUID();
+    expect((await queueSignup(secondTokenId, secondTokenHash, secondOutboxId)).rows[0]?.queued).toBe(false);
+    expect((await pool.query(
+      "SELECT consumed_at IS NULL AS available FROM auth_one_time_tokens WHERE token_hash=$1",
+      [firstSetupHash],
+    )).rows[0]?.available).toBe(true);
+    await pool.query(
+      `UPDATE auth_one_time_tokens
+       SET created_at=now()-interval '1 hour',expires_at=now()-interval '1 minute'
+       WHERE token_hash=$1`,
+      [firstSetupHash],
+    );
+    expect((await queueSignup(secondTokenId, secondTokenHash, secondOutboxId)).rows[0]?.queued).toBe(true);
     expect((await pool.query(
       "SELECT consumed_at IS NOT NULL AS consumed FROM auth_one_time_tokens WHERE token_hash=$1",
       [firstSetupHash],
@@ -299,6 +311,9 @@ runDatabaseTests("signup and invitation identity precedence", () => {
     const ownerOrganizationId = randomUUID();
     const invitedOrganizationId = randomUUID();
     const invitedMembershipId = randomUUID();
+    const invitedRoleId = randomUUID();
+    const invitationId = randomUUID();
+    const invitationTokenId = randomUUID();
     const emailHash = randomUUID().replaceAll("-", "").repeat(2);
     const invitationTokenHash = randomUUID().replaceAll("-", "").repeat(2);
     const signupTokenHash = randomUUID().replaceAll("-", "").repeat(2);
@@ -316,14 +331,37 @@ runDatabaseTests("signup and invitation identity precedence", () => {
       [userId, emailHash, `idv1:${"e".repeat(80)}`, `idv1:${"n".repeat(80)}`],
     );
     await pool.query(
+      "INSERT INTO roles(id,organization_id,key,display_name,system_template,active) VALUES($1,$2,'VIEWER_AUDITOR','Viewer',true,true)",
+      [invitedRoleId, invitedOrganizationId],
+    );
+    await pool.query(
       "INSERT INTO organization_memberships(id,organization_id,user_id,active) VALUES($1,$2,$3,false)",
       [invitedMembershipId, invitedOrganizationId, userId],
     );
     await pool.query(
+      `INSERT INTO membership_roles(organization_id,membership_id,role_id,assigned_by)
+       VALUES($1,$2,$3,$4)`,
+      [invitedOrganizationId, invitedMembershipId, invitedRoleId, userId],
+    );
+    await pool.query(
       `INSERT INTO auth_one_time_tokens(
-         token_hash,purpose,user_id,organization_id,expires_at
-       ) VALUES($1,'INVITATION',$2,$3,now()+interval '72 hours')`,
-      [invitationTokenHash, userId, invitedOrganizationId],
+         id,token_hash,purpose,user_id,organization_id,expires_at
+       ) VALUES($1,$2,'INVITATION',$3,$4,now()+interval '72 hours')`,
+      [invitationTokenId, invitationTokenHash, userId, invitedOrganizationId],
+    );
+    await pool.query(
+      `INSERT INTO organization_invitations(
+         id,organization_id,user_id,membership_id,role_id,token_id,
+         status,invited_by_user_id,expires_at
+       ) VALUES($1,$2,$3,$4,$5,$6,'PENDING',$3,now()+interval '72 hours')`,
+      [
+        invitationId,
+        invitedOrganizationId,
+        userId,
+        invitedMembershipId,
+        invitedRoleId,
+        invitationTokenId,
+      ],
     );
 
     const queueSignup = async (tokenId: string, tokenHash: string, outboxId: string) => pool.query(

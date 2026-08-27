@@ -53,7 +53,9 @@ describe("self-service signup security", () => {
   });
 
   it("keeps operator invitations compatible with the durable invitation registry", () => {
-    expect(operatorInviteScript).toContain("This email already has an identity or pending flow");
+    expect(operatorInviteScript).toContain("This email already has an identity or proof-bearing flow");
+    expect(operatorInviteScript).toContain("signup.status IN ('PENDING','EXPIRED')");
+    expect(operatorInviteScript).toContain("business-finlynq|account-user|");
     expect(operatorInviteScript).toContain("INSERT INTO auth_one_time_tokens(id,token_hash");
     expect(operatorInviteScript).toContain("INSERT INTO organization_invitations(");
     expect(operatorInviteScript).toContain("invitationTokenId");

@@ -6,6 +6,10 @@ const migration = readFileSync(
   join(process.cwd(), "migrations", "drizzle", "0014_organization_member_administration.sql"),
   "utf8",
 );
+const coexistenceMigration = readFileSync(
+  join(process.cwd(), "migrations", "drizzle", "0016_signup_invitation_coexistence.sql"),
+  "utf8",
+);
 const demoReset = readFileSync(
   join(process.cwd(), "src", "modules", "onboarding", "demo-bootstrap.ts"),
   "utf8",
@@ -102,8 +106,8 @@ describe("organization administration database boundary", () => {
 
   it("makes demo invitations local and includes their identities in the nightly reset extension", () => {
     expect(migration).toContain("Demo invitations must remain synthetic and local");
-    expect(migration).toContain("Demo sandbox member limit of 32 reached");
-    expect(migration).toMatch(/selected_organization\.is_demo[\s\S]*?count\(\*\)[\s\S]*?organization_memberships[\s\S]*?>= 32/);
+    expect(coexistenceMigration).toContain("Demo sandbox member limit of 32 reached");
+    expect(coexistenceMigration).toMatch(/selected_organization\.is_demo[\s\S]*?count\(\*\)[\s\S]*?organization_memberships[\s\S]*?>= 32/);
     expect(migration).toContain("'organization_invitations'");
     expect(migration).toContain("CREATE OR REPLACE FUNCTION app.reset_demo_sandbox_extensions");
     expect(migration).toContain("settings_version = 1");
@@ -122,5 +126,58 @@ describe("organization administration database boundary", () => {
     expect(migration).toContain("DELETE FROM organization_memberships");
     expect(migration).toContain("DELETE FROM users selected_user");
     expect(runtimeGrants).not.toContain("app.reset_demo_sandbox_extensions(uuid,uuid)");
+  });
+});
+
+function functionDefinition(sql: string, name: string): string {
+  const start = sql.indexOf(`CREATE OR REPLACE FUNCTION app.${name}(`);
+  expect(start, `${name} definition start`).toBeGreaterThanOrEqual(0);
+  const end = sql.indexOf("\n$$;", start);
+  expect(end, `${name} definition end`).toBeGreaterThan(start);
+  return sql.slice(start, end + 4);
+}
+
+describe("signup and invitation coexistence forward migration", () => {
+  it("reuses only an untouched pending or expired signup identity without rewriting ciphertext", () => {
+    const invite = functionDefinition(coexistenceMigration, "organization_invite_member");
+    expect(invite).toContain("'business-finlynq|account-user|' || selected_email_lookup_hash");
+    expect(invite).toContain("existing_identity.password_hash <> '!organization-signup-pending!'");
+    expect(invite).toContain("signup.status IN ('PENDING', 'EXPIRED')");
+    expect(invite).toContain("signup.accepted_at IS NULL");
+    expect(invite).toContain("signup.completed_at IS NULL");
+    expect(invite).toContain("factor.status IN ('PENDING', 'ACTIVE')");
+    expect(invite).toContain("effective_user_id := existing_identity.id");
+    expect(invite).not.toMatch(/UPDATE users SET\s+email_ciphertext = selected_email_ciphertext/);
+  });
+
+  it("serializes both verified acceptance paths and keeps their loser terminal", () => {
+    const acceptInvitation = functionDefinition(coexistenceMigration, "auth_accept_invitation");
+    const beginSignup = functionDefinition(coexistenceMigration, "auth_begin_organization_signup");
+    expect(acceptInvitation).toContain("'!organization-signup-pending!'");
+    expect(acceptInvitation).toContain("status = 'SUPERSEDED'");
+    expect(acceptInvitation).toContain("last_error_code = 'SUPERSEDED_BY_INVITATION'");
+    expect(beginSignup).toContain("foreign_membership_conflict");
+    expect(beginSignup).toContain("invitation.status NOT IN ('PENDING', 'CANCELLED')");
+    expect(beginSignup).toContain("invitation.status <> 'SUPERSEDED'");
+  });
+
+  it("checks recovery authority only after locking each target invitation", () => {
+    for (const name of ["organization_resend_invitation", "organization_cancel_invitation"]) {
+      const definition = functionDefinition(coexistenceMigration, name);
+      const lock = definition.indexOf("FOR UPDATE;");
+      const recovery = definition.indexOf("Recovery-administration permission is required for this invitation");
+      expect(lock).toBeGreaterThan(0);
+      expect(recovery).toBeGreaterThan(lock);
+      expect(definition).toContain("permission_key = 'organization.recovery.manage'");
+    }
+  });
+
+  it("re-applies explicit runtime grants without exposing internal administration helpers", () => {
+    const grantBlock = coexistenceMigration.slice(coexistenceMigration.lastIndexOf("DO $$"));
+    expect(coexistenceMigration).toContain("REVOKE ALL ON FUNCTION app.organization_invite_member(");
+    expect(grantBlock).toContain("GRANT EXECUTE ON FUNCTION");
+    expect(grantBlock).toContain("app.organization_invite_member(");
+    expect(grantBlock).toContain("app.auth_accept_invitation(");
+    expect(grantBlock).toContain("app.auth_begin_organization_signup(");
   });
 });

@@ -91,19 +91,56 @@ async function main(): Promise<void> {
       if (!inviter.rowCount) throw new Error("The inviting user lacks active recovery-administration permission");
     }
 
+    const deterministicUserId = identityDerivedUuid("account-user", emailHash);
     const existing = await client.query<{ id: string }>(
       "SELECT id FROM users WHERE email_lookup_hash=$1 FOR UPDATE", [emailHash],
     );
-    if (existing.rows[0]) throw new Error("This email already has an identity or pending flow");
-    const userId = identityDerivedUuid("account-user", emailHash);
-    await client.query(
-      `INSERT INTO users(
-         id,email_lookup_hash,email_ciphertext,display_name_ciphertext,password_hash,
-         active,is_demo,mfa_required
-       ) VALUES ($1,$2,$3,$4,'!invitation-pending!',false,false,true)`,
-      [userId, emailHash, encryptIdentityField(normalizedEmail, "email", userId),
-        encryptIdentityField(input.name, "display-name", userId)],
-    );
+    let userId = deterministicUserId;
+    if (existing.rows[0]) {
+      const reusableSignup = await client.query<{ id: string }>(
+        `SELECT selected_user.id
+         FROM users selected_user
+         JOIN auth_organization_signups signup ON signup.user_id=selected_user.id
+         WHERE selected_user.id=$1
+           AND selected_user.id=$2
+           AND NOT selected_user.active AND NOT selected_user.is_demo
+           AND selected_user.email_verified_at IS NULL
+           AND selected_user.password_hash='!organization-signup-pending!'
+           AND signup.status IN ('PENDING','EXPIRED')
+           AND signup.accepted_at IS NULL AND signup.completed_at IS NULL
+           AND NOT EXISTS (
+             SELECT 1 FROM organization_memberships membership
+             WHERE membership.user_id=selected_user.id
+               AND (membership.active OR membership.organization_id=$3)
+           )
+           AND NOT EXISTS (
+             SELECT 1 FROM organization_memberships membership
+             LEFT JOIN organization_invitations invitation
+               ON invitation.organization_id=membership.organization_id
+              AND invitation.membership_id=membership.id
+              AND invitation.user_id=membership.user_id
+             WHERE membership.user_id=selected_user.id
+               AND (invitation.id IS NULL OR invitation.status NOT IN ('PENDING','CANCELLED'))
+           )
+           AND NOT EXISTS (
+             SELECT 1 FROM auth_mfa_factors factor
+             WHERE factor.user_id=selected_user.id AND factor.status IN ('PENDING','ACTIVE')
+           )
+         FOR UPDATE OF selected_user,signup`,
+        [existing.rows[0].id, deterministicUserId, input.organization],
+      );
+      if (!reusableSignup.rows[0]) throw new Error("This email already has an identity or proof-bearing flow");
+      userId = reusableSignup.rows[0].id;
+    } else {
+      await client.query(
+        `INSERT INTO users(
+           id,email_lookup_hash,email_ciphertext,display_name_ciphertext,password_hash,
+           active,is_demo,mfa_required
+         ) VALUES ($1,$2,$3,$4,'!invitation-pending!',false,false,true)`,
+        [userId, emailHash, encryptIdentityField(normalizedEmail, "email", userId),
+          encryptIdentityField(input.name, "display-name", userId)],
+      );
+    }
 
     const membershipId = randomUUID();
     const membership = await client.query<{ id: string }>(
@@ -120,16 +157,6 @@ async function main(): Promise<void> {
        VALUES ($1,$2,$3,$4)`,
       [input.organization, selectedMembershipId, input.role, input.invitedBy ?? userId],
     );
-    await client.query(
-      `UPDATE auth_one_time_tokens SET consumed_at=coalesce(consumed_at,now())
-       WHERE user_id=$1 AND purpose IN ('INVITATION','MFA_SETUP') AND consumed_at IS NULL`,
-      [userId],
-    );
-    await client.query(
-      "UPDATE auth_mfa_factors SET status='REVOKED', revoked_at=now() WHERE user_id=$1 AND status IN ('PENDING','ACTIVE')",
-      [userId],
-    );
-
     const invitation = createOpaqueToken();
     const invitationId = randomUUID();
     const invitationTokenId = randomUUID();
