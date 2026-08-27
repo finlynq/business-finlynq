@@ -131,11 +131,13 @@ async function main(): Promise<void> {
     );
 
     const invitation = createOpaqueToken();
+    const invitationId = randomUUID();
+    const invitationTokenId = randomUUID();
     const outboxId = randomUUID();
     await client.query(
-      `INSERT INTO auth_one_time_tokens(token_hash,purpose,user_id,organization_id,expires_at)
-       VALUES ($1,'INVITATION',$2,$3,now()+interval '72 hours')`,
-      [invitation.hash, userId, input.organization],
+      `INSERT INTO auth_one_time_tokens(id,token_hash,purpose,user_id,organization_id,expires_at)
+       VALUES ($1,$2,'INVITATION',$3,$4,now()+interval '72 hours')`,
+      [invitationTokenId, invitation.hash, userId, input.organization],
     );
     await client.query(
       `INSERT INTO auth_email_outbox(
@@ -145,6 +147,21 @@ async function main(): Promise<void> {
         encryptAuthPayload(JSON.stringify({ token: invitation.raw }), "email-payload", outboxId), requestId],
     );
     await client.query(
+      `INSERT INTO organization_invitations(
+         id,organization_id,user_id,membership_id,role_id,token_id,
+         status,invited_by_user_id,expires_at
+       ) VALUES($1,$2,$3,$4,$5,$6,'PENDING',$7,now()+interval '72 hours')`,
+      [
+        invitationId,
+        input.organization,
+        userId,
+        selectedMembershipId,
+        input.role,
+        invitationTokenId,
+        input.invitedBy ?? userId,
+      ],
+    );
+    await client.query(
       `INSERT INTO auth_security_events(user_id,organization_id,event_type,outcome,request_id,metadata)
        VALUES ($1,$2,'INVITATION_ISSUED','SUCCESS',$3,
          jsonb_build_object('invitedBy',$4::text,'roleId',$5::text))`,
@@ -152,7 +169,7 @@ async function main(): Promise<void> {
     );
     await client.query("COMMIT");
     console.log(`Invitation queued in ${target.rows[0].organization_name} (${target.rows[0].role_name}).`);
-    console.log(`User ${userId}; membership ${selectedMembershipId}; request ${requestId}. No token was printed.`);
+    console.log(`User ${userId}; membership ${selectedMembershipId}; invitation ${invitationId}; request ${requestId}. No token was printed.`);
   } catch (error) {
     await client.query("ROLLBACK");
     throw error;

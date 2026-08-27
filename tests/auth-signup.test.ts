@@ -21,6 +21,10 @@ const signupMigration = readFileSync(
   join(process.cwd(), "migrations", "drizzle", "0013_self_service_owner_signup.sql"),
   "utf8",
 );
+const operatorInviteScript = readFileSync(
+  join(process.cwd(), "scripts", "invite-account.ts"),
+  "utf8",
+);
 
 describe("self-service signup security", () => {
   it("derives stable opaque UUIDs without exposing the identity", () => {
@@ -44,6 +48,13 @@ describe("self-service signup security", () => {
     expect(signupMigration).toContain("status = 'SUPERSEDED'");
     expect(signupMigration).toContain("membership.organization_id <> selected_token.organization_id");
     expect(signupMigration).toContain("The invitation won the race and already proved the email");
+  });
+
+  it("keeps operator invitations compatible with the durable invitation registry", () => {
+    expect(operatorInviteScript).toContain("This email already has an identity or pending flow");
+    expect(operatorInviteScript).toContain("INSERT INTO auth_one_time_tokens(id,token_hash");
+    expect(operatorInviteScript).toContain("INSERT INTO organization_invitations(");
+    expect(operatorInviteScript).toContain("invitationTokenId");
   });
 
   it("fails closed when production signup has no enabled challenge", () => {
