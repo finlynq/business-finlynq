@@ -222,10 +222,10 @@ runRuntimeRoleTests("PostgreSQL platform administrator runtime boundary", () => 
 
   it("exposes assurance-only authorization without direct grant or audit access", async () => {
     await expect(runtimePool.query(
-      "SELECT id FROM platform_administrator_grants LIMIT 1",
+      "SELECT id FROM public.platform_administrator_grants LIMIT 1",
     )).rejects.toThrow(/permission denied/);
     await expect(runtimePool.query(
-      "SELECT event_type FROM platform_administrator_grant_events LIMIT 1",
+      "SELECT event_type FROM public.platform_administrator_grant_events LIMIT 1",
     )).rejects.toThrow(/permission denied/);
     await expect(runtimePool.query(
       "SELECT * FROM app.auth_platform_administrator_authorization($1,$2)",
@@ -248,10 +248,10 @@ runAuthWorkerRoleTests("PostgreSQL platform administrator auth-worker boundary",
 
   it("cannot read grants, audit history, or authorization results", async () => {
     await expect(workerPool.query(
-      "SELECT id FROM platform_administrator_grants LIMIT 1",
+      "SELECT id FROM public.platform_administrator_grants LIMIT 1",
     )).rejects.toThrow(/permission denied/);
     await expect(workerPool.query(
-      "SELECT event_type FROM platform_administrator_grant_events LIMIT 1",
+      "SELECT event_type FROM public.platform_administrator_grant_events LIMIT 1",
     )).rejects.toThrow(/permission denied/);
     await expect(workerPool.query(
       "SELECT * FROM app.auth_platform_administrator_authorization($1,$2)",
