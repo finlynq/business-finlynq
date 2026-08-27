@@ -103,6 +103,8 @@ AS $$
 DECLARE
   existing_user users%ROWTYPE;
   existing_signup auth_organization_signups%ROWTYPE;
+  effective_user_id uuid := selected_user_id;
+  reusing_invitation_identity boolean := false;
   envelope jsonb;
 BEGIN
   IF selected_signup_id IS NULL OR selected_user_id IS NULL
@@ -147,7 +149,7 @@ BEGIN
   END IF;
 
   PERFORM pg_advisory_xact_lock(hashtextextended(
-    'business-finlynq|organization-signup|' || selected_email_hash, 0
+    'business-finlynq|account-user|' || selected_email_hash, 0
   ));
 
   SELECT selected_user.* INTO existing_user
@@ -160,25 +162,85 @@ BEGIN
     FROM auth_organization_signups signup
     WHERE signup.user_id = existing_user.id
     FOR UPDATE;
-    IF existing_user.id <> selected_user_id
-      OR existing_user.active OR existing_user.is_demo
-      OR existing_signup.id IS NULL
+    effective_user_id := existing_user.id;
+    IF existing_signup.id IS NULL THEN
+      -- An invitation is only a reservation, not proof of email ownership.
+      -- Reuse a retained pending/cancelled/expired placeholder, but leave its
+      -- invitation usable until the owner proves possession of the signup
+      -- email. Accepted, verified, active, or MFA-started identities never
+      -- enter this branch.
+      IF existing_user.active OR existing_user.is_demo
+        OR existing_user.email_verified_at IS NOT NULL
+        OR existing_user.password_hash <> '!invitation-pending!'
+        OR NOT EXISTS (
+          SELECT 1 FROM organization_memberships membership
+          WHERE membership.user_id = existing_user.id
+        )
+        OR EXISTS (
+          SELECT 1 FROM organization_memberships membership
+          WHERE membership.user_id = existing_user.id AND membership.active
+        )
+        OR EXISTS (
+          SELECT 1 FROM auth_mfa_factors factor
+          WHERE factor.user_id = existing_user.id
+            AND factor.status IN ('PENDING', 'ACTIVE')
+        ) THEN
+        RETURN false;
+      END IF;
+      reusing_invitation_identity := true;
+    ELSIF existing_user.active OR existing_user.is_demo
       OR existing_signup.id <> selected_signup_id
       OR existing_signup.organization_id <> selected_organization_id
       OR existing_signup.status = 'ACTIVE' THEN
       RETURN false;
+    ELSIF existing_signup.accepted_at IS NULL AND (
+      existing_user.email_verified_at IS NOT NULL
+      OR existing_user.password_hash NOT IN (
+        '!organization-signup-pending!', '!invitation-pending!'
+      )
+      OR EXISTS (
+        SELECT 1 FROM auth_mfa_factors factor
+        WHERE factor.user_id = existing_user.id
+          AND factor.status IN ('PENDING', 'ACTIVE')
+      )
+      OR EXISTS (
+        SELECT 1 FROM organization_memberships membership
+        WHERE membership.user_id = existing_user.id AND membership.active
+      )
+    ) THEN
+      -- The invitation won the race and already proved the email. An
+      -- unverified signup retry must not invalidate its MFA setup.
+      RETURN false;
+    ELSIF existing_signup.accepted_at IS NOT NULL AND (
+      existing_user.email_verified_at IS NULL
+      OR existing_user.password_hash NOT LIKE 'scrypt-v1$32768$8$1$%'
+      OR EXISTS (
+        SELECT 1 FROM auth_mfa_factors factor
+        WHERE factor.user_id = existing_user.id AND factor.status = 'ACTIVE'
+      )
+      OR EXISTS (
+        SELECT 1 FROM organization_memberships membership
+        WHERE membership.user_id = existing_user.id AND membership.active
+      )
+    ) THEN
+      RETURN false;
     END IF;
-    IF EXISTS (
+    IF NOT reusing_invitation_identity AND EXISTS (
       SELECT 1 FROM organization_memberships membership
       WHERE membership.user_id = existing_user.id
         AND membership.organization_id <> existing_signup.organization_id
     ) THEN
       RETURN false;
     END IF;
-    UPDATE users SET
-      email_ciphertext = selected_email_ciphertext,
-      display_name_ciphertext = selected_display_name_ciphertext
-    WHERE id = existing_user.id;
+    -- Legacy invitations may predate the shared deterministic UUID. Their
+    -- ciphertext remains bound to that retained id; a new deterministic
+    -- placeholder can safely accept the refreshed encrypted fields.
+    IF existing_user.id = selected_user_id THEN
+      UPDATE users SET
+        email_ciphertext = selected_email_ciphertext,
+        display_name_ciphertext = selected_display_name_ciphertext
+      WHERE id = existing_user.id;
+    END IF;
   ELSE
     INSERT INTO users(
       id, email_lookup_hash, email_ciphertext, display_name_ciphertext,
@@ -191,18 +253,18 @@ BEGIN
   END IF;
 
   UPDATE auth_one_time_tokens SET consumed_at = coalesce(consumed_at, now())
-  WHERE user_id = selected_user_id
+  WHERE user_id = effective_user_id
     AND purpose IN ('ORGANIZATION_SIGNUP', 'MFA_SETUP')
     AND consumed_at IS NULL;
   UPDATE auth_email_outbox SET status = 'DEAD', last_error_code = 'superseded'
-  WHERE user_id = selected_user_id AND template_type = 'ORGANIZATION_SIGNUP'
+  WHERE user_id = effective_user_id AND template_type = 'ORGANIZATION_SIGNUP'
     AND status = 'PENDING';
 
   INSERT INTO auth_one_time_tokens(
     id, token_hash, purpose, user_id, requested_ip_hash, expires_at
   ) VALUES (
     selected_token_id, selected_token_hash, 'ORGANIZATION_SIGNUP',
-    selected_user_id, selected_ip_hash, now() + interval '24 hours'
+    effective_user_id, selected_ip_hash, now() + interval '24 hours'
   );
 
   IF existing_signup.id IS NULL THEN
@@ -213,7 +275,7 @@ BEGIN
       manual_posting_mode, key_provider, wrapped_dek, terms_version,
       status, expires_at
     ) VALUES (
-      selected_signup_id, selected_token_id, selected_user_id,
+      selected_signup_id, selected_token_id, effective_user_id,
       selected_organization_id, selected_organization_slug,
       selected_organization_name, selected_entity_code, selected_entity_name,
       selected_country_code, selected_region_code, selected_functional_currency,
@@ -257,13 +319,13 @@ BEGIN
   INSERT INTO auth_email_outbox(
     id, user_id, template_type, payload_ciphertext, template_data, request_id
   ) VALUES (
-    selected_outbox_id, selected_user_id, 'ORGANIZATION_SIGNUP',
+    selected_outbox_id, effective_user_id, 'ORGANIZATION_SIGNUP',
     selected_payload_ciphertext,
     jsonb_build_object('organizationName', coalesce(existing_signup.organization_name, selected_organization_name)),
     selected_request_id
   );
   INSERT INTO auth_security_events(user_id, event_type, outcome, request_id)
-  VALUES (selected_user_id, 'ORGANIZATION_SIGNUP_REQUEST', 'SUCCESS', selected_request_id);
+  VALUES (effective_user_id, 'ORGANIZATION_SIGNUP_REQUEST', 'SUCCESS', selected_request_id);
   RETURN true;
 END
 $$;
@@ -344,6 +406,9 @@ DECLARE
   selected_entity_id uuid;
   selected_ledger_id uuid;
   organization_exists boolean;
+  superseding_invitation boolean := false;
+  restarting_enrollment boolean := false;
+  selected_email_hash text;
 BEGIN
   IF selected_password_hash NOT LIKE 'scrypt-v1$32768$8$1$%'
     OR length(selected_factor_secret_ciphertext) NOT BETWEEN 40 AND 1000
@@ -351,6 +416,20 @@ BEGIN
     OR length(selected_request_id) NOT BETWEEN 1 AND 200 THEN
     RAISE EXCEPTION 'Invalid organization signup acceptance request' USING ERRCODE = '22023';
   END IF;
+
+  SELECT selected_identity.email_lookup_hash INTO selected_email_hash
+  FROM auth_organization_signups signup
+  JOIN auth_one_time_tokens token ON token.id = signup.token_id
+  JOIN users selected_identity ON selected_identity.id = signup.user_id
+  WHERE token.token_hash = selected_token_hash
+    AND token.purpose = 'ORGANIZATION_SIGNUP'
+    AND token.consumed_at IS NULL AND token.available_at <= now()
+    AND token.expires_at > now() AND signup.status = 'PENDING'
+    AND signup.expires_at > now();
+  IF selected_email_hash IS NULL THEN RETURN; END IF;
+  PERFORM pg_advisory_xact_lock(hashtextextended(
+    'business-finlynq|account-user|' || selected_email_hash, 0
+  ));
 
   SELECT signup.* INTO selected_signup
   FROM auth_organization_signups signup
@@ -373,11 +452,39 @@ BEGIN
     AND NOT selected_identity.active AND NOT selected_identity.is_demo
   FOR UPDATE;
   IF selected_user.id IS NULL THEN RETURN; END IF;
+  restarting_enrollment := selected_signup.accepted_at IS NOT NULL;
+  IF EXISTS (
+    SELECT 1 FROM organization_memberships membership
+    WHERE membership.user_id = selected_signup.user_id AND membership.active
+  ) OR (restarting_enrollment AND EXISTS (
+    SELECT 1 FROM auth_mfa_factors factor
+    WHERE factor.user_id = selected_signup.user_id
+      AND factor.status = 'ACTIVE'
+  )) OR (NOT restarting_enrollment AND EXISTS (
+    SELECT 1 FROM auth_mfa_factors factor
+    WHERE factor.user_id = selected_signup.user_id
+      AND factor.status IN ('PENDING', 'ACTIVE')
+  )) THEN
+    RETURN;
+  END IF;
+  IF restarting_enrollment THEN
+    IF selected_user.email_verified_at IS NULL
+      OR selected_user.password_hash NOT LIKE 'scrypt-v1$32768$8$1$%' THEN
+      RETURN;
+    END IF;
+  ELSIF selected_user.email_verified_at IS NOT NULL
+    OR selected_user.password_hash NOT IN (
+      '!organization-signup-pending!', '!invitation-pending!'
+    ) THEN
+    RETURN;
+  END IF;
+  superseding_invitation := selected_user.password_hash = '!invitation-pending!';
 
   SELECT EXISTS(
     SELECT 1 FROM organizations organization
     WHERE organization.id = selected_signup.organization_id
   ) INTO organization_exists;
+  IF restarting_enrollment AND NOT organization_exists THEN RETURN; END IF;
 
   IF NOT organization_exists THEN
     INSERT INTO organizations(
@@ -541,13 +648,33 @@ BEGIN
     IF NOT FOUND OR selected_signup.accepted_at IS NULL THEN RETURN; END IF;
   END IF;
 
+  -- Only the verified signup acceptance supersedes retained invitation state.
+  -- Dynamic SQL keeps this migration independently runnable before the
+  -- organization-invitations extension is installed by the next migration.
+  IF superseding_invitation
+    AND to_regclass('public.organization_invitations') IS NOT NULL THEN
+    EXECUTE $cancel_invitation$
+      UPDATE organization_invitations SET
+        status = 'SUPERSEDED', cancelled_at = coalesce(cancelled_at, now()),
+        updated_at = now(),
+        version = version + 1
+      WHERE user_id = $1 AND status IN ('PENDING', 'CANCELLED')
+    $cancel_invitation$ USING selected_signup.user_id;
+  END IF;
   UPDATE auth_one_time_tokens SET consumed_at = now()
   WHERE id = selected_token.id;
   UPDATE auth_one_time_tokens SET consumed_at = coalesce(consumed_at, now())
-  WHERE user_id = selected_signup.user_id AND purpose = 'MFA_SETUP'
+  WHERE user_id = selected_signup.user_id
+    AND purpose IN ('INVITATION', 'MFA_SETUP')
     AND consumed_at IS NULL;
+  UPDATE auth_email_outbox SET
+    status = 'DEAD', lease_owner = NULL, lease_expires_at = NULL,
+    last_error_code = 'SUPERSEDED_BY_SIGNUP'
+  WHERE user_id = selected_signup.user_id
+    AND template_type = 'INVITATION'
+    AND status IN ('PENDING', 'SENDING');
   UPDATE auth_mfa_factors SET status = 'REVOKED', revoked_at = now()
-  WHERE user_id = selected_signup.user_id AND status IN ('PENDING', 'ACTIVE');
+  WHERE user_id = selected_signup.user_id AND status = 'PENDING';
   UPDATE users SET
     password_hash = selected_password_hash,
     password_changed_at = now(),
@@ -598,12 +725,45 @@ AS $$
 DECLARE
   selected_token auth_one_time_tokens%ROWTYPE;
   completed_signup_id uuid;
+  selected_email_hash text;
 BEGIN
+  SELECT selected_user.email_lookup_hash INTO selected_email_hash
+  FROM auth_one_time_tokens token
+  JOIN users selected_user ON selected_user.id = token.user_id
+  WHERE token.token_hash = selected_setup_token_hash
+    AND token.purpose = 'MFA_SETUP'
+    AND token.consumed_at IS NULL AND token.expires_at > now();
+  IF selected_email_hash IS NULL THEN RETURN false; END IF;
+  PERFORM pg_advisory_xact_lock(hashtextextended(
+    'business-finlynq|account-user|' || selected_email_hash, 0
+  ));
+
   SELECT token.* INTO selected_token FROM auth_one_time_tokens token
   WHERE token.token_hash = selected_setup_token_hash AND token.purpose = 'MFA_SETUP'
     AND token.consumed_at IS NULL AND token.expires_at > now()
   FOR UPDATE;
   IF selected_token.id IS NULL OR selected_token.organization_id IS NULL THEN RETURN false; END IF;
+
+  -- One email has one active organization in v1. Lock every membership before
+  -- activating the factor/user so a concurrent administrator cannot revive a
+  -- superseded invitation into a second tenant.
+  PERFORM 1 FROM organization_memberships membership
+  WHERE membership.user_id = selected_token.user_id
+  ORDER BY membership.organization_id, membership.id
+  FOR UPDATE;
+  IF NOT EXISTS (
+    SELECT 1 FROM organization_memberships membership
+    WHERE membership.user_id = selected_token.user_id
+      AND membership.organization_id = selected_token.organization_id
+      AND NOT membership.active
+  ) OR EXISTS (
+    SELECT 1 FROM organization_memberships membership
+    WHERE membership.user_id = selected_token.user_id
+      AND membership.organization_id <> selected_token.organization_id
+      AND membership.active
+  ) THEN
+    RETURN false;
+  END IF;
 
   UPDATE auth_mfa_factors factor
   SET status = 'ACTIVE', verified_at = now(), last_accepted_counter = selected_totp_counter

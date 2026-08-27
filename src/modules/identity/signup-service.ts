@@ -52,7 +52,9 @@ export async function requestOwnerSignup(input: OwnerSignupRequest): Promise<boo
   try {
     const email = normalizeEmail(input.email);
     const emailHash = emailLookupHash(email, identitySecret);
-    const userId = identityDerivedUuid("organization-signup-user", emailHash, identitySecret);
+    // Invitations and owner signup share one secret-derived identity key so an
+    // unverified placeholder cannot squat the email under a second user id.
+    const userId = identityDerivedUuid("account-user", emailHash, identitySecret);
     const organizationId = identityDerivedUuid("organization-signup-organization", emailHash, identitySecret);
     const signupId = identityDerivedUuid("organization-signup-request", emailHash, identitySecret);
     const slug = `business-${organizationId.replaceAll("-", "").slice(0, 20)}`;

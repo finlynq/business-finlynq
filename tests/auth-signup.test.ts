@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { renderAuthenticationEmail } from "@/modules/identity/auth-email";
 import {
@@ -15,16 +17,33 @@ const productionChallengeEnvironment = {
   TURNSTILE_SECRET_KEY_FILE: "/run/secrets/turnstile",
   APP_ORIGIN: "https://business.finlynq.com",
 } as const;
+const signupMigration = readFileSync(
+  join(process.cwd(), "migrations", "drizzle", "0013_self_service_owner_signup.sql"),
+  "utf8",
+);
 
 describe("self-service signup security", () => {
   it("derives stable opaque UUIDs without exposing the identity", () => {
     const secret = Buffer.alloc(64, 19);
-    const first = identityDerivedUuid("organization-signup-user", "email-hash", secret);
-    expect(first).toBe(identityDerivedUuid("organization-signup-user", "email-hash", secret));
+    const first = identityDerivedUuid("account-user", "email-hash", secret);
+    expect(first).toBe(identityDerivedUuid("account-user", "email-hash", secret));
     expect(first).not.toBe(identityDerivedUuid("organization-signup-organization", "email-hash", secret));
     expect(first).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
     expect(first).not.toContain("email");
     expect(() => identityDerivedUuid("Invalid Scope", "email-hash", secret)).toThrow(/canonical/);
+  });
+
+  it("lets email-verified owner signup supersede only unused invitation state", () => {
+    expect(signupMigration).toContain("'business-finlynq|account-user|' || selected_email_hash");
+    expect(signupMigration).toContain("existing_user.password_hash <> '!invitation-pending!'");
+    expect(signupMigration).toContain("selected_user.email_verified_at IS NOT NULL");
+    expect(signupMigration).toContain("to_regclass('public.organization_invitations') IS NOT NULL");
+    expect(signupMigration).toContain("purpose IN ('INVITATION', 'MFA_SETUP')");
+    expect(signupMigration).toContain("last_error_code = 'SUPERSEDED_BY_SIGNUP'");
+    expect(signupMigration).toContain("restarting_enrollment := selected_signup.accepted_at IS NOT NULL");
+    expect(signupMigration).toContain("status = 'SUPERSEDED'");
+    expect(signupMigration).toContain("membership.organization_id <> selected_token.organization_id");
+    expect(signupMigration).toContain("The invitation won the race and already proved the email");
   });
 
   it("fails closed when production signup has no enabled challenge", () => {

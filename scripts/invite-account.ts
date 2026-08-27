@@ -7,6 +7,7 @@ import {
   emailLookupHash,
   encryptAuthPayload,
   encryptIdentityField,
+  identityDerivedUuid,
   normalizeEmail,
 } from "@/security/identity-secret";
 import { operatorDatabaseConfig } from "./operator-database";
@@ -43,8 +44,13 @@ async function main(): Promise<void> {
   const client = await pool.connect();
   const requestId = randomUUID();
   const normalizedEmail = normalizeEmail(input.email);
+  const emailHash = emailLookupHash(normalizedEmail);
   try {
     await client.query("BEGIN ISOLATION LEVEL SERIALIZABLE");
+    await client.query(
+      "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
+      [`business-finlynq|account-user|${emailHash}`],
+    );
     await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [`account-invite|${input.organization}`]);
     const target = await client.query<{ organization_name: string; role_name: string }>(
       `SELECT organization.display_name AS organization_name, role.display_name AS role_name
@@ -85,37 +91,19 @@ async function main(): Promise<void> {
       if (!inviter.rowCount) throw new Error("The inviting user lacks active recovery-administration permission");
     }
 
-    const emailHash = emailLookupHash(normalizedEmail);
-    const existing = await client.query<{ id: string; active: boolean }>(
-      "SELECT id, active FROM users WHERE email_lookup_hash=$1 FOR UPDATE", [emailHash],
+    const existing = await client.query<{ id: string }>(
+      "SELECT id FROM users WHERE email_lookup_hash=$1 FOR UPDATE", [emailHash],
     );
-    if (existing.rows[0]?.active) throw new Error("An active account already uses that email");
-    const userId = existing.rows[0]?.id ?? randomUUID();
-    const membershipElsewhere = await client.query(
-      "SELECT 1 FROM organization_memberships WHERE user_id=$1 AND organization_id<>$2",
-      [userId, input.organization],
+    if (existing.rows[0]) throw new Error("This email already has an identity or pending flow");
+    const userId = identityDerivedUuid("account-user", emailHash);
+    await client.query(
+      `INSERT INTO users(
+         id,email_lookup_hash,email_ciphertext,display_name_ciphertext,password_hash,
+         active,is_demo,mfa_required
+       ) VALUES ($1,$2,$3,$4,'!invitation-pending!',false,false,true)`,
+      [userId, emailHash, encryptIdentityField(normalizedEmail, "email", userId),
+        encryptIdentityField(input.name, "display-name", userId)],
     );
-    if (membershipElsewhere.rowCount) throw new Error("The pending identity already belongs to another organization");
-
-    if (!existing.rows[0]) {
-      await client.query(
-        `INSERT INTO users(
-           id,email_lookup_hash,email_ciphertext,display_name_ciphertext,password_hash,
-           active,is_demo,mfa_required
-         ) VALUES ($1,$2,$3,$4,'!invitation-pending!',false,false,true)`,
-        [userId, emailHash, encryptIdentityField(normalizedEmail, "email", userId),
-          encryptIdentityField(input.name, "display-name", userId)],
-      );
-    } else {
-      await client.query(
-        `UPDATE users SET email_ciphertext=$2, display_name_ciphertext=$3,
-           password_hash='!invitation-pending!', active=false, email_verified_at=NULL,
-           mfa_required=true
-         WHERE id=$1`,
-        [userId, encryptIdentityField(normalizedEmail, "email", userId),
-          encryptIdentityField(input.name, "display-name", userId)],
-      );
-    }
 
     const membershipId = randomUUID();
     const membership = await client.query<{ id: string }>(

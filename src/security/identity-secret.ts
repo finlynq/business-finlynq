@@ -61,8 +61,8 @@ export function emailLookupHash(email: string, secret = loadIdentitySecret()): s
 
 /**
  * Derives a stable, non-enumerable UUID from the identity lookup key. Signup
- * uses this to bind encrypted pending-user fields and the organization key
- * envelope to retry-safe record identifiers without exposing the email.
+ * and invitations share the account-user scope so encrypted pending identity
+ * fields are retry-safe without allowing a second user id to squat an email.
  */
 export function identityDerivedUuid(
   scope: string,
