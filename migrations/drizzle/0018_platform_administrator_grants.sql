@@ -485,7 +485,7 @@ AS $$
        AND membership.user_id = selected_session.user_id
       JOIN organizations organization
         ON organization.id = selected_session.organization_id
-      JOIN users session_user ON session_user.id = selected_session.user_id
+      JOIN users active_session_user ON active_session_user.id = selected_session.user_id
       WHERE selected_session.session_mode = 'REAL'
         AND selected_session.revoked_at IS NULL
         AND selected_session.expires_at > now()
@@ -494,8 +494,8 @@ AS $$
         AND organization.active
         AND NOT organization.is_demo
         AND organization.organization_mode = 'REAL'
-        AND session_user.active
-        AND NOT session_user.is_demo
+        AND active_session_user.active
+        AND NOT active_session_user.is_demo
     ),
     (
       SELECT count(*) FROM platform_administrator_grants grant_record
