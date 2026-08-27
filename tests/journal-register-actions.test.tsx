@@ -205,4 +205,72 @@ describe("journal register actions", () => {
     expect(reverseMarkup).toContain("Post full reversal");
     expect(reverseMarkup.toLowerCase()).not.toContain(">delete<");
   });
+
+  it("remounts post state with reversal defaults while preserving an existing reversal state boundary", async () => {
+    const journalId = "30000000-0000-4000-8000-000000000099";
+    const workspace = {
+      demoOnly: true,
+      readiness: "READY",
+      canDraft: true,
+      canPost: true,
+      canReverse: true,
+      reversalPeriods: [reversalPeriod],
+    };
+    mocks.loadWorkspace.mockResolvedValueOnce({
+      ...workspace,
+      journals: [{
+        ...baseJournal,
+        id: journalId,
+        number: "Draft",
+        description: "Transitioning manual journal",
+        typeKey: "ledger.manual",
+        ownerModule: "ledger",
+        status: "DRAFT",
+        expectedContentHash: "b".repeat(64),
+        canPost: true,
+        canReverse: false,
+      }],
+    });
+
+    const postPage = await JournalsPage({ searchParams: Promise.resolve({}) });
+    const postAction = elements(postPage).find((element) => element.type === JournalRegisterAction);
+    expect(postAction?.key).toBe(`${journalId}:post`);
+
+    const postedJournal = {
+      ...baseJournal,
+      id: journalId,
+      number: "42",
+      description: "Transitioning manual journal",
+      typeKey: "ledger.manual",
+      ownerModule: "ledger",
+      status: "POSTED",
+      expectedContentHash: null,
+      canPost: false,
+      canReverse: true,
+    };
+    mocks.loadWorkspace.mockResolvedValueOnce({
+      ...workspace,
+      reversalPeriods: [{ ...reversalPeriod }],
+      journals: [postedJournal],
+    });
+
+    const reversePage = await JournalsPage({ searchParams: Promise.resolve({}) });
+    const reverseAction = elements(reversePage).find((element) => element.type === JournalRegisterAction);
+    expect(reverseAction?.key).toBe(`${journalId}:reverse`);
+    expect(reverseAction?.key).not.toBe(postAction?.key);
+
+    const reverseMarkup = renderToStaticMarkup(reverseAction);
+    expect(reverseMarkup).toContain(`value="${reversalPeriod.id}" selected=""`);
+    expect(reverseMarkup).toContain(`value="${reversalPeriod.defaultAccountingDate}"`);
+
+    mocks.loadWorkspace.mockResolvedValueOnce({
+      ...workspace,
+      reversalPeriods: [{ ...reversalPeriod }],
+      journals: [{ ...postedJournal }],
+    });
+    const refreshedReversePage = await JournalsPage({ searchParams: Promise.resolve({}) });
+    const refreshedReverseAction = elements(refreshedReversePage)
+      .find((element) => element.type === JournalRegisterAction);
+    expect(refreshedReverseAction?.key).toBe(reverseAction?.key);
+  });
 });

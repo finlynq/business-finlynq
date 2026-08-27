@@ -59,6 +59,7 @@ export default async function JournalsPage({ searchParams }: { searchParams: Pro
                     <td>
                       {journal.canPost && journal.expectedContentHash ? (
                         <JournalRegisterAction
+                          key={`${journal.id}:post`}
                           journalId={journal.id}
                           journalNumber={journal.number}
                           journalDescription={journal.description}
@@ -66,6 +67,7 @@ export default async function JournalsPage({ searchParams }: { searchParams: Pro
                         />
                       ) : journal.canReverse && reversalPeriods.length > 0 ? (
                         <JournalRegisterAction
+                          key={`${journal.id}:reverse`}
                           journalId={journal.id}
                           journalNumber={journal.number}
                           journalDescription={journal.description}
