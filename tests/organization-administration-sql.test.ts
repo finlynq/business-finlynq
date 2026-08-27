@@ -162,6 +162,29 @@ describe("signup and invitation coexistence forward migration", () => {
     expect(beginSignup).toContain("invitation.status <> 'SUPERSEDED'");
   });
 
+  it("qualifies invitation acceptance DML that shares names with table outputs", () => {
+    const acceptance = functionDefinition(coexistenceMigration, "auth_accept_invitation");
+    expect(acceptance).toContain(
+      "UPDATE auth_organization_signups superseded_signup SET",
+    );
+    expect(acceptance).toContain(
+      "WHERE superseded_signup.user_id = selected_token.user_id",
+    );
+    expect(acceptance).toContain(
+      "UPDATE organization_invitations superseded_invitation SET",
+    );
+    expect(acceptance).toContain(
+      "WHERE superseded_token.user_id = selected_token.user_id",
+    );
+    expect(acceptance).toContain(
+      "WHERE superseded_message.user_id = selected_token.user_id",
+    );
+    expect(acceptance).not.toContain("UPDATE auth_organization_signups SET");
+    expect(acceptance).not.toContain("UPDATE organization_invitations SET");
+    expect(acceptance).not.toContain("UPDATE auth_one_time_tokens SET");
+    expect(acceptance).not.toContain("UPDATE auth_email_outbox SET");
+  });
+
   it("checks recovery authority only after locking each target invitation", () => {
     for (const name of ["organization_resend_invitation", "organization_cancel_invitation"]) {
       const definition = functionDefinition(coexistenceMigration, name);

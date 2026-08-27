@@ -882,26 +882,33 @@ BEGIN
   FOR SHARE;
   IF selected_organization_name IS NULL THEN RETURN; END IF;
 
-  UPDATE auth_organization_signups SET status = 'SUPERSEDED'
-  WHERE user_id = selected_token.user_id
-    AND status IN ('PENDING', 'EXPIRED')
-    AND accepted_at IS NULL AND completed_at IS NULL;
-  UPDATE organization_invitations SET
-    status = 'SUPERSEDED', cancelled_at = coalesce(cancelled_at, now()),
-    updated_at = now(), version = version + 1
-  WHERE user_id = selected_token.user_id
-    AND id <> selected_invitation.id
-    AND status IN ('PENDING', 'CANCELLED');
-  UPDATE auth_one_time_tokens SET consumed_at = coalesce(consumed_at, now())
-  WHERE user_id = selected_token.user_id
-    AND purpose IN ('ORGANIZATION_SIGNUP', 'MFA_SETUP', 'INVITATION')
-    AND consumed_at IS NULL;
-  UPDATE auth_email_outbox SET
+  UPDATE auth_organization_signups superseded_signup SET status = 'SUPERSEDED'
+  WHERE superseded_signup.user_id = selected_token.user_id
+    AND superseded_signup.status IN ('PENDING', 'EXPIRED')
+    AND superseded_signup.accepted_at IS NULL
+    AND superseded_signup.completed_at IS NULL;
+  UPDATE organization_invitations superseded_invitation SET
+    status = 'SUPERSEDED',
+    cancelled_at = coalesce(superseded_invitation.cancelled_at, now()),
+    updated_at = now(), version = superseded_invitation.version + 1
+  WHERE superseded_invitation.user_id = selected_token.user_id
+    AND superseded_invitation.id <> selected_invitation.id
+    AND superseded_invitation.status IN ('PENDING', 'CANCELLED');
+  UPDATE auth_one_time_tokens superseded_token SET
+    consumed_at = coalesce(superseded_token.consumed_at, now())
+  WHERE superseded_token.user_id = selected_token.user_id
+    AND superseded_token.purpose IN (
+      'ORGANIZATION_SIGNUP', 'MFA_SETUP', 'INVITATION'
+    )
+    AND superseded_token.consumed_at IS NULL;
+  UPDATE auth_email_outbox superseded_message SET
     status = 'DEAD', lease_owner = NULL, lease_expires_at = NULL,
     last_error_code = 'SUPERSEDED_BY_INVITATION'
-  WHERE user_id = selected_token.user_id
-    AND template_type IN ('ORGANIZATION_SIGNUP', 'INVITATION')
-    AND status IN ('PENDING', 'SENDING');
+  WHERE superseded_message.user_id = selected_token.user_id
+    AND superseded_message.template_type IN (
+      'ORGANIZATION_SIGNUP', 'INVITATION'
+    )
+    AND superseded_message.status IN ('PENDING', 'SENDING');
   UPDATE users invited_user SET
     password_hash = selected_password_hash,
     password_changed_at = now(),

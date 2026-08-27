@@ -678,34 +678,38 @@ BEGIN
       WHERE user_id = $1 AND status IN ('PENDING', 'CANCELLED')
     $cancel_invitation$ USING selected_signup.user_id;
   END IF;
-  UPDATE auth_one_time_tokens SET consumed_at = now()
-  WHERE id = selected_token.id;
-  UPDATE auth_one_time_tokens SET consumed_at = coalesce(consumed_at, now())
-  WHERE user_id = selected_signup.user_id
-    AND purpose IN ('INVITATION', 'MFA_SETUP')
-    AND consumed_at IS NULL;
-  UPDATE auth_email_outbox SET
+  UPDATE auth_one_time_tokens accepted_token SET consumed_at = now()
+  WHERE accepted_token.id = selected_token.id;
+  UPDATE auth_one_time_tokens superseded_token SET
+    consumed_at = coalesce(superseded_token.consumed_at, now())
+  WHERE superseded_token.user_id = selected_signup.user_id
+    AND superseded_token.purpose IN ('INVITATION', 'MFA_SETUP')
+    AND superseded_token.consumed_at IS NULL;
+  UPDATE auth_email_outbox superseded_message SET
     status = 'DEAD', lease_owner = NULL, lease_expires_at = NULL,
     last_error_code = 'SUPERSEDED_BY_SIGNUP'
-  WHERE user_id = selected_signup.user_id
-    AND template_type = 'INVITATION'
-    AND status IN ('PENDING', 'SENDING');
-  UPDATE auth_mfa_factors SET status = 'REVOKED', revoked_at = now()
-  WHERE user_id = selected_signup.user_id AND status = 'PENDING';
-  UPDATE users SET
+  WHERE superseded_message.user_id = selected_signup.user_id
+    AND superseded_message.template_type = 'INVITATION'
+    AND superseded_message.status IN ('PENDING', 'SENDING');
+  UPDATE auth_mfa_factors superseded_factor SET
+    status = 'REVOKED', revoked_at = now()
+  WHERE superseded_factor.user_id = selected_signup.user_id
+    AND superseded_factor.status = 'PENDING';
+  UPDATE users accepted_user SET
     password_hash = selected_password_hash,
     password_changed_at = now(),
-    email_verified_at = coalesce(email_verified_at, now()),
+    email_verified_at = coalesce(accepted_user.email_verified_at, now()),
     email_ciphertext = CASE
       WHEN selected_signup.identity_encryption_user_id = selected_signup.user_id
-      THEN selected_signup.requested_email_ciphertext ELSE email_ciphertext END,
+      THEN selected_signup.requested_email_ciphertext
+      ELSE accepted_user.email_ciphertext END,
     display_name_ciphertext = CASE
       WHEN selected_signup.identity_encryption_user_id = selected_signup.user_id
       THEN selected_signup.requested_display_name_ciphertext
-      ELSE display_name_ciphertext END,
+      ELSE accepted_user.display_name_ciphertext END,
     mfa_required = true,
     active = false
-  WHERE id = selected_signup.user_id;
+  WHERE accepted_user.id = selected_signup.user_id;
   INSERT INTO auth_mfa_factors(
     id, user_id, factor_type, label, secret_ciphertext, status
   ) VALUES (
@@ -718,9 +722,9 @@ BEGIN
     selected_setup_token_hash, 'MFA_SETUP', selected_signup.user_id,
     selected_signup.organization_id, now() + interval '30 minutes'
   );
-  UPDATE auth_organization_signups SET
+  UPDATE auth_organization_signups accepted_signup SET
     status = 'ENROLLING', accepted_at = coalesce(accepted_at, now())
-  WHERE id = selected_signup.id;
+  WHERE accepted_signup.id = selected_signup.id;
   INSERT INTO auth_security_events(
     user_id, organization_id, event_type, outcome, request_id,
     metadata

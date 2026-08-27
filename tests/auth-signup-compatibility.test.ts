@@ -49,6 +49,21 @@ describe("forward-only signup compatibility migration", () => {
     }
   });
 
+  it("qualifies DML columns that share names with signup acceptance outputs", () => {
+    for (const sql of [canonical, compatibility]) {
+      const acceptance = functionDefinition(sql, "auth_accept_organization_signup");
+      expect(acceptance).toContain("UPDATE auth_one_time_tokens accepted_token SET");
+      expect(acceptance).toContain("WHERE superseded_token.user_id = selected_signup.user_id");
+      expect(acceptance).toContain("WHERE superseded_message.user_id = selected_signup.user_id");
+      expect(acceptance).toContain("WHERE superseded_factor.user_id = selected_signup.user_id");
+      expect(acceptance).toContain("ELSE accepted_user.email_ciphertext END");
+      expect(acceptance).not.toContain("UPDATE auth_one_time_tokens SET");
+      expect(acceptance).not.toContain("UPDATE auth_email_outbox SET");
+      expect(acceptance).not.toContain("UPDATE auth_mfa_factors SET");
+      expect(acceptance).not.toContain("UPDATE users SET");
+    }
+  });
+
   it("keeps the compatibility functions security-definer and explicitly scoped", () => {
     expect(compatibility.match(/SECURITY DEFINER/g)).toHaveLength(3);
     expect(compatibility.match(/SET search_path = public, pg_temp/g)).toHaveLength(3);
