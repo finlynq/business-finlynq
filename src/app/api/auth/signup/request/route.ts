@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
+import { readAuthMutationJson } from "@/app/api/_shared/auth-mutation-route";
 import { assertEmailDeliveryReady, consumeRateLimit } from "@/modules/identity/auth-store";
 import { assertAccountAuthenticationConfigured } from "@/modules/identity/email-provider";
 import {
@@ -49,20 +50,7 @@ export async function POST(request: NextRequest) {
 
   try {
     assertAccountAuthenticationConfigured();
-    const contentType = request.headers.get("content-type") ?? "";
-    const parsed = contentType.toLowerCase().startsWith("application/json")
-      ? schema.safeParse(await request.json())
-      : { success: false as const };
-    if (!parsed.success) {
-      return NextResponse.json(
-        { error: "Review the account details, accept the terms, and try again." },
-        { status: 400, headers },
-      );
-    }
-
     const { ipHash } = requestFingerprints(request);
-    const email = normalizeEmail(parsed.data.email);
-    const emailHash = emailLookupHash(email);
     // Spend only the caller's coarse IP budget before bot proof. Otherwise an
     // attacker could exhaust a victim email's daily budget with invalid
     // challenge tokens.
@@ -74,6 +62,17 @@ export async function POST(request: NextRequest) {
         { status: 429, headers: { ...headers, "Retry-After": String(ipLimit.retry_after_seconds) } },
       );
     }
+    const body = await readAuthMutationJson(request);
+    if (!body.ok) return body.response;
+    const parsed = schema.safeParse(body.value);
+    if (!parsed.success) {
+      return NextResponse.json(
+        { error: "Review the account details, accept the terms, and try again." },
+        { status: 400, headers },
+      );
+    }
+    const email = normalizeEmail(parsed.data.email);
+    const emailHash = emailLookupHash(email);
 
     assertSignupChallengeConfigured();
     await assertEmailDeliveryReady();

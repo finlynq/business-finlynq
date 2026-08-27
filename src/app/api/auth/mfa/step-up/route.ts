@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
+import { readAuthMutationJson } from "@/app/api/_shared/auth-mutation-route";
 import { consumeMfaStepUpLimits, consumeRateLimit, markStepUp, totpForSession } from "@/modules/identity/auth-store";
 import { requestFingerprints, validateSameOriginMutation } from "@/modules/identity/request-security";
 import { requestPrincipal } from "@/modules/identity/session";
@@ -15,8 +16,6 @@ export async function POST(request: NextRequest) {
   const principal = await requestPrincipal(request);
   if (!principal || principal.sessionMode !== "real") return NextResponse.json({ error: "Sign in to continue." }, { status: 401, headers });
   try {
-    const parsed = schema.safeParse(await request.json());
-    if (!parsed.success) return NextResponse.json({ error: "Enter the current six-digit authenticator code." }, { status: 400, headers });
     const { ipHash } = requestFingerprints(request);
     const [ipLimit, principalLimit] = await Promise.all([
       consumeRateLimit("mfa-step-up-ip-hour", ipHash, 20, 3600),
@@ -28,6 +27,10 @@ export async function POST(request: NextRequest) {
         { status: 429, headers: { ...headers, "Retry-After": String(Math.max(ipLimit.retry_after_seconds, principalLimit.retry_after_seconds)) } },
       );
     }
+    const body = await readAuthMutationJson(request);
+    if (!body.ok) return body.response;
+    const parsed = schema.safeParse(body.value);
+    if (!parsed.success) return NextResponse.json({ error: "Enter the current six-digit authenticator code." }, { status: 400, headers });
     const factor = await totpForSession(principal.sessionId);
     if (!factor) return NextResponse.json({ error: "No active authenticator is available." }, { status: 403, headers });
     const secret = decryptAuthPayload(factor.factor_secret_ciphertext, "totp-secret", factor.factor_id);

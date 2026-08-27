@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
+import { readAuthMutationJson } from "@/app/api/_shared/auth-mutation-route";
 import { acceptInvitation, assertEmailDeliveryReady, consumeRateLimit } from "@/modules/identity/auth-store";
 import { assertAccountAuthenticationConfigured } from "@/modules/identity/email-provider";
 import { hashPassword } from "@/modules/identity/passwords";
@@ -19,11 +20,13 @@ export async function POST(request: NextRequest) {
   try {
     assertAccountAuthenticationConfigured();
     await assertEmailDeliveryReady();
-    const parsed = schema.safeParse(await request.json());
-    if (!parsed.success) return NextResponse.json({ error: "Use a valid invitation and a password with at least 14 characters." }, { status: 400, headers });
     const { ipHash } = requestFingerprints(request);
     const limit = await consumeRateLimit("invitation-accept-ip-hour", ipHash, 10, 3600);
     if (!limit.allowed) return NextResponse.json({ error: "Too many attempts. Try again later." }, { status: 429, headers: { ...headers, "Retry-After": String(limit.retry_after_seconds) } });
+    const body = await readAuthMutationJson(request);
+    if (!body.ok) return body.response;
+    const parsed = schema.safeParse(body.value);
+    if (!parsed.success) return NextResponse.json({ error: "Use a valid invitation and a password with at least 14 characters." }, { status: 400, headers });
 
     const factorId = randomUUID();
     const secret = createTotpSecret();

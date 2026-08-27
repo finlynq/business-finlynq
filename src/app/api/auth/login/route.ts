@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
+import { readAuthMutationJson } from "@/app/api/_shared/auth-mutation-route";
 import { assertEmailDeliveryReady, consumeRateLimit, issueMfaUserSession, lookupLogin, recordLoginFailure } from "@/modules/identity/auth-store";
 import { assertAccountAuthenticationConfigured } from "@/modules/identity/email-provider";
 import { consumeDummyPasswordCheck, verifyPassword } from "@/modules/identity/passwords";
@@ -34,23 +35,28 @@ export async function POST(request: NextRequest) {
     const existing = await requestPrincipal(request);
     if (existing) return NextResponse.json({ success: true, next: "/app" }, { headers: noStoreHeaders });
 
-    const contentType = request.headers.get("content-type") ?? "";
-    if (!contentType.toLowerCase().startsWith("application/json")) {
-      return NextResponse.json({ error: "Invalid sign-in request." }, { status: 415, headers: noStoreHeaders });
+    const { ipHash, userAgentHash } = requestFingerprints(request);
+    const ipLimit = await consumeRateLimit("login-ip-minute", ipHash, 5, 60);
+    if (!ipLimit.allowed) {
+      return NextResponse.json(
+        { error: "Too many sign-in attempts. Please wait and try again." },
+        { status: 429, headers: { ...noStoreHeaders, "Retry-After": String(ipLimit.retry_after_seconds) } },
+      );
     }
-    const parsed = loginSchema.safeParse(await request.json());
+
+    const body = await readAuthMutationJson(request);
+    if (!body.ok) return body.response;
+    const parsed = loginSchema.safeParse(body.value);
     if (!parsed.success) {
       return NextResponse.json({ error: "Enter a valid email address and password." }, { status: 400, headers: noStoreHeaders });
     }
 
-    const { ipHash, userAgentHash } = requestFingerprints(request);
     const identifierHash = emailLookupHash(parsed.data.email);
-    const [ipLimit, hourlyLimit, dailyLimit] = await Promise.all([
-      consumeRateLimit("login-ip-minute", ipHash, 5, 60),
+    const [hourlyLimit, dailyLimit] = await Promise.all([
       consumeRateLimit("login-identifier-hour", identityLookupHash(`login-hour|${identifierHash}`), 10, 3600),
       consumeRateLimit("login-identifier-day", identityLookupHash(`login-day|${identifierHash}`), 50, 86400),
     ]);
-    const blocked = [ipLimit, hourlyLimit, dailyLimit].filter((entry) => !entry.allowed);
+    const blocked = [hourlyLimit, dailyLimit].filter((entry) => !entry.allowed);
     if (blocked.length > 0) {
       const retryAfter = Math.max(...blocked.map((entry) => entry.retry_after_seconds));
       return NextResponse.json(

@@ -5,6 +5,14 @@
 {$BUSINESS_FINLYNQ_HOSTNAME:business.finlynq.com} {
 	encode zstd gzip
 
+	@auth_mutations {
+		path /api/auth/*
+		method POST
+	}
+	request_body @auth_mutations {
+		max_size 16KB
+	}
+
 	reverse_proxy app:3000 {
 		health_uri /api/health
 		health_interval 30s

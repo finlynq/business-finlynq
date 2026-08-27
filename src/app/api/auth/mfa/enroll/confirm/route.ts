@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
+import { readAuthMutationJson } from "@/app/api/_shared/auth-mutation-route";
 import { consumeMfaEnrollmentLimits, consumeRateLimit, finishMfaEnrollment, mfaSetupChallenge } from "@/modules/identity/auth-store";
 import { requestFingerprints, validateSameOriginMutation } from "@/modules/identity/request-security";
 import { hashOpaqueToken } from "@/modules/identity/session";
@@ -14,18 +15,24 @@ export async function POST(request: NextRequest) {
   if (!validateSameOriginMutation(request)) return NextResponse.json({ error: "The request could not be verified." }, { status: 403, headers });
   if (process.env.ACCOUNT_LOGIN_ENABLED !== "true") return NextResponse.json({ error: "Authenticator enrollment is not enabled." }, { status: 403, headers });
   try {
-    const parsed = schema.safeParse(await request.json());
-    if (!parsed.success) return NextResponse.json({ error: "Enter the current six-digit authenticator code." }, { status: 400, headers });
     const { ipHash } = requestFingerprints(request);
-    const setupTokenHash = hashOpaqueToken(parsed.data.setupToken);
-    const [ipLimit, tokenLimit] = await Promise.all([
-      consumeRateLimit("mfa-enrollment-ip-hour", ipHash, 10, 3600),
-      consumeMfaEnrollmentLimits(setupTokenHash),
-    ]);
-    if (!ipLimit.allowed || !tokenLimit.allowed) {
+    const ipLimit = await consumeRateLimit("mfa-enrollment-ip-hour", ipHash, 10, 3600);
+    if (!ipLimit.allowed) {
       return NextResponse.json(
         { error: "Too many attempts. Ask the administrator for a new invitation." },
-        { status: 429, headers: { ...headers, "Retry-After": String(Math.max(ipLimit.retry_after_seconds, tokenLimit.retry_after_seconds)) } },
+        { status: 429, headers: { ...headers, "Retry-After": String(ipLimit.retry_after_seconds) } },
+      );
+    }
+    const body = await readAuthMutationJson(request);
+    if (!body.ok) return body.response;
+    const parsed = schema.safeParse(body.value);
+    if (!parsed.success) return NextResponse.json({ error: "Enter the current six-digit authenticator code." }, { status: 400, headers });
+    const setupTokenHash = hashOpaqueToken(parsed.data.setupToken);
+    const tokenLimit = await consumeMfaEnrollmentLimits(setupTokenHash);
+    if (!tokenLimit.allowed) {
+      return NextResponse.json(
+        { error: "Too many attempts. Ask the administrator for a new invitation." },
+        { status: 429, headers: { ...headers, "Retry-After": String(tokenLimit.retry_after_seconds) } },
       );
     }
     const challenge = await mfaSetupChallenge(setupTokenHash);

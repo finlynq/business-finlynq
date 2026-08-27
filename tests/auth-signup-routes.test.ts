@@ -60,12 +60,34 @@ afterAll(() => {
   else process.env.ACCOUNT_LOGIN_ENABLED = previousLoginEnabled;
 });
 
-function request(path: string, body: unknown, contentType = "application/json") {
+function request(
+  path: string,
+  body: unknown,
+  contentType = "application/json",
+  additionalHeaders: Record<string, string> = {},
+) {
   return new NextRequest(`https://business.finlynq.com${path}`, {
     method: "POST",
-    headers: { "Content-Type": contentType },
+    headers: { "Content-Type": contentType, ...additionalHeaders },
     body: JSON.stringify(body),
   });
+}
+
+function streamedRequest(path: string, chunks: string[]) {
+  const encoder = new TextEncoder();
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) {
+      for (const chunk of chunks) controller.enqueue(encoder.encode(chunk));
+      controller.close();
+    },
+  });
+  const init: RequestInit & { duplex: "half" } = {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body,
+    duplex: "half",
+  };
+  return new NextRequest(new Request(`https://business.finlynq.com${path}`, init));
 }
 
 const validRequest = {
@@ -138,8 +160,24 @@ describe("public owner signup routes", () => {
 
   it("rejects non-JSON signup mutations", async () => {
     const response = await requestSignup(request("/api/auth/signup/request", validRequest, "text/plain"));
-    expect(response.status).toBe(400);
-    expect(mocks.limit).not.toHaveBeenCalled();
+    expect(response.status).toBe(415);
+    expect(response.headers.get("Cache-Control")).toBe("private, no-store");
+    expect(mocks.limit).toHaveBeenCalledTimes(1);
+    expect(mocks.requestSignup).not.toHaveBeenCalled();
+  });
+
+  it("rejects a declared oversized signup body after the coarse IP gate", async () => {
+    const response = await requestSignup(request(
+      "/api/auth/signup/request",
+      validRequest,
+      "application/json",
+      { "Content-Length": "16385" },
+    ));
+    expect(response.status).toBe(413);
+    expect(response.headers.get("Cache-Control")).toBe("private, no-store");
+    expect(mocks.limit).toHaveBeenCalledTimes(1);
+    expect(mocks.verifyChallenge).not.toHaveBeenCalled();
+    expect(mocks.requestSignup).not.toHaveBeenCalled();
   });
 
   it("applies an IP budget before accepting a signup link", async () => {
@@ -149,6 +187,17 @@ describe("public owner signup routes", () => {
       password: "a sufficiently long password",
     }));
     expect(response.status).toBe(429);
+    expect(mocks.acceptSignup).not.toHaveBeenCalled();
+  });
+
+  it("rejects an oversized streamed signup-accept body without a declared length", async () => {
+    const response = await acceptSignup(streamedRequest("/api/auth/signup/accept", [
+      `{"token":"${"t".repeat(9_000)}`,
+      `${"t".repeat(9_000)}","password":"a sufficiently long password"}`,
+    ]));
+    expect(response.status).toBe(413);
+    expect(response.headers.get("Cache-Control")).toBe("private, no-store");
+    expect(mocks.limit).toHaveBeenCalledTimes(1);
     expect(mocks.acceptSignup).not.toHaveBeenCalled();
   });
 

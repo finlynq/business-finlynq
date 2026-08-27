@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
+import { readAuthMutationJson } from "@/app/api/_shared/auth-mutation-route";
 import { assertEmailDeliveryReady, consumeRateLimit } from "@/modules/identity/auth-store";
 import { assertAccountAuthenticationConfigured } from "@/modules/identity/email-provider";
 import { requestFingerprints, validateSameOriginMutation } from "@/modules/identity/request-security";
@@ -27,15 +28,6 @@ export async function POST(request: NextRequest) {
   try {
     assertAccountAuthenticationConfigured();
     await assertEmailDeliveryReady();
-    const contentType = request.headers.get("content-type") ?? "";
-    const parsed = contentType.toLowerCase().startsWith("application/json")
-      ? schema.safeParse(await request.json())
-      : { success: false as const };
-    if (!parsed.success) {
-      await settleSensitiveResponse(startedAt, { minimumMs: 300 });
-      return NextResponse.json({ error: invalidMessage }, { status: 400, headers });
-    }
-
     const { ipHash } = requestFingerprints(request);
     const ipLimit = await consumeRateLimit("organization-signup-accept-ip-hour", ipHash, 10, 3600);
     if (!ipLimit.allowed) {
@@ -44,6 +36,16 @@ export async function POST(request: NextRequest) {
         { error: "Too many attempts. Try again later." },
         { status: 429, headers: { ...headers, "Retry-After": String(ipLimit.retry_after_seconds) } },
       );
+    }
+    const body = await readAuthMutationJson(request);
+    if (!body.ok) {
+      await settleSensitiveResponse(startedAt, { minimumMs: 300 });
+      return body.response;
+    }
+    const parsed = schema.safeParse(body.value);
+    if (!parsed.success) {
+      await settleSensitiveResponse(startedAt, { minimumMs: 300 });
+      return NextResponse.json({ error: invalidMessage }, { status: 400, headers });
     }
 
     const accepted = await acceptOwnerSignup({

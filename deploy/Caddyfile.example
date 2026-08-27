@@ -1,6 +1,14 @@
 business.finlynq.com {
   encode zstd gzip
 
+  @auth_mutations {
+    path /api/auth/*
+    method POST
+  }
+  request_body @auth_mutations {
+    max_size 16KB
+  }
+
   reverse_proxy 127.0.0.1:3100 {
     health_uri /api/health
     health_interval 30s

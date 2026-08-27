@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
+import { readAuthMutationJson } from "@/app/api/_shared/auth-mutation-route";
 import {
   authorizePasswordResetTotp,
   assertEmailDeliveryReady,
@@ -33,18 +34,24 @@ export async function POST(request: NextRequest) {
   try {
     assertAccountAuthenticationConfigured();
     await assertEmailDeliveryReady();
-    const parsed = schema.safeParse(await request.json());
-    if (!parsed.success) return NextResponse.json({ error: "Use a password with at least 14 characters." }, { status: 400, headers });
     const { ipHash } = requestFingerprints(request);
-    const tokenHash = hashOpaqueToken(parsed.data.token);
-    const [ipLimit, tokenLimit] = await Promise.all([
-      consumeRateLimit("password-reset-confirm-ip-hour", ipHash, 10, 3600),
-      consumePasswordResetLimits(tokenHash),
-    ]);
-    if (!ipLimit.allowed || !tokenLimit.allowed) {
+    const ipLimit = await consumeRateLimit("password-reset-confirm-ip-hour", ipHash, 10, 3600);
+    if (!ipLimit.allowed) {
       return NextResponse.json(
         { error: "Too many attempts. Please request a new link later." },
-        { status: 429, headers: { ...headers, "Retry-After": String(Math.max(ipLimit.retry_after_seconds, tokenLimit.retry_after_seconds)) } },
+        { status: 429, headers: { ...headers, "Retry-After": String(ipLimit.retry_after_seconds) } },
+      );
+    }
+    const body = await readAuthMutationJson(request);
+    if (!body.ok) return body.response;
+    const parsed = schema.safeParse(body.value);
+    if (!parsed.success) return NextResponse.json({ error: "Use a password with at least 14 characters." }, { status: 400, headers });
+    const tokenHash = hashOpaqueToken(parsed.data.token);
+    const tokenLimit = await consumePasswordResetLimits(tokenHash);
+    if (!tokenLimit.allowed) {
+      return NextResponse.json(
+        { error: "Too many attempts. Please request a new link later." },
+        { status: 429, headers: { ...headers, "Retry-After": String(tokenLimit.retry_after_seconds) } },
       );
     }
 

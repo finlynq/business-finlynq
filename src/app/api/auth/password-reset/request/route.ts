@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
+import { readAuthMutationJson } from "@/app/api/_shared/auth-mutation-route";
 import { assertEmailDeliveryReady, consumeRateLimit, queuePasswordReset } from "@/modules/identity/auth-store";
 import { assertAccountAuthenticationConfigured } from "@/modules/identity/email-provider";
 import { requestFingerprints, validateSameOriginMutation } from "@/modules/identity/request-security";
@@ -19,24 +20,33 @@ export async function POST(request: NextRequest) {
   if (process.env.ACCOUNT_LOGIN_ENABLED !== "true") return NextResponse.json({ message: genericMessage }, { headers });
 
   try {
-    const contentType = request.headers.get("content-type") ?? "";
-    const parsed = contentType.toLowerCase().startsWith("application/json")
-      ? schema.safeParse(await request.json())
-      : { success: false as const };
+    const { ipHash } = requestFingerprints(request);
+    const ipLimit = await consumeRateLimit("password-reset-ip-hour", ipHash, 8, 3600);
+    if (!ipLimit.allowed) {
+      await settleSensitiveResponse(startedAt);
+      return NextResponse.json({ message: genericMessage }, { status: 429, headers: { ...headers, "Retry-After": String(ipLimit.retry_after_seconds) } });
+    }
+
+    const body = await readAuthMutationJson(request);
+    if (!body.ok) {
+      await settleSensitiveResponse(startedAt);
+      return body.response;
+    }
+    const parsed = schema.safeParse(body.value);
     if (!parsed.success) {
       await settleSensitiveResponse(startedAt);
       return NextResponse.json({ message: genericMessage }, { headers });
     }
-    const { ipHash } = requestFingerprints(request);
     const identifierHash = emailLookupHash(parsed.data.email);
-    const [ipLimit, identifierLimit] = await Promise.all([
-      consumeRateLimit("password-reset-ip-hour", ipHash, 8, 3600),
-      consumeRateLimit("password-reset-identifier-hour", identityLookupHash(`reset|${identifierHash}`), 3, 3600),
-    ]);
-    if (!ipLimit.allowed || !identifierLimit.allowed) {
-      const retryAfter = Math.max(ipLimit.retry_after_seconds, identifierLimit.retry_after_seconds);
+    const identifierLimit = await consumeRateLimit(
+      "password-reset-identifier-hour",
+      identityLookupHash(`reset|${identifierHash}`),
+      3,
+      3600,
+    );
+    if (!identifierLimit.allowed) {
       await settleSensitiveResponse(startedAt);
-      return NextResponse.json({ message: genericMessage }, { status: 429, headers: { ...headers, "Retry-After": String(retryAfter) } });
+      return NextResponse.json({ message: genericMessage }, { status: 429, headers: { ...headers, "Retry-After": String(identifierLimit.retry_after_seconds) } });
     }
 
     assertAccountAuthenticationConfigured();

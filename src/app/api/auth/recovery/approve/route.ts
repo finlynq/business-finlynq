@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
+import { readAuthMutationJson } from "@/app/api/_shared/auth-mutation-route";
 import { approveRecovery, consumeRateLimit, consumeRecoveryApprovalLimits, totpForSession } from "@/modules/identity/auth-store";
 import { requestFingerprints, validateSameOriginMutation } from "@/modules/identity/request-security";
 import { requestPrincipal } from "@/modules/identity/session";
@@ -15,17 +16,23 @@ export async function POST(request: NextRequest) {
   const principal = await requestPrincipal(request);
   if (!principal || principal.sessionMode !== "real") return NextResponse.json({ error: "Sign in to continue." }, { status: 401, headers });
   try {
-    const parsed = schema.safeParse(await request.json());
-    if (!parsed.success) return NextResponse.json({ error: "Enter a valid recovery request and authenticator code." }, { status: 400, headers });
     const { ipHash } = requestFingerprints(request);
-    const [ipLimit, principalLimit] = await Promise.all([
-      consumeRateLimit("recovery-approval-ip-hour", ipHash, 10, 3600),
-      consumeRecoveryApprovalLimits(principal.sessionId, parsed.data.recoveryRequestId),
-    ]);
-    if (!ipLimit.allowed || !principalLimit.allowed) {
+    const ipLimit = await consumeRateLimit("recovery-approval-ip-hour", ipHash, 10, 3600);
+    if (!ipLimit.allowed) {
       return NextResponse.json(
         { error: "Too many attempts. Try again later." },
-        { status: 429, headers: { ...headers, "Retry-After": String(Math.max(ipLimit.retry_after_seconds, principalLimit.retry_after_seconds)) } },
+        { status: 429, headers: { ...headers, "Retry-After": String(ipLimit.retry_after_seconds) } },
+      );
+    }
+    const body = await readAuthMutationJson(request);
+    if (!body.ok) return body.response;
+    const parsed = schema.safeParse(body.value);
+    if (!parsed.success) return NextResponse.json({ error: "Enter a valid recovery request and authenticator code." }, { status: 400, headers });
+    const principalLimit = await consumeRecoveryApprovalLimits(principal.sessionId, parsed.data.recoveryRequestId);
+    if (!principalLimit.allowed) {
+      return NextResponse.json(
+        { error: "Too many attempts. Try again later." },
+        { status: 429, headers: { ...headers, "Retry-After": String(principalLimit.retry_after_seconds) } },
       );
     }
     const factor = await totpForSession(principal.sessionId);
