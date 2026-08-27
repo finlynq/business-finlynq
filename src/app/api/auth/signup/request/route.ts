@@ -49,8 +49,6 @@ export async function POST(request: NextRequest) {
 
   try {
     assertAccountAuthenticationConfigured();
-    assertSignupChallengeConfigured();
-    await assertEmailDeliveryReady();
     const contentType = request.headers.get("content-type") ?? "";
     const parsed = contentType.toLowerCase().startsWith("application/json")
       ? schema.safeParse(await request.json())
@@ -77,6 +75,8 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    assertSignupChallengeConfigured();
+    await assertEmailDeliveryReady();
     const challengeValid = await verifySignupChallenge({
       token: parsed.data.challengeToken,
       remoteIp: clientIp(request),
