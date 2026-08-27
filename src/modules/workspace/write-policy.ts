@@ -6,6 +6,7 @@ import {
   transactionAuthMethod,
   type SessionPrincipal,
 } from "@/modules/identity/session";
+import { isDemoTransactionAuthMethod } from "@/modules/identity/auth-provenance";
 
 export function demoWritesEnabled(): boolean {
   return process.env.DEMO_WRITES_ENABLED === "true";
@@ -42,16 +43,16 @@ export function mutationContext(
 
 export function isAuthorizedDemoWriteContext(context: TenantTransactionContext): boolean {
   const sessionMode = context.sessionMode ??
-    (context.authMethod.toLowerCase() === "demo-link" ? "demo" : "real");
+    (isDemoTransactionAuthMethod(context.authMethod) ? "demo" : "real");
   return sessionMode === "demo" && context.demoWriteAuthorized === true &&
     Boolean(context.sessionId) &&
-    context.authMethod.toLowerCase() === "demo-link" &&
+    isDemoTransactionAuthMethod(context.authMethod) &&
     demoWritesEnabled();
 }
 
 export function assertTenantWritesEnabled(context: TenantTransactionContext): void {
   const sessionMode = context.sessionMode ??
-    (context.authMethod.toLowerCase() === "demo-link" ? "demo" : "real");
+    (isDemoTransactionAuthMethod(context.authMethod) ? "demo" : "real");
   if (sessionMode === "demo") {
     if (!isAuthorizedDemoWriteContext(context)) {
       throw new Error("Demo writes require a live isolated demo-link session");

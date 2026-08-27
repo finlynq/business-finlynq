@@ -1,6 +1,7 @@
 import { Pool, type PoolClient, type QueryResult, type QueryResultRow } from "pg";
 import { readFileSync } from "node:fs";
 import { z } from "zod";
+import { isDemoTransactionAuthMethod } from "@/modules/identity/auth-provenance";
 
 const tenantContextInputSchema = z.object({
   organizationId: z.uuid(),
@@ -16,8 +17,8 @@ const tenantContextInputSchema = z.object({
 
 const tenantContextSchema = tenantContextInputSchema.transform((context, issueContext) => {
   const sessionMode = context.sessionMode ??
-    (context.authMethod.toLowerCase() === "demo-link" ? "demo" : "real");
-  const usesDemoAuthentication = context.authMethod.toLowerCase() === "demo-link";
+    (isDemoTransactionAuthMethod(context.authMethod) ? "demo" : "real");
+  const usesDemoAuthentication = isDemoTransactionAuthMethod(context.authMethod);
 
   if ((sessionMode === "demo") !== usesDemoAuthentication) {
     issueContext.addIssue({
@@ -45,6 +46,10 @@ const tenantContextSchema = tenantContextInputSchema.transform((context, issueCo
 });
 
 export type TenantTransactionContext = z.input<typeof tenantContextSchema>;
+
+export function validateTenantTransactionContext(context: TenantTransactionContext) {
+  return tenantContextSchema.parse(context);
+}
 
 let pool: Pool | undefined;
 
@@ -114,7 +119,7 @@ export async function withTenantTransaction<T>(
   untrustedContext: TenantTransactionContext,
   work: (client: PoolClient) => Promise<T>,
 ): Promise<T> {
-  const context = tenantContextSchema.parse(untrustedContext);
+  const context = validateTenantTransactionContext(untrustedContext);
   const client = await getPool().connect();
 
   try {
