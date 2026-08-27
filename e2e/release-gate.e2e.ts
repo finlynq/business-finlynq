@@ -146,7 +146,14 @@ test("public website, readiness, and security headers are release-ready", async 
   if (readiness.checks.accountAuthentication === "ready" && readiness.checks.accountSignup === "ready") {
     await expect(page.getByRole("heading", { level: 1, name: "Create your workspace" })).toBeVisible();
     await expect(page.getByRole("button", { name: "Create account" })).toBeVisible();
-    await expect(page.getByLabel("Signup verification").locator("iframe")).toBeVisible({ timeout: 15_000 });
+    const signupVerification = page.getByLabel("Signup verification");
+    await expect(signupVerification).toBeVisible();
+    // Turnstile's iframe can live behind Cloudflare-controlled implementation
+    // details and managed challenges may solve without displaying it. The
+    // response input is created only after the public widget API renders.
+    await expect(signupVerification.locator('input[name="cf-turnstile-response"]')).toHaveCount(1, {
+      timeout: 15_000,
+    });
   } else {
     await expect(page.getByRole("heading", { level: 1, name: "Secure account signup is being enabled" })).toBeVisible();
     await expect(page.getByRole("link", { name: /Open the live demo/ })).toBeVisible();
@@ -161,7 +168,13 @@ test("demo session protects workspace routes and is revoked by sign-out", async 
 
   await page.goto("/app/journals");
   await expect(page).toHaveURL(/\/login\?next=%2Fapp%2Fjournals$/);
-  await expect(page.getByRole("heading", { level: 1, name: "Explore Business Finlynq" })).toBeVisible();
+  if (expectedAccountAuthentication === "ready") {
+    await expect(page.getByRole("heading", { level: 1, name: "Welcome back" })).toBeVisible();
+  } else if (expectedAccountAuthentication === "disabled") {
+    await expect(page.getByRole("heading", { level: 1, name: "Explore Business Finlynq" })).toBeVisible();
+  } else {
+    await expect(page.getByRole("heading", { level: 1, name: /Welcome back|Explore Business Finlynq/ })).toBeVisible();
+  }
 
   const demoLink = page.getByRole("link", { name: /Open the public demo/ });
   const demoHref = await demoLink.getAttribute("href");
