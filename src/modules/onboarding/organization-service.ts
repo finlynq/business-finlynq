@@ -7,15 +7,19 @@ import {
   serializeWrappedKey,
 } from "@/security/organization-encryption";
 import { loadOrganizationRootKek } from "@/security/root-secret";
+import { supportedCurrencies } from "@/kernel/money";
 
 const onboardingSchema = z.object({
   slug: z.string().trim().toLowerCase().regex(/^[a-z0-9][a-z0-9-]{1,62}$/),
   organizationName: z.string().trim().min(2).max(200),
   entityCode: z.string().trim().toUpperCase().regex(/^[A-Z0-9][A-Z0-9_-]{0,15}$/),
   entityName: z.string().trim().min(2).max(200),
-  countryCode: z.enum(["CA", "US"]),
+  countryCode: z.string().trim().toUpperCase().regex(/^[A-Z]{2}$/),
   regionCode: z.string().trim().toUpperCase().regex(/^[A-Z0-9-]{2,10}$/),
-  functionalCurrency: z.enum(["CAD", "USD"]),
+  functionalCurrency: z.string().trim().toUpperCase().refine(
+    (value) => supportedCurrencies.includes(value),
+    "Choose a supported functional currency",
+  ),
   accountingProfile: z.enum(["CAN_ASPE", "US_GAAP_NONPUBLIC"]),
   fiscalYear: z.number().int().min(2000).max(2200),
 });
@@ -241,12 +245,6 @@ export async function onboardOrganization(
   unparsedInput: OrganizationOnboardingInput,
 ): Promise<OrganizationOnboardingResult> {
   const input = onboardingSchema.parse(unparsedInput);
-  if ((input.countryCode === "CA") !== (input.functionalCurrency === "CAD")) {
-    throw new Error("The initial Canadian entity must use CAD and the initial US entity must use USD");
-  }
-  if ((input.countryCode === "CA") !== (input.accountingProfile === "CAN_ASPE")) {
-    throw new Error("The accounting profile must match the initial entity country");
-  }
   const client = await pool.connect();
   try {
     await client.query("BEGIN");

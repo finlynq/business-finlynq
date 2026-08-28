@@ -57,7 +57,7 @@ Posting and closing lock the same period row. One atomic posting service validat
 
 The tax module is a stable decision contract plus separately versioned jurisdiction packs—not one universal law engine. The first packs are Ontario HST and Washington retail sales/use tax. Posted results snapshot facts, registration, evidence, jurisdiction/location, pack/rule version, rate components, rounding, and GL mappings.
 
-Unknown, stale, or unsupported facts return `MANUAL_REVIEW_REQUIRED`, never a silent zero. Zero-rated, exempt, resale, marketplace-collected, and out-of-scope outcomes remain distinct. Washington v0 imports effective-dated official DOR rate data and does not claim automatic national address determination. B&O, lodging, vehicles, tribal rules, construction, and special taxes are outside the demo scope.
+Unknown, stale, or unsupported facts return `MANUAL_REVIEW_REQUIRED`, never a silent zero. Zero-rated, exempt, resale, marketplace-collected, and out-of-scope outcomes remain distinct. An entity activates a pack with an explicit encrypted registration reference, validity range, jurisdiction/location facts, and evidence; country or state alone never implies registration, nexus, or a Washington local rate. Washington v0 uses reviewed effective-dated DOR location data and does not claim automatic national address determination. B&O, lodging, vehicles, tribal rules, construction, and special taxes are outside the demo scope.
 
 ## Encryption and recovery
 
@@ -77,6 +77,10 @@ Hosted MCP uses an organization-bound OAuth service principal and the same appli
 
 `business.finlynq.com` may share the existing VPS hardware but not its trust namespace. It receives a separate OS service account, deploy directory, PostgreSQL database and least-privilege roles, encryption root, JWT/cookie name, OAuth credentials, port, storage path, resource limits, audit stream, and encrypted off-VPS backups. A later Finlynq integration will use explicit OIDC/account linking, not shared cookies, secrets, or databases.
 
+## Banking boundary
+
+SimpleFIN credentials and bank descriptions use the organization envelope key. Provider transactions are immutable, versioned observations, not journals. Reconciliation matches observations to posted cash lines through append-only allocations and a guarded preparer/reviewer lifecycle. Categorization rules are versioned append-only and currently create encrypted manual-review suggestions only; they cannot create source-module drafts, approve, post, mutate source books, or delete history.
+
 ## Deferred modules
 
-Inventory, manufacturing, banking/reconciliation, projects, insurance, payroll, fixed assets, consolidation, budgeting, secondary ledgers, and payment execution are outside this first slice. Module keys, source envelopes, and the ledger extension contract make them additive; no placeholder inventory tables are created.
+Inventory, manufacturing, projects, insurance, payroll, fixed assets, consolidation, budgeting, secondary ledgers, payment execution, and public MCP are outside this slice. Module keys, source envelopes, and the ledger extension contract make them additive; no placeholder inventory tables are created.

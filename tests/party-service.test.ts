@@ -29,7 +29,7 @@ vi.mock("@/security/organization-encryption", () => ({
   serializeEncryptedField: vi.fn(() => "serialized-ciphertext"),
 }));
 
-import { createParty } from "@/modules/parties/party-service";
+import { addPartyAccount, createParty } from "@/modules/parties/party-service";
 
 const previousBusinessWrites = process.env.BUSINESS_WRITES_ENABLED;
 const ids = {
@@ -170,5 +170,75 @@ describe("encrypted party and AR/AP account creation", () => {
       account: { ...command.account, role: "SUPPLIER" },
     })).rejects.toThrow(/active AR\/AP configuration/i);
     expect(query.mock.calls.some(([statement]) => statement.includes("INSERT INTO party_accounts"))).toBe(false);
+  });
+
+  it("attaches another legal-entity role to the existing organization party", async () => {
+    const attachedAccount = { ...partyAccountRow, party_id: ids.party };
+    const query = vi.fn(async (statement: string, parameters?: readonly unknown[]) => {
+      void parameters;
+      if (statement.includes("FROM parties") && statement.includes("FOR SHARE")) return { rows: [{ allowed: true }] };
+      if (statement.includes("FROM legal_entities entity")) return { rows: [{ allowed: true }] };
+      if (statement.includes("INSERT INTO party_accounts")) return { rows: [attachedAccount] };
+      throw new Error(`Unexpected party-account attachment SQL: ${statement}`);
+    });
+    mocks.withTenantTransaction.mockImplementation(async (
+      _context: unknown,
+      work: (client: PoolClient) => Promise<unknown>,
+    ) => work({ query } as unknown as PoolClient));
+
+    await expect(addPartyAccount({
+      context: command.context,
+      partyId: ids.party,
+      idempotencyKey: "attach-us-customer",
+      account: command.account,
+    })).resolves.toEqual({
+      partyAccount: {
+        id: ids.partyAccount,
+        legalEntityId: ids.entity,
+        ledgerId: ids.ledger,
+        role: "CUSTOMER",
+        accountNumber: "C-CA-1001",
+        controlAccountId: ids.control,
+        transactionCurrency: null,
+      },
+      idempotentReplay: false,
+    });
+    const insert = query.mock.calls.find(([statement]) => statement.includes("INSERT INTO party_accounts"));
+    expect(insert?.[1]?.slice(1)).toEqual([
+      ids.organization,
+      ids.entity,
+      ids.ledger,
+      ids.party,
+      "CUSTOMER",
+      "C-CA-1001",
+      ids.control,
+      null,
+    ]);
+  });
+
+  it("rejects an entity-role account number already bound to a different party", async () => {
+    const query = vi.fn(async (statement: string) => {
+      if (statement.includes("FROM parties") && statement.includes("FOR SHARE")) return { rows: [{ allowed: true }] };
+      if (statement.includes("FROM legal_entities entity")) return { rows: [{ allowed: true }] };
+      if (statement.includes("INSERT INTO party_accounts")) return { rows: [] };
+      if (statement.includes("FROM party_accounts")) {
+        return { rows: [{
+          ...partyAccountRow,
+          party_id: "90000000-0000-4000-8000-000000000001",
+        }] };
+      }
+      throw new Error(`Unexpected party-account attachment SQL: ${statement}`);
+    });
+    mocks.withTenantTransaction.mockImplementation(async (
+      _context: unknown,
+      work: (client: PoolClient) => Promise<unknown>,
+    ) => work({ query } as unknown as PoolClient));
+
+    await expect(addPartyAccount({
+      context: command.context,
+      partyId: ids.party,
+      idempotencyKey: "attach-conflict",
+      account: command.account,
+    })).rejects.toThrow(/different party account data/i);
   });
 });

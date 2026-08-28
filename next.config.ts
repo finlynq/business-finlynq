@@ -13,6 +13,8 @@ const nextConfig: NextConfig = {
   async redirects() {
     const legacyWorkspaceRoutes = [
       "/automation",
+      "/banking",
+      "/banking/:path*",
       "/controls/:path*",
       "/entities",
       "/journals/:path*",
@@ -21,6 +23,7 @@ const nextConfig: NextConfig = {
       "/receivables/:path*",
       "/reports/:path*",
       "/settings",
+      "/settings/:path*",
       "/tax",
     ];
 
@@ -33,6 +36,8 @@ const nextConfig: NextConfig = {
   async rewrites() {
     return [
       { source: "/app/automation", destination: "/automation" },
+      { source: "/app/banking", destination: "/banking" },
+      { source: "/app/banking/:path*", destination: "/banking/:path*" },
       { source: "/app/controls/:path*", destination: "/controls/:path*" },
       { source: "/app/entities", destination: "/entities" },
       { source: "/app/journals/:path*", destination: "/journals/:path*" },
@@ -41,6 +46,7 @@ const nextConfig: NextConfig = {
       { source: "/app/receivables/:path*", destination: "/receivables/:path*" },
       { source: "/app/reports/:path*", destination: "/reports/:path*" },
       { source: "/app/settings", destination: "/settings" },
+      { source: "/app/settings/:path*", destination: "/settings/:path*" },
       { source: "/app/tax", destination: "/tax" },
     ];
   },

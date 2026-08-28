@@ -18,6 +18,18 @@ const mocks = vi.hoisted(() => {
       status: "DRAFT",
       period_state: "OPEN" as const,
       total_debit_functional: "100.00",
+      canonical_account_keys: [
+        "CA01.6100.0000.MKT.0000.0000.0000.0000.0000.0000.0000.0000.0000",
+      ],
+      account_segment_definitions: [
+        { key: "subaccount", displayName: "Product", visible: false },
+        { key: "department", displayName: "Cost center", visible: true },
+        ...Array.from({ length: 8 }, (_, index) => ({
+          key: `custom${index + 1}`,
+          displayName: `Custom ${index + 1}`,
+          visible: false,
+        })),
+      ],
       source_number: null,
       canonical_content_hash: "a".repeat(64),
       reversal_of_number: null,
@@ -189,6 +201,13 @@ describe("tenant journal action capabilities", () => {
       { id: "30000000-0000-4000-8000-000000000004", canPost: false, canReverse: false },
     ]);
     expect(workspace.journals[0]?.expectedContentHash).toBe("a".repeat(64));
+    expect(workspace.journals[0]?.accountKeys[0]).toMatchObject({
+      canonicalKey: "CA01.6100.0000.MKT.0000.0000.0000.0000.0000.0000.0000.0000.0000",
+      displayKey: "CA01.6100.MKT.0000",
+      displaySegments: expect.arrayContaining([
+        { key: "department", displayName: "Cost center", code: "MKT" },
+      ]),
+    });
     expect(workspace.journals[3]).toMatchObject({
       ownerModule: "receivables",
       sourceNumber: "INV-1001",

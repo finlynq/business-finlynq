@@ -1,5 +1,6 @@
 export * from "./audit";
 export * from "./auth";
+export * from "./banking";
 export * from "./identity";
 export * from "./journals";
 export * from "./ledger";

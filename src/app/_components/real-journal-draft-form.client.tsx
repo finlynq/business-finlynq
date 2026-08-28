@@ -53,12 +53,18 @@ function emptyLines(): DraftLine[] {
 export function RealJournalDraftForm({
   options,
   initialAccountingDate,
+  initialEntityId,
 }: {
   options: ManualJournalOptionsDto;
   initialAccountingDate: string;
+  initialEntityId?: string | null;
 }) {
   const formId = useId();
-  const initialEntity = options.entities[0];
+  // The server validates this presentation preference against the tenant's
+  // active entity set. Finding it again in the authorized DTO keeps the client
+  // default from becoming an accounting or authorization boundary.
+  const initialEntity = options.entities.find((entity) => entity.id === initialEntityId)
+    ?? options.entities[0];
   const [entityId, setEntityId] = useState(initialEntity?.id ?? "");
   const [periodId, setPeriodId] = useState(initialEntity?.periods[0]?.id ?? "");
   const [accountingDate, setAccountingDate] = useState(initialAccountingDate);

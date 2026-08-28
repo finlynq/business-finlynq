@@ -47,6 +47,61 @@ export const currencyDefinitions = pgTable("currency_definitions", {
   active: boolean("active").notNull().default(true),
 });
 
+export const organizationCurrencies = pgTable(
+  "organization_currencies",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    organizationId: uuid("organization_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "restrict" }),
+    currencyCode: text("currency_code")
+      .notNull()
+      .references(() => currencyDefinitions.code, { onDelete: "restrict" }),
+    enabled: boolean("enabled").notNull().default(true),
+    createdBy: uuid("created_by").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("organization_currencies_org_code_unique").on(
+      table.organizationId,
+      table.currencyCode,
+    ),
+    uniqueIndex("organization_currencies_org_id_unique").on(table.organizationId, table.id),
+  ],
+);
+
+export const currencyExchangeRates = pgTable(
+  "currency_exchange_rates",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    organizationId: uuid("organization_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "restrict" }),
+    sourceCurrency: text("source_currency")
+      .notNull()
+      .references(() => currencyDefinitions.code, { onDelete: "restrict" }),
+    targetCurrency: text("target_currency")
+      .notNull()
+      .references(() => currencyDefinitions.code, { onDelete: "restrict" }),
+    rate: numeric("rate", { precision: 38, scale: 18 }).notNull(),
+    effectiveAt: timestamp("effective_at", { withTimezone: true }).notNull(),
+    source: text("source").notNull(),
+    createdBy: uuid("created_by").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("currency_exchange_rates_org_identity_unique").on(
+      table.organizationId,
+      table.sourceCurrency,
+      table.targetCurrency,
+      table.effectiveAt,
+      table.source,
+    ),
+    uniqueIndex("currency_exchange_rates_org_id_unique").on(table.organizationId, table.id),
+  ],
+);
+
 export const legalEntities = pgTable(
   "legal_entities",
   {

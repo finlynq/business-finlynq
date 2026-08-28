@@ -1,7 +1,9 @@
 import Link from "next/link";
 import { demoSearchIndex } from "@/modules/demo/dashboard-data";
 import type { SessionPrincipal } from "@/modules/identity/session";
+import type { WorkspaceEntityContext } from "@/modules/workspace/entity-context";
 import { AccountMenu, type AccountMenuPrincipal } from "./account-menu.client";
+import { EntityContextSwitcher } from "./entity-context-switcher.client";
 import { GlobalSearch, type SearchEntry } from "./global-search.client";
 import {
   DesktopNavigation,
@@ -15,6 +17,7 @@ const workspaceItems: readonly NavigationItem[] = [
   { abbreviation: "PT", label: "Parties", href: "/app/parties" },
   { abbreviation: "AR", label: "Receivables", href: "/app/receivables/invoices" },
   { abbreviation: "AP", label: "Payables", href: "/app/payables/bills" },
+  { abbreviation: "BK", label: "Banking", href: "/app/banking" },
   { abbreviation: "TX", label: "Tax", href: "/app/tax" },
   { abbreviation: "RP", label: "Reports", href: "/app/reports/trial-balance" },
   { abbreviation: "CT", label: "Controls", href: "/app/controls/period-close", badge: "2" },
@@ -45,11 +48,13 @@ export function WorkspaceShell({
   children,
   principal,
   readOnly,
+  entityContext,
   isPlatformAdministrator = false,
 }: {
   children: React.ReactNode;
   principal: SessionPrincipal;
   readOnly: boolean;
+  entityContext: WorkspaceEntityContext;
   isPlatformAdministrator?: boolean;
 }) {
   const organization = {
@@ -98,14 +103,17 @@ export function WorkspaceShell({
 
       <div className="main-shell">
         <div className="utility-bar">
-          <div>
-            <span className="read-only-dot" aria-hidden="true" />
-            <strong>{principal.sessionMode === "demo" ? "Public demo" : "Accounting workspace"}</strong>
-            <span>{principal.sessionMode === "demo"
-              ? readOnly ? "Synthetic records · sandbox writes are disabled" : "Synthetic records · changes reset nightly"
-              : readOnly ? "Business writes are disabled for this deployment" : "Posting follows your assigned roles"}</span>
+          <EntityContextSwitcher context={entityContext} />
+          <div className="utility-actions">
+            <div className="workspace-session-note">
+              <span className="read-only-dot" aria-hidden="true" />
+              <strong>{principal.sessionMode === "demo" ? "Public demo" : "Accounting workspace"}</strong>
+              <span>{principal.sessionMode === "demo"
+                ? readOnly ? "Sandbox writes disabled" : "Resets nightly"
+                : readOnly ? "Writes disabled" : "Role-based posting"}</span>
+            </div>
+            <GlobalSearch entries={searchIndex} />
           </div>
-          <GlobalSearch entries={searchIndex} />
         </div>
         <main id="main-content">{children}</main>
         <footer className="app-footer">

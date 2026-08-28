@@ -1,10 +1,19 @@
-import { Pool } from "pg";
+import { Pool, type QueryResult } from "pg";
 import { decryptIdentityField, loadIdentitySecret } from "../../src/security/identity-secret";
 import {
   LocalRootKeyProvider,
   parseWrappedKey,
 } from "../../src/security/organization-encryption";
 import { loadOrganizationRootKek } from "../../src/security/root-secret";
+import {
+  RESTORED_BANKING_FIELD_SPECIFICATIONS,
+  restoredBankingCiphertextBatchQuery,
+  restoredOrganizationKeyMapKey,
+  type RestoredBankingCiphertextRow,
+  verifyRestoredBankingCiphertexts,
+} from "./restored-banking-secrets";
+
+const BANKING_DECRYPTION_BATCH_SIZE = 1_000;
 
 function required(name: string): string {
   const value = process.env[name]?.trim();
@@ -33,32 +42,58 @@ async function main(): Promise<void> {
   const rootKey = loadOrganizationRootKek();
   const identitySecret = loadIdentitySecret();
   const keyProvider = new LocalRootKeyProvider(rootKey);
+  const organizationDeks = new Map<string, Buffer>();
 
   try {
     const keyResult = await pool.query<{
       organization_id: string;
+      version: number;
+      key_provider: string;
       wrapped_dek: string;
     }>(
-      "SELECT organization_id, wrapped_dek FROM organization_key_versions ORDER BY organization_id, version",
+      `SELECT organization_id, version, key_provider, wrapped_dek
+       FROM organization_key_versions ORDER BY organization_id, version`,
     );
 
     let unwrappedKeyCount = 0;
     for (const row of keyResult.rows) {
-      const organizationDek = keyProvider.unwrapOrganizationKey(
-        row.organization_id,
-        parseWrappedKey(row.wrapped_dek),
-      );
-      organizationDek.fill(0);
+      if (!Number.isSafeInteger(row.version) || row.version <= 0) {
+        throw new Error("Organization key metadata contains an invalid version");
+      }
+      const wrapped = parseWrappedKey(row.wrapped_dek);
+      if (wrapped.provider !== row.key_provider || wrapped.keyVersion !== row.version) {
+        throw new Error("Organization key envelope does not match its restored database metadata");
+      }
+      const mapKey = restoredOrganizationKeyMapKey(row.organization_id, row.version);
+      if (organizationDeks.has(mapKey)) {
+        throw new Error("Restore contains duplicate organization key metadata");
+      }
+      const organizationDek = keyProvider.unwrapOrganizationKey(row.organization_id, wrapped);
+      organizationDeks.set(mapKey, organizationDek);
       unwrappedKeyCount += 1;
     }
 
     const missingKeyCoverage = await pool.query<{ missing_count: number }>(
       `SELECT count(*)::int AS missing_count
        FROM (
-         SELECT organization_id FROM parties WHERE display_name_ciphertext IS NOT NULL
-         UNION
-         SELECT organization_id FROM party_addresses WHERE ciphertext IS NOT NULL
-       ) encrypted_organization
+          SELECT organization_id FROM parties WHERE display_name_ciphertext IS NOT NULL
+          UNION
+          SELECT organization_id FROM party_addresses WHERE ciphertext IS NOT NULL
+          UNION
+          SELECT organization_id FROM bank_connections WHERE credentials_ciphertext IS NOT NULL
+          UNION
+          SELECT organization_id FROM bank_external_accounts
+            WHERE provider_account_id_ciphertext IS NOT NULL OR display_name_ciphertext IS NOT NULL
+          UNION
+          SELECT organization_id FROM bank_observations WHERE provider_transaction_id_ciphertext IS NOT NULL
+          UNION
+          SELECT organization_id FROM bank_observation_versions WHERE details_ciphertext IS NOT NULL
+          UNION
+          SELECT organization_id FROM bank_rules
+            WHERE condition_ciphertext IS NOT NULL OR action_ciphertext IS NOT NULL
+          UNION
+          SELECT organization_id FROM bank_draft_proposals WHERE payload_ciphertext IS NOT NULL
+        ) encrypted_organization
        WHERE NOT EXISTS (
          SELECT 1 FROM organization_key_versions key_version
          WHERE key_version.organization_id = encrypted_organization.organization_id
@@ -87,6 +122,26 @@ async function main(): Promise<void> {
       decryptedIdentityCount += 1;
     }
 
+    let decryptedBankingFieldCount = 0;
+    for (const specification of RESTORED_BANKING_FIELD_SPECIFICATIONS) {
+      let afterOrganizationId: string | null = null;
+      let afterRecordId: string | null = null;
+      while (true) {
+        const bankingResult: QueryResult<RestoredBankingCiphertextRow> = await pool.query<RestoredBankingCiphertextRow>(
+          restoredBankingCiphertextBatchQuery(specification),
+          [afterOrganizationId, afterRecordId, BANKING_DECRYPTION_BATCH_SIZE],
+        );
+        decryptedBankingFieldCount += verifyRestoredBankingCiphertexts(
+          bankingResult.rows,
+          organizationDeks,
+        );
+        const lastRow: RestoredBankingCiphertextRow | undefined = bankingResult.rows.at(-1);
+        if (!lastRow || bankingResult.rows.length < BANKING_DECRYPTION_BATCH_SIZE) break;
+        afterOrganizationId = lastRow.organization_id;
+        afterRecordId = lastRow.record_id;
+      }
+    }
+
     if (enabled("RESTORE_REQUIRE_WRAPPED_KEYS") && unwrappedKeyCount === 0) {
       throw new Error("Restore drill requires at least one recoverable organization key");
     }
@@ -99,8 +154,10 @@ async function main(): Promise<void> {
       wrappedOrganizationKeys: unwrappedKeyCount,
       encryptedOrganizationsMissingKeys,
       encryptedIdentities: decryptedIdentityCount,
+      encryptedBankingFields: decryptedBankingFieldCount,
     })}\n`);
   } finally {
+    for (const organizationDek of organizationDeks.values()) organizationDek.fill(0);
     rootKey.fill(0);
     identitySecret.fill(0);
     await pool.end();

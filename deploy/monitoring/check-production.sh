@@ -25,6 +25,7 @@ readonly monitor_cron_maintenance_lock_file="/home/deploy/.local/state/business-
 : "${MONITOR_EXPECT_ACCOUNT_LOGIN_ENABLED:?MONITOR_EXPECT_ACCOUNT_LOGIN_ENABLED is required}"
 : "${MONITOR_EXPECT_ACCOUNT_SIGNUP_ENABLED:?MONITOR_EXPECT_ACCOUNT_SIGNUP_ENABLED is required}"
 : "${MONITOR_EXPECT_BUSINESS_WRITES_ENABLED:?MONITOR_EXPECT_BUSINESS_WRITES_ENABLED is required}"
+: "${MONITOR_EXPECT_BANK_FEEDS_ENABLED:?MONITOR_EXPECT_BANK_FEEDS_ENABLED is required}"
 : "${MONITOR_EXPECT_DEMO_MAINTENANCE:?MONITOR_EXPECT_DEMO_MAINTENANCE is required}"
 
 MONITOR_EXPECT_DEMO_POOL_SIZE="${MONITOR_EXPECT_DEMO_POOL_SIZE:-128}"
@@ -56,7 +57,7 @@ done
 for boolean_value in \
   MONITOR_EXPECT_DEMO_LOGIN_ENABLED MONITOR_EXPECT_DEMO_WRITES_ENABLED \
   MONITOR_EXPECT_ACCOUNT_LOGIN_ENABLED MONITOR_EXPECT_ACCOUNT_SIGNUP_ENABLED \
-  MONITOR_EXPECT_BUSINESS_WRITES_ENABLED; do
+  MONITOR_EXPECT_BUSINESS_WRITES_ENABLED MONITOR_EXPECT_BANK_FEEDS_ENABLED; do
   [[ "${!boolean_value}" == "true" || "${!boolean_value}" == "false" ]] || {
     printf 'Invalid boolean monitoring setting: %s\n' "$boolean_value" >&2
     exit 2
@@ -136,6 +137,11 @@ if ! grep -Eiq '^cache-control:.*no-store' "$response_headers"; then
 fi
 response_revision="$(jq -r '.revision // empty' "$response_body" 2>/dev/null || true)"
 [[ "$response_revision" == "$MONITOR_EXPECT_REVISION" ]] || record_failure "readiness revision does not match the deployed release"
+response_bank_feeds="$(jq -r '.checks.bankFeeds // empty' "$response_body" 2>/dev/null || true)"
+expected_bank_feed_readiness="disabled"
+[[ "$MONITOR_EXPECT_BANK_FEEDS_ENABLED" == "true" ]] && expected_bank_feed_readiness="ready"
+[[ "$response_bank_feeds" == "$expected_bank_feed_readiness" ]] \
+  || record_failure "readiness bank-feed gate does not match the monitored release boundary"
 
 tls_seconds=$((MONITOR_MIN_TLS_DAYS * 86400))
 if ! openssl s_client \
@@ -179,7 +185,8 @@ if [[ -n "$app_container_id" ]]; then
     "MONITOR_EXPECT_DEMO_WRITES_ENABLED:DEMO_WRITES_ENABLED" \
     "MONITOR_EXPECT_ACCOUNT_LOGIN_ENABLED:ACCOUNT_LOGIN_ENABLED" \
     "MONITOR_EXPECT_ACCOUNT_SIGNUP_ENABLED:ACCOUNT_SIGNUP_ENABLED" \
-    "MONITOR_EXPECT_BUSINESS_WRITES_ENABLED:BUSINESS_WRITES_ENABLED"; do
+    "MONITOR_EXPECT_BUSINESS_WRITES_ENABLED:BUSINESS_WRITES_ENABLED" \
+    "MONITOR_EXPECT_BANK_FEEDS_ENABLED:BANK_FEEDS_ENABLED"; do
     monitor_key="${gate_mapping%%:*}"
     container_key="${gate_mapping#*:}"
     expected_value="${!monitor_key}"

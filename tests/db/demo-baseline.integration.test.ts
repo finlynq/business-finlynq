@@ -2,6 +2,10 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { Pool } from "pg";
 import { DEMO_ORGANIZATION_ID } from "@/modules/demo/constants";
 import { demoAccountingCalendar, demoPeriodState } from "@/modules/demo/accounting-clock";
+import {
+  bootstrapDemoOrganization,
+  resetDemoSandboxes,
+} from "@/modules/onboarding/demo-bootstrap";
 
 const databaseUrl = process.env.TEST_DATABASE_URL;
 const runDatabaseTests = databaseUrl ? describe : describe.skip;
@@ -11,6 +15,13 @@ runDatabaseTests("rich nightly demo baseline", () => {
   let organizationId = "";
 
   beforeAll(async () => {
+    // Exercise the same destructive maintenance boundary used by the nightly
+    // job, then prove that the additive deploy bootstrap can run repeatedly.
+    // TEST_DATABASE_URL always identifies the disposable integration database.
+    await resetDemoSandboxes(pool, { mode: "nightly" });
+    await bootstrapDemoOrganization(pool);
+    await bootstrapDemoOrganization(pool);
+
     const ready = await pool.query<{
       organization_id: string;
       state: string;
@@ -27,22 +38,22 @@ runDatabaseTests("rich nightly demo baseline", () => {
               AND claim.invalidated_at IS NULL) AS active_claims
        FROM demo_sandbox_slots sandbox
        JOIN organizations organization ON organization.id = sandbox.organization_id
-       WHERE sandbox.state = 'READY' AND sandbox.baseline_version = 2
+       WHERE sandbox.state = 'READY' AND sandbox.baseline_version = 4
        ORDER BY sandbox.slot
        LIMIT 1`,
     );
     const selected = ready.rows[0];
-    if (!selected) throw new Error("No baseline-v2 READY demo sandbox is available");
+    if (!selected) throw new Error("No baseline-v4 READY demo sandbox is available");
     expect(selected).toMatchObject({
       state: "READY",
-      baseline_version: 2,
+      baseline_version: 4,
       active: true,
       is_demo: true,
       organization_mode: "SANDBOX",
       active_claims: 0,
     });
     organizationId = selected.organization_id;
-  });
+  }, 300_000);
 
   afterAll(async () => pool.end());
 
@@ -125,8 +136,8 @@ runDatabaseTests("rich nightly demo baseline", () => {
       void_events: 0,
       relations: 0,
       number_sequences: 2,
-      audit_events: 4,
-      outbox_events: 4,
+      audit_events: 9,
+      outbox_events: 5,
     });
 
     const lineage = await pool.query<{
@@ -181,6 +192,7 @@ runDatabaseTests("rich nightly demo baseline", () => {
       registrations: number;
       source_documents: number;
       posted_journals: number;
+      bank_connections: number;
     }>(
       `SELECT
          (SELECT count(*)::int FROM entity_tax_registrations
@@ -188,13 +200,57 @@ runDatabaseTests("rich nightly demo baseline", () => {
          (SELECT count(*)::int FROM source_documents
             WHERE organization_id = $1) AS source_documents,
          (SELECT count(*)::int FROM journal_entries
-            WHERE organization_id = $1 AND status = 'POSTED') AS posted_journals`,
+            WHERE organization_id = $1 AND status = 'POSTED') AS posted_journals,
+         (SELECT count(*)::int FROM bank_connections
+            WHERE organization_id = $1) AS bank_connections`,
       [DEMO_ORGANIZATION_ID],
     );
     expect(publicTemplate.rows[0]).toEqual({
       registrations: 2,
       source_documents: 0,
       posted_journals: 0,
+      bank_connections: 0,
+    });
+
+    const sandboxBanking = await pool.query<{
+      connections: number;
+      credential_events: number;
+      accounts: number;
+      sync_runs: number;
+      observations: number;
+      versions: number;
+      anchors: number;
+      reconciliations: number;
+      reconciliation_voids: number;
+      rules: number;
+      proposals: number;
+    }>(
+      `SELECT
+         (SELECT count(*)::int FROM bank_connections WHERE organization_id = $1) AS connections,
+         (SELECT count(*)::int FROM bank_connection_credential_events WHERE organization_id = $1) AS credential_events,
+         (SELECT count(*)::int FROM bank_external_accounts WHERE organization_id = $1) AS accounts,
+         (SELECT count(*)::int FROM bank_sync_runs WHERE organization_id = $1) AS sync_runs,
+         (SELECT count(*)::int FROM bank_observations WHERE organization_id = $1) AS observations,
+         (SELECT count(*)::int FROM bank_observation_versions WHERE organization_id = $1) AS versions,
+         (SELECT count(*)::int FROM bank_balance_anchors WHERE organization_id = $1) AS anchors,
+         (SELECT count(*)::int FROM bank_reconciliation_sessions WHERE organization_id = $1) AS reconciliations,
+         (SELECT count(*)::int FROM bank_reconciliation_voids WHERE organization_id = $1) AS reconciliation_voids,
+         (SELECT count(*)::int FROM bank_rules WHERE organization_id = $1) AS rules,
+         (SELECT count(*)::int FROM bank_draft_proposals WHERE organization_id = $1) AS proposals`,
+      [organizationId],
+    );
+    expect(sandboxBanking.rows[0]).toEqual({
+      connections: 1,
+      credential_events: 1,
+      accounts: 2,
+      sync_runs: 1,
+      observations: 3,
+      versions: 3,
+      anchors: 2,
+      reconciliations: 1,
+      reconciliation_voids: 0,
+      rules: 1,
+      proposals: 1,
     });
   });
 
@@ -264,7 +320,7 @@ runDatabaseTests("rich nightly demo baseline", () => {
     ]);
   });
 
-  it("contains four source-owned posted journals with exact balances", async () => {
+  it("contains five posted journals, including four source-owned documents, with exact balances", async () => {
     const statuses = await pool.query<{
       journals: number;
       posted: number;
@@ -294,11 +350,11 @@ runDatabaseTests("rich nightly demo baseline", () => {
     );
     expect(statuses.rows[0]).toEqual({
       journals: 6,
-      posted: 4,
-      drafts: 2,
+      posted: 5,
+      drafts: 1,
       complete_posted: 4,
-      posting_audits: 4,
-      posting_outbox: 4,
+      posting_audits: 5,
+      posting_outbox: 5,
     });
 
     const balances = await pool.query<{
@@ -347,6 +403,15 @@ runDatabaseTests("rich nightly demo baseline", () => {
         header_credit: "11300.00",
         line_debit: "11300.00",
         line_credit: "11300.00",
+      },
+      {
+        entity_code: "US01",
+        journal_type_key: "ledger.manual",
+        line_count: 2,
+        header_debit: "2400.00",
+        header_credit: "2400.00",
+        line_debit: "2400.00",
+        line_credit: "2400.00",
       },
       {
         entity_code: "US01",

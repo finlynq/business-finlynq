@@ -11,17 +11,17 @@ Use this checklist for every Business Finlynq release. Releases are commit-addre
 - Database capacity, disk, TLS, external uptime monitor, alert delivery, and auth email worker health are green.
 - Any migration was reviewed for locks, runtime-role grants, backup-role grants, rollback compatibility, and required forward repair.
 - The last demo-sandbox nightly reconciliation passed, no slot is unexpectedly quarantined or overdue, and the single nightly scheduler is enabled on hosts that allow writable demos.
-- The mandatory operations environment contains the full release SHA, matching monitor revision, exact five app-gate expectations, and reviewed demo-pool thresholds.
+- The mandatory operations environment contains the full release SHA, matching monitor revision, every app-gate expectation (including the independent bank-feed gate), and reviewed demo-pool thresholds.
 - A named operator owns the release and another owns rollback/acceptance.
 
 ## Deployment
 
 1. Record the current SHA and container image digests. Retain the prior application artifact.
-2. Put the application in the appropriate maintenance/write state. Never leave writes enabled while migrating. Stop `business-finlynq-backup.timer`, `business-finlynq-monitor.timer`, and `business-finlynq-demo-reconcile.timer` before changing the checkout or schema so a backup, monitor, or old reset artifact cannot overlap migration or emit false alerts.
+2. Put the application in the appropriate maintenance/write state. Never leave writes enabled while migrating. On a root-managed host, stop `business-finlynq-backup.timer`, `business-finlynq-monitor.timer`, and `business-finlynq-demo-reconcile.timer`. On a host using the reviewed deploy-owned fallback, run `bash deploy/cron/remove.sh`; it takes the exclusive scheduler lock, drains active jobs, and removes only the marked Business Finlynq block. Complete this before changing the checkout or schema so a backup, monitor, or old reset artifact cannot overlap migration or emit false alerts.
 3. Run `deploy/backup/run-scheduled-backup.sh` and verify its off-site marker.
 4. Build all required targets from the pinned SHA. Do not use an unreviewed working tree.
 5. Run the one-shot migrator as the database owner. Before bootstrap or app startup, run the mandatory post-migration runtime and authentication-worker grant reconciliations; then re-run the backup-role provisioner so new relations are covered. A migration is incomplete until all three explicit grant matrices succeed.
-6. Recreate the app. If real login is enabled, recreate the `auth-email` worker profile with the same SHA. Normal `bootstrap_demo` prepares only additive dirty slots and preserves assigned claims; do not run full reconciliation as an ordinary deploy step. Restart the nightly, backup, and monitor schedulers. Run destructive full-pool acceptance only in an explicit maintenance window or for a fresh install.
+6. Recreate the app. If real login is enabled, recreate the `auth-email` worker profile with the same SHA. Normal `bootstrap_demo` prepares only additive dirty slots and preserves assigned claims; do not run full reconciliation as an ordinary deploy step. Restart the root-managed timers or reinstall the deploy-owned block with `bash deploy/cron/install.sh`, matching `MONITOR_MAINTENANCE_SCHEDULER` in the operations environment. Run destructive full-pool acceptance only in an explicit maintenance window or for a fresh install.
 7. Verify container state, `/api/live`, `/api/health`, response security headers, release revision, auth worker, and external monitoring.
 8. Run the browser acceptance path: public site, protected redirect, isolated demo-sandbox claim, workspace route, logout/session revocation, pool exhaustion behavior, recovery delivery, and mobile navigation.
 9. Re-enable writes only after tenant isolation, posting authorization, idempotency, audit insertion, and period controls pass against the deployed release.
@@ -34,6 +34,7 @@ PLAYWRIGHT_BASE_URL=https://business.finlynq.com
 E2E_EXPECT_ACCOUNT_LOGIN_ENABLED=true
 E2E_EXPECT_ACCOUNT_SIGNUP_ENABLED=true
 E2E_EXPECT_AUTH_EMAIL_WORKER=true
+E2E_EXPECT_BANK_FEEDS_ENABLED=false
 npm run test:e2e
 ```
 

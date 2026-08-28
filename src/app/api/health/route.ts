@@ -16,6 +16,7 @@ export async function GET() {
     loadOrganizationRootKek();
     const accountAuthentication = process.env.ACCOUNT_LOGIN_ENABLED === "true" ? "ready" : "disabled";
     const accountSignup = process.env.ACCOUNT_SIGNUP_ENABLED === "true" ? "ready" : "disabled";
+    const bankFeeds = process.env.BANK_FEEDS_ENABLED === "true" ? "ready" : "disabled";
     if (accountSignup === "ready" && accountAuthentication !== "ready") {
       throw new Error("Self-service signup requires real-account authentication");
     }
@@ -40,6 +41,7 @@ export async function GET() {
           accountAuthentication,
           accountSignup,
           emailWorker,
+          bankFeeds,
         },
         revision: revision && /^[a-f0-9]{7,64}$/i.test(revision) ? revision : "unknown",
       },

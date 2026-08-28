@@ -16,7 +16,7 @@
     "auth:email-worker": "tsx src/workers/auth-email-worker.ts",
     "auth:invite": "tsx scripts/invite-account.ts",
     "auth:grant-platform-admin": "tsx scripts/grant-platform-administrator.ts",
-    "db:generate": "drizzle-kit generate",
+    "db:generate": "node scripts/operations/refuse-drizzle-generate.mjs",
     "db:migrate": "drizzle-kit migrate",
     "org:onboard": "tsx scripts/onboard-organization.ts",
     "demo:bootstrap": "tsx scripts/bootstrap-demo.ts",

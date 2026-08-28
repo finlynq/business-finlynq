@@ -10,12 +10,17 @@ const mocks = vi.hoisted(() => {
     if (sql.includes("FROM party_accounts account") && sql.includes("display_name_ciphertext")) return "partyAccounts";
     if (sql.includes("FROM entity_tax_registrations registration")) return "tax";
     if (sql.includes("FROM currency_definitions")) return "currencies";
+    if (sql.includes("FROM currency_exchange_rates")) return "fxRates";
     if (sql.includes("FROM source_documents current")) return "documents";
     if (sql.includes("FROM open_item_balances balance")) return "openItems";
     throw new Error(`Unexpected workspace query: ${sql}`);
   }
   const client = {
-    query: vi.fn(async (sql: string) => ({ rows: [...(rows.get(queryKey(sql)) ?? [])] })),
+    query: vi.fn(async (sql: string, params?: readonly unknown[]) => {
+      const key = queryKey(sql);
+      if (key === "documents" && params?.[2] === "does-not-match") return { rows: [] };
+      return { rows: [...(rows.get(key) ?? [])] };
+    }),
   };
   return { rows, client };
 });
@@ -33,6 +38,7 @@ vi.mock("@/modules/workspace/write-policy", () => ({
   principalCanWrite: vi.fn(() => true),
 }));
 vi.mock("@/security/organization-encryption", () => ({
+  createBlindIndex: vi.fn(() => "blind-index"),
   parseEncryptedField: vi.fn((value: string) => value),
   decryptField: vi.fn(() => "Harbour Dental Group"),
 }));
@@ -155,10 +161,23 @@ beforeEach(() => {
     legal_entity_id: ids.entity,
     registration_id: ids.registration,
     regime_key: "ca.on.hst",
-    effective_from: "2016-07-01",
-    effective_to: null,
+    destination_country: "CA",
+    destination_region: "ON",
+    destination_city: "Toronto",
+    location_code: null,
+    registration_valid_to: null,
+    pack_effective_from: "2016-07-01",
+    pack_effective_to: null,
   }]);
   mocks.rows.set("currencies", [{ code: "CAD", minor_units: 2 }, { code: "USD", minor_units: 2 }]);
+  mocks.rows.set("fxRates", [{
+    id: "10000000-0000-4000-8000-000000000019",
+    source_currency: "USD",
+    target_currency: "CAD",
+    rate: "1.375",
+    effective_at: "2026-08-26T16:00:00.000Z",
+    source: "Treasury policy",
+  }]);
   mocks.rows.set("documents", [{
     id: ids.document,
     source_type: "receivables.sales-invoice",
@@ -219,11 +238,130 @@ describe("AR/AP tenant workspace loader", () => {
       openAmount: "113.000000000",
       status: "OPEN",
     });
+    expect(workspace.fxRates).toEqual([{
+      id: "10000000-0000-4000-8000-000000000019",
+      sourceCurrency: "USD",
+      targetCurrency: "CAD",
+      rate: "1.375",
+      effectiveAt: "2026-08-26T16:00:00.000Z",
+      source: "Treasury policy",
+    }]);
+    const currencyQuery = mocks.client.query.mock.calls.find(([sql]) => (
+      sql.includes("FROM currency_definitions")
+    ));
+    expect(currencyQuery?.[0]).toContain("organization_currencies");
+    expect(currencyQuery?.[0]).toContain("functional_ledger.functional_currency");
+    expect(currencyQuery?.[1]).toEqual([principal.organizationId]);
   });
 
   it("filters the current register without hiding allocation candidates", async () => {
     const workspace = await loadSubledgerWorkspace(principal, "receivables", "does-not-match");
     expect(workspace.documents).toEqual([]);
     expect(workspace.openItems).toHaveLength(1);
+    const documentsQuery = mocks.client.query.mock.calls.find(([sql]) => (
+      sql.includes("FROM source_documents current")
+    ));
+    expect(documentsQuery?.[0]).toContain("LIMIT $13 OFFSET $14");
+    expect(documentsQuery?.[1]).toEqual(expect.arrayContaining([
+      principal.organizationId,
+      "receivables",
+      "does-not-match",
+    ]));
+  });
+
+  it("keeps unsupported countries intact and never applies Washington tax defaults to them", async () => {
+    mocks.rows.set("entities", [{
+      id: ids.entity,
+      code: "MX01",
+      display_name: "Northstar Mexico",
+      country_code: "MX",
+      region_code: "CMX",
+      ledger_id: ids.ledger,
+      functional_currency: "USD",
+    }]);
+    mocks.rows.set("tax", [{
+      legal_entity_id: ids.entity,
+      registration_id: ids.registration,
+      regime_key: "generic.unsupported",
+      destination_country: "MX",
+      destination_region: "CMX",
+      destination_city: null,
+      location_code: null,
+      registration_valid_to: null,
+      pack_effective_from: "2000-01-01",
+      pack_effective_to: null,
+    }]);
+
+    const workspace = await loadSubledgerWorkspace(principal, "receivables");
+    expect(workspace.entities[0]).toMatchObject({
+      countryCode: "MX",
+      regionCode: "CMX",
+      tax: {
+        packKey: "generic.unsupported",
+        destinationCountry: "MX",
+        destinationRegion: "CMX",
+        destinationCity: null,
+        locationCode: null,
+      },
+    });
+  });
+
+  it("uses stored Washington sourcing facts without inferring Seattle or location 1726", async () => {
+    mocks.rows.set("entities", [{
+      id: ids.entity,
+      code: "US01",
+      display_name: "Northstar USA",
+      country_code: "US",
+      region_code: "WA",
+      ledger_id: ids.ledger,
+      functional_currency: "USD",
+    }]);
+    mocks.rows.set("tax", [{
+      legal_entity_id: ids.entity,
+      registration_id: ids.registration,
+      regime_key: "us.wa.sales-use",
+      destination_country: "US",
+      destination_region: "WA",
+      destination_city: null,
+      location_code: null,
+      registration_valid_to: null,
+      pack_effective_from: "2026-07-01",
+      pack_effective_to: "2026-09-30",
+    }]);
+
+    const workspace = await loadSubledgerWorkspace(principal, "receivables");
+    expect(workspace.entities[0]?.tax).toEqual({
+      packKey: "us.wa.sales-use",
+      registrationReference: ids.registration,
+      destinationCountry: "US",
+      destinationRegion: "WA",
+      destinationCity: null,
+      locationCode: null,
+      effectiveFrom: "2026-07-01",
+      effectiveTo: "2026-09-30",
+    });
+  });
+
+  it("uses an unknown manual-review destination when no registration facts are stored", async () => {
+    mocks.rows.set("entities", [{
+      id: ids.entity,
+      code: "US01",
+      display_name: "Northstar USA",
+      country_code: "US",
+      region_code: "WA",
+      ledger_id: ids.ledger,
+      functional_currency: "USD",
+    }]);
+    mocks.rows.set("tax", []);
+
+    const workspace = await loadSubledgerWorkspace(principal, "receivables");
+    expect(workspace.entities[0]?.tax).toMatchObject({
+      packKey: "generic.unsupported",
+      registrationReference: null,
+      destinationCountry: "ZZ",
+      destinationRegion: "NA",
+      destinationCity: null,
+      locationCode: null,
+    });
   });
 });

@@ -32,7 +32,10 @@ import { ensureOperatorOrganizationKey } from "./organization-service";
 
 export { DEMO_ORGANIZATION_ID } from "@/modules/demo/constants";
 
-const DEMO_BASELINE_VERSION = 2;
+// Increment whenever the exact reconstructed sandbox fixture changes. Bootstrap
+// may refresh only unclaimed READY slots on an older version; assigned visitor
+// workspaces remain untouched until the ordinary nightly reset.
+const DEMO_BASELINE_VERSION = 4;
 const DEMO_CALENDAR = demoAccountingCalendar();
 const DEMO_FISCAL_YEAR = DEMO_CALENDAR.fiscalYear;
 const DEMO_CURRENT_PERIOD = DEMO_CALENDAR.periodNumber;
@@ -287,8 +290,8 @@ type SeededPartyData = Readonly<{
 type SeededJournalToPost = Readonly<{
   fixtureKey: string;
   journalId: string;
-  ownerModule: SubledgerOwnerModule;
-  journalTypeKey: "receivables.sales-invoice" | "payables.supplier-bill";
+  ownerModule: SubledgerOwnerModule | "ledger";
+  journalTypeKey: "receivables.sales-invoice" | "payables.supplier-bill" | "ledger.manual";
 }>;
 
 type SandboxSlot = Readonly<{
@@ -300,6 +303,7 @@ type SandboxSlot = Readonly<{
 type SandboxCandidate = Readonly<{
   slot: number;
   organization_id: string;
+  baseline_version: number;
 }>;
 
 function deterministicUuid(organizationId: string, scope: string): string {
@@ -702,6 +706,13 @@ async function seedEncryptedPartyData(
       const registrationValue = foundation.countryCode === "CA"
         ? "SYNTHETIC-DEMO-GST-HST-000001"
         : "SYNTHETIC-DEMO-WA-1726-000001";
+      const destinationCountry = foundation.countryCode;
+      const destinationRegion = foundation.regionCode;
+      const destinationCity = foundation.countryCode === "CA" ? "Toronto" : "Seattle";
+      const locationCode = foundation.countryCode === "CA" ? null : "1726";
+      const configurationEvidence = foundation.countryCode === "CA"
+        ? "Synthetic demo setup: explicit CA-ON place-of-supply facts"
+        : "Synthetic demo setup: explicit Washington DOR Seattle location 1726";
       const encryptedRegistration = encryptField(registrationValue, activeKey.dek, {
         organizationId: identity.organizationId,
         table: "entity_tax_registrations",
@@ -712,9 +723,16 @@ async function seedEncryptedPartyData(
       await client.query(
         `INSERT INTO entity_tax_registrations (
            id, organization_id, legal_entity_id, regime_key,
-           registration_ciphertext, key_version, valid_from, valid_to
-         ) VALUES ($1, $2, $3, $4, $5, $6, '2026-01-01', NULL)
+           destination_country, destination_region, destination_city, location_code,
+           configuration_evidence, registration_ciphertext, key_version,
+           valid_from, valid_to
+         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, '2026-01-01', NULL)
          ON CONFLICT (id) DO UPDATE SET
+           destination_country = EXCLUDED.destination_country,
+           destination_region = EXCLUDED.destination_region,
+           destination_city = EXCLUDED.destination_city,
+           location_code = EXCLUDED.location_code,
+           configuration_evidence = EXCLUDED.configuration_evidence,
            registration_ciphertext = EXCLUDED.registration_ciphertext,
            key_version = EXCLUDED.key_version,
            valid_from = EXCLUDED.valid_from,
@@ -724,6 +742,11 @@ async function seedEncryptedPartyData(
           identity.organizationId,
           selectedFoundation.legalEntityId,
           regimeKey,
+          destinationCountry,
+          destinationRegion,
+          destinationCity,
+          locationCode,
+          configurationEvidence,
           serializeEncryptedField(encryptedRegistration),
           String(activeKey.keyVersion),
         ],
@@ -1063,7 +1086,7 @@ async function seedDraftJournal(
     creditAccount: string;
     amount: string;
   }>,
-): Promise<void> {
+): Promise<string> {
   const setup = await client.query<{
     period_id: string;
     journal_type_id: string;
@@ -1150,6 +1173,304 @@ async function seedDraftJournal(
       creditCombinationId,
     ],
   );
+  return journalId;
+}
+
+function encryptDemoBankField(input: Readonly<{
+  plaintext: string;
+  organizationId: string;
+  table: string;
+  column: string;
+  recordId: string;
+  keyVersion: number;
+  dek: Buffer;
+}>): string {
+  return serializeEncryptedField(encryptField(input.plaintext, input.dek, {
+    organizationId: input.organizationId,
+    table: input.table,
+    column: input.column,
+    recordId: input.recordId,
+    keyVersion: input.keyVersion,
+  }));
+}
+
+async function seedDemoBankingData(
+  client: PoolClient,
+  identity: SeedIdentity,
+  foundations: ReadonlyMap<string, SeededFoundation>,
+): Promise<void> {
+  const ca = foundations.get("CA01");
+  const us = foundations.get("US01");
+  const usCashCombinationId = us?.combinationIds.get("1000");
+  if (!ca || !us || !usCashCombinationId) throw new Error("Demo banking foundation is incomplete");
+
+  await client.query("SELECT set_config('app.organization_id', $1, true)", [identity.organizationId]);
+  await client.query("SELECT set_config('app.actor_id', $1, true)", [identity.userId]);
+  await client.query("SELECT set_config('app.session_id', '', true)");
+  await client.query("SELECT set_config('app.session_mode', 'real', true)");
+  await client.query("SELECT set_config('app.request_id', $1, true)", [`demo-baseline-v${DEMO_BASELINE_VERSION}:banking`]);
+  await client.query("SELECT set_config('app.auth_method', 'DEMO_BASELINE', true)");
+  await client.query("SELECT set_config('app.source_surface', 'WORKER', true)");
+  await client.query("SELECT set_config('app.reason', 'Restore synthetic banking evidence', true)");
+
+  const key = await loadActiveOrganizationKey(client, identity.organizationId);
+  try {
+    const connectionId = fixtureId(identity, "bank-connection:synthetic-simplefin");
+    const credentialCiphertext = encryptDemoBankField({
+      plaintext: JSON.stringify({ synthetic: true, outboundProviderCallsAllowed: false }),
+      organizationId: identity.organizationId,
+      table: "bank_connections",
+      column: "credentials_ciphertext",
+      recordId: connectionId,
+      keyVersion: key.keyVersion,
+      dek: key.dek,
+    });
+    const connectionIdempotency = `demo-baseline-v${DEMO_BASELINE_VERSION}:${identity.organizationId}:bank-connection`;
+    const connectionCommandHash = createHash("sha256").update(connectionIdempotency).digest("hex");
+    await client.query(
+      `INSERT INTO bank_connections(
+         id, organization_id, provider, display_name, credentials_ciphertext,
+         credentials_key_version, status, idempotency_key, command_hash,
+         last_synced_at, created_by, created_at, updated_at
+      ) VALUES ($1,$2,'SIMPLEFIN','Synthetic nightly-reset feed',$3,$4,'DISABLED',$5,$6,$7,$8,$7,$7)`,
+      [connectionId, identity.organizationId, credentialCiphertext, key.keyVersion,
+        connectionIdempotency, connectionCommandHash,
+        BASELINE_TIMESTAMP, identity.userId],
+    );
+    await client.query(
+      `INSERT INTO bank_connection_credential_events(
+         id, organization_id, connection_id, credential_version, event_type,
+         credential_ciphertext_hash, credential_key_version, idempotency_key,
+         command_hash, created_by, created_at
+       ) VALUES ($1,$2,$3,1,'CREATED',$4,$5,$6,$7,$8,$9)`,
+      [fixtureId(identity, "bank-connection-credential-event:synthetic-simplefin"),
+        identity.organizationId, connectionId,
+        createHash("sha256").update(credentialCiphertext).digest("hex"), key.keyVersion,
+        connectionIdempotency, connectionCommandHash, identity.userId, BASELINE_TIMESTAMP],
+    );
+
+    const syncRunId = fixtureId(identity, "bank-sync:synthetic-baseline");
+    const transactionDate = DEMO_CALENDAR.accountingDate;
+    const earlierDate = demoDateOffset(transactionDate, -3);
+    await client.query(
+      `INSERT INTO bank_sync_runs(
+         id, organization_id, connection_id, status, requested_start_on,
+         requested_end_on, account_count, observation_count, version_count,
+         provider_warning_count, created_by, started_at, credential_version
+       ) VALUES ($1,$2,$3,'RUNNING',$4,$5,0,0,0,0,$6,$7,1)`,
+      [syncRunId, identity.organizationId, connectionId, earlierDate, transactionDate,
+        identity.userId, BASELINE_TIMESTAMP],
+    );
+
+    const accounts = [
+      {
+        key: "us-operating",
+        providerId: "demo-us-operating-001",
+        displayName: "USA Operating · 0042",
+        currency: "USD",
+        foundation: us,
+        mapped: true,
+        balance: "47600.000000000",
+        availableBalance: "47100.000000000",
+      },
+      {
+        key: "ca-reserve",
+        providerId: "demo-ca-reserve-009",
+        displayName: "Canada Reserve · 0917",
+        currency: "CAD",
+        foundation: ca,
+        mapped: false,
+        balance: "18750.000000000",
+        availableBalance: "18750.000000000",
+      },
+    ] as const;
+    const accountIds = new Map<string, string>();
+    for (const account of accounts) {
+      const accountId = fixtureId(identity, `bank-account:${account.key}`);
+      accountIds.set(account.key, accountId);
+      const providerHash = createBlindIndex(account.providerId, key.dek, identity.organizationId, "bank.provider-account-id.SIMPLEFIN");
+      const providerCiphertext = encryptDemoBankField({
+        plaintext: account.providerId, organizationId: identity.organizationId,
+        table: "bank_external_accounts", column: "provider_account_id_ciphertext",
+        recordId: accountId, keyVersion: key.keyVersion, dek: key.dek,
+      });
+      const displayCiphertext = encryptDemoBankField({
+        plaintext: account.displayName, organizationId: identity.organizationId,
+        table: "bank_external_accounts", column: "display_name_ciphertext",
+        recordId: accountId, keyVersion: key.keyVersion, dek: key.dek,
+      });
+      await client.query(
+        `INSERT INTO bank_external_accounts(
+           id, organization_id, connection_id, provider_account_id_hash,
+           provider_account_id_ciphertext, display_name_ciphertext, key_version,
+           currency_code, legal_entity_id, ledger_id, cash_account_combination_id,
+           active, last_reported_balance, last_balance_at, created_at, updated_at
+         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,true,$12,$13,$13,$13)`,
+        [accountId, identity.organizationId, connectionId, providerHash,
+          providerCiphertext, displayCiphertext, key.keyVersion, account.currency,
+          account.mapped ? account.foundation.legalEntityId : null,
+          account.mapped ? account.foundation.ledgerId : null,
+          account.mapped ? usCashCombinationId : null,
+          account.balance, BASELINE_TIMESTAMP],
+      );
+      await client.query(
+        `INSERT INTO bank_balance_anchors(
+           id, organization_id, external_account_id, sync_run_id, balance,
+           available_balance, currency_code, balance_at, observed_at
+         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$8)`,
+        [fixtureId(identity, `bank-balance:${account.key}`), identity.organizationId,
+          accountId, syncRunId, account.balance, account.availableBalance,
+          account.currency, BASELINE_TIMESTAMP],
+      );
+    }
+
+    const observations = [
+      {
+        key: "us-prepaid",
+        accountKey: "us-operating",
+        providerId: "demo-bank-txn-us-prepaid-001",
+        date: transactionDate,
+        amount: "-2400.000000000",
+        currency: "USD",
+        details: { payee: "Workspace Services", description: "Prepaid workspace expense", memo: "Matches the posted US prepaid cash line" },
+      },
+      {
+        key: "us-client-receipt",
+        accountKey: "us-operating",
+        providerId: "demo-bank-txn-us-receipt-002",
+        date: earlierDate,
+        amount: "975.000000000",
+        currency: "USD",
+        details: { payee: "Rainier Creative Studio", description: "Client receipt", memo: "Outside the seeded statement-day reconciliation" },
+      },
+      {
+        key: "ca-bank-fee",
+        accountKey: "ca-reserve",
+        providerId: "demo-bank-txn-ca-fee-003",
+        date: earlierDate,
+        amount: "-38.550000000",
+        currency: "CAD",
+        details: { payee: "Northstar Bank", description: "Monthly account fee", memo: "Unmapped account demonstration" },
+      },
+    ] as const;
+    const versionIds = new Map<string, string>();
+    for (const observation of observations) {
+      const accountId = accountIds.get(observation.accountKey);
+      if (!accountId) throw new Error("Demo bank observation account is missing");
+      const observationId = fixtureId(identity, `bank-observation:${observation.key}`);
+      const versionId = fixtureId(identity, `bank-observation-version:${observation.key}:1`);
+      versionIds.set(observation.key, versionId);
+      const providerHash = createBlindIndex(observation.providerId, key.dek, identity.organizationId, `bank.transaction-id.${accountId}`);
+      const providerCiphertext = encryptDemoBankField({
+        plaintext: observation.providerId, organizationId: identity.organizationId,
+        table: "bank_observations", column: "provider_transaction_id_ciphertext",
+        recordId: observationId, keyVersion: key.keyVersion, dek: key.dek,
+      });
+      await client.query(
+        `INSERT INTO bank_observations(
+           id, organization_id, external_account_id, provider_transaction_id_hash,
+           provider_transaction_id_ciphertext, key_version, first_seen_run_id, first_seen_at
+         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+        [observationId, identity.organizationId, accountId, providerHash,
+          providerCiphertext, key.keyVersion, syncRunId, BASELINE_TIMESTAMP],
+      );
+      const detailsText = JSON.stringify(observation.details);
+      const canonicalContent = JSON.stringify({
+        status: "POSTED", postedOn: observation.date, transactedAt: null,
+        amount: observation.amount, currencyCode: observation.currency,
+        details: observation.details,
+      });
+      const detailsCiphertext = encryptDemoBankField({
+        plaintext: detailsText, organizationId: identity.organizationId,
+        table: "bank_observation_versions", column: "details_ciphertext",
+        recordId: versionId, keyVersion: key.keyVersion, dek: key.dek,
+      });
+      await client.query(
+        `INSERT INTO bank_observation_versions(
+           id, organization_id, observation_id, sync_run_id, version_number,
+           content_hash, status, posted_on, amount, currency_code,
+           details_ciphertext, key_version, observed_at
+         ) VALUES ($1,$2,$3,$4,1,$5,'POSTED',$6,$7,$8,$9,$10,$11)`,
+        [versionId, identity.organizationId, observationId, syncRunId,
+          createBlindIndex(canonicalContent, key.dek, identity.organizationId, "bank.observation-content"),
+          observation.date, observation.amount, observation.currency,
+          detailsCiphertext, key.keyVersion, BASELINE_TIMESTAMP],
+      );
+    }
+
+    const reconciliationId = fixtureId(identity, "bank-reconciliation:us-prepaid-day");
+    const reconciliationIdempotency = `demo-baseline-v${DEMO_BASELINE_VERSION}:${identity.organizationId}:bank-reconciliation`;
+    await client.query(
+      `INSERT INTO bank_reconciliation_sessions(
+         id, organization_id, external_account_id, legal_entity_id, ledger_id,
+         cash_account_combination_id, statement_start_on, statement_end_on,
+         opening_balance, closing_balance, currency_code, status, version,
+         idempotency_key, command_hash, created_by, created_at
+       ) VALUES ($1,$2,$3,$4,$5,$6,$7,$7,'50000.000000000','47600.000000000',
+         'USD','DRAFT',1,$8,$9,$10,$11)`,
+      [reconciliationId, identity.organizationId, accountIds.get("us-operating"),
+        us.legalEntityId, us.ledgerId, usCashCombinationId, transactionDate,
+        reconciliationIdempotency, createHash("sha256").update(reconciliationIdempotency).digest("hex"),
+        identity.userId, BASELINE_TIMESTAMP],
+    );
+
+    const ruleId = fixtureId(identity, "bank-rule:fees:1");
+    const condition = JSON.stringify({ descriptionContains: "fee", direction: "OUTFLOW" });
+    const action = JSON.stringify({ kind: "MANUAL_REVIEW", memo: "Review bank fees and select an expense account" });
+    const ruleIdempotency = `demo-baseline-v${DEMO_BASELINE_VERSION}:${identity.organizationId}:bank-rule-fees`;
+    await client.query(
+      `INSERT INTO bank_rules(
+         id, organization_id, name, priority, state, condition_ciphertext,
+         action_ciphertext, key_version, version, supersedes_rule_id,
+         idempotency_key, command_hash, created_by, created_at
+       ) VALUES ($1,$2,'Review bank fees',10,'ACTIVE',$3,$4,$5,1,NULL,$6,$7,$8,$9)`,
+      [ruleId, identity.organizationId,
+        encryptDemoBankField({ plaintext: condition, organizationId: identity.organizationId,
+          table: "bank_rules", column: "condition_ciphertext", recordId: ruleId,
+          keyVersion: key.keyVersion, dek: key.dek }),
+        encryptDemoBankField({ plaintext: action, organizationId: identity.organizationId,
+          table: "bank_rules", column: "action_ciphertext", recordId: ruleId,
+          keyVersion: key.keyVersion, dek: key.dek }),
+        key.keyVersion, ruleIdempotency,
+        createHash("sha256").update(ruleIdempotency).digest("hex"), identity.userId,
+        BASELINE_TIMESTAMP],
+    );
+    const feeVersionId = versionIds.get("ca-bank-fee");
+    if (!feeVersionId) throw new Error("Demo bank fee observation version is missing");
+    await client.query(
+      `INSERT INTO bank_rule_runs(
+         id, organization_id, sync_run_id, observation_version_id, rule_id, matched, evaluated_at
+       ) VALUES ($1,$2,$3,$4,$5,true,$6)`,
+      [fixtureId(identity, "bank-rule-run:fees"), identity.organizationId,
+        syncRunId, feeVersionId, ruleId, BASELINE_TIMESTAMP],
+    );
+    const proposalId = fixtureId(identity, "bank-proposal:fees");
+    const proposalPayload = JSON.stringify({
+      action: JSON.parse(action),
+      source: { externalAccountId: accountIds.get("ca-reserve"), observationVersionId: feeVersionId },
+    });
+    await client.query(
+      `INSERT INTO bank_draft_proposals(
+         id, organization_id, observation_version_id, rule_id, kind,
+         payload_ciphertext, payload_hash, key_version, created_at
+       ) VALUES ($1,$2,$3,$4,'MANUAL_REVIEW',$5,$6,$7,$8)`,
+      [proposalId, identity.organizationId, feeVersionId, ruleId,
+        encryptDemoBankField({ plaintext: proposalPayload, organizationId: identity.organizationId,
+          table: "bank_draft_proposals", column: "payload_ciphertext", recordId: proposalId,
+          keyVersion: key.keyVersion, dek: key.dek }),
+        createBlindIndex(proposalPayload, key.dek, identity.organizationId, "bank.proposal-payload"),
+        key.keyVersion, BASELINE_TIMESTAMP],
+    );
+    await client.query(
+      `UPDATE bank_sync_runs SET
+         status = 'SUCCEEDED', account_count = 2, observation_count = 3,
+         version_count = 3, provider_warning_count = 0, completed_at = $3
+       WHERE organization_id = $1 AND id = $2 AND status = 'RUNNING'`,
+      [identity.organizationId, syncRunId, BASELINE_TIMESTAMP],
+    );
+  } finally {
+    key.dek.fill(0);
+  }
 }
 
 async function seedOrganizationBaseline(
@@ -1177,7 +1498,7 @@ async function seedOrganizationBaseline(
     creditAccount: "2300",
     amount: "1250.00",
   });
-  await seedDraftJournal(client, identity, {
+  const usPrepaidJournalId = await seedDraftJournal(client, identity, {
     fixtureKey: "us-prepaid-expense",
     publicId: "10000000-0000-4000-8000-000000000202",
     entityCode: "US01",
@@ -1187,6 +1508,15 @@ async function seedOrganizationBaseline(
     creditAccount: "1000",
     amount: "2400.00",
   });
+  // The fixed PUBLIC_DEMO organization is an operator-owned, draft-only
+  // template and is intentionally never handed to a visitor. Synthetic bank
+  // evidence belongs only in the isolated SANDBOX organizations that are
+  // purged and reconstructed by the nightly reset. Keeping the public template
+  // bank-free also makes ordinary additive bootstrap safe to repeat without
+  // weakening the append-only banking tables with conflict updates.
+  if (!identity.publicTemplate) {
+    await seedDemoBankingData(client, identity, foundations);
+  }
 
   const journalsToPost: SeededJournalToPost[] = [];
   if (!identity.publicTemplate) {
@@ -1195,6 +1525,12 @@ async function seedOrganizationBaseline(
         await seedIssuedDemoDocument(client, identity, foundations, partyData, fixture),
       );
     }
+    journalsToPost.push({
+      fixtureKey: "us-prepaid-expense",
+      journalId: usPrepaidJournalId,
+      ownerModule: "ledger",
+      journalTypeKey: "ledger.manual",
+    });
   }
   if (identity.publicTemplate && journalsToPost.length !== 0) {
     throw new Error("The fixed public demo template must remain draft-only");
@@ -1220,11 +1556,13 @@ async function listSandboxCandidates(
   mode: DemoSandboxResetMode,
 ): Promise<readonly SandboxCandidate[]> {
   const result = await client.query<SandboxCandidate>(
-    `SELECT slot.slot, slot.organization_id
+    `SELECT slot.slot, slot.organization_id, slot.baseline_version
      FROM demo_sandbox_slots slot
-     WHERE $1::boolean OR slot.state IN ('DIRTY', 'RESETTING')
+     WHERE $1::boolean
+       OR slot.state IN ('DIRTY', 'RESETTING')
+       OR (slot.state = 'READY' AND slot.baseline_version < $2)
      ORDER BY slot.slot`,
-    [mode === "nightly"],
+    [mode === "nightly", DEMO_BASELINE_VERSION],
   );
   return result.rows;
 }
@@ -1256,15 +1594,17 @@ async function claimSandboxForReset(
        FOR UPDATE`,
       [candidate.organization_id],
     );
-    const selected = await client.query<{ state: string }>(
-      `SELECT slot.state
+    const selected = await client.query<{ state: string; baseline_version: number }>(
+      `SELECT slot.state, slot.baseline_version
        FROM demo_sandbox_slots slot
        WHERE slot.slot = $1 AND slot.organization_id = $2
        FOR UPDATE OF slot`,
       [candidate.slot, candidate.organization_id],
     );
     const slot = selected.rows[0];
-    const eligible = mode === "nightly" || slot?.state === "DIRTY" || slot?.state === "RESETTING";
+    const eligible = mode === "nightly" || slot?.state === "DIRTY" || slot?.state === "RESETTING" || (
+      slot?.state === "READY" && slot.baseline_version < DEMO_BASELINE_VERSION
+    );
     if (!slot || !eligible) {
       await client.query("COMMIT");
       return null;
@@ -1399,7 +1739,18 @@ async function verifySandboxBaseline(client: PoolClient, organizationId: string)
        (SELECT count(*) FROM journal_entry_relations WHERE organization_id = $1)::text AS journal_relations,
        (SELECT count(*) FROM ledger_number_sequences WHERE organization_id = $1)::text AS number_sequences,
        (SELECT count(*) FROM audit_events WHERE organization_id = $1)::text AS audit_events,
-       (SELECT count(*) FROM outbox_events WHERE organization_id = $1)::text AS outbox_events`,
+       (SELECT count(*) FROM outbox_events WHERE organization_id = $1)::text AS outbox_events,
+       (SELECT count(*) FROM bank_connections WHERE organization_id = $1)::text AS bank_connections,
+       (SELECT count(*) FROM bank_connection_credential_events WHERE organization_id = $1)::text AS bank_credential_events,
+       (SELECT count(*) FROM bank_external_accounts WHERE organization_id = $1)::text AS bank_accounts,
+       (SELECT count(*) FROM bank_sync_runs WHERE organization_id = $1)::text AS bank_sync_runs,
+       (SELECT count(*) FROM bank_observations WHERE organization_id = $1)::text AS bank_observations,
+       (SELECT count(*) FROM bank_observation_versions WHERE organization_id = $1)::text AS bank_observation_versions,
+       (SELECT count(*) FROM bank_balance_anchors WHERE organization_id = $1)::text AS bank_balance_anchors,
+       (SELECT count(*) FROM bank_reconciliation_sessions WHERE organization_id = $1)::text AS bank_reconciliations,
+       (SELECT count(*) FROM bank_reconciliation_voids WHERE organization_id = $1)::text AS bank_reconciliation_voids,
+       (SELECT count(*) FROM bank_rules WHERE organization_id = $1)::text AS bank_rules,
+       (SELECT count(*) FROM bank_draft_proposals WHERE organization_id = $1)::text AS bank_proposals`,
     [organizationId],
   );
   const counts = result.rows[0];
@@ -1420,8 +1771,8 @@ async function verifySandboxBaseline(client: PoolClient, organizationId: string)
     registrations: "2",
     posting_policies: "2",
     journals: "6",
-    posted_journals: "4",
-    draft_journals: "2",
+    posted_journals: "5",
+    draft_journals: "1",
     lines: "16",
     source_documents: "8",
     draft_sources: "4",
@@ -1434,8 +1785,19 @@ async function verifySandboxBaseline(client: PoolClient, organizationId: string)
     allocations: "0",
     journal_relations: "0",
     number_sequences: "2",
-    audit_events: "4",
-    outbox_events: "4",
+    audit_events: "9",
+    outbox_events: "5",
+    bank_connections: "1",
+    bank_credential_events: "1",
+    bank_accounts: "2",
+    bank_sync_runs: "1",
+    bank_observations: "3",
+    bank_observation_versions: "3",
+    bank_balance_anchors: "2",
+    bank_reconciliations: "1",
+    bank_reconciliation_voids: "0",
+    bank_rules: "1",
+    bank_proposals: "1",
   };
   if (!counts || Object.entries(expected).some(([key, value]) => counts[key] !== value)) {
     throw new Error(`Demo sandbox baseline verification failed for ${organizationId}`);
@@ -1500,8 +1862,8 @@ async function verifySandboxBaseline(client: PoolClient, organizationId: string)
     posted_journal_errors: "0",
     open_balance_errors: "0",
     cross_currency_items: "2",
-    posting_audits: "4",
-    posting_outbox_events: "4",
+    posting_audits: "5",
+    posting_outbox_events: "5",
   };
   const integrityResult = integrity.rows[0];
   if (
@@ -1748,7 +2110,7 @@ async function resetClaimedSandbox(client: PoolClient, slot: SandboxSlot): Promi
     await purgeSandboxBusinessData(client, slot.organization_id);
     await client.query("SELECT app.reset_demo_sandbox_extensions($1, $2)", [slot.organization_id, slot.user_id]);
     journalsToPost = await seedOrganizationBaseline(client, identity);
-    if (journalsToPost.length !== DEMO_ISSUED_DOCUMENTS.length) {
+    if (journalsToPost.length !== DEMO_ISSUED_DOCUMENTS.length + 1) {
       throw new Error(`Demo sandbox slot ${slot.slot} did not seed every issued fixture`);
     }
     await client.query("COMMIT");
@@ -1895,6 +2257,7 @@ export async function bootstrapDemoOrganization(pool: Pool): Promise<void> {
       registrations: string;
       source_documents: string;
       posted_journals: string;
+      bank_connections: string;
     }>(
       `SELECT
          (SELECT count(*) FROM entity_tax_registrations
@@ -1902,15 +2265,18 @@ export async function bootstrapDemoOrganization(pool: Pool): Promise<void> {
          (SELECT count(*) FROM source_documents
             WHERE organization_id = $1)::text AS source_documents,
          (SELECT count(*) FROM journal_entries
-            WHERE organization_id = $1 AND status = 'POSTED')::text AS posted_journals`,
+            WHERE organization_id = $1 AND status = 'POSTED')::text AS posted_journals,
+         (SELECT count(*) FROM bank_connections
+            WHERE organization_id = $1)::text AS bank_connections`,
       [DEMO_ORGANIZATION_ID],
     );
     if (
       publicTemplateInvariant.rows[0]?.registrations !== "2" ||
       publicTemplateInvariant.rows[0]?.source_documents !== "0" ||
-      publicTemplateInvariant.rows[0]?.posted_journals !== "0"
+      publicTemplateInvariant.rows[0]?.posted_journals !== "0" ||
+      publicTemplateInvariant.rows[0]?.bank_connections !== "0"
     ) {
-      throw new Error("The fixed public demo template violated its draft-only baseline invariant");
+      throw new Error("The fixed public demo template violated its draft-only, bank-free baseline invariant");
     }
     await client.query("COMMIT");
   } catch (error) {
@@ -1920,7 +2286,8 @@ export async function bootstrapDemoOrganization(pool: Pool): Promise<void> {
     client.release();
   }
 
-  // Ordinary deploys prepare only additive DIRTY slots. Assigned browser
-  // claims and their data survive bootstrap, logout, and session expiry.
+  // Ordinary deploys prepare additive DIRTY slots and unclaimed READY slots
+  // whose baseline is obsolete. Assigned browser claims and their data survive
+  // bootstrap, logout, and session expiry until the nightly boundary.
   await resetDemoSandboxes(pool, { mode: "bootstrap" });
 }

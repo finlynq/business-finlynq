@@ -14,5 +14,8 @@ report through GitHub and coordinate remediation and disclosure there.
 ## Supported release
 
 Only the commit currently deployed at `https://business.finlynq.com` is
-supported. The hosted release is a synthetic, read-only preview; real account
-access and accounting writes are intentionally disabled.
+supported. The hosted release contains both disposable synthetic demo tenants
+and private real-account tenants. Report whether an issue affects the demo,
+real authentication, tenant isolation, accounting integrity, encryption,
+banking, backup/recovery, or the deployment boundary. Never use production
+customer data or credentials in a proof of concept.

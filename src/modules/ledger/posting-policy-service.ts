@@ -3,10 +3,14 @@ import "server-only";
 import { z } from "zod";
 import { withTenantTransaction, type TenantTransactionContext } from "@/db/transaction";
 import { assertActorHasActivePermission } from "@/modules/identity/authorization";
+import { OrganizationAdministrationError } from "@/modules/identity/organization-administration";
 import { PERMISSIONS } from "@/modules/identity/permissions";
+import { hasRecentStepUp, type SessionPrincipal } from "@/modules/identity/session";
 import {
   assertTenantWritesEnabled,
   assertWritableOrganization,
+  demoWritesEnabled,
+  mutationContext,
 } from "@/modules/workspace/write-policy";
 
 const commandSchema = z.object({
@@ -14,6 +18,13 @@ const commandSchema = z.object({
   manualMode: z.enum(["REVIEW_REQUIRED", "AUTO_POST"]),
   expectedVersion: z.number().int().min(0),
 });
+
+export const postingPolicyChangeSchema = z.object({
+  ledgerId: z.uuid(),
+  manualMode: z.enum(["REVIEW_REQUIRED", "AUTO_POST"]),
+  expectedVersion: z.number().int().min(0),
+  reason: z.string().trim().min(8).max(500),
+}).strict();
 
 export type SetLedgerPostingPolicyCommand = Readonly<{
   context: TenantTransactionContext;
@@ -85,6 +96,13 @@ export async function setLedgerPostingPolicy(
     if (existing.rows[0].version !== command.expectedVersion) {
       throw new Error("Posting policy changed after it was loaded; refresh before retrying");
     }
+    if (existing.rows[0].manual_mode === command.manualMode) {
+      return {
+        ledgerId: command.ledgerId,
+        manualMode: existing.rows[0].manual_mode,
+        version: existing.rows[0].version,
+      };
+    }
     const updated = await client.query<{
       manual_mode: "REVIEW_REQUIRED" | "AUTO_POST";
       version: number;
@@ -104,5 +122,35 @@ export async function setLedgerPostingPolicy(
     const policy = updated.rows[0];
     if (!policy) throw new Error("Concurrent posting-policy update detected");
     return { ledgerId: command.ledgerId, manualMode: policy.manual_mode, version: policy.version };
+  });
+}
+
+export async function changeLedgerPostingPolicy(input: Readonly<{
+  principal: SessionPrincipal;
+  requestId: string;
+}> & z.output<typeof postingPolicyChangeSchema>): Promise<LedgerPostingPolicyResult> {
+  if (input.principal.sessionMode === "demo") {
+    if (!demoWritesEnabled()) {
+      throw new OrganizationAdministrationError(
+        "Demo changes are not available on this deployment.",
+        403,
+        "DEMO_WRITES_DISABLED",
+      );
+    }
+  } else if (!hasRecentStepUp(input.principal)) {
+    throw new OrganizationAdministrationError(
+      "Verify your authenticator code before changing the ledger posting policy.",
+      428,
+      "MFA_STEP_UP_REQUIRED",
+    );
+  }
+  return setLedgerPostingPolicy({
+    context: mutationContext(input.principal, input.requestId, {
+      reason: input.reason,
+      sourceSurface: "API",
+    }),
+    ledgerId: input.ledgerId,
+    manualMode: input.manualMode,
+    expectedVersion: input.expectedVersion,
   });
 }

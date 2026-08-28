@@ -2,23 +2,23 @@
 
 Open-source, audit-first accounting for small businesses at `business.finlynq.com`.
 
-This repository is intentionally separate from personal Finlynq. It reuses proven architectural ideas—organization envelope encryption, explicit service boundaries, and extension seams for future banking and AI access—without sharing databases, keys, cookies, or mutable financial records.
+This repository is intentionally separate from personal Finlynq. It reuses proven architectural ideas—organization envelope encryption, explicit service boundaries, hardened SimpleFIN access, and extension seams for AI access—without sharing databases, keys, cookies, or mutable financial records.
 
-> Release status: the public site is an isolated, writable synthetic demo—not a production bookkeeping service or a complete ERP. The demo covers manual GL, service/non-stock receivables and payables, recorded settlements, transaction tax decisions, reporting, and period controls. Real-account activation, production tax filing, banking, inventory, live payment execution, and MCP access remain gated.
+> Release status: the hosted application provides self-service private organizations plus an isolated, writable synthetic demo. Its supported bookkeeping scope is general ledger, role-based posting, immutable corrections, period control, multi-company and multi-currency setup, unified parties, service/non-stock receivables and payables, transaction-tax decisions, bank-feed observations/reconciliation, and financial reporting. It is not a complete ERP or a tax filing/payment service; inventory, production returns/filing, live payment execution, and public MCP access remain gated.
 
 Public access exchanges `/try-demo` for a short-lived PostgreSQL session plus a separate host-only daily claim to one exclusive sandbox organization. Only digests are stored. Logout and session expiry preserve that browser's changed business; the Toronto nightly reset invalidates claims and restores the 128-slot pool. Demo writes remain limited to a live demo-link session in a `SANDBOX` organization. See [docs/roadmap.md](docs/roadmap.md).
 
-The hosted demo keeps `ACCOUNT_LOGIN_ENABLED=false`, `ACCOUNT_SIGNUP_ENABLED=false`, and `BUSINESS_WRITES_ENABLED=false`. Self-service real-account signup is implemented behind independent login, email-delivery, and bot-protection gates; it must not be enabled as an accidental side effect of demo writes.
+Real login, signup, business writes, demo writes, email delivery, bot protection, and bank feeds are independent deployment gates. The source defaults fail closed. The hosted release enables real-account onboarding only with the isolated email worker, verified sender, Turnstile, MFA enrollment, recovery, backup, and monitoring controls described in the operations runbooks.
 
 ## P0 interactive demo
 
-The public P0 release is a focused interactive product preview over synthetic data. Every visitor receives an independently encrypted sandbox seeded with two legal entities, complete GL/fiscal/tax configuration, and usable customer and supplier accounts. Changes persist inside that sandbox so reports and downstream workflows reflect them during the session.
+The public demo is a focused interactive product preview over synthetic data. Every visitor receives an independently encrypted sandbox seeded with two legal entities, complete GL/fiscal/tax configuration, usable customer and supplier accounts, and synthetic bank observations. Changes persist inside that sandbox so reports and downstream workflows reflect them until the nightly reset.
 
-Visitors can create and post balanced manual journals according to the seeded role and posting policy; create, issue, and void service/non-stock invoices and bills; record and reverse synthetic receipt/payment allocations; exercise transaction-tax decisions and snapshots; review reporting; and test period controls. Recorded receipts and supplier payments are accounting events only—no money moves and no bank is connected.
+Visitors can exercise the same bookkeeping settings and accounting workflows as a private owner: create and post balanced journals; create, issue, settle, and void service/non-stock invoices and bills; review tax evidence; configure companies, dimensions, currencies, and rates; reconcile synthetic bank activity; run financial statements and account inquiries; and test period controls. External bank credentials and outbound provider synchronization are disabled in the public sandbox. Recorded receipts and supplier payments are accounting events only—no money moves.
 
 Each session ends after 15 minutes idle or one hour total, but the browser claim survives logout and session expiry until 04:15 `America/Toronto`. Re-entry resumes the same sandbox. Nightly reconciliation invalidates claims, purges registered tenant rows child-first, restores the exact seed, increments every sandbox generation, and returns the full pool to service. Ordinary deployments prepare only additive dirty slots and never run this destructive reset.
 
-Do not enter real or confidential information. Inventory, bank feeds/reconciliation, live payments, tax returns or filing, identity/recovery administration, and MCP writes are not part of this demo.
+Do not enter real or confidential information in the demo. Inventory, live bank credentials, live payments, tax returns or filing, identity/recovery administration, and MCP writes are not part of the sandbox.
 
 The browser acceptance checklist and production launch gates are in [docs/operations/interactive-demo.md](docs/operations/interactive-demo.md). The deployment and rollback contract is in [docs/deployment/vps.md](docs/deployment/vps.md).
 
@@ -26,11 +26,12 @@ The browser acceptance checklist and production launch gates are in [docs/operat
 
 - One organization can contain multiple legal entities.
 - Each legal entity has one visible primary ledger in v0; the schema permits more later.
-- Canadian entities use ASPE and U.S. non-public entities use U.S. GAAP profiles.
+- A legal entity may use any supported ISO currency and two-letter country code; the current accounting-profile choices are Canadian ASPE and U.S. GAAP for non-public entities.
 - Posted journals are exact-decimal, balanced, immutable, and corrected by linked reversal/replacement.
 - Periods move through `OPEN`, `ADJUSTMENT_ONLY`, `HARD_CLOSED`, and `SEALED`.
 - Party, customer, and supplier numbers never occupy chart-of-account segments.
 - The canonical account key has 13 typed fields: Entity, Account, Subaccount, Department, Intercompany, and Custom 1–8.
+- Tax automation is opt-in through explicit registration, jurisdiction, location, validity, and evidence facts. Ontario HST and the reviewed Washington location pack are bundled; everything else fails to manual review rather than silent zero tax.
 - Inventory is deferred; current invoice and bill lines are service/non-stock only.
 - A future MCP surface starts with organization-bound reads and explicit draft proposals through the same authorization, RLS, and audit path as the UI; no public MCP endpoint is active today.
 
@@ -53,7 +54,7 @@ npm run check
 npm run build
 ```
 
-Database migrations are the source of truth. Drizzle declarations provide type-safe access but do not replace migration replay in CI or production.
+Database migrations are the source of truth. Drizzle declarations provide type-safe access but do not replace migration replay in CI or production. Migrations after the last generated Drizzle snapshot are intentionally hand-authored and security-reviewed; `npm run db:generate` therefore fails closed so a stale snapshot cannot generate duplicate or destructive DDL. Add forward SQL and the matching monotonic journal entry explicitly until the project adopts and verifies a complete snapshot-regeneration procedure.
 
 ## Modules
 
@@ -63,12 +64,13 @@ kernel
 ├── ledger → periods + COA + posting + corrections
 ├── parties → customer/supplier roles + encrypted addresses
 ├── tax → shared decision contract + jurisdiction packs
-└── subledger → AR/AP open items → ledger + parties
+├── subledger → AR/AP open items → ledger + parties
+└── banking → encrypted SimpleFIN observations + reconciliation + draft proposals
 
 UI / HTTP API / future MCP → application services → one posting service → PostgreSQL
 ```
 
-Manufacturing, inventory, insurance, projects, payroll, banking, and other domains use versioned module manifests assembled at the application composition root. No module can bypass ledger invariants or edit another module's posted entries.
+Manufacturing, inventory, insurance, projects, payroll, and other future domains use versioned module manifests assembled at the application composition root. No module—including banking—can bypass ledger invariants or edit another module's posted entries.
 
 ## Security boundary
 

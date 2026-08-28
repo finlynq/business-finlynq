@@ -12,7 +12,7 @@ export type TaxFacts = Readonly<{
   taxPointDate: string;
   currency: string;
   taxableBasis: string;
-  destinationCountry: "CA" | "US";
+  destinationCountry: string;
   destinationRegion: string;
   destinationCity?: string;
   locationCode?: string;

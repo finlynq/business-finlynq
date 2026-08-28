@@ -17,9 +17,9 @@ export type BeginOrganizationSignup = Readonly<{
   organizationName: string;
   entityCode: string;
   entityName: string;
-  countryCode: "CA" | "US";
+  countryCode: string;
   regionCode: string;
-  functionalCurrency: "CAD" | "USD";
+  functionalCurrency: string;
   accountingProfile: SignupAccountingProfile;
   fiscalYear: number;
   manualPostingMode: SignupPostingMode;

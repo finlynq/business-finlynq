@@ -1,0 +1,131 @@
+.filterPanel {
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  background: #fff;
+  box-shadow: var(--shadow);
+}
+
+.filterHeading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 15px 18px;
+  border-bottom: 1px solid var(--line);
+}
+
+.filterHeading h2 {
+  margin: 0;
+  font-family: Georgia, serif;
+  font-size: 21px;
+}
+
+.resultCount {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 750;
+}
+
+.filters {
+  display: grid;
+  grid-template-columns: minmax(220px, 1.6fr) repeat(3, minmax(130px, .7fr));
+  gap: 11px;
+  padding: 16px 18px 8px;
+}
+
+.dateFilters {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(150px, 1fr)) auto auto;
+  align-items: end;
+  gap: 11px;
+  padding: 0 18px 17px;
+}
+
+.filters label span,
+.dateFilters label span {
+  display: block;
+  margin-bottom: 6px;
+}
+
+.registerPanel {
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  background: #fff;
+  box-shadow: var(--shadow);
+}
+
+.registerPanel table {
+  min-width: 1180px;
+}
+
+.numberCell {
+  min-width: 170px;
+}
+
+.numberCell strong {
+  font-family: ui-monospace, monospace;
+}
+
+.partyCell {
+  min-width: 190px;
+}
+
+.dateCell,
+.statusCell,
+.journalCell {
+  min-width: 125px;
+}
+
+.amountCell {
+  min-width: 145px;
+  font-family: ui-monospace, monospace;
+  font-size: 12px;
+  font-weight: 800;
+  text-align: right;
+  white-space: nowrap;
+}
+
+.actionsCell {
+  min-width: 220px;
+}
+
+.rowActions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 7px;
+}
+
+.emptyFilter {
+  padding: 32px 18px;
+}
+
+@media (max-width: 1220px) {
+  .filters {
+    grid-template-columns: repeat(2, minmax(180px, 1fr));
+  }
+}
+
+@media (max-width: 860px) {
+  .dateFilters {
+    grid-template-columns: repeat(2, minmax(150px, 1fr));
+  }
+}
+
+@media (max-width: 580px) {
+  .filterHeading {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .filters,
+  .dateFilters {
+    grid-template-columns: 1fr;
+  }
+
+  .dateFilters button {
+    width: 100%;
+  }
+}

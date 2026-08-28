@@ -4,7 +4,7 @@ The public demo is a bounded, writable accounting sandbox over synthetic data. E
 
 ## Production release boundary
 
-The hosted demo uses this exact five-gate boundary:
+Demo access, private accounts, and external bank feeds use six independent application gates. A sandbox-only deployment uses:
 
 ```dotenv
 DEMO_LOGIN_ENABLED=true
@@ -12,9 +12,10 @@ DEMO_WRITES_ENABLED=true
 ACCOUNT_LOGIN_ENABLED=false
 ACCOUNT_SIGNUP_ENABLED=false
 BUSINESS_WRITES_ENABLED=false
+BANK_FEEDS_ENABLED=false
 ```
 
-`DEMO_WRITES_ENABLED` authorizes mutations only for a live `demo-link` session whose claimed organization is registered as a synthetic `SANDBOX`. `ACCOUNT_SIGNUP_ENABLED` independently controls owner acquisition, and `BUSINESS_WRITES_ENABLED` independently controls real organizations. Real-account activation is a separate release gate.
+`DEMO_WRITES_ENABLED` authorizes mutations only for a live `demo-link` session whose claimed organization is registered as a synthetic `SANDBOX`. `ACCOUNT_SIGNUP_ENABLED` independently controls owner acquisition, `BUSINESS_WRITES_ENABLED` controls real organizations, and `BANK_FEEDS_ENABLED` controls external-provider credentials and synchronization only. The combined hosted service may enable the private-account gates after their separate acceptance without broadening demo authority; synthetic demo banking remains available while the external bank gate is false.
 
 ## Isolation and lifecycle contract
 
@@ -39,10 +40,11 @@ The release may persist the following synthetic actions inside the leased sandbo
 - customer and supplier account use, service/non-stock invoice and bill drafts, issue/post, and void;
 - recorded customer receipts and supplier payments, exact open-item allocations, settlement reversal, and realized-FX accounting;
 - transaction-tax decisions and immutable tax snapshots using the bundled Ontario and Washington reference packs;
+- seeded synthetic bank observations, cash-account mapping, review-only categorization proposals, and guarded reconciliation without accepting external credentials;
 - trial-balance/reporting views and exports that reflect the visitor's saved sandbox activity;
 - permitted period transitions and locked-period rejection.
 
-Recorded receipts and supplier payments are accounting records only. The demo has no inventory, bank feed or bank connection, live payment execution, tax return or filing service, identity/recovery administration, or public MCP endpoint. Do not imply those capabilities in UI copy or acceptance evidence.
+Recorded receipts and supplier payments are accounting records only. The demo never connects to a live bank or accepts provider credentials. It has no inventory, live payment execution, tax return or filing service, identity/recovery administration, or public MCP endpoint. Do not imply those capabilities in UI copy or acceptance evidence.
 
 ## Browser acceptance checklist
 
@@ -55,6 +57,7 @@ Recorded receipts and supplier payments are accounting records only. The demo ha
 - AR/AP forms enforce party role, entity/ledger, dates, currency/FX facts, tax evidence, source ownership, and version checks. Issuing produces the expected source-owned journal and open item.
 - Receipt/payment allocations cannot exceed or cross the selected party, source type, ledger, or currency. Voiding reverses allocations and accounting lineage instead of deleting history.
 - Tax-review outcomes and snapshots remain traceable to their pack/version and evidence. The UI does not claim to file a return or fetch a live official rate.
+- Synthetic bank observations can be mapped and reconciled without leaving the sandbox; rules create reviewable proposals only, and neither rules nor observations can post or erase accounting records directly.
 - Trial-balance pages and CSV exports are non-empty, correctly labeled, keep unlike currencies separate, and reflect the current sandbox's posted activity.
 - Period controls reject ordinary posting in restricted periods and preserve the audit path for permitted transitions and corrections.
 - Keyboard order, visible focus, dialog focus containment, labels, status announcements, mobile layout, and zoom remain usable across writable forms and confirmation states.

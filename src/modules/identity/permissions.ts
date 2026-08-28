@@ -31,6 +31,12 @@ export const PERMISSIONS = {
   settlePayables: "payables.settle",
   voidPayables: "payables.void",
   readTax: "tax.read",
+  readBanking: "banking.read",
+  manageBankConnections: "banking.connections.manage",
+  syncBanking: "banking.sync",
+  prepareBankReconciliation: "banking.reconcile.prepare",
+  reviewBankReconciliation: "banking.reconcile.review",
+  manageBankRules: "banking.rules.manage",
 } as const;
 
 export type Permission = (typeof PERMISSIONS)[keyof typeof PERMISSIONS];
@@ -43,6 +49,8 @@ export const ROLE_TEMPLATES: Readonly<Record<string, readonly Permission[]>> = {
     PERMISSIONS.readOrganizationMembers,
     PERMISSIONS.manageOrganizationMembers,
     PERMISSIONS.manageRoles,
+    PERMISSIONS.readBanking,
+    PERMISSIONS.manageBankConnections,
   ],
   ACCOUNTANT_APPROVER: [
     PERMISSIONS.readOrganizationSettings,
@@ -69,6 +77,10 @@ export const ROLE_TEMPLATES: Readonly<Record<string, readonly Permission[]>> = {
     PERMISSIONS.settlePayables,
     PERMISSIONS.voidPayables,
     PERMISSIONS.readTax,
+    PERMISSIONS.readBanking,
+    PERMISSIONS.syncBanking,
+    PERMISSIONS.reviewBankReconciliation,
+    PERMISSIONS.manageBankRules,
   ],
   BOOKKEEPER_MAKER: [
     PERMISSIONS.readOrganizationSettings,
@@ -82,6 +94,9 @@ export const ROLE_TEMPLATES: Readonly<Record<string, readonly Permission[]>> = {
     PERMISSIONS.readPayables,
     PERMISSIONS.managePayables,
     PERMISSIONS.readTax,
+    PERMISSIONS.readBanking,
+    PERMISSIONS.syncBanking,
+    PERMISSIONS.prepareBankReconciliation,
   ],
   VIEWER_AUDITOR: [
     PERMISSIONS.readOrganizationSettings,
@@ -90,6 +105,7 @@ export const ROLE_TEMPLATES: Readonly<Record<string, readonly Permission[]>> = {
     PERMISSIONS.readReceivables,
     PERMISSIONS.readPayables,
     PERMISSIONS.readTax,
+    PERMISSIONS.readBanking,
   ],
   INTEGRATION_MCP: [
     PERMISSIONS.readOrganizationSettings,

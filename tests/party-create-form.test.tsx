@@ -27,7 +27,8 @@ describe("party creation form", () => {
     expect(markup).toContain("CA01 · Customer · 1100 Accounts receivable");
     expect(markup).toContain("AR/AP account number");
     expect(markup).toContain("Currency restriction (optional)");
-    expect(markup).toContain("Create encrypted party and account");
+    expect(markup).toContain("Create party and first role");
+    expect(markup).toContain("Do not recreate this party for another company");
   });
 
   it("fails closed when no active control-account combination is available", () => {

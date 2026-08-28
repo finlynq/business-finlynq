@@ -63,7 +63,7 @@ END
 $owner_check$;
 
 SELECT format(
-  'CREATE ROLE business_finlynq_app LOGIN PASSWORD %L NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOBYPASSRLS CONNECTION LIMIT 20',
+  'CREATE ROLE business_finlynq_app LOGIN PASSWORD %L NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS CONNECTION LIMIT 20',
   :'app_password'
 )
 WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'business_finlynq_app')
@@ -71,11 +71,32 @@ WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'business_finlynq_app')
 
 ALTER ROLE business_finlynq_app
   LOGIN PASSWORD :'app_password'
-  NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOBYPASSRLS
+  NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS
   CONNECTION LIMIT 20;
 
+-- NOINHERIT alone is insufficient: a login may SET ROLE to any role it is a
+-- member of. Remove both directions so a legacy restore cannot retain an
+-- unreviewed privilege path into or out of the web runtime identity.
+SELECT format('REVOKE %I FROM business_finlynq_app', granted_role.rolname)
+FROM pg_auth_members membership
+JOIN pg_roles granted_role ON granted_role.oid = membership.roleid
+JOIN pg_roles member_role ON member_role.oid = membership.member
+WHERE member_role.rolname = 'business_finlynq_app'
+\gexec
+
+SELECT format('REVOKE business_finlynq_app FROM %I', member_role.rolname)
+FROM pg_auth_members membership
+JOIN pg_roles granted_role ON granted_role.oid = membership.roleid
+JOIN pg_roles member_role ON member_role.oid = membership.member
+WHERE granted_role.rolname = 'business_finlynq_app'
+\gexec
+
 REVOKE ALL ON DATABASE :"db_name" FROM PUBLIC;
-REVOKE CREATE ON SCHEMA public FROM PUBLIC;
+REVOKE ALL PRIVILEGES ON DATABASE :"db_name" FROM business_finlynq_app;
+-- PostgreSQL grants PUBLIC schema USAGE by default. Remove the shared grant so
+-- every service identity receives only its reviewed schema access explicitly.
+REVOKE ALL PRIVILEGES ON SCHEMA public FROM PUBLIC;
+REVOKE ALL PRIVILEGES ON SCHEMA public FROM business_finlynq_app;
 GRANT CONNECT ON DATABASE :"db_name" TO business_finlynq_app;
 GRANT USAGE ON SCHEMA public TO business_finlynq_app;
 
@@ -101,6 +122,7 @@ DECLARE
 BEGIN
   IF EXISTS (SELECT 1 FROM pg_namespace WHERE nspname = 'app') THEN
     REVOKE ALL ON SCHEMA app FROM PUBLIC;
+    REVOKE ALL PRIVILEGES ON SCHEMA app FROM business_finlynq_app;
     GRANT USAGE ON SCHEMA app TO business_finlynq_app;
     REVOKE EXECUTE ON ALL FUNCTIONS IN SCHEMA app FROM PUBLIC;
     REVOKE ALL PRIVILEGES ON ALL FUNCTIONS IN SCHEMA app FROM business_finlynq_app;
@@ -120,7 +142,8 @@ BEGIN
     'organizations', 'organization_memberships', 'roles',
     'membership_roles', 'role_permissions', 'permissions',
     'organization_key_versions', 'legal_entities', 'ledgers',
-    'currency_definitions',
+    'currency_definitions', 'organization_currencies',
+    'currency_exchange_rates',
     'fiscal_periods', 'period_events', 'ledger_number_sequences',
     'ledger_posting_policies', 'gl_accounts', 'segment_definitions',
     'segment_values', 'account_combinations', 'journal_type_definitions',
@@ -130,7 +153,12 @@ BEGIN
     'document_settlement_allocations', 'open_item_void_events',
     'open_item_balances',
     'tax_pack_versions', 'entity_tax_registrations',
-    'tax_determination_snapshots'
+    'tax_determination_snapshots',
+    'bank_connections', 'bank_connection_credential_events', 'bank_external_accounts', 'bank_sync_runs',
+    'bank_observations', 'bank_observation_versions', 'bank_balance_anchors',
+    'bank_reconciliation_sessions', 'bank_reconciliation_voids', 'bank_match_allocations',
+    'bank_match_allocation_voids', 'bank_rules', 'bank_rule_runs',
+    'bank_draft_proposals'
   ] LOOP
     IF to_regclass(format('public.%I', selected_name)) IS NOT NULL THEN
       EXECUTE format('GRANT SELECT ON TABLE public.%I TO business_finlynq_app', selected_name);
@@ -142,7 +170,9 @@ BEGIN
   FOREACH selected_name IN ARRAY ARRAY[
     'journal_entries', 'journal_lines', 'parties', 'party_addresses',
     'party_accounts',
-    'ledger_posting_policies', 'ledger_number_sequences'
+    'ledger_posting_policies', 'ledger_number_sequences',
+    'bank_connections', 'bank_external_accounts', 'bank_sync_runs',
+    'bank_reconciliation_sessions'
   ] LOOP
     IF to_regclass(format('public.%I', selected_name)) IS NOT NULL THEN
       EXECUTE format('GRANT INSERT, UPDATE ON TABLE public.%I TO business_finlynq_app', selected_name);
@@ -153,7 +183,11 @@ BEGIN
     'journal_approvals', 'journal_entry_relations', 'source_documents',
     'subledger_events', 'open_items', 'document_settlement_allocations',
     'open_item_void_events',
-    'tax_determination_snapshots'
+    'tax_determination_snapshots',
+    'bank_connection_credential_events',
+    'bank_observations', 'bank_observation_versions', 'bank_balance_anchors',
+    'bank_reconciliation_voids', 'bank_match_allocations', 'bank_match_allocation_voids', 'bank_rules',
+    'bank_rule_runs', 'bank_draft_proposals'
   ] LOOP
     IF to_regclass(format('public.%I', selected_name)) IS NOT NULL THEN
       EXECUTE format('GRANT INSERT ON TABLE public.%I TO business_finlynq_app', selected_name);
@@ -177,6 +211,13 @@ BEGIN
     'app.allocate_journal_number(uuid,uuid,text)',
     'app.compute_journal_content_hash(uuid)',
     'app.install_initial_organization_key(text,text)',
+    'app.accounting_set_currency_enabled(text,boolean)',
+    'app.accounting_add_currency_rate(text,text,numeric,timestamp with time zone,text)',
+    'app.accounting_add_tax_registration(uuid,uuid,text,text,integer,text,text,text,text,text,date,date)',
+    'app.accounting_configure_segment(text,text,boolean,boolean,text)',
+    'app.accounting_add_segment_value(text,text,text,date,date)',
+    'app.accounting_create_account_combination(uuid,uuid,uuid,uuid,uuid,uuid,uuid,uuid,uuid,uuid,uuid,uuid,uuid,uuid,uuid)',
+    'app.accounting_create_legal_entity(text,text,text,text,text,accounting_profile,integer,manual_posting_mode)',
     'app.auth_consume_rate_limit(text,text,integer,integer)',
     'app.auth_lookup_login(text)',
     'app.auth_lookup_login_v2(text)',
@@ -228,4 +269,46 @@ BEGIN
   END LOOP;
 END
 $reconcile$;
+
+DO $role_contract$
+DECLARE
+  selected_role oid;
+BEGIN
+  SELECT oid INTO selected_role
+  FROM pg_roles
+  WHERE rolname = 'business_finlynq_app'
+    AND rolcanlogin
+    AND NOT rolbypassrls
+    AND NOT rolsuper
+    AND NOT rolcreatedb
+    AND NOT rolcreaterole
+    AND NOT rolreplication
+    AND NOT rolinherit
+    AND rolconnlimit = 20;
+  IF selected_role IS NULL THEN
+    RAISE EXCEPTION 'runtime role attributes are unsafe';
+  END IF;
+  IF EXISTS (
+    SELECT 1 FROM pg_auth_members
+    WHERE member = selected_role OR roleid = selected_role
+  ) THEN
+    RAISE EXCEPTION 'runtime role must have no inbound or outbound role memberships';
+  END IF;
+  IF NOT has_database_privilege('business_finlynq_app', current_database(), 'CONNECT')
+    OR has_database_privilege('business_finlynq_app', current_database(), 'CREATE')
+    OR has_database_privilege('business_finlynq_app', current_database(), 'TEMPORARY') THEN
+    RAISE EXCEPTION 'runtime database privileges are unsafe';
+  END IF;
+  IF NOT has_schema_privilege('business_finlynq_app', 'public', 'USAGE')
+    OR has_schema_privilege('business_finlynq_app', 'public', 'CREATE') THEN
+    RAISE EXCEPTION 'runtime public-schema privileges are unsafe';
+  END IF;
+  IF to_regnamespace('app') IS NOT NULL AND (
+    NOT has_schema_privilege('business_finlynq_app', 'app', 'USAGE')
+    OR has_schema_privilege('business_finlynq_app', 'app', 'CREATE')
+  ) THEN
+    RAISE EXCEPTION 'runtime app-schema privileges are unsafe';
+  END IF;
+END
+$role_contract$;
 SQL

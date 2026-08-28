@@ -1,0 +1,24 @@
+.pagination {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  padding: 14px 18px;
+  border-top: 1px solid var(--line);
+}
+
+.pagination span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 750;
+}
+
+.disabled {
+  opacity: .55;
+}
+
+@media (max-width: 580px) {
+  .pagination {
+    justify-content: space-between;
+  }
+}

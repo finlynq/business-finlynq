@@ -72,11 +72,37 @@ SELECT format('ALTER ROLE business_finlynq_auth_worker PASSWORD %L', :'worker_pa
 
 ALTER ROLE business_finlynq_auth_worker
   NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS CONNECTION LIMIT 4;
+
+-- Scrub both membership directions after a restore. NOINHERIT does not stop
+-- this login from explicitly using SET ROLE for a role granted to it.
+SELECT format('REVOKE %I FROM business_finlynq_auth_worker', granted_role.rolname)
+FROM pg_auth_members membership
+JOIN pg_roles granted_role ON granted_role.oid = membership.roleid
+JOIN pg_roles member_role ON member_role.oid = membership.member
+WHERE member_role.rolname = 'business_finlynq_auth_worker'
+\gexec
+
+SELECT format('REVOKE business_finlynq_auth_worker FROM %I', member_role.rolname)
+FROM pg_auth_members membership
+JOIN pg_roles granted_role ON granted_role.oid = membership.roleid
+JOIN pg_roles member_role ON member_role.oid = membership.member
+WHERE granted_role.rolname = 'business_finlynq_auth_worker'
+\gexec
+
 ALTER ROLE business_finlynq_auth_worker SET statement_timeout = '20s';
 ALTER ROLE business_finlynq_auth_worker SET lock_timeout = '5s';
 ALTER ROLE business_finlynq_auth_worker SET idle_in_transaction_session_timeout = '30s';
 ALTER ROLE business_finlynq_auth_worker SET search_path = app, pg_catalog;
 
+-- Reconcile effective database/schema access too, not only grants recorded
+-- directly against the worker. A restored PUBLIC grant would otherwise keep
+-- CREATE, TEMPORARY, or public-schema access reachable through every login.
+SELECT format('REVOKE ALL PRIVILEGES ON DATABASE %I FROM PUBLIC', :'database_name')
+\gexec
+SELECT format('REVOKE ALL PRIVILEGES ON DATABASE %I FROM business_finlynq_auth_worker', :'database_name')
+\gexec
+REVOKE ALL PRIVILEGES ON SCHEMA public FROM PUBLIC;
+REVOKE ALL PRIVILEGES ON SCHEMA public FROM business_finlynq_auth_worker;
 SELECT format('GRANT CONNECT ON DATABASE %I TO business_finlynq_auth_worker', :'database_name')
 \gexec
 
@@ -89,6 +115,7 @@ DECLARE
 BEGIN
   IF to_regnamespace('app') IS NULL THEN RETURN; END IF;
 
+  REVOKE ALL PRIVILEGES ON SCHEMA app FROM business_finlynq_auth_worker;
   REVOKE EXECUTE ON ALL FUNCTIONS IN SCHEMA app FROM business_finlynq_auth_worker;
   GRANT USAGE ON SCHEMA app TO business_finlynq_auth_worker;
 
@@ -109,20 +136,43 @@ END
 $$;
 
 DO $$
+DECLARE
+  selected_role oid;
 BEGIN
-  IF NOT EXISTS (
-    SELECT 1
-    FROM pg_roles
-    WHERE rolname = 'business_finlynq_auth_worker'
-      AND rolcanlogin
-      AND NOT rolbypassrls
-      AND NOT rolsuper
-      AND NOT rolcreatedb
-      AND NOT rolcreaterole
-      AND NOT rolreplication
-      AND rolconnlimit = 4
-  ) THEN
+  SELECT oid INTO selected_role
+  FROM pg_roles
+  WHERE rolname = 'business_finlynq_auth_worker'
+    AND rolcanlogin
+    AND NOT rolbypassrls
+    AND NOT rolsuper
+    AND NOT rolcreatedb
+    AND NOT rolcreaterole
+    AND NOT rolreplication
+    AND NOT rolinherit
+    AND rolconnlimit = 4;
+  IF selected_role IS NULL THEN
     RAISE EXCEPTION 'authentication worker role attributes are unsafe';
+  END IF;
+  IF EXISTS (
+    SELECT 1 FROM pg_auth_members
+    WHERE member = selected_role OR roleid = selected_role
+  ) THEN
+    RAISE EXCEPTION 'authentication worker role must have no inbound or outbound role memberships';
+  END IF;
+  IF NOT has_database_privilege('business_finlynq_auth_worker', current_database(), 'CONNECT')
+    OR has_database_privilege('business_finlynq_auth_worker', current_database(), 'CREATE')
+    OR has_database_privilege('business_finlynq_auth_worker', current_database(), 'TEMPORARY') THEN
+    RAISE EXCEPTION 'authentication worker database privileges are unsafe';
+  END IF;
+  IF has_schema_privilege('business_finlynq_auth_worker', 'public', 'USAGE')
+    OR has_schema_privilege('business_finlynq_auth_worker', 'public', 'CREATE') THEN
+    RAISE EXCEPTION 'authentication worker public-schema privileges are unsafe';
+  END IF;
+  IF to_regnamespace('app') IS NOT NULL AND (
+    NOT has_schema_privilege('business_finlynq_auth_worker', 'app', 'USAGE')
+    OR has_schema_privilege('business_finlynq_auth_worker', 'app', 'CREATE')
+  ) THEN
+    RAISE EXCEPTION 'authentication worker app-schema privileges are unsafe';
   END IF;
 END
 $$;

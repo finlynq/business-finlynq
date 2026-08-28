@@ -1,0 +1,29 @@
+.tabs { display:flex; flex-wrap:wrap; gap:8px; }
+.tabs a { min-height:42px; display:inline-flex; align-items:center; padding:8px 14px; border:1px solid var(--line); border-radius:8px; color:var(--muted); background:#fff; font-weight:750; }
+.tabs a[data-active="true"] { color:#fff; border-color:var(--accent); background:var(--accent); }
+.stack { display:grid; gap:14px; }
+.form { display:grid; gap:15px; padding:20px; }
+.grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:13px; }
+.gridThree { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:13px; }
+.full { grid-column:1/-1; }
+.actions { display:flex; flex-wrap:wrap; align-items:center; gap:10px; }
+.feedback { margin:0; padding:10px 12px; border-radius:7px; color:#19564f; background:#e9f5f2; }
+.error { color:#8a2f28; background:#fceeed; }
+.secretNote { color:var(--muted); font-size:12px; line-height:1.55; }
+.rowAction { display:flex; flex-wrap:wrap; gap:8px; align-items:center; }
+.rowAction select { min-width:250px; }
+.statusLine { display:flex; flex-wrap:wrap; gap:8px; align-items:center; }
+.amount { text-align:right; font-variant-numeric:tabular-nums; white-space:nowrap; }
+.empty { color:var(--muted); }
+.callout { padding:16px 18px; border:1px solid #d6e2e6; border-radius:9px; color:var(--muted); background:#f8fbfb; line-height:1.55; }
+.callout strong { color:var(--ink); }
+.compact { width:auto; min-width:120px; }
+.proofGrid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:1px; border:1px solid var(--line); border-radius:9px; overflow:hidden; background:var(--line); }
+.proofGrid > div { display:grid; gap:4px; padding:14px; background:#fff; }
+.proofGrid span { color:var(--muted); font-size:11px; font-weight:750; text-transform:uppercase; letter-spacing:.05em; }
+.proofGrid strong { font-variant-numeric:tabular-nums; }
+.selectedRow { background:#f0f8f6; }
+.inlineForm { display:flex; gap:8px; align-items:center; min-width:270px; }
+.inlineForm input { min-width:150px; }
+@media (max-width:860px) { .grid,.gridThree{grid-template-columns:1fr}.full{grid-column:auto}.rowAction{display:grid}.rowAction select{min-width:0;width:100%} }
+@media (max-width:700px) { .proofGrid{grid-template-columns:1fr}.inlineForm{display:grid;min-width:0} }

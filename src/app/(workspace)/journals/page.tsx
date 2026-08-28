@@ -2,8 +2,12 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 import { formatMoney } from "@/kernel/money";
 import { currentPrincipal } from "@/modules/identity/session";
+import { accountKeyDisplayTitle } from "@/modules/ledger/account-key-display";
 import { loadTenantJournalWorkspace, type TenantJournalDto } from "@/modules/ledger/tenant-workspace";
+import { currentWorkspaceEntityContext } from "@/modules/workspace/entity-context";
+import { normalizeRegisterPage } from "@/modules/workspace/register-pagination";
 import { JournalRegisterAction } from "../../_components/journal-register-action.client";
+import { RegisterPaginationNav } from "../../_components/register-pagination";
 import { DemoNotice, EmptyState, PageHeader, StatusPill } from "../../_components/ui";
 
 function formatAmount(currency: string, amount: string): string {
@@ -19,11 +23,19 @@ function sourceModuleHref(journal: TenantJournalDto): string | null {
   return journal.sourceNumber ? `${base}?q=${encodeURIComponent(journal.sourceNumber)}` : base;
 }
 
-export default async function JournalsPage({ searchParams }: { searchParams: Promise<{ q?: string }> }) {
+export default async function JournalsPage({ searchParams }: { searchParams: Promise<{ q?: string; page?: string }> }) {
   const principal = await currentPrincipal();
   if (!principal) redirect("/login?next=%2Fapp%2Fjournals&reason=expired");
-  const query = (await searchParams).q?.trim() ?? "";
-  const workspace = await loadTenantJournalWorkspace(principal, query);
+  const parameters = await searchParams;
+  const query = parameters.q?.trim() ?? "";
+  const page = normalizeRegisterPage(parameters.page);
+  const entityContext = await currentWorkspaceEntityContext(principal);
+  const workspace = await loadTenantJournalWorkspace(
+    principal,
+    query,
+    entityContext.selectedEntity?.id ?? null,
+    page,
+  );
   return (
     <div className="page-content">
       <PageHeader
@@ -40,21 +52,34 @@ export default async function JournalsPage({ searchParams }: { searchParams: Pro
       {workspace.readiness === "EMPTY_ORGANIZATION" && (
         <EmptyState title="Accounting setup is not complete">Create a legal entity, primary ledger, fiscal calendar, and chart of accounts before entering journals.</EmptyState>
       )}
+      {workspace.readiness === "READY" && (
+        <form className="subledger-toolbar" method="get" aria-label="Filter journal register">
+          <label className="full-field"><span>Journal, description, entity, or type</span><input type="search" name="q" defaultValue={query} maxLength={100} /></label>
+          <button className="secondary-button" type="submit">Search</button>
+          {query && <Link className="text-link compact-button" href="/app/journals">Clear</Link>}
+        </form>
+      )}
       {workspace.journals.length ? (
         <section className="panel" aria-label="Journal register">
           <div className="table-scroll" tabIndex={0}>
             <table>
               <caption className="sr-only">Journal register</caption>
-              <thead><tr><th scope="col">Journal</th><th scope="col">Description</th><th scope="col">Owner</th><th scope="col">Amount</th><th scope="col">Status</th><th scope="col">Action</th></tr></thead>
+              <thead><tr><th scope="col">Journal</th><th scope="col">Description</th><th scope="col">Displayed accounts</th><th scope="col">Owner</th><th scope="col">Functional debit</th><th scope="col">Functional credit</th><th scope="col">Status</th><th scope="col">Action</th></tr></thead>
               <tbody>{workspace.journals.map((journal) => {
                 const sourceHref = sourceModuleHref(journal);
                 const reversalPeriods = workspace.reversalPeriods.filter((period) => period.ledgerId === journal.ledgerId);
                 return (
                   <tr key={journal.id}>
-                    <td><strong>{journal.number}</strong><small>{journal.accountingDate} · {journal.entityCode}</small></td>
+                    <td><Link className="text-link compact-button" href={`/app/journals/${journal.id}`}>{journal.number}</Link><small>{journal.accountingDate} · {journal.entityCode}</small></td>
                     <td><strong>{journal.description}</strong><small>{journal.typeKey}{journal.reversalOfNumber ? ` · reverses ${journal.reversalOfNumber}` : ""}{journal.reversedByNumber ? ` · reversed by ${journal.reversedByNumber}` : ""}</small></td>
+                    <td>{journal.accountKeys?.length ? journal.accountKeys.map((key) => (
+                      <small key={key.canonicalKey}>
+                        <code title={accountKeyDisplayTitle(key.displaySegments)}>{key.displayKey}</code>
+                      </small>
+                    )) : <span className="subtle-label">No lines</span>}</td>
                     <td>{journal.ownerModule}</td>
-                    <td className="amount-cell">{formatAmount(journal.currency, journal.amount)}</td>
+                    <td className="amount-cell">{formatAmount(journal.currency, journal.debitFunctional ?? journal.amount)}</td>
+                    <td className="amount-cell">{formatAmount(journal.currency, journal.creditFunctional ?? journal.amount)}</td>
                     <td><StatusPill status={journal.reversedByNumber ? "REVERSED" : journal.status} /></td>
                     <td>
                       {journal.canPost && journal.expectedContentHash ? (
@@ -86,6 +111,11 @@ export default async function JournalsPage({ searchParams }: { searchParams: Pro
               })}</tbody>
             </table>
           </div>
+          <RegisterPaginationNav
+            basePath="/app/journals"
+            pagination={workspace.pagination}
+            parameters={{ q: query || undefined }}
+          />
         </section>
       ) : workspace.readiness === "READY" ? (
         <EmptyState title="No journals found">{query ? "Clear the search query or search by journal, description, entity, or type." : "Create the first authorized journal draft for this ledger."}</EmptyState>

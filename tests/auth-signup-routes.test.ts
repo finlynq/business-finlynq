@@ -98,6 +98,8 @@ const validRequest = {
   entityName: "Example Books Inc.",
   countryCode: "CA",
   regionCode: "ON",
+  functionalCurrency: "CAD",
+  accountingProfile: "CAN_ASPE",
   fiscalYear: 2026,
   manualPostingMode: "AUTO_POST",
   termsAccepted: true,
@@ -105,6 +107,24 @@ const validRequest = {
 };
 
 describe("public owner signup routes", () => {
+  it("accepts an ISO country outside the bundled tax jurisdictions", async () => {
+    const response = await requestSignup(request("/api/auth/signup/request", {
+      ...validRequest,
+      entityCode: "GB01",
+      countryCode: "GB",
+      regionCode: "ENG",
+      functionalCurrency: "GBP",
+      accountingProfile: "US_GAAP_NONPUBLIC",
+    }));
+    expect(response.status).toBe(202);
+    expect(mocks.requestSignup).toHaveBeenCalledWith(expect.objectContaining({
+      countryCode: "GB",
+      regionCode: "ENG",
+      functionalCurrency: "GBP",
+      accountingProfile: "US_GAAP_NONPUBLIC",
+    }));
+  });
+
   it("keeps new signup disabled unless its independent gate is enabled", async () => {
     process.env.ACCOUNT_SIGNUP_ENABLED = "false";
     const response = await requestSignup(request("/api/auth/signup/request", validRequest));

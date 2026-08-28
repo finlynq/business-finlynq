@@ -20,6 +20,7 @@ const mocks = vi.hoisted(() => ({
     stepUpExpiresAt: null,
   },
   loadWorkspace: vi.fn(),
+  selectedEntityId: "30000000-0000-4000-8000-000000000020",
 }));
 
 vi.mock("next/navigation", () => ({
@@ -31,6 +32,12 @@ vi.mock("@/modules/identity/session", () => ({
 }));
 vi.mock("@/modules/ledger/tenant-workspace", () => ({
   loadTenantJournalWorkspace: mocks.loadWorkspace,
+}));
+vi.mock("@/modules/workspace/entity-context", () => ({
+  currentWorkspaceEntityContext: vi.fn(async () => ({
+    options: [],
+    selectedEntity: { id: mocks.selectedEntityId },
+  })),
 }));
 
 import JournalsPage from "@/app/(workspace)/journals/page";
@@ -58,7 +65,19 @@ const baseJournal = {
   typeLabel: "Manual journal",
   correctionRoute: "/journals",
   amount: "100.00",
+  debitFunctional: "100.00",
+  creditFunctional: "100.00",
   sourceNumber: null,
+  accountKeys: [{
+    canonicalKey: "CA01.6100.0000.MKT.0000.0000.0000.0000.0000.0000.0000.0000.0000",
+    displayKey: "CA01.6100.MKT.0000",
+    displaySegments: [
+      { key: "entity", displayName: "Entity", code: "CA01" },
+      { key: "account", displayName: "Account", code: "6100" },
+      { key: "department", displayName: "Cost center", code: "MKT" },
+      { key: "intercompany", displayName: "Intercompany", code: "0000" },
+    ],
+  }],
   reversalOfNumber: null,
   reversedByNumber: null,
 };
@@ -161,6 +180,12 @@ beforeEach(() => {
 describe("journal register actions", () => {
   it("renders only DTO-authorized manual actions and routes AR/AP ownership back to source", async () => {
     const page = await JournalsPage({ searchParams: Promise.resolve({}) });
+    expect(mocks.loadWorkspace).toHaveBeenCalledWith(
+      mocks.principal,
+      "",
+      mocks.selectedEntityId,
+      1,
+    );
     const tree = elements(page);
     const actionElements = tree.filter((element) => element.type === JournalRegisterAction);
     const actions = actionElements.map((element) => (
@@ -174,6 +199,10 @@ describe("journal register actions", () => {
     expect(actions).toEqual(["post", "reverse"]);
     expect(hrefs).toContain("/app/receivables/invoices?q=INV-1001");
     expect(hrefs).toContain("/app/payables/bills?q=BILL-1001");
+    expect(hrefs).toContain("/app/journals/30000000-0000-4000-8000-000000000002");
+    expect(textContent(page)).toContain("Functional debit");
+    expect(textContent(page)).toContain("Functional credit");
+    expect(textContent(page)).toContain("CA01.6100.MKT.0000");
     expect(textContent(page)).toContain("reversed by 42");
     expect(textContent(page).toLowerCase()).not.toContain("delete");
   });

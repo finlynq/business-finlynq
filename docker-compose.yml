@@ -309,6 +309,7 @@ services:
       AUTH_EMAIL_FROM: ${AUTH_EMAIL_FROM:-}
       AUTH_EMAIL_REPLY_TO: ${AUTH_EMAIL_REPLY_TO:-}
       BUSINESS_WRITES_ENABLED: ${BUSINESS_WRITES_ENABLED:-false}
+      BANK_FEEDS_ENABLED: ${BANK_FEEDS_ENABLED:-false}
       BUSINESS_FINLYNQ_IMAGE_REVISION: ${BUSINESS_FINLYNQ_IMAGE_REVISION:-unknown}
       ORGANIZATION_ROOT_KEK_FILE: /run/secrets/business_finlynq_root_kek
       IDENTITY_SECRET_FILE: /run/secrets/business_finlynq_identity_secret
@@ -988,6 +989,7 @@ services:
       SIGNUP_TURNSTILE_ENABLED: "false"
       AUTH_EMAIL_DELIVERY_ENABLED: "false"
       BUSINESS_WRITES_ENABLED: "false"
+      BANK_FEEDS_ENABLED: "false"
       BUSINESS_FINLYNQ_IMAGE_REVISION: ${BUSINESS_FINLYNQ_IMAGE_REVISION:-unknown}
       ORGANIZATION_ROOT_KEK_FILE: /run/secrets/business_finlynq_root_kek
       IDENTITY_SECRET_FILE: /run/secrets/business_finlynq_identity_secret

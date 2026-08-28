@@ -3,6 +3,10 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 const script = readFileSync(join(process.cwd(), "deploy", "postgres", "010-runtime-role.sh"), "utf8");
+const authWorkerScript = readFileSync(
+  join(process.cwd(), "deploy", "postgres", "015-auth-worker-role.sh"),
+  "utf8",
+);
 
 describe("runtime role reconciliation contract", () => {
   it("removes blanket current and future CRUD before reviewed grants", () => {
@@ -20,6 +24,13 @@ describe("runtime role reconciliation contract", () => {
     expect(script).toContain("'parties', 'party_addresses'");
     expect(script).not.toContain("'platform_administrator_grants'");
     expect(script).not.toContain("'platform_administrator_grant_events'");
+    for (const table of [
+      "bank_connections", "bank_connection_credential_events", "bank_external_accounts", "bank_sync_runs",
+      "bank_observations", "bank_observation_versions", "bank_balance_anchors",
+      "bank_reconciliation_sessions", "bank_reconciliation_voids", "bank_match_allocations",
+      "bank_match_allocation_voids", "bank_rules", "bank_rule_runs",
+      "bank_draft_proposals",
+    ]) expect(script).toContain(`'${table}'`);
   });
 
   it("revokes inherited function execution and restores only reviewed app APIs", () => {
@@ -44,6 +55,7 @@ describe("runtime role reconciliation contract", () => {
     expect(script).toContain("app.organization_assign_member_role(uuid,uuid,integer)");
     expect(script).toContain("app.organization_set_member_active(uuid,integer,boolean)");
     expect(script).toContain("app.organization_revoke_member_sessions(uuid)");
+    expect(script).toContain("app.accounting_add_tax_registration(uuid,uuid,text,text,integer,text,text,text,text,text,date,date)");
     expect(script).not.toContain("app.organization_admin_authorize(text,boolean)");
     expect(script).not.toContain("app.reset_demo_sandbox_extensions(uuid,uuid)");
     expect(script).not.toContain("'app.auth_issue_user_session(");
@@ -53,5 +65,65 @@ describe("runtime role reconciliation contract", () => {
     expect(script).toContain("APP_DATABASE_PASSWORD_FILE");
     expect(script).toContain("\\getenv app_password BUSINESS_FINLYNQ_RECONCILE_PASSWORD");
     expect(script).not.toContain("--set=app_password=");
+  });
+
+  it("scrubs both role-membership directions and verifies the runtime identity", () => {
+    expect(script).toContain("REVOKE %I FROM business_finlynq_app");
+    expect(script).toContain("REVOKE business_finlynq_app FROM %I");
+    expect(script).toContain("FROM pg_auth_members");
+    expect(script).toContain("WHERE member = selected_role OR roleid = selected_role");
+    expect(script).toContain("runtime role must have no inbound or outbound role memberships");
+    expect(script).toContain("NOINHERIT NOREPLICATION NOBYPASSRLS");
+  });
+
+  it("removes legacy database/schema authority before granting runtime connect and usage", () => {
+    expect(script).toContain(
+      'REVOKE ALL PRIVILEGES ON DATABASE :"db_name" FROM business_finlynq_app',
+    );
+    expect(script).toContain(
+      "REVOKE ALL PRIVILEGES ON SCHEMA public FROM business_finlynq_app",
+    );
+    expect(script).toContain("REVOKE ALL PRIVILEGES ON SCHEMA public FROM PUBLIC");
+    expect(script).toContain(
+      "REVOKE ALL PRIVILEGES ON SCHEMA app FROM business_finlynq_app",
+    );
+    expect(script).toContain("runtime database privileges are unsafe");
+    expect(script).toContain("runtime public-schema privileges are unsafe");
+    expect(script).toContain("runtime app-schema privileges are unsafe");
+    expect(script).toContain("'TEMPORARY'");
+  });
+
+  it("applies the same membership scrub and assertion to the auth worker", () => {
+    expect(authWorkerScript).toContain("REVOKE %I FROM business_finlynq_auth_worker");
+    expect(authWorkerScript).toContain("REVOKE business_finlynq_auth_worker FROM %I");
+    expect(authWorkerScript).toContain("FROM pg_auth_members");
+    expect(authWorkerScript).toContain("WHERE member = selected_role OR roleid = selected_role");
+    expect(authWorkerScript).toContain(
+      "authentication worker role must have no inbound or outbound role memberships",
+    );
+  });
+
+  it("removes legacy database/schema authority from the auth worker", () => {
+    expect(authWorkerScript).toContain(
+      "REVOKE ALL PRIVILEGES ON DATABASE %I FROM business_finlynq_auth_worker",
+    );
+    expect(authWorkerScript).toContain(
+      "REVOKE ALL PRIVILEGES ON DATABASE %I FROM PUBLIC",
+    );
+    expect(authWorkerScript).toContain(
+      "REVOKE ALL PRIVILEGES ON SCHEMA public FROM business_finlynq_auth_worker",
+    );
+    expect(authWorkerScript).toContain(
+      "REVOKE ALL PRIVILEGES ON SCHEMA public FROM PUBLIC",
+    );
+    expect(authWorkerScript).toContain(
+      "REVOKE ALL PRIVILEGES ON SCHEMA app FROM business_finlynq_auth_worker",
+    );
+    expect(authWorkerScript).toContain("authentication worker database privileges are unsafe");
+    expect(authWorkerScript).toContain("authentication worker public-schema privileges are unsafe");
+    expect(authWorkerScript).toContain("authentication worker app-schema privileges are unsafe");
+    expect(authWorkerScript).toContain(
+      "has_schema_privilege('business_finlynq_auth_worker', 'public', 'USAGE')",
+    );
   });
 });

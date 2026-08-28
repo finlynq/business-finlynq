@@ -178,6 +178,17 @@ type TaxPackVersionRow = Readonly<{
   effective_to: string | null;
 }>;
 
+type EntityTaxRegistrationRow = Readonly<{
+  id: string;
+  regime_key: string;
+  destination_country: string | null;
+  destination_region: string | null;
+  destination_city: string | null;
+  location_code: string | null;
+  valid_from: string;
+  valid_to: string | null;
+}>;
+
 const SOURCE_TYPES_BY_OWNER: Readonly<Record<SubledgerOwnerModule, readonly string[]>> = {
   receivables: ["receivables.sales-invoice", "receivables.customer-receipt"],
   payables: ["payables.supplier-bill", "payables.supplier-payment"],
@@ -556,6 +567,110 @@ function assertBusinessAccountMappings(
   }
 }
 
+function optionalTaxFact(value: string | undefined): string | null {
+  return value ?? null;
+}
+
+/**
+ * Binds every supported tax decision to the immutable registration record that
+ * supplied its jurisdiction facts. The entity registration configuration is
+ * locked for the rest of the tenant transaction, including the final issue
+ * transaction, so governed configuration mutations cannot race posting. This
+ * uses the same per-regime advisory-lock identities as configuration mutation
+ * and acquires them in lexical order to avoid cross-regime deadlocks. It does
+ * not widen the runtime role's intentionally read-only table grant.
+ *
+ * The generic pack intentionally remains registration-optional: it is the
+ * explicit manual/evidenced fallback for jurisdictions without an installed
+ * automated pack. If a generic line does select a registration, that
+ * reference is held to the same tenant, entity, sourcing, and validity checks.
+ */
+export async function assertBusinessDocumentTaxRegistrationBindings(
+  client: PoolClient,
+  context: TenantTransactionContext,
+  snapshot: BusinessDocumentSnapshot,
+): Promise<void> {
+  const registrationIds = new Set<string>();
+  const registrationRegimes = new Set<string>();
+
+  for (const line of snapshot.lines) {
+    const facts = line.taxDecision.facts;
+    if (
+      line.taxDecision.packKey !== line.tax.packKey
+      || facts.taxPointDate !== snapshot.documentDate
+      || facts.destinationCountry !== line.tax.destinationCountry
+      || facts.destinationRegion !== line.tax.destinationRegion
+      || optionalTaxFact(facts.destinationCity) !== optionalTaxFact(line.tax.destinationCity)
+      || optionalTaxFact(facts.locationCode) !== optionalTaxFact(line.tax.locationCode)
+      || optionalTaxFact(facts.registrationId) !== optionalTaxFact(line.tax.registrationId)
+    ) {
+      throw new Error(`Draft tax facts do not match source line ${line.lineNumber}`);
+    }
+
+    const registrationId = facts.registrationId;
+    if (!registrationId && line.taxDecision.packKey === "generic.unsupported") continue;
+    if (!registrationId) {
+      throw new Error(`Tax registration is required for source line ${line.lineNumber}`);
+    }
+    if (!z.uuid().safeParse(registrationId).success) {
+      throw new Error(`Tax registration reference is invalid for source line ${line.lineNumber}`);
+    }
+    registrationIds.add(registrationId);
+    registrationRegimes.add(line.taxDecision.packKey.trim().toLowerCase());
+  }
+
+  if (registrationIds.size === 0) return;
+
+  for (const regime of [...registrationRegimes].sort()) {
+    await client.query(
+      "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
+      [`${context.organizationId}|tax-registration|${snapshot.legalEntityId}|${regime}`],
+    );
+  }
+
+  const result = await client.query<EntityTaxRegistrationRow>(
+    `SELECT id, regime_key, destination_country, destination_region,
+       destination_city, location_code, valid_from::text, valid_to::text
+     FROM entity_tax_registrations
+     WHERE organization_id = $1
+       AND legal_entity_id = $2
+       AND id = ANY($3::uuid[])
+     ORDER BY id`,
+    [context.organizationId, snapshot.legalEntityId, [...registrationIds].sort()],
+  );
+  const registrations = new Map(result.rows.map((row) => [row.id, row]));
+
+  for (const line of snapshot.lines) {
+    const facts = line.taxDecision.facts;
+    if (!facts.registrationId) continue;
+    const registration = registrations.get(facts.registrationId);
+    if (!registration) {
+      throw new Error(
+        `Tax registration is missing or belongs to another organization or entity for source line ${line.lineNumber}`,
+      );
+    }
+    if (registration.regime_key !== line.taxDecision.packKey) {
+      throw new Error(`Tax registration pack does not match source line ${line.lineNumber}`);
+    }
+    if (
+      registration.destination_country !== facts.destinationCountry
+      || registration.destination_region !== facts.destinationRegion
+      || registration.destination_city !== optionalTaxFact(facts.destinationCity)
+      || registration.location_code !== optionalTaxFact(facts.locationCode)
+    ) {
+      throw new Error(`Tax registration destination does not match source line ${line.lineNumber}`);
+    }
+    if (
+      snapshot.documentDate < registration.valid_from
+      || (registration.valid_to !== null && snapshot.documentDate > registration.valid_to)
+    ) {
+      throw new Error(
+        `Tax registration is not active on the document date for source line ${line.lineNumber}`,
+      );
+    }
+  }
+}
+
 async function validateDraftConfiguration(
   client: PoolClient,
   context: TenantTransactionContext,
@@ -591,6 +706,7 @@ async function validateDraftConfiguration(
     ids: combinationIds,
   });
   assertBusinessAccountMappings(snapshot, setup, combinations);
+  await assertBusinessDocumentTaxRegistrationBindings(client, context, snapshot);
   await loadTaxPackVersions(client, snapshot);
   return setup;
 }

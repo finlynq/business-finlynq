@@ -20,7 +20,7 @@ import { hashPassword } from "./passwords";
 import { createOpaqueToken, hashOpaqueToken } from "./session";
 import {
   CURRENT_SIGNUP_TERMS_VERSION,
-  signupCountryDefaults,
+  type SignupAccountingProfile,
   type SignupCountry,
 } from "./signup-policy";
 import {
@@ -39,6 +39,8 @@ export type OwnerSignupRequest = Readonly<{
   entityName: string;
   countryCode: SignupCountry;
   regionCode: string;
+  functionalCurrency: string;
+  accountingProfile: SignupAccountingProfile;
   fiscalYear: number;
   manualPostingMode: SignupPostingMode;
   ipHash: string;
@@ -62,8 +64,6 @@ export async function requestOwnerSignup(input: OwnerSignupRequest): Promise<boo
     const tokenId = randomUUID();
     const outboxId = randomUUID();
     const wrapped = new LocalRootKeyProvider(rootKey).wrapOrganizationKey(organizationId, 1, dek);
-    const countryDefaults = signupCountryDefaults(input.countryCode);
-
     return await beginOrganizationSignup({
       signupId,
       userId,
@@ -78,8 +78,8 @@ export async function requestOwnerSignup(input: OwnerSignupRequest): Promise<boo
       entityName: input.entityName,
       countryCode: input.countryCode,
       regionCode: input.regionCode,
-      functionalCurrency: countryDefaults.functionalCurrency,
-      accountingProfile: countryDefaults.accountingProfile,
+      functionalCurrency: input.functionalCurrency,
+      accountingProfile: input.accountingProfile,
       fiscalYear: input.fiscalYear,
       manualPostingMode: input.manualPostingMode,
       keyProvider: wrapped.provider,

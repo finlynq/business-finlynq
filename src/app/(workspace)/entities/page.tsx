@@ -16,7 +16,7 @@ export default async function EntitiesPage({ searchParams }: { searchParams: Pro
   ].join(" ").toLocaleLowerCase().includes(query));
   return (
     <div className="page-content">
-      <PageHeader eyebrow="Organization setup" title="Legal entities" description="Active legal entities with their persisted accounting framework, primary ledger, functional currency, and current period state." />
+      <PageHeader eyebrow="Organization setup" title="Legal entities" description="Active legal entities with their persisted accounting framework, primary ledger, functional currency, and current period state." actions={<Link className="primary-button" href="/app/settings/accounting#legal-entities">＋ Add legal entity</Link>} />
       {principal.sessionMode === "demo" && (
         <DemoNotice>
           This is your isolated writable sandbox. Transaction changes persist for this browser until the seeded business is restored nightly.
@@ -37,3 +37,4 @@ export default async function EntitiesPage({ searchParams }: { searchParams: Pro
     </div>
   );
 }
+import Link from "next/link";

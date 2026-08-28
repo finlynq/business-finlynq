@@ -2,6 +2,29 @@ import { describe, expect, it } from "vitest";
 import { decideTax } from "@/modules/tax/engine";
 
 describe("versioned tax decisions", () => {
+  it("holds unsupported jurisdictions for review and only permits evidenced zero treatments", () => {
+    const facts = {
+      direction: "SALE" as const,
+      taxPointDate: "2026-08-27",
+      currency: "GBP",
+      taxableBasis: "100.00",
+      destinationCountry: "GB",
+      destinationRegion: "ENG",
+      category: "STANDARD" as const,
+    };
+    const review = decideTax("generic.unsupported", facts);
+    expect(review.status).toBe("MANUAL_REVIEW_REQUIRED");
+    expect(review.reviewReason).toContain("No supported tax pack");
+
+    const evidenced = decideTax("generic.unsupported", {
+      ...facts,
+      category: "OUT_OF_SCOPE",
+      evidenceReference: "contract-place-of-supply-2026-08",
+    });
+    expect(evidenced.status).toBe("OUT_OF_SCOPE");
+    expect(evidenced.totalTax).toBe("0.00");
+  });
+
   it("calculates an Ontario CAD 100 standard sale as HST 13", () => {
     const decision = decideTax("ca.on.hst", {
       direction: "SALE",

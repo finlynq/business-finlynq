@@ -95,7 +95,7 @@ export function PartyCreateForm({
 
   return (
     <section className="panel form-panel" aria-labelledby="new-party-title">
-      <div className="panel-heading"><div><p className="eyebrow">Encrypted master data</p><h2 id="new-party-title">Create a party</h2></div></div>
+      <div className="panel-heading"><div><p className="eyebrow">Organization-wide encrypted master</p><h2 id="new-party-title">Create a party and its first entity role</h2></div></div>
       <form className="close-form" onSubmit={save} noValidate>
         <div className="form-grid form-grid-three">
           <label>
@@ -131,7 +131,8 @@ export function PartyCreateForm({
         </div>
         {accountOptions.length === 0 && <p className="validation-message validation-error" role="alert">Create an active AR or AP control account combination before adding a customer or supplier.</p>}
         {message && <p className={`validation-message ${message.kind === "success" ? "validation-success" : "validation-error"}`} role={message.kind === "error" ? "alert" : "status"}>{message.text}</p>}
-        <div className="form-actions"><button type="submit" className="primary-button" disabled={busy || accountOptions.length === 0}>{busy ? "Saving…" : "Create encrypted party and account"}</button></div>
+        <p className="form-footnote">Do not recreate this party for another company. After saving, attach additional customer or supplier accounts from the shared directory below.</p>
+        <div className="form-actions"><button type="submit" className="primary-button" disabled={busy || accountOptions.length === 0}>{busy ? "Saving…" : "Create party and first role"}</button></div>
       </form>
     </section>
   );

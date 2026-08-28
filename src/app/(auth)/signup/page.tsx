@@ -21,7 +21,7 @@ export default function SignupPage() {
       eyebrow="Business account"
       title={ready ? "Create your workspace" : "Secure account signup is being enabled"}
       description={ready
-        ? "Start a full private US or Canadian organization. Verify your email and authenticator before the owner account becomes active."
+        ? "Create an authenticated organization workspace in the hosted preview for any two-letter ISO country. Automated tax packs currently cover Ontario and Washington; other jurisdictions remain in explicit manual review. This preview is not a production system of record."
         : "Account creation is temporarily closed while verified email delivery and signup abuse protection are completed. This page will not create or retain an account request yet."}
     >
       {ready && challenge

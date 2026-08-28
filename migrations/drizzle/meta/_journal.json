@@ -134,6 +134,27 @@
       "when": 1787846000000,
       "tag": "0018_platform_administrator_grants",
       "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1787847000000,
+      "tag": "0019_global_signup_foundation",
+      "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "7",
+      "when": 1787848000000,
+      "tag": "0020_accounting_configuration",
+      "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "7",
+      "when": 1787849000000,
+      "tag": "0021_banking_foundation",
+      "breakpoints": true
     }
   ]
 }

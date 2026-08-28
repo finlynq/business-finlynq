@@ -14,7 +14,20 @@ import {
   exactAllocationTotal,
   isPositiveExactAmount,
 } from "@/modules/subledger/client-money";
+import {
+  applicableOrganizationFxRates,
+  suggestedFxEvidence,
+  type OrganizationFxRate,
+} from "@/modules/subledger/fx-suggestions";
+import {
+  subledgerDocumentDate,
+  subledgerDocumentDueDate,
+  type SubledgerDueFilter,
+  type SubledgerRegisterFilter,
+} from "@/modules/subledger/register-filter";
 import { EmptyState, StatusPill } from "./ui";
+import { RegisterPaginationNav } from "./register-pagination";
+import styles from "./ar-ap-register.module.css";
 
 type TaxCategory =
   | "STANDARD"
@@ -96,6 +109,20 @@ function mutationTimestamp(date: string): string {
   return new Date(`${date}T12:00:00.000Z`).toISOString();
 }
 
+function suggestedEvidence(
+  workspace: SubledgerWorkspaceDto,
+  transactionCurrency: string,
+  functionalCurrency: string | undefined,
+  date: string,
+) {
+  return suggestedFxEvidence(
+    workspace.fxRates ?? [],
+    transactionCurrency,
+    functionalCurrency ?? transactionCurrency,
+    mutationTimestamp(date),
+  );
+}
+
 function matchingPeriod(entity: SubledgerEntityOptionDto | undefined, date: string): string {
   return entity?.periods.find((period) => period.startsOn <= date && period.endsOn >= date)?.id
     ?? entity?.periods[0]?.id
@@ -159,7 +186,10 @@ function defaultDocumentDraft(
     };
   }
 
-  const entity = workspace.entities.find((candidate) =>
+  const preferredEntity = workspace.entities.find((candidate) => candidate.id === workspace.preferredEntityId);
+  const entity = (preferredEntity?.periods.length && preferredEntity.partyAccounts.length && preferredEntity.lineAccounts.length
+    ? preferredEntity
+    : undefined) ?? workspace.entities.find((candidate) =>
     candidate.periods.length > 0 && candidate.partyAccounts.length > 0 && candidate.lineAccounts.length > 0)
     ?? workspace.entities[0];
   const party = entity?.partyAccounts[0];
@@ -168,6 +198,12 @@ function defaultDocumentDraft(
     ? workspace.currentDate
     : entity?.periods[0]?.startsOn ?? workspace.currentDate;
   const currency = party?.transactionCurrency ?? entity?.functionalCurrency ?? "USD";
+  const fxEvidence = suggestedEvidence(
+    workspace,
+    currency,
+    entity?.functionalCurrency,
+    documentDate,
+  );
   const taxCode = workspace.ownerModule === "receivables"
     ? "2200"
     : entity?.countryCode === "CA" ? "1500" : "6100";
@@ -181,9 +217,9 @@ function defaultDocumentDraft(
     accountingDate: documentDate,
     dueOn: addDays(documentDate, 30),
     currency,
-    fxRate: currency === entity?.functionalCurrency ? "1" : "",
-    fxSource: "USER_ENTERED",
-    fxEffectiveAt: mutationTimestamp(documentDate),
+    fxRate: fxEvidence.rate,
+    fxSource: fxEvidence.source,
+    fxEffectiveAt: fxEvidence.effectiveAt,
     taxAccountCombinationId: preferredAccount(entity?.taxAccounts ?? [], taxCode),
     fxRoundingAccountCombinationId: preferredAccount(entity?.roundingAccounts ?? [], "7190"),
     description: "",
@@ -211,6 +247,7 @@ function defaultSettlementDraft(
     ? workspace.entities.find((entity) => entity.partyAccounts.some((party) => party.id === requestedPartyAccountId))
     : undefined;
   const entity = requestedEntity
+    ?? workspace.entities.find((candidate) => candidate.id === workspace.preferredEntityId)
     ?? workspace.entities.find((candidate) => candidate.partyAccounts.some((party) =>
       workspace.openItems.some((item) => item.partyAccountId === party.id)))
     ?? workspace.entities[0];
@@ -228,6 +265,12 @@ function defaultSettlementDraft(
     ?? item?.currency
     ?? entity?.functionalCurrency
     ?? "USD";
+  const fxEvidence = suggestedEvidence(
+    workspace,
+    currency,
+    entity?.functionalCurrency,
+    date,
+  );
   return {
     sourceNumber: "",
     legalEntityId: entity?.id ?? "",
@@ -236,9 +279,9 @@ function defaultSettlementDraft(
     accountingDate: date,
     settlementDate: date,
     currency,
-    fxRate: currency === entity?.functionalCurrency ? "1" : "",
-    fxSource: "USER_ENTERED",
-    fxEffectiveAt: mutationTimestamp(date),
+    fxRate: fxEvidence.rate,
+    fxSource: fxEvidence.source,
+    fxEffectiveAt: fxEvidence.effectiveAt,
     bankAccountCombinationId: preferredAccount(entity?.bankAccounts ?? [], "1000"),
     realizedFxGainAccountCombinationId: preferredAccount(entity?.fxGainAccounts ?? [], "4900"),
     realizedFxLossAccountCombinationId: preferredAccount(entity?.fxLossAccounts ?? [], "7100"),
@@ -303,7 +346,64 @@ function AccountSelect({
   );
 }
 
-export function ArApWorkspace({ workspace }: Readonly<{ workspace: SubledgerWorkspaceDto }>) {
+function FxRateSuggestionSelect({
+  rates,
+  transactionCurrency,
+  functionalCurrency,
+  asOfDate,
+  current,
+  onSelect,
+}: Readonly<{
+  rates: readonly OrganizationFxRate[];
+  transactionCurrency: string;
+  functionalCurrency: string;
+  asOfDate: string;
+  current: Readonly<{ rate: string; source: string; effectiveAt: string }>;
+  onSelect: (rate: OrganizationFxRate) => void;
+}>) {
+  if (transactionCurrency === functionalCurrency) return null;
+  const suggestions = applicableOrganizationFxRates(
+    rates,
+    transactionCurrency,
+    functionalCurrency,
+    mutationTimestamp(asOfDate),
+  );
+  const selected = suggestions.find((suggestion) => (
+    suggestion.rate === current.rate &&
+    suggestion.source === current.source &&
+    suggestion.effectiveAt === current.effectiveAt
+  ));
+  return (
+    <label className="full-field">
+      <span>Saved FX-rate suggestion</span>
+      <select
+        value={selected?.id ?? ""}
+        onChange={(event) => {
+          const suggestion = suggestions.find((candidate) => candidate.id === event.target.value);
+          if (suggestion) onSelect(suggestion);
+        }}
+      >
+        <option value="">Keep the evidence entered below</option>
+        {suggestions.map((suggestion, index) => (
+          <option key={suggestion.id} value={suggestion.id}>
+            {index === 0 ? "Latest · " : ""}{suggestion.rate} {functionalCurrency}/{transactionCurrency} · {suggestion.source} · effective {suggestion.effectiveAt}
+          </option>
+        ))}
+      </select>
+      <small>
+        {suggestions.length
+          ? "Selecting a saved rate copies its value, source, and effective time into the immutable document evidence. Manual edits are preserved until you explicitly choose another suggestion or change the entity/currency."
+          : `No saved ${transactionCurrency}/${functionalCurrency} rate is effective by ${asOfDate}; enter and identify the evidence manually.`}
+      </small>
+    </label>
+  );
+}
+
+export function ArApWorkspace({
+  workspace,
+}: Readonly<{
+  workspace: SubledgerWorkspaceDto;
+}>) {
   const router = useRouter();
   const [pending, startTransition] = useTransition();
   const [busy, setBusy] = useState(false);
@@ -313,6 +413,9 @@ export function ArApWorkspace({ workspace }: Readonly<{ workspace: SubledgerWork
   const [voidDraft, setVoidDraft] = useState<VoidDraft | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [registerFilter, setRegisterFilter] = useState<SubledgerRegisterFilter>(() => workspace.registerFilter ?? ({
+    search: "", entityCode: "", status: "", currency: "", dateFrom: "", dateTo: "", due: "ALL",
+  }));
   const base = apiBase(workspace);
 
   const documentEntity = currentEntity(workspace, documentDraft.legalEntityId);
@@ -325,10 +428,55 @@ export function ArApWorkspace({ workspace }: Readonly<{ workspace: SubledgerWork
     () => exactAllocationTotal(settlementDraft.allocations, settlementDraft.currency),
     [settlementDraft.allocations, settlementDraft.currency],
   );
-
   const businessLabel = workspace.ownerModule === "receivables" ? "invoice" : "bill";
   const settlementLabel = workspace.ownerModule === "receivables" ? "receipt" : "payment";
   const counterpartyLabel = workspace.ownerModule === "receivables" ? "customer" : "supplier";
+  const hasRegisterCriteria = Boolean(
+    workspace.registerFilter && (
+      workspace.registerFilter.search || workspace.registerFilter.entityCode ||
+      workspace.registerFilter.status || workspace.registerFilter.currency ||
+      workspace.registerFilter.dateFrom || workspace.registerFilter.dateTo ||
+      workspace.registerFilter.due !== "ALL"
+    ),
+  ) || (workspace.pagination?.page ?? 1) > 1;
+
+  function updateRegisterFilter(patch: Partial<SubledgerRegisterFilter>): void {
+    setRegisterFilter((current) => ({ ...current, ...patch }));
+  }
+
+  function registerHref(filter: SubledgerRegisterFilter): string {
+    const parameters = new URLSearchParams();
+    if (filter.search.trim()) parameters.set("q", filter.search.trim());
+    parameters.set("entity", filter.entityCode);
+    if (filter.status) parameters.set("status", filter.status);
+    if (filter.currency) parameters.set("currency", filter.currency);
+    if (filter.dateFrom) parameters.set("dateFrom", filter.dateFrom);
+    if (filter.dateTo) parameters.set("dateTo", filter.dateTo);
+    if (filter.due !== "ALL") parameters.set("due", filter.due);
+    const path = workspace.ownerModule === "receivables"
+      ? "/app/receivables/invoices"
+      : "/app/payables/bills";
+    return `${path}?${parameters.toString()}`;
+  }
+
+  function applyRegisterFilters(event: FormEvent<HTMLFormElement>): void {
+    event.preventDefault();
+    startTransition(() => router.push(registerHref(registerFilter)));
+  }
+
+  function resetRegisterFilter(): void {
+    const cleared: SubledgerRegisterFilter = {
+      search: "",
+      entityCode: "",
+      status: "",
+      currency: "",
+      dateFrom: "",
+      dateTo: "",
+      due: "ALL",
+    };
+    setRegisterFilter(cleared);
+    startTransition(() => router.push(registerHref(cleared)));
+  }
 
   function finish(messageText: string): void {
     setError(null);
@@ -364,6 +512,12 @@ export function ArApWorkspace({ workspace }: Readonly<{ workspace: SubledgerWork
       ? workspace.currentDate
       : entity?.periods[0]?.startsOn ?? workspace.currentDate;
     const currency = party?.transactionCurrency ?? entity?.functionalCurrency ?? "USD";
+    const fxEvidence = suggestedEvidence(
+      workspace,
+      currency,
+      entity?.functionalCurrency,
+      date,
+    );
     const taxCode = workspace.ownerModule === "receivables"
       ? "2200"
       : entity?.countryCode === "CA" ? "1500" : "6100";
@@ -376,8 +530,9 @@ export function ArApWorkspace({ workspace }: Readonly<{ workspace: SubledgerWork
       accountingDate: date,
       dueOn: addDays(date, 30),
       currency,
-      fxRate: currency === entity?.functionalCurrency ? "1" : "",
-      fxEffectiveAt: mutationTimestamp(date),
+      fxRate: fxEvidence.rate,
+      fxSource: fxEvidence.source,
+      fxEffectiveAt: fxEvidence.effectiveAt,
       taxAccountCombinationId: preferredAccount(entity?.taxAccounts ?? [], taxCode),
       fxRoundingAccountCombinationId: preferredAccount(entity?.roundingAccounts ?? [], "7190"),
       lines: draft.lines.map((line) => ({
@@ -392,13 +547,43 @@ export function ArApWorkspace({ workspace }: Readonly<{ workspace: SubledgerWork
 
   function chooseDocumentParty(partyAccountId: string): void {
     const party = currentParty(documentEntity, partyAccountId);
-    const currency = party?.transactionCurrency ?? documentDraft.currency;
-    setDocumentDraft((draft) => ({
-      ...draft,
-      partyAccountId,
-      currency,
-      fxRate: currency === documentEntity?.functionalCurrency ? "1" : draft.fxRate,
-    }));
+    setDocumentDraft((draft) => {
+      const currency = party?.transactionCurrency ?? draft.currency;
+      if (currency === draft.currency) return { ...draft, partyAccountId };
+      const fxEvidence = suggestedEvidence(
+        workspace,
+        currency,
+        documentEntity?.functionalCurrency,
+        draft.documentDate,
+      );
+      return {
+        ...draft,
+        partyAccountId,
+        currency,
+        fxRate: fxEvidence.rate,
+        fxSource: fxEvidence.source,
+        fxEffectiveAt: fxEvidence.effectiveAt,
+      };
+    });
+  }
+
+  function chooseDocumentCurrency(currency: string): void {
+    setDocumentDraft((draft) => {
+      if (currency === draft.currency) return draft;
+      const fxEvidence = suggestedEvidence(
+        workspace,
+        currency,
+        documentEntity?.functionalCurrency,
+        draft.documentDate,
+      );
+      return {
+        ...draft,
+        currency,
+        fxRate: fxEvidence.rate,
+        fxSource: fxEvidence.source,
+        fxEffectiveAt: fxEvidence.effectiveAt,
+      };
+    });
   }
 
   function updateLine(key: string, patch: Partial<DocumentLineDraft>): void {
@@ -504,6 +689,12 @@ export function ArApWorkspace({ workspace }: Readonly<{ workspace: SubledgerWork
       ? workspace.currentDate
       : entity?.periods[0]?.startsOn ?? workspace.currentDate;
     const currency = party?.transactionCurrency ?? item?.currency ?? entity?.functionalCurrency ?? "USD";
+    const fxEvidence = suggestedEvidence(
+      workspace,
+      currency,
+      entity?.functionalCurrency,
+      date,
+    );
     setSettlementDraft((draft) => ({
       ...draft,
       legalEntityId,
@@ -512,8 +703,9 @@ export function ArApWorkspace({ workspace }: Readonly<{ workspace: SubledgerWork
       accountingDate: date,
       settlementDate: date,
       currency,
-      fxRate: currency === entity?.functionalCurrency ? "1" : "",
-      fxEffectiveAt: mutationTimestamp(date),
+      fxRate: fxEvidence.rate,
+      fxSource: fxEvidence.source,
+      fxEffectiveAt: fxEvidence.effectiveAt,
       bankAccountCombinationId: preferredAccount(entity?.bankAccounts ?? [], "1000"),
       realizedFxGainAccountCombinationId: preferredAccount(entity?.fxGainAccounts ?? [], "4900"),
       realizedFxLossAccountCombinationId: preferredAccount(entity?.fxLossAccounts ?? [], "7100"),
@@ -525,14 +717,45 @@ export function ArApWorkspace({ workspace }: Readonly<{ workspace: SubledgerWork
   function chooseSettlementParty(partyAccountId: string): void {
     const party = currentParty(settlementEntity, partyAccountId);
     const item = workspace.openItems.find((candidate) => candidate.partyAccountId === partyAccountId);
-    const currency = party?.transactionCurrency ?? item?.currency ?? settlementEntity?.functionalCurrency ?? "USD";
-    setSettlementDraft((draft) => ({
-      ...draft,
-      partyAccountId,
-      currency,
-      fxRate: currency === settlementEntity?.functionalCurrency ? "1" : "",
-      allocations: {},
-    }));
+    setSettlementDraft((draft) => {
+      const currency = party?.transactionCurrency ?? item?.currency ?? settlementEntity?.functionalCurrency ?? "USD";
+      if (currency === draft.currency) return { ...draft, partyAccountId, allocations: {} };
+      const fxEvidence = suggestedEvidence(
+        workspace,
+        currency,
+        settlementEntity?.functionalCurrency,
+        draft.settlementDate,
+      );
+      return {
+        ...draft,
+        partyAccountId,
+        currency,
+        fxRate: fxEvidence.rate,
+        fxSource: fxEvidence.source,
+        fxEffectiveAt: fxEvidence.effectiveAt,
+        allocations: {},
+      };
+    });
+  }
+
+  function chooseSettlementCurrency(currency: string): void {
+    setSettlementDraft((draft) => {
+      if (currency === draft.currency) return draft;
+      const fxEvidence = suggestedEvidence(
+        workspace,
+        currency,
+        settlementEntity?.functionalCurrency,
+        draft.settlementDate,
+      );
+      return {
+        ...draft,
+        currency,
+        fxRate: fxEvidence.rate,
+        fxSource: fxEvidence.source,
+        fxEffectiveAt: fxEvidence.effectiveAt,
+        allocations: {},
+      };
+    });
   }
 
   async function saveSettlement(event: FormEvent<HTMLFormElement>): Promise<void> {
@@ -684,7 +907,7 @@ export function ArApWorkspace({ workspace }: Readonly<{ workspace: SubledgerWork
               </label>
               <label className="full-field">
                 <span>Document date</span>
-                <input type="date" value={documentDraft.documentDate} onChange={(event) => setDocumentDraft((draft) => ({ ...draft, documentDate: event.target.value, dueOn: addDays(event.target.value, 30), fxEffectiveAt: mutationTimestamp(event.target.value) }))} required />
+                <input type="date" value={documentDraft.documentDate} onChange={(event) => setDocumentDraft((draft) => ({ ...draft, documentDate: event.target.value, dueOn: addDays(event.target.value, 30) }))} required />
               </label>
               <label className="full-field">
                 <span>Accounting period</span>
@@ -702,10 +925,27 @@ export function ArApWorkspace({ workspace }: Readonly<{ workspace: SubledgerWork
               </label>
               <label className="full-field">
                 <span>Transaction currency</span>
-                <select value={documentDraft.currency} onChange={(event) => setDocumentDraft((draft) => ({ ...draft, currency: event.target.value, fxRate: event.target.value === documentEntity.functionalCurrency ? "1" : "" }))} disabled={Boolean(documentParty?.transactionCurrency)} required>
+                <select value={documentDraft.currency} onChange={(event) => chooseDocumentCurrency(event.target.value)} disabled={Boolean(documentParty?.transactionCurrency)} required>
                   {workspace.currencies.map((currency) => <option key={currency.code} value={currency.code}>{currency.code}</option>)}
                 </select>
               </label>
+              <FxRateSuggestionSelect
+                rates={workspace.fxRates ?? []}
+                transactionCurrency={documentDraft.currency}
+                functionalCurrency={documentEntity.functionalCurrency}
+                asOfDate={documentDraft.documentDate}
+                current={{
+                  rate: documentDraft.fxRate,
+                  source: documentDraft.fxSource,
+                  effectiveAt: documentDraft.fxEffectiveAt,
+                }}
+                onSelect={(suggestion) => setDocumentDraft((draft) => ({
+                  ...draft,
+                  fxRate: suggestion.rate,
+                  fxSource: suggestion.source,
+                  fxEffectiveAt: suggestion.effectiveAt,
+                }))}
+              />
               <label className="full-field">
                 <span>FX rate</span>
                 <input inputMode="decimal" value={documentDraft.fxRate} onChange={(event) => setDocumentDraft((draft) => ({ ...draft, fxRate: event.target.value }))} disabled={documentDraft.currency === documentEntity.functionalCurrency} required />
@@ -757,7 +997,7 @@ export function ArApWorkspace({ workspace }: Readonly<{ workspace: SubledgerWork
                     <span>Tax treatment</span>
                     <select value={line.category} onChange={(event) => updateLine(line.key, { category: event.target.value as TaxCategory })}>
                       <option value="STANDARD">Standard</option>
-                      {documentEntity.countryCode === "CA" ? <><option value="ZERO_RATED">Zero-rated</option><option value="EXEMPT">Exempt</option></> : <><option value="RESALE">Resale</option><option value="MARKETPLACE_COLLECTED">Marketplace collected</option></>}
+                      {documentEntity.countryCode === "CA" ? <><option value="ZERO_RATED">Zero-rated</option><option value="EXEMPT">Exempt</option></> : documentEntity.countryCode === "US" ? <><option value="RESALE">Resale</option><option value="MARKETPLACE_COLLECTED">Marketplace collected</option></> : null}
                       <option value="OUT_OF_SCOPE">Out of scope</option>
                     </select>
                   </label>
@@ -781,7 +1021,10 @@ export function ArApWorkspace({ workspace }: Readonly<{ workspace: SubledgerWork
                 </label>
               )}
             </div>
-            {documentDraft.lines.some((line) => line.category === "RESALE" || line.category === "MARKETPLACE_COLLECTED") && (
+            {documentDraft.lines.some((line) =>
+              line.category === "RESALE" ||
+              line.category === "MARKETPLACE_COLLECTED" ||
+              (documentEntity.tax.packKey === "generic.unsupported" && line.category !== "STANDARD")) && (
               <label className="full-field">
                 <span>Tax evidence reference</span>
                 <input value={documentDraft.evidenceReference} onChange={(event) => setDocumentDraft((draft) => ({ ...draft, evidenceReference: event.target.value }))} maxLength={200} required />
@@ -789,6 +1032,7 @@ export function ArApWorkspace({ workspace }: Readonly<{ workspace: SubledgerWork
             )}
             <p className="form-footnote">
               Tax pack {documentEntity.tax.packKey} is snapshotted line by line. FX source and effective time are stored immutably with every version.
+              {documentEntity.tax.packKey === "generic.unsupported" && " Standard transactions remain in manual review until a jurisdiction pack is installed; an evidenced out-of-scope treatment may be recorded explicitly."}
             </p>
             <div className="form-actions">
               <button className="primary-button" type="submit" disabled={busy || pending}>Save draft</button>
@@ -829,13 +1073,30 @@ export function ArApWorkspace({ workspace }: Readonly<{ workspace: SubledgerWork
                 </select>
               </label>
               <label className="full-field"><span>Accounting date</span><input type="date" value={settlementDraft.accountingDate} onChange={(event) => setSettlementDraft((draft) => ({ ...draft, accountingDate: event.target.value }))} required /></label>
-              <label className="full-field"><span>Settlement date</span><input type="date" value={settlementDraft.settlementDate} onChange={(event) => setSettlementDraft((draft) => ({ ...draft, settlementDate: event.target.value, fxEffectiveAt: mutationTimestamp(event.target.value) }))} required /></label>
+              <label className="full-field"><span>Settlement date</span><input type="date" value={settlementDraft.settlementDate} onChange={(event) => setSettlementDraft((draft) => ({ ...draft, settlementDate: event.target.value }))} required /></label>
               <label className="full-field">
                 <span>Currency</span>
-                <select value={settlementDraft.currency} onChange={(event) => setSettlementDraft((draft) => ({ ...draft, currency: event.target.value, fxRate: event.target.value === settlementEntity.functionalCurrency ? "1" : "", allocations: {} }))} disabled={Boolean(settlementParty?.transactionCurrency)} required>
+                <select value={settlementDraft.currency} onChange={(event) => chooseSettlementCurrency(event.target.value)} disabled={Boolean(settlementParty?.transactionCurrency)} required>
                   {workspace.currencies.map((currency) => <option key={currency.code} value={currency.code}>{currency.code}</option>)}
                 </select>
               </label>
+              <FxRateSuggestionSelect
+                rates={workspace.fxRates ?? []}
+                transactionCurrency={settlementDraft.currency}
+                functionalCurrency={settlementEntity.functionalCurrency}
+                asOfDate={settlementDraft.settlementDate}
+                current={{
+                  rate: settlementDraft.fxRate,
+                  source: settlementDraft.fxSource,
+                  effectiveAt: settlementDraft.fxEffectiveAt,
+                }}
+                onSelect={(suggestion) => setSettlementDraft((draft) => ({
+                  ...draft,
+                  fxRate: suggestion.rate,
+                  fxSource: suggestion.source,
+                  fxEffectiveAt: suggestion.effectiveAt,
+                }))}
+              />
               <label className="full-field">
                 <span>FX rate</span>
                 <input inputMode="decimal" value={settlementDraft.fxRate} onChange={(event) => setSettlementDraft((draft) => ({ ...draft, fxRate: event.target.value }))} disabled={settlementDraft.currency === settlementEntity.functionalCurrency} required />
@@ -902,39 +1163,165 @@ export function ArApWorkspace({ workspace }: Readonly<{ workspace: SubledgerWork
         ) : null;
       })()}
 
-      {workspace.documents.length ? (
-        <section className="record-grid subledger-record-grid" aria-label={`${businessLabel} and ${settlementLabel} register`}>
-          {workspace.documents.map((document) => {
-            const businessSnapshot = "grossTotal" in document.snapshot ? document.snapshot : null;
-            const settlementSnapshot = "amount" in document.snapshot ? document.snapshot : null;
-            const business = businessSnapshot !== null;
-            const amount = businessSnapshot?.grossTotal ?? settlementSnapshot?.amount ?? "0";
-            const documentDate = businessSnapshot?.documentDate ?? settlementSnapshot?.settlementDate ?? document.createdAt.slice(0, 10);
-            const partiallySettled = document.openStatus === "PARTIALLY_SETTLED" || document.openStatus === "SETTLED";
-            return (
-              <article className="record-card subledger-record" id={`source-${document.id}`} key={document.id}>
-                <div><span className="code-chip">{document.sourceNumber}</span><StatusPill status={document.status} /></div>
-                <p className="subledger-kind">{document.snapshot.kind.replaceAll("_", " ")} · immutable version {document.version}</p>
-                <h2>{document.partyName}</h2>
-                <p>{document.entityCode} · {documentDate}</p>
-                <strong className="record-amount">{displayExactMoney(document.snapshot.currency, amount)}</strong>
-                <dl>
-                  {business && <div><dt>Open balance</dt><dd>{document.openAmount === null ? "Not issued" : displayExactMoney(document.snapshot.currency, document.openAmount)} {document.openStatus && <StatusPill status={document.openStatus} />}</dd></div>}
-                  {businessSnapshot && <div><dt>Tax</dt><dd>{displayExactMoney(businessSnapshot.currency, businessSnapshot.taxTotal)} · {businessSnapshot.lines[0]?.taxDecision.status ?? "No lines"}</dd></div>}
-                  {settlementSnapshot && <div><dt>Allocations</dt><dd>{settlementSnapshot.allocations.length} open item{settlementSnapshot.allocations.length === 1 ? "" : "s"}</dd></div>}
-                  <div><dt>Journal</dt><dd>{document.journalNumber ? `#${document.journalNumber}` : "Not posted"}</dd></div>
-                  {document.voidReason && <div><dt>Void reason</dt><dd>{document.voidReason}</dd></div>}
-                </dl>
-                <div className="record-actions">
-                  {business && document.status === "DRAFT" && workspace.canManage && <button className="secondary-button compact-button" type="button" onClick={() => openDocument(document)} disabled={busy || pending}>Edit draft</button>}
-                  {business && document.status === "DRAFT" && workspace.canPost && <button className="primary-button compact-button" type="button" onClick={() => void issueDocument(document)} disabled={busy || pending}>Issue</button>}
-                  {business && document.status === "POSTED" && workspace.canSettle && document.openAmount && isPositiveExactAmount(document.openAmount) && <button className="secondary-button compact-button" type="button" onClick={() => openSettlement(document.snapshot.partyAccountId, document.snapshot.currency)} disabled={busy || pending}>Record {settlementLabel}</button>}
-                  {document.status === "POSTED" && workspace.canVoid && <button className="text-danger-button" type="button" onClick={() => prepareVoid(document)} disabled={busy || pending || (business && partiallySettled)}>{business && partiallySettled ? `Reverse ${settlementLabel} first` : "Void"}</button>}
-                </div>
-              </article>
-            );
-          })}
-        </section>
+      {workspace.documents.length || hasRegisterCriteria ? (
+        <>
+          <section className={styles.filterPanel} aria-labelledby="subledger-register-filter-title">
+            <div className={styles.filterHeading}>
+              <h2 id="subledger-register-filter-title">Transaction register</h2>
+              <span className={styles.resultCount} aria-live="polite">
+                {workspace.documents.length} transaction{workspace.documents.length === 1 ? "" : "s"} on page {workspace.pagination?.page ?? 1}
+              </span>
+            </div>
+            <form onSubmit={applyRegisterFilters}>
+              <div className={styles.filters}>
+              <label>
+                <span>Number or {counterpartyLabel}</span>
+                <input
+                  type="search"
+                  value={registerFilter.search}
+                  onChange={(event) => updateRegisterFilter({ search: event.target.value })}
+                  placeholder={`Search ${businessLabel}s and ${settlementLabel}s`}
+                />
+              </label>
+              <label>
+                <span>Legal entity</span>
+                <select value={registerFilter.entityCode} onChange={(event) => updateRegisterFilter({ entityCode: event.target.value })}>
+                  <option value="">All entities</option>
+                  {workspace.entities.map((entity) => <option key={entity.id} value={entity.code}>{entity.code} · {entity.displayName}</option>)}
+                </select>
+              </label>
+              <label>
+                <span>Document status</span>
+                <select value={registerFilter.status} onChange={(event) => updateRegisterFilter({ status: event.target.value })}>
+                  <option value="">All statuses</option>
+                  <option value="DRAFT">Draft</option>
+                  <option value="POSTED">Posted</option>
+                  <option value="VOIDED">Voided</option>
+                </select>
+              </label>
+              <label>
+                <span>Currency</span>
+                <select value={registerFilter.currency} onChange={(event) => updateRegisterFilter({ currency: event.target.value })}>
+                  <option value="">All currencies</option>
+                  {workspace.currencies.map((currency) => <option key={currency.code} value={currency.code}>{currency.code}</option>)}
+                </select>
+              </label>
+              </div>
+              <div className={styles.dateFilters}>
+              <label>
+                <span>Date from</span>
+                <input type="date" value={registerFilter.dateFrom} onChange={(event) => updateRegisterFilter({ dateFrom: event.target.value })} />
+              </label>
+              <label>
+                <span>Date to</span>
+                <input type="date" value={registerFilter.dateTo} onChange={(event) => updateRegisterFilter({ dateTo: event.target.value })} />
+              </label>
+              <label>
+                <span>Due state</span>
+                <select value={registerFilter.due} onChange={(event) => updateRegisterFilter({ due: event.target.value as SubledgerDueFilter })}>
+                  <option value="ALL">All due states</option>
+                  <option value="OVERDUE">Overdue open items</option>
+                  <option value="DUE_TODAY">Due today</option>
+                  <option value="DUE_LATER">Due later</option>
+                  <option value="SETTLED">Settled / no balance</option>
+                  <option value="NOT_APPLICABLE">Drafts and settlements</option>
+                </select>
+              </label>
+                <button className="primary-button" type="submit" disabled={pending}>Apply filters</button>
+                <button className="secondary-button" type="button" onClick={resetRegisterFilter} disabled={pending}>Clear filters</button>
+              </div>
+            </form>
+          </section>
+
+          {workspace.documents.length ? (
+            <section className={styles.registerPanel} aria-label={`${businessLabel} and ${settlementLabel} register`}>
+              <div className="table-scroll" tabIndex={0}>
+                <table>
+                  <caption className="sr-only">Filtered {businessLabel} and {settlementLabel} transactions</caption>
+                  <thead>
+                    <tr>
+                      <th scope="col">Number / type</th>
+                      <th scope="col">{counterpartyLabel}</th>
+                      <th scope="col">Entity</th>
+                      <th scope="col">Document / due</th>
+                      <th scope="col">Status</th>
+                      <th scope="col">Amount / open</th>
+                      <th scope="col">Journal</th>
+                      <th scope="col">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {workspace.documents.map((document) => {
+                      const businessSnapshot = "grossTotal" in document.snapshot ? document.snapshot : null;
+                      const settlementSnapshot = "amount" in document.snapshot ? document.snapshot : null;
+                      const business = businessSnapshot !== null;
+                      const amount = businessSnapshot?.grossTotal ?? settlementSnapshot?.amount ?? "0";
+                      const documentDate = subledgerDocumentDate(document);
+                      const dueOn = subledgerDocumentDueDate(document);
+                      const partiallySettled = document.openStatus === "PARTIALLY_SETTLED" || document.openStatus === "SETTLED";
+                      return (
+                        <tr id={`source-${document.id}`} key={document.id}>
+                          <td className={styles.numberCell}>
+                            <strong>{document.sourceNumber}</strong>
+                            <small>{document.snapshot.kind.replaceAll("_", " ")} · immutable v{document.version}</small>
+                            {document.voidReason && <small>{document.voidReason}</small>}
+                          </td>
+                          <td className={styles.partyCell}><strong>{document.partyName}</strong></td>
+                          <td><span className="code-chip">{document.entityCode}</span></td>
+                          <td className={styles.dateCell}>
+                            <strong>{documentDate}</strong>
+                            <small>{dueOn ? `Due ${dueOn}` : "No due date"}</small>
+                          </td>
+                          <td className={styles.statusCell}>
+                            <StatusPill status={document.status} />
+                            {document.openStatus && <small><StatusPill status={document.openStatus} /></small>}
+                          </td>
+                          <td className={styles.amountCell}>
+                            <strong>{displayExactMoney(document.snapshot.currency, amount)}</strong>
+                            {businessSnapshot && (
+                              <small>
+                                Open {document.openAmount === null ? "Not issued" : displayExactMoney(document.snapshot.currency, document.openAmount)} · Tax {displayExactMoney(businessSnapshot.currency, businessSnapshot.taxTotal)}
+                              </small>
+                            )}
+                            {settlementSnapshot && <small>{settlementSnapshot.allocations.length} open item{settlementSnapshot.allocations.length === 1 ? "" : "s"}</small>}
+                          </td>
+                          <td className={styles.journalCell}>{document.journalNumber ? `#${document.journalNumber}` : "Not posted"}</td>
+                          <td className={styles.actionsCell}>
+                            <div className={styles.rowActions}>
+                              {business && document.status === "DRAFT" && workspace.canManage && <button className="secondary-button compact-button" type="button" onClick={() => openDocument(document)} disabled={busy || pending}>Edit draft</button>}
+                              {business && document.status === "DRAFT" && workspace.canPost && <button className="primary-button compact-button" type="button" onClick={() => void issueDocument(document)} disabled={busy || pending}>Issue</button>}
+                              {business && document.status === "POSTED" && workspace.canSettle && document.openAmount && isPositiveExactAmount(document.openAmount) && <button className="secondary-button compact-button" type="button" onClick={() => openSettlement(document.snapshot.partyAccountId, document.snapshot.currency)} disabled={busy || pending}>Record {settlementLabel}</button>}
+                              {document.status === "POSTED" && workspace.canVoid && <button className="text-danger-button" type="button" onClick={() => prepareVoid(document)} disabled={busy || pending || (business && partiallySettled)}>{business && partiallySettled ? `Reverse ${settlementLabel} first` : "Void"}</button>}
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+              <RegisterPaginationNav
+                basePath={workspace.ownerModule === "receivables" ? "/app/receivables/invoices" : "/app/payables/bills"}
+                pagination={workspace.pagination}
+                parameters={{
+                  q: workspace.registerFilter?.search || undefined,
+                  entity: workspace.registerFilter?.entityCode ?? "",
+                  status: workspace.registerFilter?.status || undefined,
+                  currency: workspace.registerFilter?.currency || undefined,
+                  dateFrom: workspace.registerFilter?.dateFrom || undefined,
+                  dateTo: workspace.registerFilter?.dateTo || undefined,
+                  due: workspace.registerFilter?.due === "ALL" ? undefined : workspace.registerFilter?.due,
+                }}
+              />
+            </section>
+          ) : (
+            <div className={styles.emptyFilter}>
+              <EmptyState title="No transactions match these filters">
+                Clear or broaden the entity, status, currency, date, due-state, or text filters.
+              </EmptyState>
+            </div>
+          )}
+        </>
       ) : (
         <EmptyState title={`No ${businessLabel}s or ${settlementLabel}s found`}>
           {workspace.canManage ? `Create the first ${businessLabel} draft for this organization.` : "No current source documents match the search."}

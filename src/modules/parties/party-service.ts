@@ -50,6 +50,13 @@ export type CreatePartyCommand = Readonly<{
   address?: z.input<typeof addressSchema>;
 }>;
 
+export type AddPartyAccountCommand = Readonly<{
+  context: TenantTransactionContext;
+  partyId: string;
+  idempotencyKey: string;
+  account: z.input<typeof partyAccountSchema>;
+}>;
+
 export type PartyAccountDto = Readonly<{
   id: string;
   legalEntityId: string;
@@ -87,6 +94,25 @@ type StoredPartyAccount = Readonly<{
   control_account_id: string;
   transaction_currency: string | null;
 }>;
+
+type StoredAttachedPartyAccount = StoredPartyAccount & Readonly<{
+  party_id: string;
+}>;
+
+function deterministicCommandUuid(
+  organizationId: string,
+  scope: string,
+  idempotencyKey: string,
+): string {
+  const bytes = createHash("sha256")
+    .update(`business-finlynq|${organizationId}|${scope}|${idempotencyKey}`, "utf8")
+    .digest()
+    .subarray(0, 16);
+  bytes[6] = (bytes[6]! & 0x0f) | 0x40;
+  bytes[8] = (bytes[8]! & 0x3f) | 0x80;
+  const hex = bytes.toString("hex");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
 
 function decryptPartyName(
   row: StoredParty,
@@ -260,7 +286,6 @@ export async function createParty(
            WHERE entity.organization_id = $1
              AND entity.id = $2
              AND entity.active
-             AND entity.country_code IN ('CA', 'US')
              AND control_account.control_kind = CASE $4::text
                WHEN 'CUSTOMER' THEN 'AR'::control_account_kind
                WHEN 'SUPPLIER' THEN 'AP'::control_account_kind
@@ -347,6 +372,148 @@ export async function createParty(
     } finally {
       activeKey.dek.fill(0);
     }
+  });
+}
+
+export async function addPartyAccount(
+  command: AddPartyAccountCommand,
+): Promise<Readonly<{ partyAccount: PartyAccountDto; idempotentReplay: boolean }>> {
+  assertTenantWritesEnabled(command.context);
+  const partyId = z.uuid().parse(command.partyId);
+  const idempotencyKey = idempotencyKeySchema.parse(command.idempotencyKey);
+  const account = partyAccountSchema.parse(command.account);
+  const transactionCurrency = account.transactionCurrency ?? null;
+  const partyAccountId = deterministicCommandUuid(
+    command.context.organizationId,
+    `party:${partyId}:account`,
+    idempotencyKey,
+  );
+
+  return withTenantTransaction(command.context, async (client) => {
+    await assertActorHasActivePermission(client, {
+      organizationId: command.context.organizationId,
+      actorId: command.context.actorId,
+      permission: PERMISSIONS.manageParties,
+    });
+    await assertWritableOrganization(client, command.context);
+
+    const party = await client.query(
+      `SELECT 1
+       FROM parties
+       WHERE organization_id = $1 AND id = $2 AND active
+       FOR SHARE`,
+      [command.context.organizationId, partyId],
+    );
+    if (!party.rows[0]) {
+      throw new Error("The active organization party was not found");
+    }
+
+    const accountingSetup = await client.query(
+      `SELECT 1
+       FROM legal_entities entity
+       JOIN ledgers ledger
+         ON ledger.organization_id = entity.organization_id
+        AND ledger.legal_entity_id = entity.id
+        AND ledger.id = $3
+        AND ledger.kind = 'PRIMARY'
+        AND ledger.active
+       JOIN gl_accounts control_account
+         ON control_account.organization_id = ledger.organization_id
+        AND control_account.ledger_id = ledger.id
+        AND control_account.id = $5
+        AND control_account.active
+        AND control_account.postable
+        AND control_account.valid_from <= current_date
+        AND (control_account.valid_to IS NULL OR control_account.valid_to >= current_date)
+       WHERE entity.organization_id = $1
+         AND entity.id = $2
+         AND entity.active
+         AND control_account.control_kind = CASE $4::text
+           WHEN 'CUSTOMER' THEN 'AR'::control_account_kind
+           WHEN 'SUPPLIER' THEN 'AP'::control_account_kind
+         END
+         AND EXISTS (
+           SELECT 1
+           FROM account_combinations combination
+           WHERE combination.organization_id = entity.organization_id
+             AND combination.ledger_id = ledger.id
+             AND combination.entity_id = entity.id
+             AND combination.account_id = control_account.id
+             AND combination.active
+         )
+         AND ($6::text IS NULL OR EXISTS (
+           SELECT 1 FROM currency_definitions currency
+           WHERE currency.code = $6 AND currency.active
+         ))`,
+      [
+        command.context.organizationId,
+        account.legalEntityId,
+        account.ledgerId,
+        account.role,
+        account.controlAccountId,
+        transactionCurrency,
+      ],
+    );
+    if (!accountingSetup.rows[0]) {
+      throw new Error("The selected entity, primary ledger, role, control account, or currency is not an active AR/AP configuration");
+    }
+
+    const inserted = await client.query<StoredAttachedPartyAccount>(
+      `INSERT INTO party_accounts (
+         id, organization_id, legal_entity_id, ledger_id, party_id,
+         role, account_number, control_account_id, transaction_currency
+       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+       ON CONFLICT DO NOTHING
+       RETURNING id, party_id, legal_entity_id, ledger_id, role, account_number,
+         control_account_id, transaction_currency`,
+      [
+        partyAccountId,
+        command.context.organizationId,
+        account.legalEntityId,
+        account.ledgerId,
+        partyId,
+        account.role,
+        account.accountNumber,
+        account.controlAccountId,
+        transactionCurrency,
+      ],
+    );
+    let stored = inserted.rows[0];
+    const idempotentReplay = !stored;
+    if (!stored) {
+      const existing = await client.query<StoredAttachedPartyAccount>(
+        `SELECT id, party_id, legal_entity_id, ledger_id, role, account_number,
+           control_account_id, transaction_currency
+         FROM party_accounts
+         WHERE organization_id = $1
+           AND (
+             id = $2 OR
+             (legal_entity_id = $3 AND role = $4 AND account_number = $5)
+           )
+         ORDER BY CASE WHEN id = $2 THEN 0 ELSE 1 END
+         LIMIT 1
+         FOR SHARE`,
+        [
+          command.context.organizationId,
+          partyAccountId,
+          account.legalEntityId,
+          account.role,
+          account.accountNumber,
+        ],
+      );
+      stored = existing.rows[0];
+      if (!stored || stored.party_id !== partyId ||
+          stored.legal_entity_id !== account.legalEntityId ||
+          stored.ledger_id !== account.ledgerId ||
+          stored.role !== account.role ||
+          stored.account_number !== account.accountNumber ||
+          stored.control_account_id !== account.controlAccountId ||
+          stored.transaction_currency !== transactionCurrency) {
+        throw new Error("The entity role or idempotency key is already bound to different party account data");
+      }
+    }
+
+    return { partyAccount: accountToDto(stored), idempotentReplay };
   });
 }
 

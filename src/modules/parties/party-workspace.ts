@@ -98,7 +98,6 @@ export async function loadPartyAccountCreationOptions(
         AND combination.active
        WHERE entity.organization_id = $1
          AND entity.active
-         AND entity.country_code IN ('CA', 'US')
        ORDER BY entity.code, role, control_account.code`,
       [principal.organizationId],
     );

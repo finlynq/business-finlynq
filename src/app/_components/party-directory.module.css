@@ -1,0 +1,176 @@
+.directoryPanel {
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  background: #fff;
+  box-shadow: var(--shadow);
+}
+
+.directoryHeading {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: 20px;
+  padding: 18px 20px;
+  border-bottom: 1px solid var(--line);
+}
+
+.directoryHeading h2 {
+  margin: 0;
+  font-family: Georgia, serif;
+  font-size: 23px;
+}
+
+.directoryHeading p:last-child {
+  margin: 6px 0 0;
+  color: var(--muted);
+}
+
+.searchForm {
+  display: grid;
+  grid-template-columns: minmax(230px, 360px) auto;
+  align-items: end;
+  gap: 9px;
+}
+
+.searchForm label span {
+  display: block;
+  margin-bottom: 7px;
+}
+
+.partyCell {
+  min-width: 190px;
+}
+
+.partyIdentity {
+  display: grid;
+  grid-template-columns: 42px minmax(0, 1fr);
+  align-items: center;
+  gap: 11px;
+}
+
+.partyIdentity > span {
+  width: 42px;
+  height: 42px;
+}
+
+.partyIdentity strong,
+.partyIdentity small {
+  display: block;
+}
+
+.partyIdentity small {
+  margin-top: 4px;
+  color: var(--muted);
+}
+
+.accountList,
+.addressList {
+  display: grid;
+  gap: 8px;
+  min-width: 230px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.accountList li,
+.addressList li {
+  display: grid;
+  gap: 3px;
+}
+
+.accountMeta,
+.addressMeta {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.accountNumber {
+  font-family: ui-monospace, monospace;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.roleBadge {
+  display: inline-flex;
+  width: max-content;
+  margin-right: 5px;
+  padding: 3px 6px;
+  border-radius: 999px;
+  color: #245b55;
+  background: #e7f3f1;
+  font-size: 9px;
+  font-weight: 900;
+  letter-spacing: .05em;
+  text-transform: uppercase;
+}
+
+.attachDetails {
+  min-width: 280px;
+}
+
+.attachDetails summary {
+  width: max-content;
+  color: var(--accent-dark);
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.attachForm {
+  display: grid;
+  gap: 10px;
+  width: min(620px, 72vw);
+  margin-top: 12px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: #f8fafb;
+}
+
+.attachForm label span {
+  display: block;
+  margin-bottom: 6px;
+}
+
+.attachForm button {
+  justify-self: start;
+}
+
+.attachMessage {
+  margin: 0;
+}
+
+.emptyValue {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+@media (max-width: 860px) {
+  .directoryHeading {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .searchForm {
+    grid-template-columns: 1fr auto;
+  }
+
+  .attachForm {
+    width: min(520px, 78vw);
+  }
+}
+
+@media (max-width: 580px) {
+  .searchForm {
+    grid-template-columns: 1fr;
+  }
+
+  .searchForm button {
+    width: 100%;
+  }
+
+  .attachForm {
+    width: 76vw;
+  }
+}

@@ -29,15 +29,29 @@ export const SIGNUP_REGIONS = {
   ],
 } as const;
 
-export type SignupCountry = keyof typeof SIGNUP_REGIONS;
+export const SIGNUP_ACCOUNTING_PROFILES = [
+  ["CAN_ASPE", "Canadian ASPE"],
+  ["US_GAAP_NONPUBLIC", "U.S. GAAP — non-public entities"],
+] as const;
 
-export function isSignupRegion(country: SignupCountry, region: string): boolean {
-  return SIGNUP_REGIONS[country].some(([code]) => code === region);
+export type SignupCountry = string;
+export type SignupAccountingProfile = (typeof SIGNUP_ACCOUNTING_PROFILES)[number][0];
+
+export function isSignupCountry(country: string): boolean {
+  return /^[A-Z]{2}$/.test(country);
 }
 
-export function signupCountryDefaults(country: SignupCountry): Readonly<{
-  functionalCurrency: "CAD" | "USD";
-  accountingProfile: "CAN_ASPE" | "US_GAAP_NONPUBLIC";
+export function isSignupRegion(country: string, region: string): boolean {
+  if (!/^[A-Z0-9-]{2,10}$/.test(region)) return false;
+  if (country === "CA" || country === "US") {
+    return SIGNUP_REGIONS[country].some(([code]) => code === region);
+  }
+  return isSignupCountry(country);
+}
+
+export function signupCountryDefaults(country: string): Readonly<{
+  functionalCurrency: string;
+  accountingProfile: SignupAccountingProfile;
 }> {
   return country === "CA"
     ? { functionalCurrency: "CAD", accountingProfile: "CAN_ASPE" }

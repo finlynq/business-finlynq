@@ -11,6 +11,7 @@ import {
   type SessionPrincipal,
 } from "@/modules/identity/session";
 import {
+  createBlindIndex,
   parseEncryptedField,
   decryptField,
 } from "@/security/organization-encryption";
@@ -18,12 +19,20 @@ import { loadActiveOrganizationKey } from "@/security/organization-key-store";
 import { principalCanWrite } from "@/modules/workspace/write-policy";
 import { withWorkspaceTenantRead } from "@/modules/workspace/tenant-read";
 import {
+  normalizeRegisterPage,
+  registerPageSize,
+  registerPageWindow,
+  type RegisterPagination,
+} from "@/modules/workspace/register-pagination";
+import {
   subledgerSourceSnapshotSchema,
   type BusinessDocumentKind,
   type SettlementDocumentKind,
   type SubledgerOwnerModule,
   type SubledgerSourceSnapshot,
 } from "./document-model";
+import type { OrganizationFxRate } from "./fx-suggestions";
+import type { SubledgerDueFilter, SubledgerRegisterFilter } from "./register-filter";
 
 type SourceDocumentStatus = "DRAFT" | "POSTED" | "VOIDED";
 type AccountClass = "ASSET" | "LIABILITY" | "EQUITY" | "REVENUE" | "EXPENSE";
@@ -56,7 +65,7 @@ export type SubledgerEntityOptionDto = Readonly<{
   id: string;
   code: string;
   displayName: string;
-  countryCode: "CA" | "US";
+  countryCode: string;
   regionCode: string;
   ledgerId: string;
   functionalCurrency: string;
@@ -69,9 +78,9 @@ export type SubledgerEntityOptionDto = Readonly<{
   fxLossAccounts: readonly SubledgerAccountOptionDto[];
   roundingAccounts: readonly SubledgerAccountOptionDto[];
   tax: Readonly<{
-    packKey: "ca.on.hst" | "us.wa.sales-use";
+    packKey: string;
     registrationReference: string | null;
-    destinationCountry: "CA" | "US";
+    destinationCountry: string;
     destinationRegion: string;
     destinationCity: string | null;
     locationCode: string | null;
@@ -125,9 +134,17 @@ export type SubledgerWorkspaceDto = Readonly<{
   canVoid: boolean;
   currentDate: string;
   currencies: readonly Readonly<{ code: string; minorUnits: number }>[];
+  fxRates: readonly OrganizationFxRate[];
   entities: readonly SubledgerEntityOptionDto[];
   documents: readonly SubledgerWorkspaceDocumentDto[];
   openItems: readonly SubledgerOpenItemDto[];
+  registerFilter: SubledgerRegisterFilter;
+  pagination: RegisterPagination;
+  preferredEntityId: string | null;
+}>;
+
+export type SubledgerRegisterRequest = Readonly<Partial<SubledgerRegisterFilter> & {
+  page?: number;
 }>;
 
 type EntityRow = Readonly<{
@@ -172,8 +189,13 @@ type TaxRow = Readonly<{
   legal_entity_id: string;
   registration_id: string;
   regime_key: string;
-  effective_from: string;
-  effective_to: string | null;
+  destination_country: string | null;
+  destination_region: string | null;
+  destination_city: string | null;
+  location_code: string | null;
+  registration_valid_to: string | null;
+  pack_effective_from: string | null;
+  pack_effective_to: string | null;
 }>;
 
 type DocumentRow = Readonly<{
@@ -278,28 +300,43 @@ function accountOptions(
   }));
 }
 
-function containsSearch(
-  document: SubledgerWorkspaceDocumentDto,
-  normalizedSearch: string,
-): boolean {
-  if (!normalizedSearch) return true;
-  return [
-    document.sourceNumber,
-    document.sourceType,
-    document.status,
-    document.partyName,
-    document.entityCode,
-    document.snapshot.description,
-    document.journalNumber?.toString() ?? "",
-  ].some((value) => value.toLocaleLowerCase().includes(normalizedSearch));
+const dueFilters = new Set<SubledgerDueFilter>([
+  "ALL", "OVERDUE", "DUE_TODAY", "DUE_LATER", "SETTLED", "NOT_APPLICABLE",
+]);
+
+export function normalizeSubledgerRegisterRequest(
+  input: string | SubledgerRegisterRequest = "",
+): Readonly<{ filter: SubledgerRegisterFilter; page: number }> {
+  const candidate = typeof input === "string" ? { search: input } : input;
+  const status = ["DRAFT", "POSTED", "VOIDED"].includes(candidate.status ?? "")
+    ? candidate.status!
+    : "";
+  const due = dueFilters.has(candidate.due ?? "ALL") ? candidate.due ?? "ALL" : "ALL";
+  const date = (value: string | undefined) => /^\d{4}-\d{2}-\d{2}$/.test(value ?? "") ? value! : "";
+  return {
+    filter: {
+      search: (candidate.search ?? "").trim().slice(0, 100),
+      entityCode: /^[A-Z0-9][A-Z0-9_-]{0,15}$/.test(candidate.entityCode ?? "")
+        ? candidate.entityCode!
+        : "",
+      status,
+      currency: /^[A-Z]{3}$/.test(candidate.currency ?? "") ? candidate.currency! : "",
+      dateFrom: date(candidate.dateFrom),
+      dateTo: date(candidate.dateTo),
+      due,
+    },
+    page: normalizeRegisterPage(candidate.page),
+  };
 }
 
 export async function loadSubledgerWorkspace(
   principal: SessionPrincipal,
   ownerModule: SubledgerOwnerModule,
-  search = "",
+  registerRequest: string | SubledgerRegisterRequest = "",
+  preferredEntityId: string | null = null,
 ): Promise<SubledgerWorkspaceDto> {
-  const normalizedSearch = search.trim().slice(0, 100).toLocaleLowerCase();
+  const { filter: registerFilter, page } = normalizeSubledgerRegisterRequest(registerRequest);
+  const normalizedSearch = registerFilter.search.toLocaleLowerCase();
   const policy = permissionsFor(ownerModule);
   const role = ownerModule === "receivables" ? "CUSTOMER" : "SUPPLIER";
   const sourceType = ownerModule === "receivables"
@@ -354,9 +391,18 @@ export async function loadSubledgerWorkspace(
         canVoid,
         currentDate,
         currencies: [],
+        fxRates: [],
         entities: [],
         documents: [],
         openItems: [],
+        registerFilter,
+        pagination: {
+          page,
+          pageSize: registerPageSize,
+          hasPrevious: page > 1,
+          hasNext: false,
+        },
+        preferredEntityId: null,
       };
     }
 
@@ -370,7 +416,6 @@ export async function loadSubledgerWorkspace(
           AND ledger.legal_entity_id = entity.id
           AND ledger.kind = 'PRIMARY' AND ledger.active
          WHERE entity.organization_id = $1 AND entity.active
-           AND entity.country_code IN ('CA', 'US')
          ORDER BY entity.code`,
         [principal.organizationId],
       );
@@ -426,27 +471,81 @@ export async function loadSubledgerWorkspace(
     const taxResult = await client.query<TaxRow>(
         `SELECT registration.legal_entity_id,
            registration.id AS registration_id, registration.regime_key,
-           version.effective_from::text, version.effective_to::text
+           registration.destination_country, registration.destination_region,
+           registration.destination_city, registration.location_code,
+           registration.valid_to::text AS registration_valid_to,
+           version.effective_from::text AS pack_effective_from,
+           version.effective_to::text AS pack_effective_to
          FROM entity_tax_registrations registration
          LEFT JOIN LATERAL (
            SELECT pack.effective_from, pack.effective_to
            FROM tax_pack_versions pack
            WHERE pack.pack_key = registration.regime_key
+             AND pack.effective_from <= $2::date
            ORDER BY pack.effective_from DESC, pack.approved_at DESC
            LIMIT 1
          ) version ON true
          WHERE registration.organization_id = $1
            AND registration.valid_from <= $2::date
-           AND (registration.valid_to IS NULL OR registration.valid_to >= $2::date)
-         ORDER BY registration.legal_entity_id, registration.valid_from DESC`,
+         ORDER BY registration.legal_entity_id, registration.valid_from DESC,
+           registration.id DESC`,
         [principal.organizationId, currentDate],
       );
     const currencyResult = await client.query<{ code: string; minor_units: number }>(
-        `SELECT code, minor_units
-         FROM currency_definitions
-         WHERE active
-         ORDER BY CASE code WHEN 'USD' THEN 0 WHEN 'CAD' THEN 1 ELSE 2 END, code`,
+         `SELECT definition.code, definition.minor_units
+         FROM currency_definitions definition
+         WHERE (
+             definition.active
+             AND EXISTS (
+               SELECT 1
+               FROM organization_currencies configured
+               WHERE configured.organization_id = $1
+                 AND configured.currency_code = definition.code
+                 AND configured.enabled
+             )
+           )
+           OR EXISTS (
+             SELECT 1
+             FROM ledgers functional_ledger
+             WHERE functional_ledger.organization_id = $1
+               AND functional_ledger.functional_currency = definition.code
+               AND functional_ledger.active
+           )
+         ORDER BY CASE definition.code WHEN 'USD' THEN 0 WHEN 'CAD' THEN 1 ELSE 2 END,
+           definition.code`,
+        [principal.organizationId],
       );
+    const fxRateResult = await client.query<{
+      id: string;
+      source_currency: string;
+      target_currency: string;
+      rate: string;
+      effective_at: string;
+      source: string;
+    }>(
+        `SELECT rate.id, rate.source_currency, rate.target_currency,
+           rate.rate::text, rate.effective_at::text, rate.source
+         FROM currency_exchange_rates rate
+         WHERE rate.organization_id = $1
+         ORDER BY rate.effective_at DESC, rate.created_at DESC, rate.id DESC
+         LIMIT 500`,
+        [principal.organizationId],
+      );
+    let partySearchToken: ReturnType<typeof createBlindIndex> | null = null;
+    if (normalizedSearch && partyAccountsResult.rows.length > 0) {
+      const searchKey = await loadActiveOrganizationKey(client, principal.organizationId);
+      try {
+        partySearchToken = createBlindIndex(
+          registerFilter.search,
+          searchKey.dek,
+          principal.organizationId,
+          "parties.display-name",
+        );
+      } finally {
+        searchKey.dek.fill(0);
+      }
+    }
+    const searchPattern = `%${normalizedSearch.replace(/[\\%_]/g, "\\$&")}%`;
     const documentsResult = await client.query<DocumentRow>(
         `SELECT current.id, current.source_type, current.source_number,
            current.version, current.status, current.snapshot,
@@ -485,16 +584,71 @@ export async function loadSubledgerWorkspace(
          ) balance ON true
          WHERE current.organization_id = $1
            AND current.owner_module = $2
+           AND ($3 = '' OR current.source_number ILIKE $4 ESCAPE '\\'
+             OR current.source_type ILIKE $4 ESCAPE '\\'
+             OR current.status::text ILIKE $4 ESCAPE '\\'
+             OR current.snapshot ->> 'description' ILIKE $4 ESCAPE '\\'
+             OR current.snapshot ->> 'currency' ILIKE $4 ESCAPE '\\'
+             OR linked_journal.journal_number::text ILIKE $4 ESCAPE '\\'
+             OR EXISTS (
+               SELECT 1
+               FROM party_accounts searched_account
+               JOIN parties searched_party
+                 ON searched_party.organization_id = searched_account.organization_id
+                AND searched_party.id = searched_account.party_id
+               WHERE searched_account.organization_id = current.organization_id
+                 AND searched_account.id::text = current.snapshot ->> 'partyAccountId'
+                 AND searched_party.search_token = $5
+             )
+             OR EXISTS (
+               SELECT 1 FROM legal_entities searched_entity
+               WHERE searched_entity.organization_id = current.organization_id
+                 AND searched_entity.id::text = current.snapshot ->> 'legalEntityId'
+                 AND searched_entity.code ILIKE $4 ESCAPE '\\'
+             ))
+           AND ($6 = '' OR EXISTS (
+             SELECT 1 FROM legal_entities filtered_entity
+             WHERE filtered_entity.organization_id = current.organization_id
+               AND filtered_entity.id::text = current.snapshot ->> 'legalEntityId'
+               AND filtered_entity.code = $6
+           ))
+           AND ($7 = '' OR current.status::text = $7)
+           AND ($8 = '' OR current.snapshot ->> 'currency' = $8)
+           AND ($9 = '' OR coalesce(current.snapshot ->> 'documentDate', current.snapshot ->> 'settlementDate') >= $9)
+           AND ($10 = '' OR coalesce(current.snapshot ->> 'documentDate', current.snapshot ->> 'settlementDate') <= $10)
+           AND (
+             $11 = 'ALL'
+             OR ($11 = 'NOT_APPLICABLE' AND (NOT (current.snapshot ? 'dueOn') OR balance.id IS NULL))
+             OR ($11 = 'SETTLED' AND current.snapshot ? 'dueOn' AND balance.id IS NOT NULL AND balance.open_transaction_amount <= 0)
+             OR ($11 = 'OVERDUE' AND current.snapshot ? 'dueOn' AND balance.open_transaction_amount > 0 AND (current.snapshot ->> 'dueOn') < $12)
+             OR ($11 = 'DUE_TODAY' AND current.snapshot ? 'dueOn' AND balance.open_transaction_amount > 0 AND (current.snapshot ->> 'dueOn') = $12)
+             OR ($11 = 'DUE_LATER' AND current.snapshot ? 'dueOn' AND balance.open_transaction_amount > 0 AND (current.snapshot ->> 'dueOn') > $12)
+           )
            AND NOT EXISTS (
              SELECT 1 FROM source_documents newer
              WHERE newer.organization_id = current.organization_id
                AND newer.source_type = current.source_type
                AND newer.source_number = current.source_number
                AND newer.version > current.version
-           )
+         )
          ORDER BY current.created_at DESC, current.source_number
-         LIMIT 200`,
-        [principal.organizationId, ownerModule],
+         LIMIT $13 OFFSET $14`,
+        [
+          principal.organizationId,
+          ownerModule,
+          normalizedSearch,
+          searchPattern,
+          partySearchToken,
+          registerFilter.entityCode,
+          registerFilter.status,
+          registerFilter.currency,
+          registerFilter.dateFrom,
+          registerFilter.dateTo,
+          registerFilter.due,
+          currentDate,
+          registerPageSize + 1,
+          (page - 1) * registerPageSize,
+        ],
       );
     const openItemsResult = await client.query<OpenItemRow>(
         `SELECT balance.id, source.source_number,
@@ -567,21 +721,29 @@ export async function loadSubledgerWorkspace(
       existing.push(account);
       partyAccountsByEntity.set(account.legal_entity_id, existing);
     }
-    const taxByEntity = new Map(taxResult.rows.map((registration) => [
-      registration.legal_entity_id,
-      registration,
-    ]));
+    const taxByEntity = new Map<string, TaxRow>();
+    for (const registration of taxResult.rows) {
+      if (!taxByEntity.has(registration.legal_entity_id)) {
+        taxByEntity.set(registration.legal_entity_id, registration);
+      }
+    }
 
     const entities = entitiesResult.rows.map<SubledgerEntityOptionDto>((entity) => {
       const accounts = accountsByEntity.get(entity.id) ?? [];
-      const tax = taxByEntity.get(entity.id);
-      const canadian = entity.country_code === "CA";
+      const taxCandidate = taxByEntity.get(entity.id);
+      const tax = taxCandidate
+        && (!taxCandidate.registration_valid_to || taxCandidate.registration_valid_to >= currentDate)
+        ? taxCandidate
+        : undefined;
+      const configuredTax = tax?.destination_country && tax.destination_region ? tax : undefined;
+      const countryCode = entity.country_code.toUpperCase();
+      const regionCode = entity.region_code.toUpperCase();
       return {
         id: entity.id,
         code: entity.code,
         displayName: entity.display_name,
-        countryCode: canadian ? "CA" : "US",
-        regionCode: entity.region_code,
+        countryCode,
+        regionCode,
         ledgerId: entity.ledger_id,
         functionalCurrency: entity.functional_currency,
         periods: (periodsByLedger.get(entity.ledger_id) ?? []).map((period) => ({
@@ -611,14 +773,14 @@ export async function loadSubledgerWorkspace(
         fxLossAccounts: accountOptions(accounts, (account) => account.account_class === "EXPENSE"),
         roundingAccounts: accountOptions(accounts, () => true),
         tax: {
-          packKey: canadian ? "ca.on.hst" : "us.wa.sales-use",
-          registrationReference: tax?.registration_id ?? null,
-          destinationCountry: canadian ? "CA" : "US",
-          destinationRegion: entity.region_code,
-          destinationCity: canadian ? null : "Seattle",
-          locationCode: canadian ? null : "1726",
-          effectiveFrom: tax?.effective_from ?? null,
-          effectiveTo: tax?.effective_to ?? null,
+          packKey: configuredTax?.regime_key ?? "generic.unsupported",
+          registrationReference: configuredTax?.registration_id ?? null,
+          destinationCountry: configuredTax?.destination_country ?? "ZZ",
+          destinationRegion: configuredTax?.destination_region ?? "NA",
+          destinationCity: configuredTax?.destination_city ?? null,
+          locationCode: configuredTax?.location_code ?? null,
+          effectiveFrom: configuredTax?.pack_effective_from ?? null,
+          effectiveTo: configuredTax?.pack_effective_to ?? null,
         },
       };
     });
@@ -626,7 +788,8 @@ export async function loadSubledgerWorkspace(
     const entityById = new Map(entities.map((entity) => [entity.id, entity]));
     const partyAccountById = new Map(entities.flatMap((entity) =>
       entity.partyAccounts.map((account) => [account.id, account] as const)));
-    const documents = documentsResult.rows.map<SubledgerWorkspaceDocumentDto>((row) => {
+    const documentPage = registerPageWindow(documentsResult.rows, page);
+    const documents = documentPage.rows.map<SubledgerWorkspaceDocumentDto>((row) => {
       const snapshot = subledgerSourceSnapshotSchema.parse(row.snapshot);
       const party = partyAccountById.get(snapshot.partyAccountId);
       const entity = entityById.get(snapshot.legalEntityId);
@@ -647,7 +810,7 @@ export async function loadSubledgerWorkspace(
         openAmount: row.open_amount,
         openStatus: row.open_status,
       };
-    }).filter((document) => containsSearch(document, normalizedSearch));
+    });
     const openItems = openItemsResult.rows.map<SubledgerOpenItemDto>((item) => ({
       id: item.id,
       sourceNumber: item.source_number,
@@ -678,9 +841,22 @@ export async function loadSubledgerWorkspace(
         code: currency.code,
         minorUnits: currency.minor_units,
       })),
+      fxRates: fxRateResult.rows.map((rate) => ({
+        id: rate.id,
+        sourceCurrency: rate.source_currency,
+        targetCurrency: rate.target_currency,
+        rate: rate.rate,
+        effectiveAt: rate.effective_at,
+        source: rate.source,
+      })),
       entities,
       documents,
       openItems,
+      registerFilter,
+      pagination: documentPage.pagination,
+      preferredEntityId: entities.some((entity) => entity.id === preferredEntityId)
+        ? preferredEntityId
+        : entities[0]?.id ?? null,
     };
   });
 }

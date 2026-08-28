@@ -89,6 +89,24 @@ const mocks = vi.hoisted(() => {
       openPayables: [],
     })),
     loadTrialBalance: vi.fn(async () => []),
+    loadReportDimensions: vi.fn(async () => ({
+      entities: [{
+        id: "30000000-0000-4000-8000-000000000001",
+        code: "SECOND",
+        displayName: "Second Organization LLC",
+        ledgerId: "30000000-0000-4000-8000-000000000002",
+        ledgerCode: "SECOND-PRIMARY",
+        currency: "USD",
+        defaultPeriodId: "30000000-0000-4000-8000-000000000003",
+        periods: [{
+          id: "30000000-0000-4000-8000-000000000003",
+          label: "August 2026",
+          startsOn: "2026-08-01",
+          endsOn: "2026-08-31",
+        }],
+        accounts: [],
+      }],
+    })),
     loadTaxDeterminations: vi.fn(async () => []),
     loadSubledgerWorkspace: vi.fn(async (_principal: unknown, ownerModule: "receivables" | "payables") => ({
       ownerModule,
@@ -105,6 +123,17 @@ const mocks = vi.hoisted(() => {
       entities: [],
       documents: [],
       openItems: [],
+    })),
+    currentWorkspaceEntityContext: vi.fn(async () => ({
+      options: [],
+      selectedEntity: {
+        id: "30000000-0000-4000-8000-000000000001",
+        code: "SECOND",
+        displayName: "Second Organization LLC",
+        functionalCurrency: "USD",
+        periodLabel: "August 2026",
+        periodState: "OPEN",
+      },
     })),
   };
 });
@@ -131,10 +160,14 @@ vi.mock("@/modules/reporting/tenant-reporting", async (importOriginal) => ({
   loadEntitySummaries: mocks.loadEntitySummaries,
   loadAccountingOverview: mocks.loadAccountingOverview,
   loadTrialBalance: mocks.loadTrialBalance,
+  loadReportDimensions: mocks.loadReportDimensions,
   loadTaxDeterminations: mocks.loadTaxDeterminations,
 }));
 vi.mock("@/modules/subledger/workspace", () => ({
   loadSubledgerWorkspace: mocks.loadSubledgerWorkspace,
+}));
+vi.mock("@/modules/workspace/entity-context", () => ({
+  currentWorkspaceEntityContext: mocks.currentWorkspaceEntityContext,
 }));
 
 import OverviewPage from "@/app/(workspace)/app/page";
@@ -183,15 +216,15 @@ type RenderedElement = Readonly<{
   props?: Readonly<Record<string, unknown>>;
 }>;
 
-function findElementsByHref(value: unknown, href: string): RenderedElement[] {
+function findElementsByHrefPrefix(value: unknown, prefix: string): RenderedElement[] {
   if (!value || typeof value !== "object") return [];
-  if (Array.isArray(value)) return value.flatMap((child) => findElementsByHref(child, href));
-
+  if (Array.isArray(value)) return value.flatMap((child) => findElementsByHrefPrefix(child, prefix));
   const candidate = value as RenderedElement;
-  const matches = candidate.props?.href === href ? [candidate] : [];
+  const href = candidate.props?.href;
+  const matches = typeof href === "string" && href.startsWith(prefix) ? [candidate] : [];
   return [
     ...matches,
-    ...Object.values(candidate.props ?? {}).flatMap((child) => findElementsByHref(child, href)),
+    ...Object.values(candidate.props ?? {}).flatMap((child) => findElementsByHrefPrefix(child, prefix)),
   ];
 }
 
@@ -232,15 +265,28 @@ describe("real organization workspace isolation", () => {
     expect(serialized(pages[6])).toContain("No recorded tax decisions");
     expect(mocks.loadEntitySummaries).toHaveBeenCalledWith(mocks.principal);
     expect(mocks.loadAccountingOverview).toHaveBeenCalledWith(mocks.principal);
-    expect(mocks.loadTrialBalance).toHaveBeenCalledWith(mocks.principal);
+    expect(mocks.loadTrialBalance).toHaveBeenCalledWith(
+      mocks.principal,
+      expect.objectContaining({ entityCode: "SECOND", currency: "USD" }),
+    );
     expect(mocks.loadTaxDeterminations).toHaveBeenCalledWith(mocks.principal, { reviewOnly: false });
-    expect(mocks.loadSubledgerWorkspace).toHaveBeenCalledWith(mocks.principal, "payables", "");
-    expect(mocks.loadSubledgerWorkspace).toHaveBeenCalledWith(mocks.principal, "receivables", "");
+    expect(mocks.loadSubledgerWorkspace).toHaveBeenCalledWith(
+      mocks.principal,
+      "payables",
+      expect.objectContaining({ entityCode: "SECOND" }),
+      "30000000-0000-4000-8000-000000000001",
+    );
+    expect(mocks.loadSubledgerWorkspace).toHaveBeenCalledWith(
+      mocks.principal,
+      "receivables",
+      expect.objectContaining({ entityCode: "SECOND" }),
+      "30000000-0000-4000-8000-000000000001",
+    );
   });
 
   it("renders CSV exports as native downloads outside Next App Router prefetching", async () => {
     const pages = await Promise.all([OverviewPage(), TrialBalancePage()]);
-    const exports = pages.flatMap((page) => findElementsByHref(
+    const exports = pages.flatMap((page) => findElementsByHrefPrefix(
       page,
       "/app/reports/trial-balance.csv",
     ));
@@ -261,6 +307,7 @@ describe("real organization workspace isolation", () => {
     expect(output).not.toContain("Northstar");
     expect(output).not.toContain("Harbour Dental");
     expect(mocks.loadManualJournalOptions).toHaveBeenCalledWith(mocks.principal);
+    expect(mocks.currentWorkspaceEntityContext).toHaveBeenCalledWith(mocks.principal);
     expect(mocks.loadPeriodControlWorkspace).toHaveBeenCalledWith(mocks.principal);
   });
 
@@ -272,8 +319,13 @@ describe("real organization workspace isolation", () => {
     expect(serialized(journals)).toContain("Accounting setup is not complete");
     expect(serialized(parties)).toContain("No party found");
     expect(serialized([journals, parties])).not.toContain("Northstar");
-    expect(mocks.loadTenantJournalWorkspace).toHaveBeenCalledWith(mocks.principal, "");
-    expect(mocks.loadTenantPartyDirectory).toHaveBeenCalledWith(mocks.principal, "");
+    expect(mocks.loadTenantJournalWorkspace).toHaveBeenCalledWith(
+      mocks.principal,
+      "",
+      "30000000-0000-4000-8000-000000000001",
+      1,
+    );
+    expect(mocks.loadTenantPartyDirectory).toHaveBeenCalledWith(mocks.principal, "", 1);
   });
 
   it("renders encrypted party creation only when the real tenant role can manage parties", async () => {
@@ -306,7 +358,29 @@ describe("real organization workspace isolation", () => {
   });
 
   it("does not place demo records in real-session global search or CSV output", async () => {
-    const shell = WorkspaceShell({ children: null, principal: mocks.principal, readOnly: false });
+    const shell = WorkspaceShell({
+      children: null,
+      principal: mocks.principal,
+      readOnly: false,
+      entityContext: {
+        options: [{
+          id: "30000000-0000-4000-8000-000000000010",
+          code: "SECOND",
+          displayName: "Second Organization LLC",
+          functionalCurrency: "USD",
+          periodLabel: "August 2026",
+          periodState: "OPEN",
+        }],
+        selectedEntity: {
+          id: "30000000-0000-4000-8000-000000000010",
+          code: "SECOND",
+          displayName: "Second Organization LLC",
+          functionalCurrency: "USD",
+          periodLabel: "August 2026",
+          periodState: "OPEN",
+        },
+      },
+    });
     const searchEntries = findSearchEntries(shell);
     expect(searchEntries.length).toBeGreaterThan(0);
     for (const entry of demoSearchIndex) expect(searchEntries.map((item) => item.label)).not.toContain(entry.title);

@@ -39,6 +39,11 @@ export const entityTaxRegistrations = pgTable(
       .notNull()
       .references(() => legalEntities.id, { onDelete: "restrict" }),
     regimeKey: text("regime_key").notNull(),
+    destinationCountry: text("destination_country"),
+    destinationRegion: text("destination_region"),
+    destinationCity: text("destination_city"),
+    locationCode: text("location_code"),
+    configurationEvidence: text("configuration_evidence"),
     registrationCiphertext: text("registration_ciphertext").notNull(),
     keyVersion: text("key_version").notNull(),
     validFrom: date("valid_from").notNull(),

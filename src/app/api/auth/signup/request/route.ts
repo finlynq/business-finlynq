@@ -16,6 +16,7 @@ import {
 } from "@/modules/identity/signup-challenge";
 import { isSignupRegion } from "@/modules/identity/signup-policy";
 import { requestOwnerSignup } from "@/modules/identity/signup-service";
+import { supportedCurrencies } from "@/kernel/money";
 import { emailLookupHash, identityLookupHash, normalizeEmail } from "@/security/identity-secret";
 
 const headers = { "Cache-Control": "private, no-store", "X-Robots-Tag": "noindex" };
@@ -26,8 +27,13 @@ const schema = z.object({
   organizationName: z.string().trim().min(2).max(200),
   entityCode: z.string().trim().toUpperCase().regex(/^[A-Z0-9][A-Z0-9_-]{0,15}$/).refine((value) => value !== "0000"),
   entityName: z.string().trim().min(2).max(200),
-  countryCode: z.enum(["CA", "US"]),
-  regionCode: z.string().trim().toUpperCase(),
+  countryCode: z.string().trim().toUpperCase().regex(/^[A-Z]{2}$/),
+  regionCode: z.string().trim().toUpperCase().regex(/^[A-Z0-9-]{2,10}$/),
+  functionalCurrency: z.string().trim().toUpperCase().refine(
+    (value) => supportedCurrencies.includes(value),
+    "Choose a supported functional currency",
+  ),
+  accountingProfile: z.enum(["CAN_ASPE", "US_GAAP_NONPUBLIC"]),
   fiscalYear: z.number().int().min(2000).max(2200),
   manualPostingMode: z.enum(["REVIEW_REQUIRED", "AUTO_POST"]),
   termsAccepted: z.literal(true),
@@ -110,6 +116,8 @@ export async function POST(request: NextRequest) {
       entityName: parsed.data.entityName,
       countryCode: parsed.data.countryCode,
       regionCode: parsed.data.regionCode,
+      functionalCurrency: parsed.data.functionalCurrency,
+      accountingProfile: parsed.data.accountingProfile,
       fiscalYear: parsed.data.fiscalYear,
       manualPostingMode: parsed.data.manualPostingMode,
       ipHash,

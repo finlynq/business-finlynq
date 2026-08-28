@@ -39,6 +39,7 @@ secret_gid=$(id -g)
   printf 'ACCOUNT_SIGNUP_ENABLED=false\n'
   printf 'SIGNUP_TURNSTILE_ENABLED=false\n'
   printf 'BUSINESS_WRITES_ENABLED=false\n'
+  printf 'BANK_FEEDS_ENABLED=false\n'
   printf 'SESSION_COOKIE_NAME=__Host-business_finlynq_session\n'
   printf 'ORGANIZATION_ROOT_KEK_FILE=%s\n' "$organization_secret_file"
   printf 'IDENTITY_SECRET_FILE=%s\n' "$identity_secret_file"

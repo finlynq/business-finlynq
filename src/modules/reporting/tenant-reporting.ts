@@ -1,5 +1,6 @@
 import "server-only";
 import { demoAccountingDate } from "@/modules/demo/accounting-clock";
+import { exact } from "@/kernel/money";
 
 import { randomUUID } from "node:crypto";
 import type { PoolClient } from "pg";
@@ -10,6 +11,10 @@ import {
 } from "@/modules/identity/authorization";
 import { PERMISSIONS, type Permission } from "@/modules/identity/permissions";
 import { transactionAuthMethod, type SessionPrincipal } from "@/modules/identity/session";
+import {
+  presentAccountKey,
+  type DisplayedAccountSegment,
+} from "@/modules/ledger/account-key-display";
 import { withWorkspaceTenantRead } from "@/modules/workspace/tenant-read";
 
 function readContext(principal: SessionPrincipal): TenantTransactionContext {
@@ -90,6 +95,7 @@ export async function loadEntitySummaries(principal: SessionPrincipal): Promise<
 }
 
 export type TrialBalanceRow = Readonly<{
+  entityId: string;
   entityCode: string;
   ledgerCode: string;
   currency: string;
@@ -97,19 +103,266 @@ export type TrialBalanceRow = Readonly<{
   accountName: string;
   accountClass: string;
   canonicalKey: string;
+  displayKey: string;
+  displaySegments: readonly DisplayedAccountSegment[];
+  openingDebit: string;
+  openingCredit: string;
+  periodDebit: string;
+  periodCredit: string;
   debit: string;
   credit: string;
 }>;
 
-export async function loadTrialBalance(principal: SessionPrincipal): Promise<readonly TrialBalanceRow[]> {
+export type ReportPeriodOption = Readonly<{
+  id: string;
+  label: string;
+  startsOn: string;
+  endsOn: string;
+}>;
+
+export type ReportAccountOption = Readonly<{
+  id: string;
+  code: string;
+  displayName: string;
+  accountClass: string;
+}>;
+
+export type ReportEntityOption = Readonly<{
+  id: string;
+  code: string;
+  displayName: string;
+  ledgerId: string;
+  ledgerCode: string;
+  currency: string;
+  defaultPeriodId: string | null;
+  periods: readonly ReportPeriodOption[];
+  accounts: readonly ReportAccountOption[];
+}>;
+
+export type ReportDimensions = Readonly<{
+  entities: readonly ReportEntityOption[];
+}>;
+
+export type ReportFilterInput = Readonly<{
+  entity?: string;
+  basis?: string;
+  from?: string;
+  to?: string;
+  fromPeriod?: string;
+  toPeriod?: string;
+  account?: string;
+}>;
+
+export function reportFilterInput(
+  params: Readonly<Record<string, string | readonly string[] | undefined>>,
+): ReportFilterInput {
+  const one = (key: string): string | undefined => {
+    const value = params[key];
+    return typeof value === "string" ? value : value?.[0];
+  };
+  return {
+    entity: one("entity"),
+    basis: one("basis"),
+    from: one("from"),
+    to: one("to"),
+    fromPeriod: one("fromPeriod"),
+    toPeriod: one("toPeriod"),
+    account: one("account"),
+  };
+}
+
+export type ReportSelection = Readonly<{
+  entityId: string;
+  entityCode: string;
+  entityName: string;
+  ledgerId: string;
+  ledgerCode: string;
+  currency: string;
+  basis: "period" | "date";
+  fromDate: string;
+  toDate: string;
+  fromPeriodId: string | null;
+  toPeriodId: string | null;
+  accountId: string | null;
+}>;
+
+export async function loadReportDimensions(principal: SessionPrincipal): Promise<ReportDimensions> {
+  return withWorkspaceTenantRead(readContext(principal), "/app/reports", async (client) => {
+    await assertReportPermission(client, principal, PERMISSIONS.readMcpLedger);
+    const asOfDate = principal.sessionMode === "demo"
+      ? demoAccountingDate()
+      : new Date().toISOString().slice(0, 10);
+    const entityResult = await client.query<{
+      id: string;
+      code: string;
+      display_name: string;
+      ledger_id: string;
+      ledger_code: string;
+      functional_currency: string;
+    }>(
+      `SELECT entity.id, entity.code, entity.display_name,
+         ledger.id AS ledger_id, ledger.code AS ledger_code,
+         ledger.functional_currency
+       FROM legal_entities entity
+       JOIN ledgers ledger
+         ON ledger.organization_id = entity.organization_id
+        AND ledger.legal_entity_id = entity.id
+        AND ledger.kind = 'PRIMARY' AND ledger.active
+       WHERE entity.organization_id = $1 AND entity.active
+       ORDER BY entity.code`,
+      [principal.organizationId],
+    );
+    const periodResult = await client.query<{
+      id: string;
+      ledger_id: string;
+      label: string;
+      starts_on: string;
+      ends_on: string;
+    }>(
+      `SELECT period.id, period.ledger_id, period.label,
+         period.starts_on::text, period.ends_on::text
+       FROM fiscal_periods period
+       JOIN ledgers ledger
+         ON ledger.organization_id = period.organization_id
+        AND ledger.id = period.ledger_id AND ledger.active
+       WHERE period.organization_id = $1
+       ORDER BY period.starts_on, period.period_number`,
+      [principal.organizationId],
+    );
+    const accountResult = await client.query<{
+      entity_id: string;
+      id: string;
+      code: string;
+      display_name: string;
+      account_class: string;
+    }>(
+      `SELECT DISTINCT combination.entity_id, account.id, account.code,
+         account.display_name, account.class::text AS account_class
+       FROM account_combinations combination
+       JOIN gl_accounts account
+         ON account.organization_id = combination.organization_id
+        AND account.id = combination.account_id
+       JOIN legal_entities entity
+         ON entity.organization_id = combination.organization_id
+        AND entity.id = combination.entity_id AND entity.active
+       WHERE combination.organization_id = $1 AND account.active
+       ORDER BY combination.entity_id, account.code`,
+      [principal.organizationId],
+    );
+    return {
+      entities: entityResult.rows.map((entity) => {
+        const periods = periodResult.rows
+          .filter((period) => period.ledger_id === entity.ledger_id)
+          .map((period) => ({
+            id: period.id,
+            label: period.label,
+            startsOn: period.starts_on,
+            endsOn: period.ends_on,
+          }));
+        const currentPeriod = periods.find((period) => (
+          asOfDate >= period.startsOn && asOfDate <= period.endsOn
+        ));
+        return {
+          id: entity.id,
+          code: entity.code,
+          displayName: entity.display_name,
+          ledgerId: entity.ledger_id,
+          ledgerCode: entity.ledger_code,
+          currency: entity.functional_currency,
+          defaultPeriodId: currentPeriod?.id ?? periods.at(-1)?.id ?? null,
+          periods,
+          accounts: accountResult.rows
+            .filter((account) => account.entity_id === entity.id)
+            .map((account) => ({
+              id: account.id,
+              code: account.code,
+              displayName: account.display_name,
+              accountClass: account.account_class,
+            })),
+        };
+      }),
+    };
+  });
+}
+
+function validDate(value: string | undefined): string | null {
+  if (!value || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return null;
+  const parsed = new Date(`${value}T00:00:00.000Z`);
+  return Number.isNaN(parsed.valueOf()) || parsed.toISOString().slice(0, 10) !== value ? null : value;
+}
+
+export function resolveReportSelection(
+  dimensions: ReportDimensions,
+  input: ReportFilterInput = {},
+): ReportSelection | null {
+  const entity = dimensions.entities.find((candidate) => candidate.id === input.entity)
+    ?? dimensions.entities[0];
+  if (!entity) return null;
+  const defaultPeriod = entity.periods.find((period) => period.id === entity.defaultPeriodId)
+    ?? entity.periods.at(-1);
+  const requestedFromPeriod = entity.periods.find((period) => period.id === input.fromPeriod)
+    ?? defaultPeriod;
+  const requestedToPeriod = entity.periods.find((period) => period.id === input.toPeriod)
+    ?? defaultPeriod;
+  const basis = input.basis === "date" ? "date" : "period";
+  const fallbackDate = new Date().toISOString().slice(0, 10);
+  let fromDate = basis === "date"
+    ? validDate(input.from) ?? requestedFromPeriod?.startsOn ?? fallbackDate
+    : requestedFromPeriod?.startsOn ?? validDate(input.from) ?? fallbackDate;
+  let toDate = basis === "date"
+    ? validDate(input.to) ?? requestedToPeriod?.endsOn ?? fromDate
+    : requestedToPeriod?.endsOn ?? validDate(input.to) ?? fromDate;
+  let fromPeriodId = requestedFromPeriod?.id ?? null;
+  let toPeriodId = requestedToPeriod?.id ?? null;
+  if (fromDate > toDate) {
+    [fromDate, toDate] = [toDate, fromDate];
+    [fromPeriodId, toPeriodId] = [toPeriodId, fromPeriodId];
+  }
+  const account = entity.accounts.find((candidate) => candidate.id === input.account)
+    ?? entity.accounts[0];
+  return {
+    entityId: entity.id,
+    entityCode: entity.code,
+    entityName: entity.displayName,
+    ledgerId: entity.ledgerId,
+    ledgerCode: entity.ledgerCode,
+    currency: entity.currency,
+    basis,
+    fromDate,
+    toDate,
+    fromPeriodId,
+    toPeriodId,
+    accountId: account?.id ?? null,
+  };
+}
+
+export function reportSearchParams(selection: ReportSelection): URLSearchParams {
+  const params = new URLSearchParams({
+    entity: selection.entityId,
+    basis: selection.basis,
+    from: selection.fromDate,
+    to: selection.toDate,
+  });
+  if (selection.fromPeriodId) params.set("fromPeriod", selection.fromPeriodId);
+  if (selection.toPeriodId) params.set("toPeriod", selection.toPeriodId);
+  if (selection.accountId) params.set("account", selection.accountId);
+  return params;
+}
+
+export async function loadTrialBalance(
+  principal: SessionPrincipal,
+  selection?: ReportSelection | null,
+): Promise<readonly TrialBalanceRow[]> {
   return withWorkspaceTenantRead(readContext(principal), "/app/reports/trial-balance", async (client) => {
     await assertReportPermission(client, principal, PERMISSIONS.readMcpLedger);
     const result = await client.query<{
-      entity_code: string; ledger_code: string; functional_currency: string;
+      entity_id: string; entity_code: string; ledger_code: string; functional_currency: string;
       account_code: string; account_name: string; account_class: string;
-      canonical_key: string; debit: string; credit: string;
+      canonical_key: string; account_segment_definitions: unknown;
+      opening_debit: string; opening_credit: string;
+      period_debit: string; period_credit: string; debit: string; credit: string;
     }>(
-      `SELECT entity.code AS entity_code, ledger.code AS ledger_code,
+      `SELECT entity.id AS entity_id, entity.code AS entity_code, ledger.code AS ledger_code,
          ledger.functional_currency, account.code AS account_code,
          account.display_name AS account_name, account.class::text AS account_class,
          concat_ws('.', entity.code, account.code,
@@ -119,9 +372,35 @@ export async function loadTrialBalance(principal: SessionPrincipal): Promise<rea
            coalesce(custom3.code, '0000'), coalesce(custom4.code, '0000'),
            coalesce(custom5.code, '0000'), coalesce(custom6.code, '0000'),
            coalesce(custom7.code, '0000'), coalesce(custom8.code, '0000')) AS canonical_key,
-         coalesce(sum(line.debit_functional) FILTER (WHERE entry.id IS NOT NULL), 0)::text AS debit,
-         coalesce(sum(line.credit_functional) FILTER (WHERE entry.id IS NOT NULL), 0)::text AS credit
-       FROM account_combinations combination
+         (SELECT coalesce(jsonb_agg(jsonb_build_object(
+              'key', definition.key,
+              'displayName', definition.display_name,
+              'visible', definition.visible
+            ) ORDER BY definition.ordinal), '[]'::jsonb)
+          FROM segment_definitions definition
+          WHERE definition.organization_id = $1
+         ) AS account_segment_definitions,
+         greatest(coalesce(sum(line.debit_functional - line.credit_functional)
+           FILTER (WHERE $3::date IS NOT NULL AND entry.accounting_date < $3::date), 0), 0)::text AS opening_debit,
+         greatest(-coalesce(sum(line.debit_functional - line.credit_functional)
+           FILTER (WHERE $3::date IS NOT NULL AND entry.accounting_date < $3::date), 0), 0)::text AS opening_credit,
+         coalesce(sum(line.debit_functional)
+           FILTER (WHERE ($3::date IS NULL OR entry.accounting_date >= $3::date)
+             AND ($4::date IS NULL OR entry.accounting_date <= $4::date)), 0)::text AS period_debit,
+         coalesce(sum(line.credit_functional)
+           FILTER (WHERE ($3::date IS NULL OR entry.accounting_date >= $3::date)
+             AND ($4::date IS NULL OR entry.accounting_date <= $4::date)), 0)::text AS period_credit,
+         greatest(coalesce(sum(line.debit_functional - line.credit_functional)
+           FILTER (WHERE $4::date IS NULL OR entry.accounting_date <= $4::date), 0), 0)::text AS debit,
+         greatest(-coalesce(sum(line.debit_functional - line.credit_functional)
+           FILTER (WHERE $4::date IS NULL OR entry.accounting_date <= $4::date), 0), 0)::text AS credit
+       FROM journal_lines line
+       JOIN journal_entries entry
+         ON entry.organization_id = line.organization_id
+        AND entry.id = line.journal_entry_id AND entry.status = 'POSTED'
+       JOIN account_combinations combination
+         ON combination.organization_id = line.organization_id
+        AND combination.id = line.account_combination_id
        JOIN legal_entities entity ON entity.organization_id = combination.organization_id
          AND entity.id = combination.entity_id
        JOIN ledgers ledger ON ledger.organization_id = combination.organization_id
@@ -142,28 +421,310 @@ export async function loadTrialBalance(principal: SessionPrincipal): Promise<rea
        LEFT JOIN segment_values custom6 ON custom6.organization_id = combination.organization_id AND custom6.id = combination.custom_6_id
        LEFT JOIN segment_values custom7 ON custom7.organization_id = combination.organization_id AND custom7.id = combination.custom_7_id
        LEFT JOIN segment_values custom8 ON custom8.organization_id = combination.organization_id AND custom8.id = combination.custom_8_id
-       LEFT JOIN journal_lines line ON line.organization_id = combination.organization_id
-         AND line.account_combination_id = combination.id
-       LEFT JOIN journal_entries entry ON entry.organization_id = line.organization_id
-         AND entry.id = line.journal_entry_id AND entry.status = 'POSTED'
-       WHERE combination.organization_id = $1
-         AND (entry.id IS NOT NULL OR combination.active)
-       GROUP BY entity.code, ledger.code, ledger.functional_currency,
+       WHERE line.organization_id = $1
+         AND ($2::uuid IS NULL OR entry.legal_entity_id = $2::uuid)
+         AND ($4::date IS NULL OR entry.accounting_date <= $4::date)
+       GROUP BY entity.id, entity.code, ledger.code, ledger.functional_currency,
          account.code, account.display_name, account.class, combination.id,
          subaccount.code, department.code, intercompany.code,
          custom1.code, custom2.code, custom3.code, custom4.code,
          custom5.code, custom6.code, custom7.code, custom8.code
-       HAVING coalesce(sum(line.debit_functional) FILTER (WHERE entry.id IS NOT NULL), 0) <> 0
-           OR coalesce(sum(line.credit_functional) FILTER (WHERE entry.id IS NOT NULL), 0) <> 0
+       HAVING coalesce(sum(line.debit_functional), 0) <> 0
+           OR coalesce(sum(line.credit_functional), 0) <> 0
        ORDER BY entity.code, account.code, canonical_key`,
-      [principal.organizationId],
+      [
+        principal.organizationId,
+        selection?.entityId ?? null,
+        selection?.fromDate ?? null,
+        selection?.toDate ?? null,
+      ],
     );
-    return result.rows.map((row) => ({
-      entityCode: row.entity_code, ledgerCode: row.ledger_code,
-      currency: row.functional_currency, accountCode: row.account_code,
-      accountName: row.account_name, accountClass: row.account_class,
-      canonicalKey: row.canonical_key, debit: row.debit, credit: row.credit,
+    return result.rows.map((row) => {
+      const presentedKey = presentAccountKey(
+        row.canonical_key,
+        row.account_segment_definitions,
+      );
+      return {
+        entityId: row.entity_id, entityCode: row.entity_code, ledgerCode: row.ledger_code,
+        currency: row.functional_currency, accountCode: row.account_code,
+        accountName: row.account_name, accountClass: row.account_class,
+        canonicalKey: presentedKey.canonicalKey,
+        displayKey: presentedKey.displayKey,
+        displaySegments: presentedKey.displaySegments,
+        openingDebit: row.opening_debit,
+        openingCredit: row.opening_credit,
+        periodDebit: row.period_debit,
+        periodCredit: row.period_credit,
+        debit: row.debit,
+        credit: row.credit,
+      };
+    });
+  });
+}
+
+export type FinancialStatementRow = Readonly<{
+  entityCode: string;
+  ledgerCode: string;
+  currency: string;
+  accountCode: string;
+  accountName: string;
+  accountClass: "ASSET" | "LIABILITY" | "EQUITY" | "REVENUE" | "EXPENSE";
+  canonicalKey: string;
+  displayKey: string;
+  displaySegments: readonly DisplayedAccountSegment[];
+  amount: string;
+  synthetic: boolean;
+}>;
+
+function statementAmount(row: TrialBalanceRow, periodActivity: boolean): string {
+  const debit = exact(periodActivity ? row.periodDebit : row.debit);
+  const credit = exact(periodActivity ? row.periodCredit : row.credit);
+  return (row.accountClass === "ASSET" || row.accountClass === "EXPENSE")
+    ? debit.minus(credit).toFixed()
+    : credit.minus(debit).toFixed();
+}
+
+export function balanceSheetRows(rows: readonly TrialBalanceRow[]): readonly FinancialStatementRow[] {
+  const statementRows: FinancialStatementRow[] = rows
+    .filter((row) => ["ASSET", "LIABILITY", "EQUITY"].includes(row.accountClass))
+    .map((row) => ({
+      entityCode: row.entityCode,
+      ledgerCode: row.ledgerCode,
+      currency: row.currency,
+      accountCode: row.accountCode,
+      accountName: row.accountName,
+      accountClass: row.accountClass as "ASSET" | "LIABILITY" | "EQUITY",
+      canonicalKey: row.canonicalKey,
+      displayKey: row.displayKey,
+      displaySegments: row.displaySegments,
+      amount: statementAmount(row, false),
+      synthetic: false,
     }));
+  const earnings = new Map<string, { entityCode: string; ledgerCode: string; currency: string; amount: ReturnType<typeof exact> }>();
+  for (const row of rows.filter((candidate) => candidate.accountClass === "REVENUE" || candidate.accountClass === "EXPENSE")) {
+    const key = `${row.entityCode}:${row.ledgerCode}:${row.currency}`;
+    const existing = earnings.get(key) ?? {
+      entityCode: row.entityCode,
+      ledgerCode: row.ledgerCode,
+      currency: row.currency,
+      amount: exact(0),
+    };
+    const amount = exact(statementAmount(row, false));
+    existing.amount = row.accountClass === "REVENUE"
+      ? existing.amount.plus(amount)
+      : existing.amount.minus(amount);
+    earnings.set(key, existing);
+  }
+  for (const earning of earnings.values()) {
+    statementRows.push({
+      entityCode: earning.entityCode,
+      ledgerCode: earning.ledgerCode,
+      currency: earning.currency,
+      accountCode: "UNCLSD-EARNINGS",
+      accountName: "Unclosed earnings",
+      accountClass: "EQUITY",
+      canonicalKey: `${earning.entityCode}.UNCLSD-EARNINGS`,
+      displayKey: `${earning.entityCode}.UNCLSD-EARNINGS`,
+      displaySegments: [
+        { key: "entity", displayName: "Entity", code: earning.entityCode },
+        { key: "account", displayName: "Account", code: "UNCLSD-EARNINGS" },
+      ],
+      amount: earning.amount.toFixed(),
+      synthetic: true,
+    });
+  }
+  return statementRows;
+}
+
+export function profitAndLossRows(rows: readonly TrialBalanceRow[]): readonly FinancialStatementRow[] {
+  return rows
+    .filter((row) => (
+      (row.accountClass === "REVENUE" || row.accountClass === "EXPENSE") &&
+      !exact(row.periodDebit).equals(row.periodCredit)
+    ))
+    .map((row) => ({
+      entityCode: row.entityCode,
+      ledgerCode: row.ledgerCode,
+      currency: row.currency,
+      accountCode: row.accountCode,
+      accountName: row.accountName,
+      accountClass: row.accountClass as "REVENUE" | "EXPENSE",
+      canonicalKey: row.canonicalKey,
+      displayKey: row.displayKey,
+      displaySegments: row.displaySegments,
+      amount: statementAmount(row, true),
+      synthetic: false,
+    }));
+}
+
+export type AccountInquiryLine = Readonly<{
+  id: string;
+  journalId: string;
+  journalNumber: string;
+  accountingDate: string;
+  description: string;
+  canonicalKey: string;
+  displayKey: string;
+  displaySegments: readonly DisplayedAccountSegment[];
+  memo: string | null;
+  transactionCurrency: string;
+  debitTransaction: string;
+  creditTransaction: string;
+  fxRate: string;
+  fxRateSource: string;
+  fxRateEffectiveAt: string;
+  debitFunctional: string;
+  creditFunctional: string;
+  runningFunctionalBalance: string;
+}>;
+
+export type AccountInquiry = Readonly<{
+  openingBalance: string;
+  lines: readonly AccountInquiryLine[];
+}>;
+
+export async function loadAccountInquiry(
+  principal: SessionPrincipal,
+  selection: ReportSelection,
+): Promise<AccountInquiry> {
+  return withWorkspaceTenantRead(readContext(principal), "/app/reports/account-inquiry", async (client) => {
+    await assertReportPermission(client, principal, PERMISSIONS.readMcpLedger);
+    if (!selection.accountId) return { openingBalance: "0", lines: [] };
+    const openingResult = await client.query<{ opening_balance: string }>(
+      `SELECT coalesce(sum(CASE
+           WHEN account.class IN ('ASSET', 'EXPENSE')
+             THEN line.debit_functional - line.credit_functional
+           ELSE line.credit_functional - line.debit_functional
+         END), 0)::text AS opening_balance
+       FROM journal_lines line
+       JOIN journal_entries entry
+         ON entry.organization_id = line.organization_id
+        AND entry.id = line.journal_entry_id AND entry.status = 'POSTED'
+       JOIN account_combinations combination
+         ON combination.organization_id = line.organization_id
+        AND combination.id = line.account_combination_id
+       JOIN gl_accounts account
+         ON account.organization_id = combination.organization_id
+        AND account.id = combination.account_id
+       WHERE line.organization_id = $1
+         AND entry.legal_entity_id = $2
+         AND combination.account_id = $3
+         AND entry.accounting_date < $4::date`,
+      [principal.organizationId, selection.entityId, selection.accountId, selection.fromDate],
+    );
+    const lineResult = await client.query<{
+      id: string;
+      journal_id: string;
+      journal_number: number | null;
+      accounting_date: string;
+      description: string;
+      canonical_key: string;
+      account_segment_definitions: unknown;
+      memo: string | null;
+      transaction_currency: string;
+      debit_transaction: string;
+      credit_transaction: string;
+      fx_rate: string;
+      fx_rate_source: string;
+      fx_rate_effective_at: string;
+      debit_functional: string;
+      credit_functional: string;
+      account_class: string;
+    }>(
+      `SELECT line.id, entry.id AS journal_id, entry.journal_number,
+         entry.accounting_date::text, entry.description,
+         concat_ws('.', entity.code, account.code,
+           coalesce(subaccount.code, '0000'), coalesce(department.code, '0000'),
+           coalesce(intercompany.code, '0000'),
+           coalesce(custom1.code, '0000'), coalesce(custom2.code, '0000'),
+           coalesce(custom3.code, '0000'), coalesce(custom4.code, '0000'),
+           coalesce(custom5.code, '0000'), coalesce(custom6.code, '0000'),
+           coalesce(custom7.code, '0000'), coalesce(custom8.code, '0000')) AS canonical_key,
+         (SELECT coalesce(jsonb_agg(jsonb_build_object(
+              'key', definition.key,
+              'displayName', definition.display_name,
+              'visible', definition.visible
+            ) ORDER BY definition.ordinal), '[]'::jsonb)
+          FROM segment_definitions definition
+          WHERE definition.organization_id = $1
+         ) AS account_segment_definitions,
+         line.memo, line.transaction_currency,
+         line.debit_transaction::text, line.credit_transaction::text,
+         line.fx_rate::text, line.fx_rate_source, line.fx_rate_effective_at::text,
+         line.debit_functional::text, line.credit_functional::text,
+         account.class::text AS account_class
+       FROM journal_lines line
+       JOIN journal_entries entry
+         ON entry.organization_id = line.organization_id
+        AND entry.id = line.journal_entry_id AND entry.status = 'POSTED'
+       JOIN account_combinations combination
+         ON combination.organization_id = line.organization_id
+        AND combination.id = line.account_combination_id
+       JOIN legal_entities entity
+         ON entity.organization_id = combination.organization_id
+        AND entity.id = combination.entity_id
+       JOIN gl_accounts account
+         ON account.organization_id = combination.organization_id
+        AND account.id = combination.account_id
+       LEFT JOIN segment_values subaccount ON subaccount.organization_id = combination.organization_id AND subaccount.id = combination.subaccount_id
+       LEFT JOIN segment_values department ON department.organization_id = combination.organization_id AND department.id = combination.department_id
+       LEFT JOIN legal_entities intercompany ON intercompany.organization_id = combination.organization_id AND intercompany.id = combination.intercompany_entity_id
+       LEFT JOIN segment_values custom1 ON custom1.organization_id = combination.organization_id AND custom1.id = combination.custom_1_id
+       LEFT JOIN segment_values custom2 ON custom2.organization_id = combination.organization_id AND custom2.id = combination.custom_2_id
+       LEFT JOIN segment_values custom3 ON custom3.organization_id = combination.organization_id AND custom3.id = combination.custom_3_id
+       LEFT JOIN segment_values custom4 ON custom4.organization_id = combination.organization_id AND custom4.id = combination.custom_4_id
+       LEFT JOIN segment_values custom5 ON custom5.organization_id = combination.organization_id AND custom5.id = combination.custom_5_id
+       LEFT JOIN segment_values custom6 ON custom6.organization_id = combination.organization_id AND custom6.id = combination.custom_6_id
+       LEFT JOIN segment_values custom7 ON custom7.organization_id = combination.organization_id AND custom7.id = combination.custom_7_id
+       LEFT JOIN segment_values custom8 ON custom8.organization_id = combination.organization_id AND custom8.id = combination.custom_8_id
+       WHERE line.organization_id = $1
+         AND entry.legal_entity_id = $2
+         AND combination.account_id = $3
+         AND entry.accounting_date BETWEEN $4::date AND $5::date
+       ORDER BY entry.accounting_date, entry.posted_at, entry.journal_number, line.line_number, line.id`,
+      [
+        principal.organizationId,
+        selection.entityId,
+        selection.accountId,
+        selection.fromDate,
+        selection.toDate,
+      ],
+    );
+    const openingBalance = openingResult.rows[0]?.opening_balance ?? "0";
+    let runningBalance = exact(openingBalance);
+    return {
+      openingBalance,
+      lines: lineResult.rows.map((line) => {
+        const presentedKey = presentAccountKey(
+          line.canonical_key,
+          line.account_segment_definitions,
+        );
+        const naturalMovement = line.account_class === "ASSET" || line.account_class === "EXPENSE"
+          ? exact(line.debit_functional).minus(line.credit_functional)
+          : exact(line.credit_functional).minus(line.debit_functional);
+        runningBalance = runningBalance.plus(naturalMovement);
+        return {
+          id: line.id,
+          journalId: line.journal_id,
+          journalNumber: line.journal_number === null ? "Unnumbered" : String(line.journal_number),
+          accountingDate: line.accounting_date,
+          description: line.description,
+          canonicalKey: presentedKey.canonicalKey,
+          displayKey: presentedKey.displayKey,
+          displaySegments: presentedKey.displaySegments,
+          memo: line.memo,
+          transactionCurrency: line.transaction_currency,
+          debitTransaction: line.debit_transaction,
+          creditTransaction: line.credit_transaction,
+          fxRate: line.fx_rate,
+          fxRateSource: line.fx_rate_source,
+          fxRateEffectiveAt: line.fx_rate_effective_at,
+          debitFunctional: line.debit_functional,
+          creditFunctional: line.credit_functional,
+          runningFunctionalBalance: runningBalance.toFixed(),
+        };
+      }),
+    };
   });
 }
 
@@ -275,9 +836,11 @@ function csvValue(value: string): string {
 
 export function trialBalanceCsv(rows: readonly TrialBalanceRow[]): string {
   return [
-    ["Entity", "Ledger", "Currency", "Account", "Canonical key", "Name", "Class", "Debit", "Credit"],
+    ["Entity", "Ledger", "Currency", "Account", "Displayed key", "Canonical key", "Name", "Class",
+      "Opening debit", "Opening credit", "Period debit", "Period credit", "Ending debit", "Ending credit"],
     ...rows.map((row) => [row.entityCode, row.ledgerCode, row.currency, row.accountCode,
-      row.canonicalKey, row.accountName, row.accountClass, row.debit, row.credit]),
+      row.displayKey, row.canonicalKey, row.accountName, row.accountClass,
+      row.openingDebit, row.openingCredit, row.periodDebit, row.periodCredit, row.debit, row.credit]),
   ].map((row) => row.map(csvValue).join(",")).join("\r\n");
 }
 

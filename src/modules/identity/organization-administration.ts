@@ -78,7 +78,7 @@ export type OrganizationAdministrationDto = Readonly<{
 export class OrganizationAdministrationError extends Error {
   constructor(
     message: string,
-    readonly status: 400 | 403 | 409 | 428 | 503,
+    readonly status: 400 | 401 | 403 | 409 | 428 | 503,
     readonly code: string,
   ) {
     super(message);
@@ -365,11 +365,42 @@ export async function revokeOrganizationMemberSessions(input: Readonly<{
 export function organizationAdministrationFailure(error: unknown): OrganizationAdministrationError {
   if (error instanceof OrganizationAdministrationError) return error;
   const message = error instanceof Error ? error.message : "";
+  const sqlState = typeof error === "object" && error !== null && "code" in error
+    ? String((error as { code?: unknown }).code ?? "")
+    : "";
   if (/fresh MFA|step-up|authenticator/i.test(message)) {
     return new OrganizationAdministrationError(
       "Verify your authenticator code before changing organization access.",
       428,
       "MFA_STEP_UP_REQUIRED",
+    );
+  }
+  if (sqlState === "28000" || /requires an active session|session mode is invalid/i.test(message)) {
+    return new OrganizationAdministrationError(
+      "Your secure session is no longer valid. Sign in again and retry the change.",
+      401,
+      "SESSION_INVALID",
+    );
+  }
+  if (sqlState === "42501") {
+    return new OrganizationAdministrationError(
+      "Your current role cannot perform this organization change.",
+      403,
+      "PERMISSION_DENIED",
+    );
+  }
+  if (sqlState === "22023" || sqlState === "23514") {
+    return new OrganizationAdministrationError(
+      "The accounting configuration is invalid. Review the values and try again.",
+      400,
+      "INVALID_CONFIGURATION",
+    );
+  }
+  if (["23505", "40001", "55000"].includes(sqlState)) {
+    return new OrganizationAdministrationError(
+      "That accounting configuration already exists or conflicts with the current setup. Refresh and try again.",
+      409,
+      "CONFIGURATION_CONFLICT",
     );
   }
   if (/permission|required|active administrator/i.test(message)) {

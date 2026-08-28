@@ -99,6 +99,7 @@ describe("party-account creation workspace", () => {
       statement.includes("SELECT DISTINCT entity.id AS legal_entity_id"),
     );
     expect(optionsQuery?.[1]).toEqual([principal.organizationId]);
+    expect(optionsQuery?.[0]).not.toContain("country_code IN");
   });
 
   it("fails closed before loading control accounts when writes are disabled", async () => {

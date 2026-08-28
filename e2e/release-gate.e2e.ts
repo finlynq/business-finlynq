@@ -24,6 +24,10 @@ const expectedEmailWorker = expectedReadiness(
   "E2E_EXPECT_AUTH_EMAIL_WORKER",
   "AUTH_EMAIL_DELIVERY_ENABLED",
 );
+const expectedBankFeeds = expectedReadiness(
+  "E2E_EXPECT_BANK_FEEDS_ENABLED",
+  "BANK_FEEDS_ENABLED",
+);
 
 function collectBrowserErrors(page: Page): string[] {
   const errors: string[] = [];
@@ -120,6 +124,7 @@ test("public website, readiness, and security headers are release-ready", async 
       accountAuthentication: ReadinessState;
       accountSignup: ReadinessState;
       emailWorker: ReadinessState;
+      bankFeeds: ReadinessState;
     };
   };
   expect(readiness).toMatchObject({
@@ -133,11 +138,13 @@ test("public website, readiness, and security headers are release-ready", async 
   expect(["ready", "disabled"]).toContain(readiness.checks.accountAuthentication);
   expect(["ready", "disabled"]).toContain(readiness.checks.accountSignup);
   expect(["ready", "disabled"]).toContain(readiness.checks.emailWorker);
+  expect(["ready", "disabled"]).toContain(readiness.checks.bankFeeds);
   if (expectedAccountAuthentication) {
     expect(readiness.checks.accountAuthentication).toBe(expectedAccountAuthentication);
   }
   if (expectedAccountSignup) expect(readiness.checks.accountSignup).toBe(expectedAccountSignup);
   if (expectedEmailWorker) expect(readiness.checks.emailWorker).toBe(expectedEmailWorker);
+  if (expectedBankFeeds) expect(readiness.checks.bankFeeds).toBe(expectedBankFeeds);
   if (readiness.checks.accountAuthentication === "ready") {
     expect(readiness.checks.emailWorker).toBe("ready");
   }
@@ -235,7 +242,7 @@ test("writable demo can create, post, and void an AR invoice", async ({ page }) 
   await line.getByLabel("Net amount").fill("100.00");
   await page.getByRole("button", { name: "Save draft" }).click();
 
-  const invoice = page.getByRole("article").filter({ hasText: "INV-E2E-VOID" });
+  const invoice = page.getByRole("row").filter({ hasText: "INV-E2E-VOID" });
   await expect(invoice).toContainText("DRAFT");
   await invoice.getByRole("button", { name: "Issue", exact: true }).click();
   await expect(invoice).toContainText("POSTED");
@@ -266,7 +273,7 @@ test("writable demo completes and exactly reverses an AP bill payment lifecycle"
     amount: "100.00",
   });
 
-  const bill = page.getByRole("article").filter({ hasText: "BILL-E2E-PAY" });
+  const bill = page.getByRole("row").filter({ hasText: "BILL-E2E-PAY" });
   await bill.getByRole("button", { name: "Issue", exact: true }).click();
   await expect(bill).toContainText("POSTED");
   await expect(bill).toContainText("CAD 100.00");
@@ -280,7 +287,7 @@ test("writable demo completes and exactly reverses an AP bill payment lifecycle"
   await expect(page.getByLabel("Total allocated")).toHaveValue("CAD 100.00");
   await page.getByRole("button", { name: "Record and post payment" }).click();
 
-  const payment = page.getByRole("article").filter({ hasText: "PAY-E2E-VOID" });
+  const payment = page.getByRole("row").filter({ hasText: "PAY-E2E-VOID" });
   await expect(payment).toContainText("POSTED");
   await expect(payment).toContainText("1 open item");
   await expect(bill).toContainText("CAD 0.00");
@@ -337,9 +344,9 @@ test("concurrent demo visitors are isolated and a released dirty slot is not rei
       amount: "17.00",
     });
     await pageA.reload();
-    await expect(pageA.getByRole("article").filter({ hasText: "BILL-E2E-ISOLATED" })).toContainText("DRAFT");
+    await expect(pageA.getByRole("row").filter({ hasText: "BILL-E2E-ISOLATED" })).toContainText("DRAFT");
     await pageB.reload();
-    await expect(pageB.getByRole("article").filter({ hasText: "BILL-E2E-ISOLATED" })).toHaveCount(0);
+    await expect(pageB.getByRole("row").filter({ hasText: "BILL-E2E-ISOLATED" })).toHaveCount(0);
 
     await revokeDemoSession(pageA);
     contextC = await browser.newContext({ baseURL });
@@ -349,7 +356,7 @@ test("concurrent demo visitors are isolated and a released dirty slot is not rei
     const sandboxC = await readSandboxName(pageC);
     expect(sandboxC).not.toBe(sandboxA);
     expect(sandboxC).not.toBe(sandboxB);
-    await expect(pageC.getByRole("article").filter({ hasText: "BILL-E2E-ISOLATED" })).toHaveCount(0);
+    await expect(pageC.getByRole("row").filter({ hasText: "BILL-E2E-ISOLATED" })).toHaveCount(0);
 
     // Revoke the two remaining leases in the assertion path. The finally block
     // remains only a safety net for an earlier failure.

@@ -145,6 +145,7 @@ for (const expected of [
   "MONITOR_EXPECT_DEMO_WRITES_ENABLED",
   "MONITOR_EXPECT_ACCOUNT_LOGIN_ENABLED",
   "MONITOR_EXPECT_BUSINESS_WRITES_ENABLED",
+  "MONITOR_EXPECT_BANK_FEEDS_ENABLED",
   "MONITOR_EXPECT_DEMO_POOL_SIZE",
   "MONITOR_MIN_DEMO_READY_SLOTS",
   'MONITOR_MAINTENANCE_SCHEDULER="${MONITOR_MAINTENANCE_SCHEDULER:-systemd}"',
@@ -163,6 +164,7 @@ for (const expected of [
   "quarantined slot(s)",
   "stranded resetting slot(s)",
   "app image OCI revision label does not match the monitored release",
+  "readiness bank-feed gate does not match the monitored release boundary",
 ]) requireText(monitor, expected, "production monitor");
 for (const forbidden of [
   'sha256sum "$archive_path"',

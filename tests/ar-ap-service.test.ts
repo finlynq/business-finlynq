@@ -1,4 +1,5 @@
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
+import type { PoolClient } from "pg";
 
 const transactionMocks = vi.hoisted(() => ({
   withTenantTransaction: vi.fn(),
@@ -9,6 +10,7 @@ vi.mock("@/db/transaction", () => ({
 }));
 
 import {
+  assertBusinessDocumentTaxRegistrationBindings,
   buildIssueJournalLines,
   recordCustomerReceiptOrSupplierPayment,
   subledgerOperationKey,
@@ -24,6 +26,9 @@ const context = {
   authMethod: "password+mfa",
   sourceSurface: "UI" as const,
 };
+
+const taxRegistrationId = "10000000-0000-4000-8000-000000000012";
+const washingtonTaxRegistrationId = "10000000-0000-4000-8000-000000000013";
 
 const settlement = {
   context,
@@ -55,7 +60,10 @@ const settlement = {
   idempotencyKey: "receipt-request-1",
 };
 
-function washingtonDocument(kind: "SALES_INVOICE" | "SUPPLIER_BILL") {
+function washingtonDocument(
+  kind: "SALES_INVOICE" | "SUPPLIER_BILL",
+  registrationId?: string,
+) {
   return buildBusinessDocumentSnapshot({
     kind,
     sourceNumber: kind === "SALES_INVOICE" ? "INV-WA-1001" : "BILL-WA-1001",
@@ -87,10 +95,74 @@ function washingtonDocument(kind: "SALES_INVOICE" | "SUPPLIER_BILL") {
         destinationRegion: "WA",
         destinationCity: "Seattle",
         locationCode: "1726",
+        ...(registrationId ? { registrationId } : {}),
       },
     }],
   }, "USD");
 }
+
+function ontarioDocument(registrationId?: string) {
+  return buildBusinessDocumentSnapshot({
+    kind: "SALES_INVOICE",
+    sourceNumber: "INV-ON-1001",
+    ledgerId: settlement.ledgerId,
+    legalEntityId: settlement.legalEntityId,
+    partyAccountId: settlement.partyAccountId,
+    controlAccountCombinationId: settlement.controlAccountCombinationId,
+    taxAccountCombinationId: settlement.realizedFxLossAccountCombinationId,
+    documentDate: "2026-08-27",
+    accountingDate: "2026-08-27",
+    periodId: settlement.periodId,
+    dueOn: "2026-09-26",
+    currency: "CAD",
+    fx: {
+      rate: "1",
+      source: "FUNCTIONAL",
+      effectiveAt: "2026-08-27T12:00:00.000Z",
+      quoteConvention: "FUNCTIONAL_UNITS_PER_TRANSACTION_UNIT",
+    },
+    description: "Ontario taxable services",
+    lines: [{
+      description: "Ontario taxable services",
+      accountCombinationId: settlement.realizedFxGainAccountCombinationId,
+      netAmount: "100.00",
+      tax: {
+        packKey: "ca.on.hst",
+        category: "STANDARD",
+        destinationCountry: "CA",
+        destinationRegion: "ON",
+        ...(registrationId ? { registrationId } : {}),
+      },
+    }],
+  }, "CAD");
+}
+
+function registrationClient(rows: readonly Readonly<{
+  id: string;
+  regime_key: string;
+  destination_country: string | null;
+  destination_region: string | null;
+  destination_city: string | null;
+  location_code: string | null;
+  valid_from: string;
+  valid_to: string | null;
+}>[]) {
+  const query = vi.fn(async (statement: string) => ({
+    rows: statement.includes("FROM entity_tax_registrations") ? rows : [],
+  }));
+  return { client: { query } as unknown as PoolClient, query };
+}
+
+const validOntarioRegistration = {
+  id: taxRegistrationId,
+  regime_key: "ca.on.hst",
+  destination_country: "CA",
+  destination_region: "ON",
+  destination_city: null,
+  location_code: null,
+  valid_from: "2026-01-01",
+  valid_to: null,
+} as const;
 
 beforeEach(() => {
   process.env.BUSINESS_WRITES_ENABLED = "true";
@@ -165,5 +237,163 @@ describe("AR/AP service command boundary", () => {
       idempotencyKey: "invoice-void-1",
     })).rejects.toThrow("bound to the transaction audit context");
     expect(transactionMocks.withTenantTransaction).not.toHaveBeenCalled();
+  });
+});
+
+describe("AR/AP tax-registration binding", () => {
+  it("rejects a supported tax pack when the draft omits its registration", async () => {
+    const { client, query } = registrationClient([]);
+
+    await expect(assertBusinessDocumentTaxRegistrationBindings(
+      client,
+      context,
+      ontarioDocument(),
+    )).rejects.toThrow("Tax registration is required for source line 1");
+    expect(query).not.toHaveBeenCalled();
+  });
+
+  it("rejects a registration missing from the active organization and entity", async () => {
+    const { client, query } = registrationClient([]);
+
+    await expect(assertBusinessDocumentTaxRegistrationBindings(
+      client,
+      context,
+      ontarioDocument(taxRegistrationId),
+    )).rejects.toThrow("missing or belongs to another organization or entity");
+    expect(query).toHaveBeenCalledTimes(2);
+  });
+
+  it("rejects registration facts that do not match the persisted destination", async () => {
+    const { client } = registrationClient([{
+      ...validOntarioRegistration,
+      destination_region: "QC",
+    }]);
+
+    await expect(assertBusinessDocumentTaxRegistrationBindings(
+      client,
+      context,
+      ontarioDocument(taxRegistrationId),
+    )).rejects.toThrow("Tax registration destination does not match source line 1");
+  });
+
+  it("rejects a registration that expired before the document date", async () => {
+    const { client } = registrationClient([{
+      ...validOntarioRegistration,
+      valid_to: "2026-08-26",
+    }]);
+
+    await expect(assertBusinessDocumentTaxRegistrationBindings(
+      client,
+      context,
+      ontarioDocument(taxRegistrationId),
+    )).rejects.toThrow("Tax registration is not active on the document date");
+  });
+
+  it("accepts an exact active registration and locks it in tenant scope", async () => {
+    const { client, query } = registrationClient([validOntarioRegistration]);
+    const snapshot = ontarioDocument(taxRegistrationId);
+
+    await expect(assertBusinessDocumentTaxRegistrationBindings(
+      client,
+      context,
+      snapshot,
+    )).resolves.toBeUndefined();
+    expect(query).toHaveBeenNthCalledWith(
+      1,
+      "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
+      [`${context.organizationId}|tax-registration|${snapshot.legalEntityId}|ca.on.hst`],
+    );
+    expect(query).toHaveBeenNthCalledWith(
+      2,
+      expect.stringMatching(/organization_id = \$1[\s\S]*legal_entity_id = \$2/),
+      [context.organizationId, snapshot.legalEntityId, [taxRegistrationId]],
+    );
+  });
+
+  it("locks every referenced tax regime in deterministic lexical order", async () => {
+    const ontario = ontarioDocument(taxRegistrationId);
+    const washington = washingtonDocument("SALES_INVOICE", washingtonTaxRegistrationId);
+    const snapshot = {
+      ...ontario,
+      lines: [
+        ontario.lines[0],
+        { ...washington.lines[0], lineNumber: 2 },
+      ],
+    };
+    const { client, query } = registrationClient([
+      validOntarioRegistration,
+      {
+        id: washingtonTaxRegistrationId,
+        regime_key: "us.wa.sales-use",
+        destination_country: "US",
+        destination_region: "WA",
+        destination_city: "Seattle",
+        location_code: "1726",
+        valid_from: "2026-01-01",
+        valid_to: null,
+      },
+    ]);
+
+    await expect(assertBusinessDocumentTaxRegistrationBindings(
+      client,
+      context,
+      snapshot,
+    )).resolves.toBeUndefined();
+    expect(query).toHaveBeenNthCalledWith(
+      1,
+      "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
+      [`${context.organizationId}|tax-registration|${snapshot.legalEntityId}|ca.on.hst`],
+    );
+    expect(query).toHaveBeenNthCalledWith(
+      2,
+      "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
+      [`${context.organizationId}|tax-registration|${snapshot.legalEntityId}|us.wa.sales-use`],
+    );
+    expect(query).toHaveBeenNthCalledWith(
+      3,
+      expect.stringMatching(/organization_id = \$1[\s\S]*legal_entity_id = \$2/),
+      [
+        context.organizationId,
+        snapshot.legalEntityId,
+        [taxRegistrationId, washingtonTaxRegistrationId],
+      ],
+    );
+  });
+
+  it("preserves the registration-free generic unsupported review path", async () => {
+    const { client, query } = registrationClient([]);
+    const snapshot = buildBusinessDocumentSnapshot({
+      kind: "SALES_INVOICE",
+      sourceNumber: "INV-GENERIC-1001",
+      ledgerId: settlement.ledgerId,
+      legalEntityId: settlement.legalEntityId,
+      partyAccountId: settlement.partyAccountId,
+      controlAccountCombinationId: settlement.controlAccountCombinationId,
+      documentDate: "2026-08-27",
+      accountingDate: "2026-08-27",
+      periodId: settlement.periodId,
+      dueOn: "2026-09-26",
+      currency: "CAD",
+      fx: settlement.fx,
+      description: "Unsupported jurisdiction review",
+      lines: [{
+        description: "Unsupported jurisdiction review",
+        accountCombinationId: settlement.realizedFxGainAccountCombinationId,
+        netAmount: "100.00",
+        tax: {
+          packKey: "generic.unsupported",
+          category: "STANDARD",
+          destinationCountry: "FR",
+          destinationRegion: "IDF",
+        },
+      }],
+    }, "CAD");
+
+    await expect(assertBusinessDocumentTaxRegistrationBindings(
+      client,
+      context,
+      snapshot,
+    )).resolves.toBeUndefined();
+    expect(query).not.toHaveBeenCalled();
   });
 });
