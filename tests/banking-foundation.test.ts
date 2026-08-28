@@ -53,6 +53,9 @@ describe("banking persistence and workflow contract", () => {
   });
 
   it("separates reconciliation preparation from review by permission while allowing intentional dual-role users", () => {
+    const guardBody = migration.match(
+      /FUNCTION app\.guard_banking_mutation\(\)[\s\S]*?END\r?\n\$\$;/,
+    )?.[0] ?? "";
     expect(service).toContain("PERMISSIONS.prepareBankReconciliation");
     expect(service).toContain("PERMISSIONS.reviewBankReconciliation");
     expect(migration).toMatch(/ACCOUNTANT_APPROVER[\s\S]*banking\.reconcile\.review/);
@@ -63,8 +66,11 @@ describe("banking persistence and workflow contract", () => {
     expect(workspace).toContain("workspace.permissions.reconcileReview");
     expect(service).toContain('session.status === "REVIEWED"');
     expect(service).toContain("RECONCILIATION_VOID_PERMISSION_REQUIRED");
-    expect(migration).toContain("NEW.status = 'VOIDED' AND OLD.status = 'REVIEWED'");
+    expect(guardBody).toContain("(new_row ->> 'status') = 'VOIDED'");
+    expect(guardBody).toContain("(old_row ->> 'status') = 'REVIEWED'");
     expect(migration).toMatch(/TG_TABLE_NAME = 'bank_reconciliation_voids'[\s\S]*reconciliation\.status = 'REVIEWED'[\s\S]*banking\.reconcile\.review/);
+    expect(guardBody).toContain("to_jsonb(NEW)");
+    expect(guardBody).not.toMatch(/\bNEW\.[a-z_]+/);
     expect(workspace).toContain("A reviewed session requires review permission");
   });
 

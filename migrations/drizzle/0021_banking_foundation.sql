@@ -530,7 +530,10 @@ CREATE OR REPLACE FUNCTION app.guard_banking_mutation()
 RETURNS trigger
 LANGUAGE plpgsql
 AS $$
-DECLARE required_permission text;
+DECLARE
+  required_permission text;
+  new_row jsonb := to_jsonb(NEW);
+  old_row jsonb := CASE WHEN TG_OP = 'INSERT' THEN NULL ELSE to_jsonb(OLD) END;
 BEGIN
   IF TG_OP = 'DELETE' THEN
     RAISE EXCEPTION '% cannot be deleted; disable, void, or add a compensating record', TG_TABLE_NAME
@@ -539,13 +542,13 @@ BEGIN
   required_permission := CASE
     WHEN TG_TABLE_NAME = 'bank_connections' AND TG_OP = 'INSERT' THEN 'banking.connections.manage'
     WHEN TG_TABLE_NAME = 'bank_connections' THEN
-      CASE WHEN NEW.provider IS NOT DISTINCT FROM OLD.provider
-        AND NEW.credentials_ciphertext IS NOT DISTINCT FROM OLD.credentials_ciphertext
-        AND NEW.credentials_key_version IS NOT DISTINCT FROM OLD.credentials_key_version
-        AND NEW.display_name IS NOT DISTINCT FROM OLD.display_name
+      CASE WHEN (new_row -> 'provider') IS NOT DISTINCT FROM (old_row -> 'provider')
+        AND (new_row -> 'credentials_ciphertext') IS NOT DISTINCT FROM (old_row -> 'credentials_ciphertext')
+        AND (new_row -> 'credentials_key_version') IS NOT DISTINCT FROM (old_row -> 'credentials_key_version')
+        AND (new_row -> 'display_name') IS NOT DISTINCT FROM (old_row -> 'display_name')
         AND (
-          NEW.status IS NOT DISTINCT FROM OLD.status
-          OR (OLD.status = 'ACTIVE' AND NEW.status = 'REAUTHORIZATION_REQUIRED')
+          (new_row ->> 'status') IS NOT DISTINCT FROM (old_row ->> 'status')
+          OR ((old_row ->> 'status') = 'ACTIVE' AND (new_row ->> 'status') = 'REAUTHORIZATION_REQUIRED')
         )
         THEN 'banking.sync' ELSE 'banking.connections.manage' END
     WHEN TG_TABLE_NAME = 'bank_connection_credential_events' THEN 'banking.connections.manage'
@@ -554,14 +557,14 @@ BEGIN
     WHEN TG_TABLE_NAME IN ('bank_sync_runs', 'bank_observations', 'bank_observation_versions', 'bank_balance_anchors', 'bank_rule_runs', 'bank_draft_proposals') THEN 'banking.sync'
     WHEN TG_TABLE_NAME = 'bank_reconciliation_sessions' THEN
       CASE WHEN TG_OP = 'UPDATE' AND (
-          NEW.status IN ('REVIEWED', 'FINALIZED')
-          OR (NEW.status = 'VOIDED' AND OLD.status = 'REVIEWED')
+          (new_row ->> 'status') IN ('REVIEWED', 'FINALIZED')
+          OR ((new_row ->> 'status') = 'VOIDED' AND (old_row ->> 'status') = 'REVIEWED')
         ) THEN 'banking.reconcile.review' ELSE 'banking.reconcile.prepare' END
     WHEN TG_TABLE_NAME = 'bank_reconciliation_voids' THEN
       CASE WHEN EXISTS (
         SELECT 1 FROM bank_reconciliation_sessions reconciliation
-        WHERE reconciliation.organization_id = NEW.organization_id
-          AND reconciliation.id = NEW.reconciliation_session_id
+        WHERE reconciliation.organization_id = (new_row ->> 'organization_id')::uuid
+          AND reconciliation.id = (new_row ->> 'reconciliation_session_id')::uuid
           AND reconciliation.status = 'REVIEWED'
       ) THEN 'banking.reconcile.review' ELSE 'banking.reconcile.prepare' END
     WHEN TG_TABLE_NAME IN ('bank_match_allocations', 'bank_match_allocation_voids') THEN 'banking.reconcile.prepare'
