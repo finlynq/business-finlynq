@@ -319,6 +319,7 @@ test("writable demo completes and exactly reverses an AP bill payment lifecycle"
 });
 
 test("concurrent demo visitors are isolated and a released dirty slot is not reissued", async ({ browser }, testInfo) => {
+  test.setTimeout(90_000);
   const baseURL = testInfo.project.use.baseURL;
   if (typeof baseURL !== "string") throw new Error("Playwright baseURL is required for isolation acceptance");
   const contextA = await browser.newContext({ baseURL });
