@@ -1,5 +1,19 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { parseDemoResetMode } from "../scripts/demo-reset-mode";
+
+const resetImplementation = readFileSync(
+  "src/modules/onboarding/demo-bootstrap.ts",
+  "utf8",
+);
+const poolUpdateStart = resetImplementation.indexOf(
+  "UPDATE demo_sandbox_pool SET",
+);
+const poolUpdateEnd = resetImplementation.indexOf(
+  "RETURNING cycle",
+  poolUpdateStart,
+);
+const poolUpdate = resetImplementation.slice(poolUpdateStart, poolUpdateEnd);
 
 describe("demo reset operator contract", () => {
   it("accepts only the destructive nightly reconciliation mode", () => {
@@ -21,5 +35,19 @@ describe("demo reset operator contract", () => {
     ]) {
       expect(() => parseDemoResetMode([argument], "nightly")).toThrow(/accepts no tenant/);
     }
+  });
+
+  it("schedules the next cycle from reconciliation completion, not the prior boundary", () => {
+    expect(poolUpdateStart).toBeGreaterThanOrEqual(0);
+    expect(poolUpdateEnd).toBeGreaterThan(poolUpdateStart);
+    expect(poolUpdate).toContain(
+      "reset_after = app.next_demo_reset_after(statement_timestamp())",
+    );
+    expect(poolUpdate).toContain(
+      "last_completed_reset_at = statement_timestamp()",
+    );
+    expect(poolUpdate).not.toContain(
+      "next_demo_reset_after(greatest(now(), reset_after))",
+    );
   });
 });

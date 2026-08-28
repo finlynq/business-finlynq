@@ -13,12 +13,34 @@ const runDatabaseTests = databaseUrl ? describe : describe.skip;
 runDatabaseTests("rich nightly demo baseline", () => {
   const pool = new Pool({ connectionString: databaseUrl });
   let organizationId = "";
+  let resetSchedule: {
+    is_future: boolean;
+    is_within_next_day: boolean;
+    toronto_time: string;
+  };
 
   beforeAll(async () => {
     // Exercise the same destructive maintenance boundary used by the nightly
     // job, then prove that the additive deploy bootstrap can run repeatedly.
     // TEST_DATABASE_URL always identifies the disposable integration database.
+    await pool.query(
+      "UPDATE demo_sandbox_pool SET reset_after = now() + interval '7 days' WHERE singleton",
+    );
     await resetDemoSandboxes(pool, { mode: "nightly" });
+    const schedule = await pool.query<{
+      is_future: boolean;
+      is_within_next_day: boolean;
+      toronto_time: string;
+    }>(
+      `SELECT
+         reset_after > last_completed_reset_at AS is_future,
+         reset_after <= last_completed_reset_at + interval '25 hours' AS is_within_next_day,
+         to_char(reset_after AT TIME ZONE 'America/Toronto', 'HH24:MI') AS toronto_time
+       FROM demo_sandbox_pool
+       WHERE singleton`,
+    );
+    if (!schedule.rows[0]) throw new Error("Demo sandbox pool state is missing");
+    resetSchedule = schedule.rows[0];
     await bootstrapDemoOrganization(pool);
     await bootstrapDemoOrganization(pool);
 
@@ -56,6 +78,14 @@ runDatabaseTests("rich nightly demo baseline", () => {
   }, 300_000);
 
   afterAll(async () => pool.end());
+
+  it("reschedules from completion even when the stored boundary is days ahead", () => {
+    expect(resetSchedule).toEqual({
+      is_future: true,
+      is_within_next_day: true,
+      toronto_time: "04:15",
+    });
+  });
 
   it("has exact deterministic accounting and source-document counts", async () => {
     const result = await pool.query<{

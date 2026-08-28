@@ -2221,8 +2221,8 @@ export async function resetDemoSandboxes(
         const completed = await client.query(
           `UPDATE demo_sandbox_pool SET
              cycle = cycle + 1,
-             reset_after = app.next_demo_reset_after(greatest(now(), reset_after)),
-             last_completed_reset_at = now()
+             reset_after = app.next_demo_reset_after(statement_timestamp()),
+             last_completed_reset_at = statement_timestamp()
            WHERE singleton
            RETURNING cycle`,
         );
