@@ -215,10 +215,16 @@ describe("banking persistence and workflow contract", () => {
     expect(seed).toContain("bank_observation_versions");
     expect(seed).toContain("bank_reconciliation_sessions");
     expect(seed).toContain("Review bank fees");
+    expect(seed).toMatch(
+      /await seedDemoBankingData\(client, identity, foundations\);[\s\S]*await clearDemoSeedApplicationContext\(client\);/,
+    );
+    expect(seed).toContain("set_config('app.organization_id', '', true)");
   });
 
   it("keeps the repeatable fixed public template bank-free while seeding nightly-reset sandboxes", () => {
-    expect(seed).toMatch(/if \(!identity\.publicTemplate\) \{\s*await seedDemoBankingData\(client, identity, foundations\);\s*\}/);
+    expect(seed).toMatch(
+      /if \(!identity\.publicTemplate\) \{[\s\S]*?await seedDemoBankingData\(client, identity, foundations\);[\s\S]*?await clearDemoSeedApplicationContext\(client\);[\s\S]*?\}/,
+    );
     expect(seed).toContain("draft-only, bank-free baseline invariant");
     expect(seed).toContain("bank_connections !== \"0\"");
     expect(seed).toContain("bank_connections: \"1\"");

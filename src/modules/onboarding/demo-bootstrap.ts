@@ -1473,6 +1473,21 @@ async function seedDemoBankingData(
   }
 }
 
+async function clearDemoSeedApplicationContext(client: PoolClient): Promise<void> {
+  await client.query(
+    `SELECT
+       set_config('app.organization_id', '', true),
+       set_config('app.actor_id', '', true),
+       set_config('app.session_id', '', true),
+       set_config('app.session_mode', '', true),
+       set_config('app.request_id', '', true),
+       set_config('app.auth_method', '', true),
+       set_config('app.source_surface', '', true),
+       set_config('app.reason', '', true),
+       set_config('app.demo_write_authorized', 'false', true)`,
+  );
+}
+
 async function seedOrganizationBaseline(
   client: PoolClient,
   identity: SeedIdentity,
@@ -1516,6 +1531,11 @@ async function seedOrganizationBaseline(
   // weakening the append-only banking tables with conflict updates.
   if (!identity.publicTemplate) {
     await seedDemoBankingData(client, identity, foundations);
+    // Banking inserts exercise the ordinary permission guards and therefore
+    // install a transaction-local actor context. Clear it before the remaining
+    // database-owner fixture inserts so they are not misclassified as live
+    // demo-session mutations.
+    await clearDemoSeedApplicationContext(client);
   }
 
   const journalsToPost: SeededJournalToPost[] = [];
