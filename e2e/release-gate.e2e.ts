@@ -207,6 +207,15 @@ test("demo session protects workspace routes and is revoked by sign-out", async 
   await expect(page).toHaveURL(/\/app\/journals$/);
   await expect(page.getByRole("heading", { level: 1, name: "Journals" })).toBeVisible();
 
+  // Keep the banking workspace in the production release gate. Its initial
+  // server render loads connection, reconciliation, and rule data together,
+  // so this catches query-shape failures even when live provider calls are
+  // deliberately disabled.
+  await page.goto("/app/banking");
+  await expect(page.getByRole("heading", { level: 1, name: "Banking" })).toBeVisible();
+  await expect(page.getByRole("navigation", { name: "Banking views" })).toBeVisible();
+  await page.goto("/app/journals");
+
   const seededDraft = page.getByRole("row").filter({ hasText: "Synthetic Canadian software accrual" });
   await expect(seededDraft).toContainText("DRAFT");
   await seededDraft.getByText("Post draft", { exact: true }).click();

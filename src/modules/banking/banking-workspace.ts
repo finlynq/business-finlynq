@@ -498,7 +498,7 @@ export async function loadBankingWorkspace(
           session_allocated: string;
         }>(
           `SELECT line.id, journal.id AS journal_id,
-             coalesce(journal.journal_number, journal.description) AS journal_label,
+             coalesce(journal.journal_number::text, journal.description) AS journal_label,
              journal.accounting_date::text, journal.description, line.memo,
              (line.debit_transaction - line.credit_transaction)::text AS amount,
              coalesce(sum(allocation.allocated_amount) FILTER (

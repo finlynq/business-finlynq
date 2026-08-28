@@ -185,6 +185,15 @@ describe("banking persistence and workflow contract", () => {
     expect(workspaceData).toContain("allocated_session.status <> 'VOIDED'");
   });
 
+  it("returns reconciliation journal labels with one PostgreSQL text type", () => {
+    expect(workspaceData).toContain(
+      "coalesce(journal.journal_number::text, journal.description) AS journal_label",
+    );
+    expect(workspaceData).not.toContain(
+      "coalesce(journal.journal_number, journal.description) AS journal_label",
+    );
+  });
+
   it("keeps categorization manual-review-only and versions rule state append-only", () => {
     expect(migration).toContain("kind text NOT NULL CHECK (kind = 'MANUAL_REVIEW')");
     expect(migration).toContain("supersedes_rule_id");
