@@ -189,15 +189,15 @@ SECURITY DEFINER
 SET search_path = public, pg_temp
 AS $$
 DECLARE
-  authorization record;
+  admin_context record;
   selected_organization_id uuid;
   selected_actor_id uuid;
   normalized_code text := upper(trim(selected_currency_code));
 BEGIN
-  SELECT * INTO authorization
+  SELECT * INTO admin_context
   FROM app.organization_admin_authorize('organization.settings.manage', true);
-  selected_organization_id := authorization.organization_id;
-  selected_actor_id := authorization.actor_id;
+  selected_organization_id := admin_context.organization_id;
+  selected_actor_id := admin_context.actor_id;
   -- This lock is shared with the ledger trigger. A concurrent ledger create
   -- therefore either observes the disable first and re-enables its currency,
   -- or commits first and makes the disable fail the active-ledger check.
@@ -255,17 +255,17 @@ SECURITY DEFINER
 SET search_path = public, pg_temp
 AS $$
 DECLARE
-  authorization record;
+  admin_context record;
   selected_organization_id uuid;
   selected_actor_id uuid;
   normalized_source text := upper(trim(selected_source_currency));
   normalized_target text := upper(trim(selected_target_currency));
   rate_id uuid;
 BEGIN
-  SELECT * INTO authorization
+  SELECT * INTO admin_context
   FROM app.organization_admin_authorize('organization.settings.manage', true);
-  selected_organization_id := authorization.organization_id;
-  selected_actor_id := authorization.actor_id;
+  selected_organization_id := admin_context.organization_id;
+  selected_actor_id := admin_context.actor_id;
   IF selected_rate IS NULL OR selected_rate <= 0 OR selected_effective_at IS NULL
     OR normalized_source = normalized_target
     OR length(trim(selected_source)) NOT BETWEEN 2 AND 100 THEN
@@ -330,7 +330,7 @@ SECURITY DEFINER
 SET search_path = public, pg_temp
 AS $$
 DECLARE
-  authorization record;
+  admin_context record;
   selected_organization_id uuid;
   normalized_regime text := lower(trim(selected_regime_key));
   normalized_country text := upper(trim(selected_destination_country));
@@ -340,9 +340,9 @@ DECLARE
   seattle_named boolean;
   seattle_location boolean;
 BEGIN
-  SELECT * INTO authorization
+  SELECT * INTO admin_context
   FROM app.organization_admin_authorize('organization.settings.manage', true);
-  selected_organization_id := authorization.organization_id;
+  selected_organization_id := admin_context.organization_id;
 
   normalized_city := CASE
     WHEN normalized_city IS NULL THEN NULL
@@ -475,15 +475,15 @@ SECURITY DEFINER
 SET search_path = public, pg_temp
 AS $$
 DECLARE
-  authorization record;
+  admin_context record;
   selected_organization_id uuid;
   normalized_key text := lower(trim(selected_key));
   selected_definition segment_definitions%ROWTYPE;
   next_state custom_slot_state;
 BEGIN
-  SELECT * INTO authorization
+  SELECT * INTO admin_context
   FROM app.organization_admin_authorize('ledger.segments.manage', true);
-  selected_organization_id := authorization.organization_id;
+  selected_organization_id := admin_context.organization_id;
   IF normalized_key NOT IN (
     'subaccount', 'department',
     'custom1', 'custom2', 'custom3', 'custom4',
@@ -589,16 +589,16 @@ SECURITY DEFINER
 SET search_path = public, pg_temp
 AS $$
 DECLARE
-  authorization record;
+  admin_context record;
   selected_organization_id uuid;
   normalized_key text := lower(trim(selected_definition_key));
   normalized_code text := upper(trim(selected_code));
   selected_definition segment_definitions%ROWTYPE;
   selected_value segment_values%ROWTYPE;
 BEGIN
-  SELECT * INTO authorization
+  SELECT * INTO admin_context
   FROM app.organization_admin_authorize('ledger.segments.manage', true);
-  selected_organization_id := authorization.organization_id;
+  selected_organization_id := admin_context.organization_id;
 
   IF normalized_key NOT IN (
     'subaccount', 'department',
@@ -701,16 +701,16 @@ SECURITY DEFINER
 SET search_path = public, pg_temp
 AS $$
 DECLARE
-  authorization record;
+  admin_context record;
   selected_organization_id uuid;
   selected_combination account_combinations%ROWTYPE;
   replacement account_combinations%ROWTYPE;
   combination_created boolean := false;
   combination_reactivated boolean := false;
 BEGIN
-  SELECT * INTO authorization
+  SELECT * INTO admin_context
   FROM app.organization_admin_authorize('ledger.segments.manage', true);
-  selected_organization_id := authorization.organization_id;
+  selected_organization_id := admin_context.organization_id;
 
   IF selected_legal_entity_id IS NULL OR selected_ledger_id IS NULL
     OR selected_account_id IS NULL THEN
@@ -956,7 +956,7 @@ SECURITY DEFINER
 SET search_path = public, pg_temp
 AS $$
 DECLARE
-  authorization record;
+  admin_context record;
   selected_organization_id uuid;
   selected_actor_id uuid;
   normalized_code text := upper(trim(selected_code));
@@ -970,10 +970,10 @@ DECLARE
   month_number integer;
   starts_on date;
 BEGIN
-  SELECT * INTO authorization
+  SELECT * INTO admin_context
   FROM app.organization_admin_authorize('organization.settings.manage', true);
-  selected_organization_id := authorization.organization_id;
-  selected_actor_id := authorization.actor_id;
+  selected_organization_id := admin_context.organization_id;
+  selected_actor_id := admin_context.actor_id;
   IF normalized_code !~ '^[A-Z0-9][A-Z0-9_-]{0,15}$' OR normalized_code = '0000'
     OR length(trim(selected_display_name)) NOT BETWEEN 2 AND 200
     OR normalized_country !~ '^[A-Z]{2}$'
