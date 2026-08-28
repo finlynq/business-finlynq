@@ -2,9 +2,10 @@
 
 import Link from "next/link";
 import { FormEvent, useEffect, useState } from "react";
+import { AuthenticatorEnrollmentSetup } from "@/app/_components/authenticator-enrollment.client";
 import styles from "../auth.module.css";
 
-type ReplacementEnrollment = Readonly<{ secret: string; enrollmentUri: string; organizationName: string }>;
+type ReplacementEnrollment = Readonly<{ secret: string; enrollmentUri: string; qrCodeDataUrl: string; organizationName: string }>;
 
 export function ResetPasswordForm() {
   const [token, setToken] = useState("");
@@ -48,14 +49,16 @@ export function ResetPasswordForm() {
         availableAt?: string;
         secret?: string;
         enrollmentUri?: string;
+        qrCodeDataUrl?: string;
         organizationName?: string;
       };
       if (result.mfaRequired) setMfaRequired(true);
-      if (result.mfaEnrollmentRequired && result.secret && result.enrollmentUri && result.organizationName) {
+      if (result.mfaEnrollmentRequired && result.secret && result.enrollmentUri && result.qrCodeDataUrl && result.organizationName) {
         setMfaRequired(false);
         setReplacementEnrollment({
           secret: result.secret,
           enrollmentUri: result.enrollmentUri,
+          qrCodeDataUrl: result.qrCodeDataUrl,
           organizationName: result.organizationName,
         });
       }
@@ -98,8 +101,7 @@ export function ResetPasswordForm() {
       {replacementEnrollment && <div className={styles.successAlert} role="status">Protected recovery is approved. Add a replacement authenticator for your {replacementEnrollment.organizationName} account before changing the password.</div>}
       <label><span>New password</span><input name="password" type="password" autoComplete="new-password" required minLength={14} maxLength={128} /><small>Use at least 14 characters.</small></label>
       <label><span>Confirm new password</span><input name="confirmation" type="password" autoComplete="new-password" required minLength={14} maxLength={128} /></label>
-      {replacementEnrollment && <label><span>Manual replacement setup key</span><input value={replacementEnrollment.secret} readOnly aria-label="Replacement authenticator manual setup key" /></label>}
-      {replacementEnrollment && <a className={styles.afterFormLink} href={replacementEnrollment.enrollmentUri}>Open authenticator app</a>}
+      {replacementEnrollment && <AuthenticatorEnrollmentSetup enrollment={replacementEnrollment} replacement />}
       {(mfaRequired || replacementEnrollment) && <label><span>{replacementEnrollment ? "Replacement authenticator code" : "Authenticator code"}</span><input name="otp" type="text" autoComplete="one-time-code" inputMode="numeric" pattern="[0-9]{6}" minLength={6} maxLength={6} required /></label>}
       {mfaRequired && <button className={styles.afterFormLink} type="button" onClick={escalate} disabled={busy || escalating}>{escalating ? "Requesting protected recovery…" : "I can’t use my authenticator"}</button>}
       <button className={styles.submitButton} type="submit" disabled={busy || !token}>{busy ? "Updating…" : "Update password"}</button>

@@ -58,6 +58,15 @@ export type TenantJournalDto = Readonly<{
     displayKey: string;
     displaySegments: readonly DisplayedAccountSegment[];
   }>[];
+  accountPostings: readonly Readonly<{
+    canonicalKey: string;
+    displayKey: string;
+    displaySegments: readonly DisplayedAccountSegment[];
+    debitFunctional: string;
+    creditFunctional: string;
+    endingBalanceFunctional: string;
+    endingSide: "DEBIT" | "CREDIT" | "ZERO";
+  }>[];
   canPost: boolean;
   canReverse: boolean;
 }>;
@@ -446,6 +455,90 @@ export async function loadTenantJournalWorkspace(
         (page - 1) * registerPageSize,
       ],
     );
+    const journalPage = registerPageWindow(journals.rows, page);
+    const journalIds = journalPage.rows.map((row) => row.id);
+    const accountPostingRows = journalIds.length > 0
+      ? await client.query<{
+          journal_entry_id: string;
+          canonical_key: string;
+          debit_functional: string;
+          credit_functional: string;
+          ending_balance_functional: string;
+          ending_side: "DEBIT" | "CREDIT" | "ZERO";
+        }>(
+          `WITH current_postings AS (
+             SELECT line.journal_entry_id,
+               combination.id AS account_combination_id,
+               concat_ws('.', entity.code, account.code,
+                 coalesce(subaccount.code, '0000'), coalesce(department.code, '0000'),
+                 coalesce(intercompany.code, '0000'),
+                 coalesce(custom1.code, '0000'), coalesce(custom2.code, '0000'),
+                 coalesce(custom3.code, '0000'), coalesce(custom4.code, '0000'),
+                 coalesce(custom5.code, '0000'), coalesce(custom6.code, '0000'),
+                 coalesce(custom7.code, '0000'), coalesce(custom8.code, '0000')) AS canonical_key,
+               sum(line.debit_functional)::text AS debit_functional,
+               sum(line.credit_functional)::text AS credit_functional
+             FROM journal_lines line
+             JOIN account_combinations combination
+               ON combination.organization_id = line.organization_id
+              AND combination.id = line.account_combination_id
+             JOIN legal_entities entity
+               ON entity.organization_id = combination.organization_id
+              AND entity.id = combination.entity_id
+             JOIN gl_accounts account
+               ON account.organization_id = combination.organization_id
+              AND account.id = combination.account_id
+             LEFT JOIN segment_values subaccount ON subaccount.organization_id = combination.organization_id AND subaccount.id = combination.subaccount_id
+             LEFT JOIN segment_values department ON department.organization_id = combination.organization_id AND department.id = combination.department_id
+             LEFT JOIN legal_entities intercompany ON intercompany.organization_id = combination.organization_id AND intercompany.id = combination.intercompany_entity_id
+             LEFT JOIN segment_values custom1 ON custom1.organization_id = combination.organization_id AND custom1.id = combination.custom_1_id
+             LEFT JOIN segment_values custom2 ON custom2.organization_id = combination.organization_id AND custom2.id = combination.custom_2_id
+             LEFT JOIN segment_values custom3 ON custom3.organization_id = combination.organization_id AND custom3.id = combination.custom_3_id
+             LEFT JOIN segment_values custom4 ON custom4.organization_id = combination.organization_id AND custom4.id = combination.custom_4_id
+             LEFT JOIN segment_values custom5 ON custom5.organization_id = combination.organization_id AND custom5.id = combination.custom_5_id
+             LEFT JOIN segment_values custom6 ON custom6.organization_id = combination.organization_id AND custom6.id = combination.custom_6_id
+             LEFT JOIN segment_values custom7 ON custom7.organization_id = combination.organization_id AND custom7.id = combination.custom_7_id
+             LEFT JOIN segment_values custom8 ON custom8.organization_id = combination.organization_id AND custom8.id = combination.custom_8_id
+             WHERE line.organization_id = $1
+               AND line.journal_entry_id = ANY($2::uuid[])
+             GROUP BY line.journal_entry_id, combination.id,
+               entity.code, account.code, subaccount.code, department.code,
+               intercompany.code, custom1.code, custom2.code, custom3.code,
+               custom4.code, custom5.code, custom6.code, custom7.code, custom8.code
+           )
+           SELECT posting.journal_entry_id, posting.canonical_key,
+             posting.debit_functional, posting.credit_functional,
+             CASE WHEN account_balance.net_functional > 0 THEN 'DEBIT'
+                  WHEN account_balance.net_functional < 0 THEN 'CREDIT'
+                  ELSE 'ZERO' END AS ending_side,
+             abs(account_balance.net_functional)::text AS ending_balance_functional
+           FROM current_postings posting
+           JOIN journal_entries current_entry
+             ON current_entry.organization_id = $1
+            AND current_entry.id = posting.journal_entry_id
+           LEFT JOIN LATERAL (
+               SELECT coalesce(sum(
+                 history_line.debit_functional - history_line.credit_functional
+               ), 0) AS net_functional
+               FROM journal_lines history_line
+               JOIN journal_entries history_entry
+                 ON history_entry.organization_id = history_line.organization_id
+                AND history_entry.id = history_line.journal_entry_id
+               WHERE history_line.organization_id = $1
+                 AND history_line.account_combination_id = posting.account_combination_id
+                 AND history_entry.status = 'POSTED'
+                 AND history_entry.accounting_date <= current_entry.accounting_date
+           ) account_balance ON true
+           ORDER BY posting.journal_entry_id, posting.canonical_key`,
+          [principal.organizationId, journalIds],
+        )
+      : { rows: [] };
+    const postingsByJournal = new Map<string, typeof accountPostingRows.rows>();
+    for (const posting of accountPostingRows.rows) {
+      const existing = postingsByJournal.get(posting.journal_entry_id) ?? [];
+      existing.push(posting);
+      postingsByJournal.set(posting.journal_entry_id, existing);
+    }
     const writable = principalCanWrite(principal);
     const canDraft = writable && await actorHasActivePermission(client, {
       organizationId: principal.organizationId,
@@ -509,7 +602,6 @@ export async function loadTenantJournalWorkspace(
         : today > period.ends_on ? period.ends_on : today,
     }));
     const contentHashPattern = /^[a-f0-9]{64}$/i;
-    const journalPage = registerPageWindow(journals.rows, page);
     return {
       demoOnly: membership.isDemo,
       readiness,
@@ -518,37 +610,47 @@ export async function loadTenantJournalWorkspace(
       canReverse: canPost && canReverse,
       reversalPeriods,
       pagination: journalPage.pagination,
-      journals: journalPage.rows.map((row) => ({
-        id: row.id,
-        ledgerId: row.ledger_id,
-        number: row.journal_number === null ? "Draft" : String(row.journal_number),
-        accountingDate: row.accounting_date,
-        entityCode: row.entity_code,
-        currency: row.functional_currency,
-        description: row.description,
-        typeKey: row.journal_type_key,
-        typeLabel: row.type_label,
-        ownerModule: row.owner_module,
-        correctionRoute: row.correction_route,
-        status: row.status,
-        amount: row.total_debit_functional,
-        debitFunctional: row.total_debit_functional,
-        creditFunctional: row.total_credit_functional ?? row.total_debit_functional,
-        sourceNumber: row.source_number,
-        expectedContentHash: row.canonical_content_hash,
-        reversalOfNumber: row.reversal_of_number === null ? null : String(row.reversal_of_number),
-        reversedByNumber: row.reversed_by_number === null ? null : String(row.reversed_by_number),
-        accountKeys: (row.canonical_account_keys ?? []).map((canonicalKey) => (
-          presentAccountKey(canonicalKey, row.account_segment_definitions)
-        )),
-        canPost: canPost && row.owner_module === "ledger" && row.journal_type_key === "ledger.manual" &&
-          row.status === "DRAFT" && (row.period_state === "OPEN" ||
-            (row.period_state === "ADJUSTMENT_ONLY" && canPostAdjustment)) &&
-          contentHashPattern.test(row.canonical_content_hash ?? ""),
-        canReverse: canPost && canReverse && row.owner_module === "ledger" &&
-          row.journal_type_key === "ledger.manual" && row.status === "POSTED" &&
-          row.reversed_by_number === null && reversalPeriods.some((period) => period.ledgerId === row.ledger_id),
-      })),
+      journals: journalPage.rows.map((row) => {
+        const accountPostings = (postingsByJournal.get(row.id) ?? []).map((posting) => ({
+          ...presentAccountKey(posting.canonical_key, row.account_segment_definitions),
+          debitFunctional: posting.debit_functional,
+          creditFunctional: posting.credit_functional,
+          endingBalanceFunctional: posting.ending_balance_functional,
+          endingSide: posting.ending_side,
+        }));
+        return {
+          id: row.id,
+          ledgerId: row.ledger_id,
+          number: row.journal_number === null ? "Draft" : String(row.journal_number),
+          accountingDate: row.accounting_date,
+          entityCode: row.entity_code,
+          currency: row.functional_currency,
+          description: row.description,
+          typeKey: row.journal_type_key,
+          typeLabel: row.type_label,
+          ownerModule: row.owner_module,
+          correctionRoute: row.correction_route,
+          status: row.status,
+          amount: row.total_debit_functional,
+          debitFunctional: row.total_debit_functional,
+          creditFunctional: row.total_credit_functional ?? row.total_debit_functional,
+          sourceNumber: row.source_number,
+          expectedContentHash: row.canonical_content_hash,
+          reversalOfNumber: row.reversal_of_number === null ? null : String(row.reversal_of_number),
+          reversedByNumber: row.reversed_by_number === null ? null : String(row.reversed_by_number),
+          accountKeys: (row.canonical_account_keys ?? []).map((canonicalKey) => (
+            presentAccountKey(canonicalKey, row.account_segment_definitions)
+          )),
+          accountPostings,
+          canPost: canPost && row.owner_module === "ledger" && row.journal_type_key === "ledger.manual" &&
+            row.status === "DRAFT" && (row.period_state === "OPEN" ||
+              (row.period_state === "ADJUSTMENT_ONLY" && canPostAdjustment)) &&
+            contentHashPattern.test(row.canonical_content_hash ?? ""),
+          canReverse: canPost && canReverse && row.owner_module === "ledger" &&
+            row.journal_type_key === "ledger.manual" && row.status === "POSTED" &&
+            row.reversed_by_number === null && reversalPeriods.some((period) => period.ledgerId === row.ledger_id),
+        };
+      }),
     };
   });
 }

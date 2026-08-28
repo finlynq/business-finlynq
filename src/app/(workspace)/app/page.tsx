@@ -5,16 +5,34 @@ import {
   loadEntitySummaries,
 } from "@/modules/reporting/tenant-reporting";
 import { requireWorkspacePrincipal } from "@/modules/workspace/access";
+import { currentWorkspaceEntityContext } from "@/modules/workspace/entity-context";
 import { DemoNotice, EmptyState, PageHeader, StatusPill } from "../../_components/ui";
 
 function displayAmount(currency: string, amount: string): string {
   return formatMoney(amount, currency);
 }
 
-export default async function OverviewPage() {
+export default async function OverviewPage({
+  searchParams = Promise.resolve({}),
+}: {
+  searchParams?: Promise<{ scope?: string | string[] }>;
+} = {}) {
   const principal = await requireWorkspacePrincipal("/app");
-  const overview = await loadAccountingOverview(principal);
-  const entities = overview.access.ledger ? await loadEntitySummaries(principal) : [];
+  const [parameters, entityContext] = await Promise.all([
+    searchParams,
+    currentWorkspaceEntityContext(principal),
+  ]);
+  const requestedScope = Array.isArray(parameters.scope) ? parameters.scope[0] : parameters.scope;
+  const showAllEntities = requestedScope === "all" || !entityContext.selectedEntity;
+  const selectedEntityId = showAllEntities ? null : entityContext.selectedEntity?.id ?? null;
+  const overview = await loadAccountingOverview(principal, selectedEntityId);
+  const entitySummaries = overview.access.ledger ? await loadEntitySummaries(principal) : [];
+  const entities = showAllEntities
+    ? entitySummaries
+    : entitySummaries.filter((entity) => entity.id === selectedEntityId);
+  const scopeLabel = showAllEntities
+    ? "All entities"
+    : `${entityContext.selectedEntity?.code} · ${entityContext.selectedEntity?.displayName}`;
   const metrics = [
     ...(overview.access.receivables ? [{
       label: "Open receivables",
@@ -52,9 +70,9 @@ export default async function OverviewPage() {
   return (
     <div className="page-content">
       <PageHeader
-        eyebrow={`${principal.organizationName} · Overview`}
+        eyebrow={`${principal.organizationName} · ${scopeLabel}`}
         title="Accounting overview"
-        description="Live balances and workflow counts from your organization ledger and subledgers. Currencies are never combined implicitly."
+        description={`Live balances and workflow counts for ${showAllEntities ? "the full organization" : "the working entity"}. Currencies are never combined implicitly.`}
         actions={overview.access.ledger ? (
           <>
             <a
@@ -74,6 +92,31 @@ export default async function OverviewPage() {
         </DemoNotice>
       )}
 
+      {entityContext.selectedEntity && entityContext.options.length > 1 && (
+        <nav className="form-actions" aria-label="Dashboard entity scope">
+          <span className="subtle-label">Dashboard scope</span>
+          <Link
+            className={showAllEntities ? "secondary-button compact-button" : "primary-button compact-button"}
+            href="/app"
+            aria-current={showAllEntities ? undefined : "page"}
+          >
+            {entityContext.selectedEntity.code} · Working entity
+          </Link>
+          <Link
+            className={showAllEntities ? "primary-button compact-button" : "secondary-button compact-button"}
+            href="/app?scope=all"
+            aria-current={showAllEntities ? "page" : undefined}
+          >
+            All entities
+          </Link>
+          <span className="subtle-label">
+            {showAllEntities
+              ? "Organization totals keep every currency in a separate row."
+              : `Using ${entityContext.selectedEntity.functionalCurrency} for ${entityContext.selectedEntity.displayName}.`}
+          </span>
+        </nav>
+      )}
+
       {overview.access.tax && overview.manualReviewTaxCount > 0 && (
         <section className="attention-banner" aria-labelledby="attention-title">
           <span className="attention-icon" aria-hidden="true">!</span>
@@ -88,7 +131,7 @@ export default async function OverviewPage() {
       <section aria-labelledby="position-title">
         <div className="section-heading">
           <div><p className="eyebrow">Position</p><h2 id="position-title">At a glance</h2></div>
-          <span className="subtle-label">Persisted tenant data · currencies shown separately</span>
+          <span className="subtle-label">{scopeLabel} · currencies shown separately</span>
         </div>
         {metrics.length ? <div className="metric-grid">
           {metrics.map((metric) => (

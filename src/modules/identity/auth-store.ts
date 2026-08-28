@@ -53,6 +53,12 @@ export type MfaSetupChallenge = Readonly<{
   factor_secret_ciphertext: string;
 }>;
 
+export type SessionMfaStatus = Readonly<{
+  mfa_required: boolean;
+  active_factor: boolean;
+  pending_enrollment: boolean;
+}>;
+
 export type ClaimedEmail = Readonly<{
   outbox_id: string;
   user_id: string;
@@ -137,6 +143,30 @@ export async function issueMfaUserSession(input: {
      LEFT JOIN demo_replacement ON true`,
     [input.userId, input.organizationId, input.membershipId, input.factorId, input.totpCounter,
       input.tokenHash, input.ipHash, input.userAgentHash, input.requestId,
+      input.replacedDemoSessionTokenHash ?? null],
+  );
+  return result.rows[0]?.session_id ?? null;
+}
+
+export async function issuePasswordUserSession(input: {
+  userId: string; organizationId: string; membershipId: string;
+  tokenHash: string; ipHash: string; userAgentHash: string | null; requestId: string;
+  replacedDemoSessionTokenHash?: string | null;
+}): Promise<string | null> {
+  const result = await queryDatabase<{ session_id: string | null }>(
+    `WITH issued AS MATERIALIZED (
+       SELECT app.auth_issue_password_user_session($1,$2,$3,$4,$5,$6,$7) AS session_id
+     ), demo_replacement AS MATERIALIZED (
+       SELECT app.auth_revoke_session($8,$7) AS revoked
+       FROM issued
+       WHERE issued.session_id IS NOT NULL
+         AND $8::text IS NOT NULL
+     )
+     SELECT issued.session_id
+     FROM issued
+     LEFT JOIN demo_replacement ON true`,
+    [input.userId, input.organizationId, input.membershipId, input.tokenHash,
+      input.ipHash, input.userAgentHash, input.requestId,
       input.replacedDemoSessionTokenHash ?? null],
   );
   return result.rows[0]?.session_id ?? null;
@@ -271,6 +301,64 @@ export async function finishMfaEnrollment(input: {
   const result = await queryDatabase<{ finished: boolean }>(
     "SELECT app.auth_finish_mfa_enrollment($1,$2,$3,$4) AS finished",
     [input.setupTokenHash, input.factorId, input.counter, input.requestId],
+  );
+  return result.rows[0]?.finished ?? false;
+}
+
+export async function skipMfaEnrollment(setupTokenHash: string, requestId: string): Promise<boolean> {
+  const result = await queryDatabase<{ skipped: boolean }>(
+    "SELECT app.auth_skip_mfa_enrollment($1,$2) AS skipped",
+    [setupTokenHash, requestId],
+  );
+  return result.rows[0]?.skipped ?? false;
+}
+
+export async function mfaStatusForSession(sessionId: string): Promise<SessionMfaStatus | null> {
+  const result = await queryDatabase<SessionMfaStatus>(
+    "SELECT * FROM app.auth_mfa_status_for_session($1)",
+    [sessionId],
+  );
+  return result.rows[0] ?? null;
+}
+
+export async function beginSessionMfaEnrollment(input: {
+  sessionId: string; factorId: string; factorSecretCiphertext: string;
+  setupTokenHash: string; requestId: string;
+}): Promise<boolean> {
+  const result = await queryDatabase<{ started: boolean }>(
+    "SELECT app.auth_begin_session_mfa_enrollment($1,$2,$3,$4,$5) AS started",
+    [input.sessionId, input.factorId, input.factorSecretCiphertext,
+      input.setupTokenHash, input.requestId],
+  );
+  return result.rows[0]?.started ?? false;
+}
+
+export async function passwordForSession(sessionId: string): Promise<Readonly<{
+  user_id: string;
+  password_hash: string;
+}> | null> {
+  const result = await queryDatabase<{ user_id: string; password_hash: string }>(
+    "SELECT * FROM app.auth_password_for_session($1)",
+    [sessionId],
+  );
+  return result.rows[0] ?? null;
+}
+
+export async function recordSessionReauthenticationFailure(sessionId: string, requestId: string): Promise<void> {
+  await queryDatabase(
+    "SELECT app.auth_record_session_reauthentication_failure($1,$2)",
+    [sessionId, requestId],
+  );
+}
+
+export async function finishSessionMfaEnrollment(input: {
+  sessionId: string; setupTokenHash: string; factorId: string;
+  counter: number; replacementSessionTokenHash: string; requestId: string;
+}): Promise<boolean> {
+  const result = await queryDatabase<{ finished: boolean }>(
+    "SELECT app.auth_finish_session_mfa_enrollment($1,$2,$3,$4,$5,$6) AS finished",
+    [input.sessionId, input.setupTokenHash, input.factorId, input.counter,
+      input.replacementSessionTokenHash, input.requestId],
   );
   return result.rows[0]?.finished ?? false;
 }

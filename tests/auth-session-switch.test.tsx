@@ -47,6 +47,7 @@ const mocks = vi.hoisted(() => {
     consumeRateLimit: vi.fn(),
     lookupLogin: vi.fn(),
     issueMfaUserSession: vi.fn(),
+    issuePasswordUserSession: vi.fn(),
     recordLoginFailure: vi.fn(),
     verifyPassword: vi.fn(),
     setSessionCookie: vi.fn(),
@@ -66,6 +67,7 @@ vi.mock("@/modules/identity/auth-store", () => ({
   consumeRateLimit: mocks.consumeRateLimit,
   lookupLogin: mocks.lookupLogin,
   issueMfaUserSession: mocks.issueMfaUserSession,
+  issuePasswordUserSession: mocks.issuePasswordUserSession,
   recordLoginFailure: mocks.recordLoginFailure,
 }));
 vi.mock("@/modules/identity/email-provider", () => ({
@@ -100,6 +102,7 @@ beforeEach(() => {
   mocks.lookupLogin.mockResolvedValue([mocks.identity]);
   mocks.verifyPassword.mockResolvedValue(true);
   mocks.issueMfaUserSession.mockResolvedValue("40000000-0000-4000-8000-000000000001");
+  mocks.issuePasswordUserSession.mockResolvedValue("40000000-0000-4000-8000-000000000002");
 });
 
 afterAll(() => {
@@ -148,6 +151,35 @@ describe("demo-to-real account session switching", () => {
       replacedDemoSessionTokenHash: "hashed:existing-demo-session-token",
       totpCounter: 101,
     }));
+    expect(mocks.setSessionCookie).toHaveBeenCalledWith(
+      expect.anything(),
+      "new-real-session-token",
+      24 * 60 * 60,
+    );
+  });
+
+  it("issues a password-only session when the user intentionally skipped MFA", async () => {
+    mocks.requestPrincipal.mockResolvedValue(mocks.demoPrincipal);
+    mocks.lookupLogin.mockResolvedValue([{
+      ...mocks.identity,
+      mfa_required: false,
+      mfa_factor_id: null,
+      mfa_secret_ciphertext: null,
+      mfa_last_accepted_counter: null,
+    }]);
+
+    const response = await login(loginRequest());
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      success: true,
+      next: "/app/receivables/invoices",
+    });
+    expect(mocks.issuePasswordUserSession).toHaveBeenCalledWith(expect.objectContaining({
+      userId: mocks.identity.user_id,
+      replacedDemoSessionTokenHash: "hashed:existing-demo-session-token",
+    }));
+    expect(mocks.issueMfaUserSession).not.toHaveBeenCalled();
     expect(mocks.setSessionCookie).toHaveBeenCalledWith(
       expect.anything(),
       "new-real-session-token",

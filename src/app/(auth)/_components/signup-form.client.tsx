@@ -111,7 +111,7 @@ export function SignupForm({
   if (message) return (
     <div className={styles.successStack}>
       <div className={styles.successAlert} role="status">{message}</div>
-      <p>Open the one-use link in the email to create your password and authenticator. No business is provisioned until the link is verified.</p>
+      <p>Open the one-use link in the email to create your password. You can scan an authenticator QR code for stronger security or continue with password-only sign-in.</p>
       <Link className={styles.submitButton} href="/login">Continue to sign in</Link>
     </div>
   );
@@ -157,7 +157,7 @@ export function SignupForm({
         <label className={styles.checkboxLabel}><input name="termsAccepted" type="checkbox" required /><span>I agree to the <Link href="/terms" target="_blank">terms</Link> and acknowledge the <Link href="/privacy" target="_blank">privacy notice</Link>.</span></label>
         {challenge.enabled && <div ref={challengeContainer} className={styles.challenge} aria-label="Signup verification" />}
         <button className={styles.submitButton} type="submit" disabled={busy}>{busy ? "Sending verification…" : "Create account"}</button>
-        <p className={styles.securityNote}>This creates an evaluation workspace in the hosted preview, not a production system of record. Do not enter regulated, confidential, or customer data under the current preview terms. The owner remains disabled until email verification, password setup, and authenticator confirmation finish.</p>
+        <p className={styles.securityNote}>This creates an evaluation workspace in the hosted preview, not a production system of record. Do not enter regulated, confidential, or customer data under the current preview terms. The owner remains disabled until email verification and password setup finish; authenticator enrollment is recommended and may be completed now or later.</p>
       </form>
     </>
   );

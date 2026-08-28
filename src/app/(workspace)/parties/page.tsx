@@ -40,7 +40,7 @@ export default async function PartiesPage({ searchParams }: { searchParams: Prom
       <PageHeader eyebrow="Unified master data" title="Organization address book" description="Create each person or business once for the organization, then attach customer or supplier accounts for every legal entity that trades with it. Party names and addresses remain envelope-encrypted." />
       {directory.demoOnly && <DemoNotice>These are encrypted synthetic records in your isolated writable sandbox. Your changes persist for this browser and reset nightly.</DemoNotice>}
       {directory.readiness === "READY" && directory.canManage && (
-        <PartyCreateForm accountOptions={accountOptions} />
+        <PartyCreateForm />
       )}
       {directory.readiness === "ENCRYPTION_SETUP_REQUIRED" ? (
         <EmptyState title="Encryption setup is required">Provision the organization data-encryption key before saving or reading party master data.</EmptyState>
@@ -69,7 +69,7 @@ export default async function PartiesPage({ searchParams }: { searchParams: Prom
                 <thead>
                   <tr>
                     <th scope="col">Party</th>
-                    <th scope="col">Entity roles and accounts</th>
+                    <th scope="col">Accounting roles by entity</th>
                     <th scope="col">Addresses</th>
                     <th scope="col">Manage roles</th>
                   </tr>
@@ -120,7 +120,7 @@ export default async function PartiesPage({ searchParams }: { searchParams: Prom
                       <td>
                         {directory.canManage ? (
                           <details className={styles.attachDetails}>
-                            <summary>Attach another entity role</summary>
+                            <summary>Add customer / supplier accounting role</summary>
                             <PartyAccountAttachForm
                               partyId={party.id}
                               partyName={party.displayName}

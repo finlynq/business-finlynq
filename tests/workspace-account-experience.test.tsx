@@ -5,6 +5,7 @@ import type { SessionPrincipal } from "@/modules/identity/session";
 const mocks = vi.hoisted(() => ({
   refresh: vi.fn(),
   requireWorkspacePrincipal: vi.fn(),
+  mfaStatusForSession: vi.fn(),
 }));
 
 vi.mock("next/navigation", () => ({
@@ -13,6 +14,10 @@ vi.mock("next/navigation", () => ({
 
 vi.mock("@/modules/workspace/access", () => ({
   requireWorkspacePrincipal: mocks.requireWorkspacePrincipal,
+}));
+
+vi.mock("@/modules/identity/auth-store", () => ({
+  mfaStatusForSession: mocks.mfaStatusForSession,
 }));
 
 import AccountPage from "@/app/(workspace)/app/account/page";
@@ -41,6 +46,11 @@ const principal: SessionPrincipal = {
 beforeEach(() => {
   vi.clearAllMocks();
   mocks.requireWorkspacePrincipal.mockResolvedValue(principal);
+  mocks.mfaStatusForSession.mockResolvedValue({
+    mfa_required: true,
+    active_factor: true,
+    pending_enrollment: false,
+  });
 });
 
 describe("workspace account and entity experience", () => {
@@ -100,7 +110,7 @@ describe("workspace account and entity experience", () => {
     expect(markup).toContain("Account &amp; security");
   });
 
-  it("shows personal, role, MFA, and session state without credential mutation controls", async () => {
+  it("shows personal, role, MFA, session state, and authenticator enrollment status", async () => {
     const markup = renderToStaticMarkup(await AccountPage());
 
     expect(mocks.requireWorkspacePrincipal).toHaveBeenCalledWith("/app/account");
@@ -110,10 +120,45 @@ describe("workspace account and entity experience", () => {
     expect(markup).toContain("Accountant approver");
     expect(markup).toContain("Private business account");
     expect(markup).toContain("VERIFIED");
+    expect(markup).toContain("ENABLED");
+    expect(markup).toContain("Authenticator enrollment");
+    expect(markup).toContain("Authenticator protection is enabled");
     expect(markup).toContain("Verified for this session");
     expect(markup).toContain('href="/app/settings"');
     expect(markup).toContain('href="/security"');
     expect(markup).not.toContain("type=\"password\"");
     expect(markup).not.toContain("<form");
+  });
+
+  it("offers later authenticator enrollment to password-only accounts", async () => {
+    mocks.mfaStatusForSession.mockResolvedValue({
+      mfa_required: false,
+      active_factor: false,
+      pending_enrollment: false,
+    });
+
+    const markup = renderToStaticMarkup(await AccountPage());
+
+    expect(markup).toContain("PASSWORD ONLY");
+    expect(markup).toContain("password-only sign-in");
+    expect(markup).toContain("Add authenticator");
+    expect(markup).toContain("sensitive operations that require MFA step-up are unavailable");
+    expect(markup).toContain("Current password");
+    expect(markup).toContain('type="password"');
+  });
+
+  it("makes an interrupted authenticator setup explicit and safely restartable", async () => {
+    mocks.mfaStatusForSession.mockResolvedValue({
+      mfa_required: false,
+      active_factor: false,
+      pending_enrollment: true,
+    });
+
+    const markup = renderToStaticMarkup(await AccountPage());
+
+    expect(markup).toContain("SETUP PENDING");
+    expect(markup).toContain("previous authenticator setup was not confirmed");
+    expect(markup).toContain("Restart authenticator setup");
+    expect(markup).toContain("Re-enter your password");
   });
 });

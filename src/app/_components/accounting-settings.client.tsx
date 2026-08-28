@@ -7,6 +7,16 @@ import {
   type AccountSegmentKey,
 } from "@/modules/ledger/accounting-configuration-contract";
 import type { AccountingConfigurationDto } from "@/modules/ledger/accounting-configuration";
+import {
+  accountingHierarchyDimensionKeys,
+  defaultFinancialStatementGroupCode,
+  defaultFinancialStatementGroups,
+  financialStatementClasses,
+  type AccountingHierarchyDimensionKey,
+  type AccountingHierarchyDto,
+  type AccountingHierarchyNodeDto,
+  type AccountingHierarchyMemberType,
+} from "@/modules/ledger/accounting-hierarchy-contract";
 
 type Feedback = Readonly<{ kind: "success" | "error"; message: string }> | null;
 
@@ -30,11 +40,126 @@ function emptySegmentSelection(): Record<AccountSegmentKey, string> {
   return Object.fromEntries(accountSegmentKeys.map((key) => [key, ""])) as Record<AccountSegmentKey, string>;
 }
 
+const hierarchyDimensionLabels: Readonly<Record<AccountingHierarchyDimensionKey, string>> = {
+  entity: "Legal entity",
+  account: "Natural account",
+  subaccount: "Subaccount",
+  department: "Department",
+  intercompany: "Intercompany entity",
+  custom1: "Custom 1",
+  custom2: "Custom 2",
+  custom3: "Custom 3",
+  custom4: "Custom 4",
+  custom5: "Custom 5",
+  custom6: "Custom 6",
+  custom7: "Custom 7",
+  custom8: "Custom 8",
+};
+
+function freshHierarchyId(): string {
+  return crypto.randomUUID();
+}
+
+function cloneHierarchyNodes(
+  nodes: readonly AccountingHierarchyNodeDto[],
+): AccountingHierarchyNodeDto[] {
+  const ids = new Map(nodes.map((node) => [node.id, freshHierarchyId()]));
+  return nodes.map((node) => ({
+    ...node,
+    id: ids.get(node.id)!,
+    parentId: node.parentId ? ids.get(node.parentId) ?? null : null,
+  }));
+}
+
+function defaultHierarchyNodes(
+  dimensionKey: AccountingHierarchyDimensionKey,
+  ledgerId: string | null,
+  configuration: AccountingConfigurationDto,
+): AccountingHierarchyNodeDto[] {
+  if (dimensionKey === "account") {
+    const roots = financialStatementClasses.map((statementClass, index) => ({
+      id: freshHierarchyId(),
+      parentId: null,
+      code: statementClass === "ASSET" ? "ASSETS" : statementClass === "LIABILITY" ? "LIABILITIES" : statementClass,
+      displayName: statementClass === "ASSET" ? "Assets" : statementClass === "LIABILITY" ? "Liabilities" : statementClass === "EQUITY" ? "Equity" : statementClass === "REVENUE" ? "Revenue" : "Expenses",
+      sortOrder: (index + 1) * 100,
+      statementClass,
+      memberType: null,
+      memberId: null,
+    } satisfies AccountingHierarchyNodeDto));
+    const rootByClass = new Map(roots.map((root) => [root.statementClass, root.id]));
+    const groups = defaultFinancialStatementGroups.map((group, index) => ({
+      id: freshHierarchyId(),
+      parentId: rootByClass.get(group.statementClass) ?? null,
+      code: group.code,
+      displayName: group.displayName,
+      sortOrder: (index + 1) * 100,
+      statementClass: null,
+      memberType: null,
+      memberId: null,
+    } satisfies AccountingHierarchyNodeDto));
+    const groupByCode = new Map<string, string>(groups.map((group) => [group.code, group.id]));
+    const accounts = configuration.entities.find((entity) => entity.ledgerId === ledgerId)?.accounts ?? [];
+    return [
+      ...roots,
+      ...groups,
+      ...accounts.map((account, index) => ({
+        id: freshHierarchyId(),
+        parentId: groupByCode.get(defaultFinancialStatementGroupCode(account.accountClass, account.code))
+          ?? rootByClass.get(account.accountClass as typeof financialStatementClasses[number])
+          ?? null,
+        code: `A_${account.code}`,
+        displayName: account.displayName,
+        sortOrder: (index + 1) * 10,
+        statementClass: null,
+        memberType: "ACCOUNT" as const,
+        memberId: account.id,
+      })),
+    ];
+  }
+  const rootId = freshHierarchyId();
+  const root: AccountingHierarchyNodeDto = {
+    id: rootId,
+    parentId: null,
+    code: `ALL_${dimensionKey.toUpperCase()}`,
+    displayName: `All ${hierarchyDimensionLabels[dimensionKey]}`,
+    sortOrder: 100,
+    statementClass: null,
+    memberType: null,
+    memberId: null,
+  };
+  if (dimensionKey === "entity" || dimensionKey === "intercompany") {
+    return [root, ...configuration.entities.map((entity, index) => ({
+      id: freshHierarchyId(),
+      parentId: rootId,
+      code: `E_${entity.code}`,
+      displayName: entity.displayName,
+      sortOrder: (index + 1) * 10,
+      statementClass: null,
+      memberType: "ENTITY" as const,
+      memberId: entity.id,
+    }))];
+  }
+  const segment = configuration.segments.find((candidate) => candidate.key === dimensionKey);
+  return [root, ...(segment?.values.filter((value) => value.active) ?? []).map((value, index) => ({
+    id: freshHierarchyId(),
+    parentId: rootId,
+    code: `V_${value.code}`,
+    displayName: value.displayName,
+    sortOrder: (index + 1) * 10,
+    statementClass: null,
+    memberType: "SEGMENT_VALUE" as const,
+    memberId: value.id,
+  }))];
+}
+
 export function AccountingSettings({
   configuration,
+  hierarchies,
   isDemo,
 }: Readonly<{
   configuration: AccountingConfigurationDto;
+  hierarchies: readonly AccountingHierarchyDto[];
   isDemo: boolean;
 }>) {
   const router = useRouter();
@@ -85,6 +210,21 @@ export function AccountingSettings({
   const [segmentValueName, setSegmentValueName] = useState("");
   const [segmentValueValidFrom, setSegmentValueValidFrom] = useState(localDateDefault);
   const [segmentValueValidTo, setSegmentValueValidTo] = useState("");
+  const initialHierarchy = hierarchies.find((hierarchy) => hierarchy.status === "DRAFT")
+    ?? hierarchies[0];
+  const [hierarchyDimension, setHierarchyDimension] = useState<AccountingHierarchyDimensionKey>("account");
+  const [hierarchyLedgerId, setHierarchyLedgerId] = useState(configuration.entities[0]?.ledgerId ?? "");
+  const [hierarchyCode, setHierarchyCode] = useState("PRIMARY_REPORTING");
+  const [hierarchyName, setHierarchyName] = useState("Primary reporting hierarchy");
+  const [selectedHierarchyId, setSelectedHierarchyId] = useState(initialHierarchy?.id ?? "");
+  const selectedHierarchy = hierarchies.find((hierarchy) => hierarchy.id === selectedHierarchyId)
+    ?? initialHierarchy;
+  const [hierarchyNodes, setHierarchyNodes] = useState<AccountingHierarchyNodeDto[]>(
+    () => initialHierarchy ? [...initialHierarchy.nodes] : [],
+  );
+  const [hierarchyRevision, setHierarchyRevision] = useState(initialHierarchy?.revision ?? 1);
+  const [hierarchyEffectiveFrom, setHierarchyEffectiveFrom] = useState(localDateDefault);
+  const [hierarchyMemberToAdd, setHierarchyMemberToAdd] = useState("");
   const [combinationEntityId, setCombinationEntityId] = useState(configuration.entities[0]?.id ?? "");
   const combinationEntity = configuration.entities.find((entity) => entity.id === combinationEntityId)
     ?? configuration.entities[0];
@@ -118,6 +258,41 @@ export function AccountingSettings({
   const [taxValidFrom, setTaxValidFrom] = useState(localDateDefault);
   const [taxValidTo, setTaxValidTo] = useState("");
   const [taxEvidence, setTaxEvidence] = useState("");
+
+  const hierarchyGroups = hierarchyNodes.filter((node) => node.memberType === null);
+  const hierarchyMemberOptions = useMemo<readonly {
+    id: string;
+    label: string;
+    memberType: AccountingHierarchyMemberType;
+    preferredParentCode?: string;
+  }[]>(() => {
+    if (!selectedHierarchy) return [];
+    if (selectedHierarchy.dimensionKey === "account") {
+      const entity = configuration.entities.find((candidate) => candidate.ledgerId === selectedHierarchy.ledgerId);
+      return (entity?.accounts ?? []).map((account) => ({
+        id: account.id,
+        label: `${account.code} — ${account.displayName}`,
+        memberType: "ACCOUNT" as const,
+        preferredParentCode: defaultFinancialStatementGroupCode(account.accountClass, account.code),
+      }));
+    }
+    if (selectedHierarchy.dimensionKey === "entity" || selectedHierarchy.dimensionKey === "intercompany") {
+      return configuration.entities.map((entity) => ({
+        id: entity.id,
+        label: `${entity.code} — ${entity.displayName}`,
+        memberType: "ENTITY" as const,
+      }));
+    }
+    const segment = configuration.segments.find((candidate) => candidate.key === selectedHierarchy.dimensionKey);
+    return (segment?.values.filter((value) => value.active) ?? []).map((value) => ({
+      id: value.id,
+      label: `${value.code} — ${value.displayName}`,
+      memberType: "SEGMENT_VALUE" as const,
+    }));
+  }, [configuration.entities, configuration.segments, selectedHierarchy]);
+  const unassignedHierarchyMembers = hierarchyMemberOptions.filter((option) => (
+    !hierarchyNodes.some((node) => node.memberId === option.id)
+  ));
 
   async function ensureStepUp(): Promise<boolean> {
     if (isDemo || stepUpComplete) return true;
@@ -169,6 +344,65 @@ export function AccountingSettings({
     } finally {
       setBusy(null);
     }
+  }
+
+  async function mutateHierarchy(
+    key: string,
+    url: string,
+    method: "POST" | "PATCH",
+    body: unknown,
+    success: string,
+    requiresStepUp = false,
+  ): Promise<Record<string, unknown> | null> {
+    setBusy(key);
+    setFeedback(null);
+    try {
+      if (requiresStepUp && !(await ensureStepUp())) return null;
+      const response = await fetch(url, {
+        method,
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      if (!response.ok) {
+        if (response.status === 428) setStepUpComplete(false);
+        throw new Error(await responseMessage(response));
+      }
+      const payload = await response.json() as Record<string, unknown>;
+      setFeedback({ kind: "success", message: success });
+      router.refresh();
+      return payload;
+    } catch (error) {
+      setFeedback({
+        kind: "error",
+        message: error instanceof Error ? error.message : "The accounting hierarchy could not be updated.",
+      });
+      return null;
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  function updateHierarchyNode(
+    nodeId: string,
+    changes: Partial<AccountingHierarchyNodeDto>,
+  ) {
+    setHierarchyNodes((current) => current.map((node) => (
+      node.id === nodeId ? { ...node, ...changes } : node
+    )));
+  }
+
+  function removeHierarchyNode(nodeId: string) {
+    setHierarchyNodes((current) => current
+      .filter((node) => node.id !== nodeId)
+      .map((node) => node.parentId === nodeId ? { ...node, parentId: null } : node));
+  }
+
+  function openHierarchy(hierarchy: AccountingHierarchyDto) {
+    setSelectedHierarchyId(hierarchy.id);
+    setHierarchyNodes([...hierarchy.nodes]);
+    setHierarchyRevision(hierarchy.revision);
+    setHierarchyEffectiveFrom(hierarchy.effectiveFrom ?? localDateDefault());
+    setHierarchyMemberToAdd("");
   }
 
   function selectCountry(next: string) {
@@ -340,6 +574,177 @@ export function AccountingSettings({
             <tr key={combination.id}><td><strong>{combination.entityCode} · {combination.accountCode}</strong><small>{combination.accountName}</small></td><td><code>{combination.displayKey}</code></td><td><code>{combination.canonicalKey}</code></td><td><span className={`status-pill ${combination.active ? "status-success" : "status-neutral"}`}>{combination.active ? "Active" : "Historical"}</span></td><td>{combination.used ? "Protected after use" : "Unused — replaceable"}{combination.lastUsedAt && <small>Last used {new Date(combination.lastUsedAt).toLocaleDateString()}</small>}</td></tr>
           )) : <tr><td colSpan={5}>No account combinations are configured.</td></tr>}</tbody></table>
         </div>
+      </section>
+
+      <section className="panel form-panel" id="reporting-hierarchies" aria-labelledby="reporting-hierarchies-title">
+        <div className="panel-heading">
+          <span className="eyebrow">Financial presentation</span>
+          <h2 id="reporting-hierarchies-title">Reporting hierarchies</h2>
+          <p>Build versioned trees for the natural account and every optional dimension. Drafts can be refined freely; publishing is effective-dated, requires fresh verification, and makes that version immutable.</p>
+          <p>Financial statements prefer the effective <code>PRIMARY_REPORTING</code> account hierarchy. If that family is unavailable, they use the latest effective published account hierarchy for the ledger, then fall back to the standard account-class roots.</p>
+        </div>
+
+        {configuration.canManageSegments && (
+          <form className="close-form" onSubmit={(event) => {
+            event.preventDefault();
+            const ledgerId = hierarchyDimension === "account" ? hierarchyLedgerId : null;
+            const nodes = defaultHierarchyNodes(hierarchyDimension, ledgerId, configuration);
+            void mutateHierarchy(
+              "hierarchy-create",
+              "/api/accounting/configuration/hierarchies",
+              "POST",
+              {
+                dimensionKey: hierarchyDimension,
+                ledgerId,
+                code: hierarchyCode,
+                displayName: hierarchyName,
+                basedOnHierarchyId: null,
+                nodes,
+                reason,
+              },
+              `${hierarchyName} draft was created with all current members.`,
+            ).then((payload) => {
+              if (typeof payload?.id === "string") {
+                setSelectedHierarchyId(payload.id);
+                setHierarchyNodes(nodes);
+                setHierarchyRevision(typeof payload.revision === "number" ? payload.revision : 1);
+              }
+            });
+          }}>
+            <h3>Create a hierarchy draft</h3>
+            <p className="panel-note">The initial draft includes every current active member. Natural accounts start below Assets, Liabilities, Equity, Revenue, and Expenses so reports remain useful before further grouping.</p>
+            <div className="form-grid form-grid-three">
+              <label><span>Dimension</span><select value={hierarchyDimension} onChange={(event) => setHierarchyDimension(event.target.value as AccountingHierarchyDimensionKey)}>{accountingHierarchyDimensionKeys.map((key) => <option key={key} value={key}>{hierarchyDimensionLabels[key]}</option>)}</select></label>
+              {hierarchyDimension === "account" && <label><span>Ledger</span><select value={hierarchyLedgerId} onChange={(event) => setHierarchyLedgerId(event.target.value)}>{configuration.entities.map((entity) => <option key={entity.ledgerId} value={entity.ledgerId}>{entity.code} — {entity.ledgerCode}</option>)}</select></label>}
+              <label><span>Hierarchy code</span><input value={hierarchyCode} onChange={(event) => setHierarchyCode(event.target.value.toUpperCase().replace(/[^A-Z0-9_-]/g, "").slice(0, 32))} pattern="[A-Z0-9][A-Z0-9_-]{0,31}" required /></label>
+              <label><span>Display name</span><input value={hierarchyName} onChange={(event) => setHierarchyName(event.target.value)} minLength={2} maxLength={160} required /></label>
+            </div>
+            <div className="form-actions"><button className="primary-button" type="submit" disabled={busy !== null || (hierarchyDimension === "account" && !hierarchyLedgerId)}>{busy === "hierarchy-create" ? "Creating…" : "Create draft"}</button></div>
+          </form>
+        )}
+
+        <div className="table-scroll" tabIndex={0} aria-label="Reporting hierarchy versions">
+          <table><thead><tr><th>Hierarchy</th><th>Scope</th><th>Version</th><th>Status</th><th>Effective</th><th>Action</th></tr></thead><tbody>{hierarchies.length ? hierarchies.map((hierarchy) => {
+            const entity = configuration.entities.find((candidate) => candidate.ledgerId === hierarchy.ledgerId);
+            const familyHasDraft = hierarchies.some((candidate) => candidate.status === "DRAFT"
+              && candidate.dimensionKey === hierarchy.dimensionKey
+              && candidate.ledgerId === hierarchy.ledgerId
+              && candidate.code === hierarchy.code);
+            return <tr key={hierarchy.id}>
+              <td><strong>{hierarchy.displayName}</strong><small>{hierarchy.code}</small></td>
+              <td>{hierarchyDimensionLabels[hierarchy.dimensionKey]}<small>{entity ? `${entity.code} · ${entity.ledgerCode}` : "Organization-wide"}</small></td>
+              <td>{hierarchy.version}<small>Revision {hierarchy.revision}</small></td>
+              <td><span className={`status-pill ${hierarchy.status === "PUBLISHED" ? "status-success" : "status-warning"}`}>{hierarchy.status}</span></td>
+              <td>{hierarchy.effectiveFrom ?? "Not published"}</td>
+              <td><div className="record-actions">
+                <button type="button" className="secondary-button compact-button" onClick={() => openHierarchy(hierarchy)}>{selectedHierarchy?.id === hierarchy.id ? "Selected" : "Open"}</button>
+                {configuration.canManageSegments && hierarchy.status === "PUBLISHED" && <button type="button" className="secondary-button compact-button" disabled={busy !== null || familyHasDraft} title={familyHasDraft ? "Open the existing draft for this hierarchy." : undefined} onClick={() => {
+                  const nodes = cloneHierarchyNodes(hierarchy.nodes);
+                  void mutateHierarchy(
+                    `hierarchy-revise-${hierarchy.id}`,
+                    "/api/accounting/configuration/hierarchies",
+                    "POST",
+                    {
+                      dimensionKey: hierarchy.dimensionKey,
+                      ledgerId: hierarchy.ledgerId,
+                      code: hierarchy.code,
+                      displayName: hierarchy.displayName,
+                      basedOnHierarchyId: hierarchy.id,
+                      nodes,
+                      reason,
+                    },
+                    `Version ${hierarchy.version + 1} draft was created.`,
+                  ).then((payload) => {
+                    if (typeof payload?.id === "string") {
+                      setSelectedHierarchyId(payload.id);
+                      setHierarchyNodes(nodes);
+                      setHierarchyRevision(typeof payload.revision === "number" ? payload.revision : 1);
+                    }
+                  });
+                }}>{familyHasDraft ? "Draft exists" : "Create next draft"}</button>}
+              </div></td>
+            </tr>;
+          }) : <tr><td colSpan={6}>No reporting hierarchies exist yet. Create a draft to organize financial statements or segment inquiries.</td></tr>}</tbody></table>
+        </div>
+
+        {selectedHierarchy && (
+          <div className="close-form">
+            <div>
+              <h3>{selectedHierarchy.displayName} · version {selectedHierarchy.version}</h3>
+              <p className="panel-note">Group rows define the presentation tree. Member rows bind exactly one ledger account, segment value, or legal entity; posting combinations are not changed.</p>
+            </div>
+            {selectedHierarchy.status === "DRAFT" && configuration.canManageSegments && <div className="form-actions">
+              <button type="button" className="secondary-button" disabled={busy !== null} onClick={() => {
+                const suffix = hierarchyNodes.filter((node) => node.memberType === null).length + 1;
+                setHierarchyNodes((current) => [...current, {
+                  id: freshHierarchyId(),
+                  parentId: selectedHierarchy.dimensionKey === "account"
+                    ? hierarchyGroups.find((group) => group.parentId === null)?.id ?? null
+                    : null,
+                  code: `GROUP_${suffix}`,
+                  displayName: `New group ${suffix}`,
+                  sortOrder: suffix * 100,
+                  statementClass: null,
+                  memberType: null,
+                  memberId: null,
+                }]);
+              }}>Add group</button>
+              <select aria-label="Unassigned hierarchy member" value={hierarchyMemberToAdd} onChange={(event) => setHierarchyMemberToAdd(event.target.value)}><option value="">Choose an unassigned member</option>{unassignedHierarchyMembers.map((option) => <option key={option.id} value={option.id}>{option.label}</option>)}</select>
+              <button type="button" className="secondary-button" disabled={busy !== null || !hierarchyMemberToAdd} onClick={() => {
+                const member = hierarchyMemberOptions.find((option) => option.id === hierarchyMemberToAdd);
+                if (!member) return;
+                const rawCode = member.label.split(" — ")[0] ?? "MEMBER";
+                const preferredParent = hierarchyGroups.find((group) => group.code === member.preferredParentCode)
+                  ?? hierarchyGroups[0];
+                setHierarchyNodes((current) => [...current, {
+                  id: freshHierarchyId(),
+                  parentId: preferredParent?.id ?? null,
+                  code: `M_${rawCode}`.replace(/[^A-Z0-9_-]/gi, "_").toUpperCase().slice(0, 32),
+                  displayName: member.label.split(" — ").slice(1).join(" — ") || member.label,
+                  sortOrder: current.length * 10 + 10,
+                  statementClass: null,
+                  memberType: member.memberType,
+                  memberId: member.id,
+                }]);
+                setHierarchyMemberToAdd("");
+              }}>Add member</button>
+            </div>}
+            <div className="table-scroll" tabIndex={0} aria-label={`${selectedHierarchy.displayName} hierarchy nodes`}>
+              <table><thead><tr><th>Code & name</th><th>Type / member</th><th>Parent group</th><th>Statement class</th><th>Order</th>{selectedHierarchy.status === "DRAFT" && configuration.canManageSegments && <th>Action</th>}</tr></thead><tbody>{hierarchyNodes.length ? hierarchyNodes.map((node) => {
+                const editable = selectedHierarchy.status === "DRAFT" && configuration.canManageSegments;
+                const member = node.memberId ? hierarchyMemberOptions.find((option) => option.id === node.memberId) : null;
+                return <tr key={node.id}>
+                  <td>{editable ? <><input aria-label={`Code for ${node.displayName}`} value={node.code} onChange={(event) => updateHierarchyNode(node.id, { code: event.target.value.toUpperCase().replace(/[^A-Z0-9_-]/g, "").slice(0, 32) })} /><input aria-label={`Name for ${node.code}`} value={node.displayName} onChange={(event) => updateHierarchyNode(node.id, { displayName: event.target.value })} /></> : <><strong>{node.displayName}</strong><small>{node.code}</small></>}</td>
+                  <td>{node.memberType ? <><span className="status-pill status-neutral">{node.memberType.replaceAll("_", " ")}</span><small>{member?.label ?? node.memberId}</small></> : <strong>Group</strong>}</td>
+                  <td>{editable ? <select aria-label={`Parent for ${node.displayName}`} value={node.parentId ?? ""} onChange={(event) => updateHierarchyNode(node.id, { parentId: event.target.value || null })}><option value="">Top level</option>{hierarchyGroups.filter((group) => group.id !== node.id).map((group) => <option key={group.id} value={group.id}>{group.code} — {group.displayName}</option>)}</select> : hierarchyGroups.find((group) => group.id === node.parentId)?.displayName ?? "Top level"}</td>
+                  <td>{editable && node.memberType === null && selectedHierarchy.dimensionKey === "account" ? <select aria-label={`Statement class for ${node.displayName}`} value={node.statementClass ?? ""} onChange={(event) => updateHierarchyNode(node.id, { statementClass: event.target.value ? event.target.value as AccountingHierarchyNodeDto["statementClass"] : null })}><option value="">Presentation group</option>{financialStatementClasses.map((value) => <option key={value} value={value}>{value}</option>)}</select> : node.statementClass ?? "—"}</td>
+                  <td>{editable ? <input aria-label={`Order for ${node.displayName}`} type="number" min={0} max={1000000} value={node.sortOrder} onChange={(event) => updateHierarchyNode(node.id, { sortOrder: Number(event.target.value) })} /> : node.sortOrder}</td>
+                  {editable && <td><button type="button" className="secondary-button compact-button" onClick={() => removeHierarchyNode(node.id)}>Remove</button></td>}
+                </tr>;
+              }) : <tr><td colSpan={selectedHierarchy.status === "DRAFT" && configuration.canManageSegments ? 6 : 5}>This hierarchy has no nodes yet.</td></tr>}</tbody></table>
+            </div>
+            {selectedHierarchy.status === "DRAFT" && configuration.canManageSegments && <div className="form-actions">
+              <button type="button" className="secondary-button" disabled={busy !== null} onClick={() => void mutateHierarchy(
+                `hierarchy-save-${selectedHierarchy.id}`,
+                `/api/accounting/configuration/hierarchies/${selectedHierarchy.id}`,
+                "PATCH",
+                { expectedRevision: hierarchyRevision, nodes: hierarchyNodes, reason },
+                `${selectedHierarchy.displayName} draft was saved.`,
+              ).then((payload) => {
+                if (typeof payload?.revision === "number") setHierarchyRevision(payload.revision);
+              })}>{busy === `hierarchy-save-${selectedHierarchy.id}` ? "Saving…" : "Save draft"}</button>
+              <label><span>Effective from</span><input type="date" value={hierarchyEffectiveFrom} onChange={(event) => setHierarchyEffectiveFrom(event.target.value)} required /></label>
+              <button type="button" className="primary-button" disabled={busy !== null || hierarchyNodes.length === 0} onClick={() => void mutateHierarchy(
+                `hierarchy-publish-${selectedHierarchy.id}`,
+                `/api/accounting/configuration/hierarchies/${selectedHierarchy.id}/publish`,
+                "POST",
+                { expectedRevision: hierarchyRevision, effectiveFrom: hierarchyEffectiveFrom, reason },
+                `${selectedHierarchy.displayName} was published effective ${hierarchyEffectiveFrom}.`,
+                true,
+              )}>{busy === `hierarchy-publish-${selectedHierarchy.id}` ? "Publishing…" : "Publish immutable version"}</button>
+            </div>}
+          </div>
+        )}
       </section>
 
       <section className="panel form-panel" id="currencies" aria-labelledby="currency-configuration-title">

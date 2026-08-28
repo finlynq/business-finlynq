@@ -99,6 +99,74 @@ afterAll(() => {
 });
 
 describe("encrypted party and AR/AP account creation", () => {
+  it("creates one encrypted organization party without forcing an entity accounting role", async () => {
+    const query = vi.fn(async (statement: string, parameters?: readonly unknown[]) => {
+      if (statement.includes("INSERT INTO parties")) {
+        return { rows: [partyRow(String(parameters?.[6]))] };
+      }
+      throw new Error(`Unexpected master-only party SQL: ${statement}`);
+    });
+    mocks.withTenantTransaction.mockImplementation(async (
+      _context: unknown,
+      work: (client: PoolClient) => Promise<unknown>,
+    ) => work({ query } as unknown as PoolClient));
+
+    const masterOnlyCommand = {
+      context: command.context,
+      partyNumber: command.partyNumber,
+      displayName: command.displayName,
+      idempotencyKey: command.idempotencyKey,
+    };
+    await expect(createParty(masterOnlyCommand)).resolves.toEqual({
+      party: {
+        id: ids.party,
+        partyNumber: "CUST-1001",
+        displayName: "Maple Studio",
+        active: true,
+        internalLegalEntityId: null,
+      },
+      partyAccount: null,
+      idempotentReplay: false,
+    });
+    expect(query.mock.calls.some(([statement]) => statement.includes("INSERT INTO party_accounts"))).toBe(false);
+  });
+
+  it("replays a master-only party command without looking for a nonexistent accounting role", async () => {
+    let commandHash = "";
+    const query = vi.fn(async (statement: string, parameters?: readonly unknown[]) => {
+      if (statement.includes("INSERT INTO parties")) {
+        commandHash = String(parameters?.[6]);
+        return { rows: [] };
+      }
+      if (statement.includes("FROM parties") && statement.includes("FOR SHARE")) {
+        return { rows: [partyRow(commandHash)] };
+      }
+      throw new Error(`Unexpected master-only replay SQL: ${statement}`);
+    });
+    mocks.withTenantTransaction.mockImplementation(async (
+      _context: unknown,
+      work: (client: PoolClient) => Promise<unknown>,
+    ) => work({ query } as unknown as PoolClient));
+
+    await expect(createParty({
+      context: command.context,
+      partyNumber: command.partyNumber,
+      displayName: command.displayName,
+      idempotencyKey: command.idempotencyKey,
+    })).resolves.toEqual({
+      party: {
+        id: ids.party,
+        partyNumber: "CUST-1001",
+        displayName: "Maple Studio",
+        active: true,
+        internalLegalEntityId: null,
+      },
+      partyAccount: null,
+      idempotentReplay: true,
+    });
+    expect(query.mock.calls.some(([statement]) => statement.includes("FROM party_accounts"))).toBe(false);
+  });
+
   it("atomically creates an encrypted party with a validated customer control account", async () => {
     const query = vi.fn(async (statement: string, parameters?: readonly unknown[]) => {
       if (statement.includes("INSERT INTO parties")) {

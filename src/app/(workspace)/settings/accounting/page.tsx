@@ -2,11 +2,15 @@ import Link from "next/link";
 import { AccountingSettings } from "@/app/_components/accounting-settings.client";
 import { DemoNotice, PageHeader } from "@/app/_components/ui";
 import { loadAccountingConfiguration } from "@/modules/ledger/accounting-configuration";
+import { loadAccountingHierarchies } from "@/modules/ledger/accounting-hierarchies";
 import { requireWorkspacePrincipal } from "@/modules/workspace/access";
 
 export default async function AccountingSettingsPage() {
   const principal = await requireWorkspacePrincipal("/app/settings/accounting");
-  const configuration = await loadAccountingConfiguration(principal);
+  const [configuration, hierarchies] = await Promise.all([
+    loadAccountingConfiguration(principal),
+    loadAccountingHierarchies(principal),
+  ]);
   return (
     <div className="page-content">
       <PageHeader
@@ -16,7 +20,11 @@ export default async function AccountingSettingsPage() {
         actions={<Link className="secondary-button" href="/app/settings">Organization & members</Link>}
       />
       {principal.sessionMode === "demo" && <DemoNotice>Configuration changes are available in this isolated sandbox and return to the seeded setup during the nightly reset.</DemoNotice>}
-      <AccountingSettings configuration={configuration} isDemo={principal.sessionMode === "demo"} />
+      <AccountingSettings
+        configuration={configuration}
+        hierarchies={hierarchies}
+        isDemo={principal.sessionMode === "demo"}
+      />
     </div>
   );
 }

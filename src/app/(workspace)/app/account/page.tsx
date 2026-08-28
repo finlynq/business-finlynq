@@ -1,5 +1,7 @@
 import Link from "next/link";
+import { AccountMfaEnrollment } from "@/app/_components/account-mfa-enrollment.client";
 import { DemoNotice, PageHeader, StatusPill } from "@/app/_components/ui";
+import { mfaStatusForSession } from "@/modules/identity/auth-store";
 import type { SessionPrincipal } from "@/modules/identity/session";
 import { requireWorkspacePrincipal } from "@/modules/workspace/access";
 
@@ -36,6 +38,19 @@ function mfaSessionState(principal: SessionPrincipal): Readonly<{
 export default async function AccountPage() {
   const principal = await requireWorkspacePrincipal("/app/account");
   const mfa = mfaSessionState(principal);
+  const authenticator = principal.sessionMode === "real"
+    ? await mfaStatusForSession(principal.sessionId)
+    : null;
+  const authenticatorEnabled = Boolean(authenticator?.mfa_required && authenticator.active_factor);
+  const authenticatorStatus = principal.sessionMode === "demo"
+    ? "DEMO LINK"
+    : authenticatorEnabled
+      ? "ENABLED"
+      : authenticator?.pending_enrollment
+        ? "SETUP PENDING"
+      : authenticator
+        ? "PASSWORD ONLY"
+        : "UNAVAILABLE";
   const sessionMode = principal.sessionMode === "demo" ? "Nightly-reset demo" : "Private business account";
 
   return (
@@ -43,12 +58,12 @@ export default async function AccountPage() {
       <PageHeader
         eyebrow="Personal account"
         title="Account & security"
-        description="Review the identity, organization role, and authentication state attached to this browser session. This page does not change credentials or permissions."
+        description="Review the identity, organization role, and authentication state attached to this browser session, and add optional authenticator protection."
       />
 
       {principal.sessionMode === "demo" && (
         <DemoNotice>
-          This is a shared product demonstration, not a personal identity. <Link href="/signup">Create a private business account</Link> to establish verified credentials and MFA.
+          This is a shared product demonstration, not a personal identity. <Link href="/signup">Create a private business account</Link> to establish verified credentials and optionally add MFA.
         </DemoNotice>
       )}
 
@@ -73,7 +88,12 @@ export default async function AccountPage() {
           </div>
           <dl className="account-detail-list">
             <div><dt>Sign-in method</dt><dd>{principal.authMethod.replaceAll("_", " ")}</dd></div>
-            <div><dt>MFA state</dt><dd>{mfa.detail}</dd></div>
+            <div><dt>Authenticator</dt><dd><StatusPill status={authenticatorStatus} /> {authenticatorEnabled
+              ? "TOTP is enabled for sign-in and step-up."
+              : principal.sessionMode === "real"
+                ? "Password-only sign-in; step-up operations remain unavailable until enrollment."
+                : "Not applicable to the shared demo identity."}</dd></div>
+            <div><dt>Session MFA</dt><dd>{mfa.detail}</dd></div>
             <div><dt>Session expires</dt><dd><time dateTime={principal.expiresAt.toISOString()}>{formatSecurityTime(principal.expiresAt)} UTC</time></dd></div>
             <div><dt>Recent step-up</dt><dd>{principal.stepUpExpiresAt
               ? <time dateTime={principal.stepUpExpiresAt.toISOString()}>Valid until {formatSecurityTime(principal.stepUpExpiresAt)} UTC</time>
@@ -81,6 +101,19 @@ export default async function AccountPage() {
           </dl>
         </section>
       </div>
+
+      {principal.sessionMode === "real" && (
+        <section className="panel" aria-labelledby="account-authenticator-title">
+          <div className="panel-heading">
+            <div><p className="eyebrow">Optional protection</p><h2 id="account-authenticator-title">Authenticator enrollment</h2></div>
+            <StatusPill status={authenticatorStatus} />
+          </div>
+          <AccountMfaEnrollment
+            enabled={authenticatorEnabled}
+            pending={Boolean(authenticator?.pending_enrollment)}
+          />
+        </section>
+      )}
 
       <section className="panel" aria-labelledby="account-links-title">
         <div className="panel-heading">
@@ -92,9 +125,7 @@ export default async function AccountPage() {
           <Link className="secondary-button" href="/privacy">Privacy policy</Link>
           <Link className="secondary-button" href="/terms">Terms of use</Link>
         </div>
-        <p className="panel-note">
-          Password replacement, MFA enrollment, role changes, and recovery approvals are intentionally not performed from this overview.
-        </p>
+        <p className="panel-note">Password replacement, role changes, and recovery approvals use their dedicated protected workflows. Authenticator enrollment is available above for password-only accounts.</p>
       </section>
     </div>
   );

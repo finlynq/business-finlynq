@@ -1,0 +1,13 @@
+.setup { display:grid; gap:16px; }
+.qrCard { display:grid; justify-items:center; gap:10px; padding:18px; border:1px solid #c9d7de; border-radius:10px; background:#fff; }
+.qrCard img { width:256px; max-width:100%; height:auto; aspect-ratio:1; image-rendering:pixelated; }
+.qrCard p { margin:0; color:#5f7083; font-size:12px; line-height:1.5; text-align:center; }
+.manual { display:grid; gap:8px; }
+.manual>span { color:#34485f; font-size:12px; font-weight:780; }
+.copyRow { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:8px; }
+.copyRow input { min-width:0; font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace; letter-spacing:.04em; }
+.copyButton { min-height:50px; padding:0 14px; border:1px solid #bfcdd4; border-radius:8px; color:#1e334b; background:#fff; font-weight:760; }
+.copyButton:hover { border-color:#167c72; color:#167c72; }
+.appLink { min-height:40px; display:inline-flex; align-items:center; justify-self:start; color:#167c72; font-size:12px; font-weight:750; }
+.copyStatus { min-height:18px; margin:0; color:#4e6175; font-size:11px; }
+@media(max-width:540px){.copyRow{grid-template-columns:1fr}.copyButton{width:100%}}

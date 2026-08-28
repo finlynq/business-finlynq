@@ -29,7 +29,7 @@ export default function SignupPage() {
         : <>
             <Link className={styles.demoButton} href="/try-demo?next=/app" prefetch={false}>Open the live demo <span aria-hidden="true">→</span></Link>
             <Link className={styles.afterFormLink} href="/login">Sign in to an existing account</Link>
-            <p className={styles.securityNote}>Signup will open only after email verification, authenticator enrollment, delivery monitoring, and hostname-bound bot protection are ready.</p>
+            <p className={styles.securityNote}>Signup will open only after email verification, optional authenticator enrollment, delivery monitoring, and hostname-bound bot protection are ready.</p>
           </>}
     </AuthShell>
   );

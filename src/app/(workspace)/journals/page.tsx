@@ -9,6 +9,7 @@ import { normalizeRegisterPage } from "@/modules/workspace/register-pagination";
 import { JournalRegisterAction } from "../../_components/journal-register-action.client";
 import { RegisterPaginationNav } from "../../_components/register-pagination";
 import { DemoNotice, EmptyState, PageHeader, StatusPill } from "../../_components/ui";
+import styles from "./journal-register.module.css";
 
 function formatAmount(currency: string, amount: string): string {
   return formatMoney(amount, currency);
@@ -41,7 +42,7 @@ export default async function JournalsPage({ searchParams }: { searchParams: Pro
       <PageHeader
         eyebrow="General ledger"
         title="Journals"
-        description="Posted journals are immutable; correction ownership follows the source module."
+        description="Review the debit, credit, and ending posted balance for every booked account. Posted journals are immutable; correction ownership follows the source module."
         actions={workspace.canDraft ? <Link className="primary-button" href="/app/journals/new">＋ New journal</Link> : undefined}
       />
       {workspace.demoOnly && <DemoNotice>This is your isolated writable sandbox. Changes persist for this browser until the seeded company is restored nightly.</DemoNotice>}
@@ -64,7 +65,7 @@ export default async function JournalsPage({ searchParams }: { searchParams: Pro
           <div className="table-scroll" tabIndex={0}>
             <table>
               <caption className="sr-only">Journal register</caption>
-              <thead><tr><th scope="col">Journal</th><th scope="col">Description</th><th scope="col">Displayed accounts</th><th scope="col">Owner</th><th scope="col">Functional debit</th><th scope="col">Functional credit</th><th scope="col">Status</th><th scope="col">Action</th></tr></thead>
+              <thead><tr><th scope="col">Journal</th><th scope="col">Description</th><th scope="col">Account postings</th><th scope="col">Owner</th><th scope="col">Journal debit</th><th scope="col">Journal credit</th><th scope="col">Status</th><th scope="col">Actions</th></tr></thead>
               <tbody>{workspace.journals.map((journal) => {
                 const sourceHref = sourceModuleHref(journal);
                 const reversalPeriods = workspace.reversalPeriods.filter((period) => period.ledgerId === journal.ledgerId);
@@ -72,7 +73,20 @@ export default async function JournalsPage({ searchParams }: { searchParams: Pro
                   <tr key={journal.id}>
                     <td><Link className="text-link compact-button" href={`/app/journals/${journal.id}`}>{journal.number}</Link><small>{journal.accountingDate} · {journal.entityCode}</small></td>
                     <td><strong>{journal.description}</strong><small>{journal.typeKey}{journal.reversalOfNumber ? ` · reverses ${journal.reversalOfNumber}` : ""}{journal.reversedByNumber ? ` · reversed by ${journal.reversedByNumber}` : ""}</small></td>
-                    <td>{journal.accountKeys?.length ? journal.accountKeys.map((key) => (
+                    <td>{journal.accountPostings?.length ? (
+                      <div className={styles.postingList}>
+                        {journal.accountPostings.map((posting) => (
+                          <div className={styles.posting} key={posting.canonicalKey}>
+                            <code title={accountKeyDisplayTitle(posting.displaySegments)}>{posting.displayKey}</code>
+                            <dl className={styles.postingAmounts}>
+                              <div><dt>Debit</dt><dd>{formatAmount(journal.currency, posting.debitFunctional)}</dd></div>
+                              <div><dt>Credit</dt><dd>{formatAmount(journal.currency, posting.creditFunctional)}</dd></div>
+                              <div><dt>Ending balance{posting.endingSide === "ZERO" ? "" : ` · ${posting.endingSide.toLowerCase()}`}</dt><dd>{formatAmount(journal.currency, posting.endingBalanceFunctional)}</dd></div>
+                            </dl>
+                          </div>
+                        ))}
+                      </div>
+                    ) : journal.accountKeys?.length ? journal.accountKeys.map((key) => (
                       <small key={key.canonicalKey}>
                         <code title={accountKeyDisplayTitle(key.displaySegments)}>{key.displayKey}</code>
                       </small>
@@ -82,29 +96,31 @@ export default async function JournalsPage({ searchParams }: { searchParams: Pro
                     <td className="amount-cell">{formatAmount(journal.currency, journal.creditFunctional ?? journal.amount)}</td>
                     <td><StatusPill status={journal.reversedByNumber ? "REVERSED" : journal.status} /></td>
                     <td>
-                      {journal.canPost && journal.expectedContentHash ? (
-                        <JournalRegisterAction
-                          key={`${journal.id}:post`}
-                          journalId={journal.id}
-                          journalNumber={journal.number}
-                          journalDescription={journal.description}
-                          action={{ kind: "post", expectedContentHash: journal.expectedContentHash }}
-                        />
-                      ) : journal.canReverse && reversalPeriods.length > 0 ? (
-                        <JournalRegisterAction
-                          key={`${journal.id}:reverse`}
-                          journalId={journal.id}
-                          journalNumber={journal.number}
-                          journalDescription={journal.description}
-                          action={{ kind: "reverse", periods: reversalPeriods }}
-                        />
-                      ) : sourceHref ? (
-                        <Link className="text-link compact-button" href={sourceHref}>Open {journal.ownerModule === "receivables" ? "AR" : "AP"} source</Link>
-                      ) : journal.reversedByNumber ? (
-                        <span className="subtle-label">Reversal posted</span>
-                      ) : (
-                        <span className="subtle-label">No action</span>
-                      )}
+                      <div className={styles.actions}>
+                        <Link className="text-link compact-button" href={`/app/journals/${journal.id}`}>View journal entry</Link>
+                        {journal.canPost && journal.expectedContentHash && (
+                          <JournalRegisterAction
+                            key={`${journal.id}:post`}
+                            journalId={journal.id}
+                            journalNumber={journal.number}
+                            journalDescription={journal.description}
+                            action={{ kind: "post", expectedContentHash: journal.expectedContentHash }}
+                          />
+                        )}
+                        {journal.canReverse && reversalPeriods.length > 0 && (
+                          <JournalRegisterAction
+                            key={`${journal.id}:reverse`}
+                            journalId={journal.id}
+                            journalNumber={journal.number}
+                            journalDescription={journal.description}
+                            action={{ kind: "reverse", periods: reversalPeriods }}
+                          />
+                        )}
+                        {sourceHref && (
+                          <Link className="text-link compact-button" href={sourceHref}>Open {journal.ownerModule === "receivables" ? "AR" : "AP"} source</Link>
+                        )}
+                        {journal.reversedByNumber && <span className="subtle-label">Reversal posted</span>}
+                      </div>
                     </td>
                   </tr>
                 );

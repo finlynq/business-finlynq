@@ -43,15 +43,7 @@ const mocks = vi.hoisted(() => {
         active: true,
         internalLegalEntityId: null,
       },
-      partyAccount: {
-        id: "30000000-0000-4000-8000-000000000002",
-        legalEntityId: "40000000-0000-4000-8000-000000000001",
-        ledgerId: "40000000-0000-4000-8000-000000000002",
-        role: "CUSTOMER" as const,
-        accountNumber: "C-CA-1001",
-        controlAccountId: "40000000-0000-4000-8000-000000000003",
-        transactionCurrency: null,
-      },
+      partyAccount: null,
       idempotentReplay: false,
     })),
   };
@@ -114,6 +106,38 @@ describe("tenant party mutation route", () => {
         actorId: mocks.principal.userId,
         sessionId: mocks.principal.sessionId,
       }),
+    }));
+  });
+
+  it("allows an organization party master to be created before any entity accounting role", async () => {
+    mocks.createParty.mockResolvedValueOnce({
+      party: {
+        id: "30000000-0000-4000-8000-000000000001",
+        partyNumber: "CUST-1001",
+        displayName: "Maple Studio",
+        active: true,
+        internalLegalEntityId: null,
+      },
+      partyAccount: null,
+      idempotentReplay: false,
+    });
+    const masterOnlyBody = {
+      partyNumber: body.partyNumber,
+      displayName: body.displayName,
+      idempotencyKey: body.idempotencyKey,
+    };
+    const response = await createParty(new NextRequest("https://business.finlynq.com/api/parties", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(masterOnlyBody),
+    }));
+    expect(response.status).toBe(201);
+    expect(mocks.createParty).toHaveBeenCalledWith(expect.objectContaining({
+      partyNumber: body.partyNumber,
+      displayName: body.displayName,
+    }));
+    expect(mocks.createParty).toHaveBeenLastCalledWith(expect.not.objectContaining({
+      account: expect.anything(),
     }));
   });
 
@@ -184,17 +208,12 @@ describe("tenant party mutation route", () => {
     expect(response.status).toBe(400);
     expect(mocks.createParty).not.toHaveBeenCalled();
 
-    const partyWithoutAccount = {
-      partyNumber: body.partyNumber,
-      displayName: body.displayName,
-      idempotencyKey: body.idempotencyKey,
-    };
-    const missingAccount = await createParty(new NextRequest("https://business.finlynq.com/api/parties", {
+    const malformedAddress = await createParty(new NextRequest("https://business.finlynq.com/api/parties", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(partyWithoutAccount),
+      body: JSON.stringify({ ...body, account: undefined, address: { kind: "BILLING" } }),
     }));
-    expect(missingAccount.status).toBe(400);
+    expect(malformedAddress.status).toBe(400);
     expect(mocks.createParty).not.toHaveBeenCalled();
   });
 });

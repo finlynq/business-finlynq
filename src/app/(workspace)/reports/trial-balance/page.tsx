@@ -1,9 +1,10 @@
-import { exact, formatMoney } from "@/kernel/money";
-import { accountKeyDisplayTitle } from "@/modules/ledger/account-key-display";
+import { exact, formatMoneyAmount } from "@/kernel/money";
 import {
   loadReportDimensions,
   loadTrialBalance,
   reportFilterInput,
+  reportSegmentCode,
+  reportSegmentColumns,
   reportSearchParams,
   resolveReportSelection,
   type TrialBalanceRow,
@@ -16,7 +17,7 @@ import { DemoNotice, EmptyState, PageHeader } from "../../../_components/ui";
 type SearchParams = Promise<Record<string, string | string[] | undefined>>;
 
 function displayAmount(currency: string, amount: string): string {
-  return formatMoney(amount, currency);
+  return formatMoneyAmount(amount, currency);
 }
 
 export default async function TrialBalancePage({
@@ -98,10 +99,12 @@ export default async function TrialBalancePage({
           action="/app/reports/trial-balance"
           dimensions={dimensions}
           selection={selection}
+          showDimensions
         />
       )}
       {groups.size ? [...groups.values()].map((group) => {
         const balanced = group.totalDebit.equals(group.totalCredit);
+        const segmentColumns = reportSegmentColumns(group.rows);
         return (
           <section className="panel" aria-labelledby={`trial-balance-${group.entityCode}-${group.ledgerCode}`} key={`${group.entityCode}:${group.ledgerCode}:${group.currency}`}>
             <div className="panel-heading">
@@ -114,13 +117,19 @@ export default async function TrialBalancePage({
             <div className="table-scroll" tabIndex={0} aria-label={`${group.entityCode} ${group.ledgerCode} trial balance; scroll horizontally if needed`}>
               <table>
                 <caption className="sr-only">{group.entityCode} {group.ledgerCode} trial balance in {group.currency}</caption>
-                <thead><tr><th scope="col">Account</th><th scope="col">Rendered key</th><th scope="col">Name</th><th scope="col">Class</th><th scope="col">Opening debit</th><th scope="col">Opening credit</th><th scope="col">Period debit</th><th scope="col">Period credit</th><th scope="col">Ending debit</th><th scope="col">Ending credit</th></tr></thead>
+                <thead><tr>
+                  {segmentColumns.map((column) => <th scope="col" key={column.key}>{column.displayName}</th>)}
+                  <th scope="col">Name</th><th scope="col">Class</th><th scope="col">Currency</th>
+                  <th scope="col">Opening debit</th><th scope="col">Opening credit</th><th scope="col">Period debit</th><th scope="col">Period credit</th><th scope="col">Ending debit</th><th scope="col">Ending credit</th>
+                </tr></thead>
                 <tbody>{group.rows.map((row) => (
                   <tr key={row.canonicalKey}>
-                    <td><strong>{row.accountCode}</strong></td>
-                    <td><code title={accountKeyDisplayTitle(row.displaySegments)}>{row.displayKey}</code></td>
+                    {segmentColumns.map((column) => (
+                      <td key={column.key}><code>{reportSegmentCode(row, column.key)}</code></td>
+                    ))}
                     <td>{row.accountName}</td>
                     <td>{row.accountClass}</td>
+                    <td>{row.currency}</td>
                     <td className="amount-cell">{displayAmount(group.currency, row.openingDebit)}</td>
                     <td className="amount-cell">{displayAmount(group.currency, row.openingCredit)}</td>
                     <td className="amount-cell">{displayAmount(group.currency, row.periodDebit)}</td>
@@ -129,7 +138,7 @@ export default async function TrialBalancePage({
                     <td className="amount-cell">{displayAmount(group.currency, row.credit)}</td>
                   </tr>
                 ))}</tbody>
-                <tfoot><tr><th scope="row" colSpan={4}>{group.currency} total</th><td className="amount-cell"><strong>{displayAmount(group.currency, group.openingDebit.toFixed())}</strong></td><td className="amount-cell"><strong>{displayAmount(group.currency, group.openingCredit.toFixed())}</strong></td><td className="amount-cell"><strong>{displayAmount(group.currency, group.periodDebit.toFixed())}</strong></td><td className="amount-cell"><strong>{displayAmount(group.currency, group.periodCredit.toFixed())}</strong></td><td className="amount-cell"><strong>{displayAmount(group.currency, group.totalDebit.toFixed())}</strong></td><td className="amount-cell"><strong>{displayAmount(group.currency, group.totalCredit.toFixed())}</strong></td></tr></tfoot>
+                <tfoot><tr><th scope="row" colSpan={segmentColumns.length + 2}>Total</th><td>{group.currency}</td><td className="amount-cell"><strong>{displayAmount(group.currency, group.openingDebit.toFixed())}</strong></td><td className="amount-cell"><strong>{displayAmount(group.currency, group.openingCredit.toFixed())}</strong></td><td className="amount-cell"><strong>{displayAmount(group.currency, group.periodDebit.toFixed())}</strong></td><td className="amount-cell"><strong>{displayAmount(group.currency, group.periodCredit.toFixed())}</strong></td><td className="amount-cell"><strong>{displayAmount(group.currency, group.totalDebit.toFixed())}</strong></td><td className="amount-cell"><strong>{displayAmount(group.currency, group.totalCredit.toFixed())}</strong></td></tr></tfoot>
               </table>
             </div>
           </section>

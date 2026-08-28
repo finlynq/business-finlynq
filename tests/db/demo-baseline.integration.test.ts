@@ -60,15 +60,15 @@ runDatabaseTests("rich nightly demo baseline", () => {
               AND claim.invalidated_at IS NULL) AS active_claims
        FROM demo_sandbox_slots sandbox
        JOIN organizations organization ON organization.id = sandbox.organization_id
-       WHERE sandbox.state = 'READY' AND sandbox.baseline_version = 4
+       WHERE sandbox.state = 'READY' AND sandbox.baseline_version = 5
        ORDER BY sandbox.slot
        LIMIT 1`,
     );
     const selected = ready.rows[0];
-    if (!selected) throw new Error("No baseline-v4 READY demo sandbox is available");
+    if (!selected) throw new Error("No baseline-v5 READY demo sandbox is available");
     expect(selected).toMatchObject({
       state: "READY",
-      baseline_version: 4,
+      baseline_version: 5,
       active: true,
       is_demo: true,
       organization_mode: "SANDBOX",

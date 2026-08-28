@@ -2,29 +2,41 @@
 
 import { useRouter } from "next/navigation";
 import { useState } from "react";
-import type { PartyAccountCreationOptionDto } from "@/modules/parties/party-workspace";
 
 type PartySaveResult = Readonly<{
   party: Readonly<{ id: string; partyNumber: string; displayName: string }>;
-  partyAccount: Readonly<{ role: "CUSTOMER" | "SUPPLIER"; accountNumber: string }>;
+  partyAccount: null;
   idempotentReplay: boolean;
 }>;
 
-function optionKey(option: PartyAccountCreationOptionDto): string {
-  return [option.legalEntityId, option.ledgerId, option.role, option.controlAccountId].join(":");
-}
+type AddressDraft = Readonly<{
+  kind: "BILLING" | "SHIPPING" | "REMIT_TO" | "REGISTERED";
+  line1: string;
+  line2: string;
+  city: string;
+  region: string;
+  postalCode: string;
+  countryCode: string;
+  validFrom: string;
+}>;
 
-export function PartyCreateForm({
-  accountOptions,
-}: Readonly<{ accountOptions: readonly PartyAccountCreationOptionDto[] }>) {
+const emptyAddress: AddressDraft = {
+  kind: "BILLING",
+  line1: "",
+  line2: "",
+  city: "",
+  region: "",
+  postalCode: "",
+  countryCode: "",
+  validFrom: "",
+};
+
+export function PartyCreateForm() {
   const router = useRouter();
   const [partyNumber, setPartyNumber] = useState("");
   const [displayName, setDisplayName] = useState("");
-  const [accountNumber, setAccountNumber] = useState("");
-  const [transactionCurrency, setTransactionCurrency] = useState("");
-  const [selectedOptionKey, setSelectedOptionKey] = useState(
-    accountOptions[0] ? optionKey(accountOptions[0]) : "",
-  );
+  const [includeAddress, setIncludeAddress] = useState(false);
+  const [address, setAddress] = useState<AddressDraft>(emptyAddress);
   const [idempotencyKey, setIdempotencyKey] = useState("");
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<Readonly<{ kind: "success" | "error"; text: string }> | null>(null);
@@ -33,18 +45,24 @@ export function PartyCreateForm({
     setMessage(null);
     setIdempotencyKey("");
   };
+
+  const updateAddress = (patch: Partial<AddressDraft>) => {
+    setAddress((current) => ({ ...current, ...patch }));
+    changeCommand();
+  };
+
   const save = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     setMessage(null);
     const normalizedNumber = partyNumber.trim().toUpperCase();
     const normalizedName = displayName.trim();
-    const normalizedAccountNumber = accountNumber.trim().toUpperCase();
-    const normalizedCurrency = transactionCurrency.trim().toUpperCase();
-    const accountOption = accountOptions.find((option) => optionKey(option) === selectedOptionKey);
-    if (!/^[A-Z0-9][A-Z0-9_-]{0,31}$/.test(normalizedNumber) ||
-        !/^[A-Z0-9][A-Z0-9_-]{0,31}$/.test(normalizedAccountNumber) ||
-        !normalizedName || !accountOption || (normalizedCurrency && !/^[A-Z]{3}$/.test(normalizedCurrency))) {
-      setMessage({ kind: "error", text: "Enter valid party and account numbers, then select an available AR/AP setup." });
+    const normalizedCountry = address.countryCode.trim().toUpperCase();
+    const validAddress = !includeAddress || (
+      Boolean(address.line1.trim()) && Boolean(address.city.trim()) && Boolean(address.region.trim()) &&
+      Boolean(address.postalCode.trim()) && /^[A-Z]{2}$/.test(normalizedCountry) && Boolean(address.validFrom)
+    );
+    if (!/^[A-Z0-9][A-Z0-9_-]{0,31}$/.test(normalizedNumber) || !normalizedName || !validAddress) {
+      setMessage({ kind: "error", text: "Enter a valid party number and name, plus every required shared-address field when an address is included." });
       return;
     }
     const requestKey = idempotencyKey || crypto.randomUUID();
@@ -58,18 +76,21 @@ export function PartyCreateForm({
           partyNumber: normalizedNumber,
           displayName: normalizedName,
           idempotencyKey: requestKey,
-          account: {
-            legalEntityId: accountOption.legalEntityId,
-            ledgerId: accountOption.ledgerId,
-            role: accountOption.role,
-            accountNumber: normalizedAccountNumber,
-            controlAccountId: accountOption.controlAccountId,
-            transactionCurrency: normalizedCurrency || null,
-          },
+          ...(includeAddress ? {
+            address: {
+              ...address,
+              line1: address.line1.trim(),
+              line2: address.line2.trim(),
+              city: address.city.trim(),
+              region: address.region.trim(),
+              postalCode: address.postalCode.trim(),
+              countryCode: normalizedCountry,
+            },
+          } : {}),
         }),
       });
       const payload = await response.json().catch(() => ({})) as Partial<PartySaveResult> & { error?: unknown };
-      if (!response.ok || !payload.party || !payload.partyAccount) {
+      if (!response.ok || !payload.party) {
         setMessage({
           kind: "error",
           text: typeof payload.error === "string" ? payload.error : "The party could not be saved.",
@@ -78,12 +99,12 @@ export function PartyCreateForm({
       }
       setMessage({
         kind: "success",
-        text: `${payload.party.partyNumber} was saved with an active ${payload.partyAccount.role.toLowerCase()} account ${payload.partyAccount.accountNumber}.`,
+        text: `${payload.party.partyNumber} was added once to the organization address book. Add customer or supplier accounting roles only where needed.`,
       });
       setPartyNumber("");
       setDisplayName("");
-      setAccountNumber("");
-      setTransactionCurrency("");
+      setIncludeAddress(false);
+      setAddress(emptyAddress);
       setIdempotencyKey("");
       router.refresh();
     } catch {
@@ -95,44 +116,41 @@ export function PartyCreateForm({
 
   return (
     <section className="panel form-panel" aria-labelledby="new-party-title">
-      <div className="panel-heading"><div><p className="eyebrow">Organization-wide encrypted master</p><h2 id="new-party-title">Create a party and its first entity role</h2></div></div>
+      <div className="panel-heading"><div><p className="eyebrow">Organization-wide encrypted master</p><h2 id="new-party-title">Create an address-book party</h2></div></div>
       <form className="close-form" onSubmit={save} noValidate>
         <div className="form-grid form-grid-three">
           <label>
             <span>Party number</span>
-            <input value={partyNumber} onChange={(event) => { setPartyNumber(event.target.value); changeCommand(); }} maxLength={32} autoComplete="off" disabled={busy} placeholder="CUST-1001" />
-            <small>Letters, numbers, underscores, and hyphens.</small>
+            <input value={partyNumber} onChange={(event) => { setPartyNumber(event.target.value); changeCommand(); }} maxLength={32} autoComplete="off" disabled={busy} placeholder="PARTY-1001" required />
+            <small>One organization-wide identifier; letters, numbers, underscores, and hyphens.</small>
           </label>
           <label>
             <span>Display name</span>
-            <input value={displayName} onChange={(event) => { setDisplayName(event.target.value); changeCommand(); }} maxLength={200} autoComplete="organization" disabled={busy} placeholder="Customer or supplier name" />
+            <input value={displayName} onChange={(event) => { setDisplayName(event.target.value); changeCommand(); }} maxLength={200} autoComplete="organization" disabled={busy} placeholder="Person or business name" required />
           </label>
-          <label>
-            <span>Customer or supplier setup</span>
-            <select value={selectedOptionKey} onChange={(event) => { setSelectedOptionKey(event.target.value); changeCommand(); }} disabled={busy || accountOptions.length === 0} required>
-              {accountOptions.length === 0 && <option value="">No configured AR/AP control account</option>}
-              {accountOptions.map((option) => (
-                <option key={optionKey(option)} value={optionKey(option)}>
-                  {option.entityCode} · {option.role === "CUSTOMER" ? "Customer" : "Supplier"} · {option.controlAccountCode} {option.controlAccountName}
-                </option>
-              ))}
-            </select>
-            <small>The legal entity, primary ledger, and matching control account are bound together.</small>
-          </label>
-          <label>
-            <span>AR/AP account number</span>
-            <input value={accountNumber} onChange={(event) => { setAccountNumber(event.target.value); changeCommand(); }} maxLength={32} autoComplete="off" disabled={busy} placeholder="C-CA-1001" />
-          </label>
-          <label>
-            <span>Currency restriction (optional)</span>
-            <input value={transactionCurrency} onChange={(event) => { setTransactionCurrency(event.target.value); changeCommand(); }} maxLength={3} autoComplete="off" disabled={busy} placeholder="Any currency" />
-            <small>Leave blank for multi-currency transactions, or enter an active ISO code.</small>
+          <label className="checkbox-field">
+            <input type="checkbox" checked={includeAddress} onChange={(event) => { setIncludeAddress(event.target.checked); changeCommand(); }} disabled={busy} />
+            <span>Add a shared address now</span>
           </label>
         </div>
-        {accountOptions.length === 0 && <p className="validation-message validation-error" role="alert">Create an active AR or AP control account combination before adding a customer or supplier.</p>}
+        {includeAddress && (
+          <fieldset className="journal-line-card">
+            <legend>Shared organization address</legend>
+            <div className="form-grid form-grid-three">
+              <label><span>Address type</span><select value={address.kind} onChange={(event) => updateAddress({ kind: event.target.value as AddressDraft["kind"] })} disabled={busy}><option value="BILLING">Billing</option><option value="SHIPPING">Shipping</option><option value="REMIT_TO">Remit to</option><option value="REGISTERED">Registered</option></select></label>
+              <label><span>Address line 1</span><input value={address.line1} onChange={(event) => updateAddress({ line1: event.target.value })} maxLength={200} disabled={busy} required /></label>
+              <label><span>Address line 2</span><input value={address.line2} onChange={(event) => updateAddress({ line2: event.target.value })} maxLength={200} disabled={busy} /></label>
+              <label><span>City</span><input value={address.city} onChange={(event) => updateAddress({ city: event.target.value })} maxLength={100} disabled={busy} required /></label>
+              <label><span>State / province / region</span><input value={address.region} onChange={(event) => updateAddress({ region: event.target.value })} maxLength={100} disabled={busy} required /></label>
+              <label><span>Postal code</span><input value={address.postalCode} onChange={(event) => updateAddress({ postalCode: event.target.value })} maxLength={30} disabled={busy} required /></label>
+              <label><span>Country code</span><input value={address.countryCode} onChange={(event) => updateAddress({ countryCode: event.target.value.toUpperCase() })} maxLength={2} placeholder="US" disabled={busy} required /></label>
+              <label><span>Valid from</span><input type="date" value={address.validFrom} onChange={(event) => updateAddress({ validFrom: event.target.value })} disabled={busy} required /></label>
+            </div>
+          </fieldset>
+        )}
         {message && <p className={`validation-message ${message.kind === "success" ? "validation-success" : "validation-error"}`} role={message.kind === "error" ? "alert" : "status"}>{message.text}</p>}
-        <p className="form-footnote">Do not recreate this party for another company. After saving, attach additional customer or supplier accounts from the shared directory below.</p>
-        <div className="form-actions"><button type="submit" className="primary-button" disabled={busy || accountOptions.length === 0}>{busy ? "Saving…" : "Create party and first role"}</button></div>
+        <p className="form-footnote">This creates one shared party and encrypted address master. Entity, ledger, currency, and control-account settings are added later as accounting roles; they never duplicate the party.</p>
+        <div className="form-actions"><button type="submit" className="primary-button" disabled={busy}>{busy ? "Saving…" : "Create shared party"}</button></div>
       </form>
     </section>
   );

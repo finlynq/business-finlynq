@@ -34,7 +34,7 @@ The public flow deliberately has three stages:
 
 1. `POST /api/auth/signup/request` consumes durable IP and normalized-email budgets before the external bot check or any organization-key work. A successful eligible request creates only an encrypted inactive pending user, one-use 24-hour token, encrypted outbox payload, and pending signup record. The response is identical when the email already belongs to an account. Version 1 permits one organization per globally normalized email.
 2. The emailed fragment link opens `/complete-signup`. After a token/principal database budget admits the request, the server hashes the password. One narrowly scoped `SECURITY DEFINER` function then atomically creates the `REAL` organization, wrapped version-1 DEK, owner membership, five role templates, one legal entity and primary ledger, 12 calendar periods, the 13-account standard chart and base combinations, Custom 1–8 definitions, and the chosen posting policy. No demo transactions, parties, tax registrations, or synthetic identifiers are copied. If any insert fails, PostgreSQL rolls back the whole foundation and leaves the verification token usable.
-3. Email possession sets the password and begins TOTP enrollment, but the user and membership remain inactive. Only a valid authenticator code consumes the setup token and activates both. An interrupted enrollment can request a fresh signup email; accepted accounting configuration and the existing wrapped key are preserved rather than replaced.
+3. Email possession sets the password and offers a locally generated TOTP QR code plus a copyable manual key. The user may confirm the current code and activate with MFA, or explicitly continue with password-only sign-in. Either choice consumes the setup token and activates the user and membership atomically. Password-only sessions never receive an MFA timestamp or privileged-operation step-up. An interrupted setup can request a fresh signup email; accepted accounting configuration and the existing wrapped key are preserved rather than replaced.
 
 The Canadian selection derives CAD and `CAN_ASPE`; the US selection derives USD and `US_GAAP_NONPUBLIC`. Region, entity code, fiscal year, and `AUTO_POST` versus `REVIEW_REQUIRED` are explicit inputs. `0000` remains reserved and Custom 1–8 begin empty, nullable, and hidden.
 
@@ -54,16 +54,18 @@ npm run auth:invite -- \
 
 The first account is allowed only when the organization has no active member and the selected role has `organization.recovery.manage`. Later invitations require `--invited-by <user-uuid>`; that user must be an active recovery administrator in the organization. The tool never prints the raw invitation token. Reissuing an invitation invalidates earlier invitations and incomplete MFA setup.
 
-Invitation acceptance is deliberately two-stage:
+Invitation acceptance is deliberately staged:
 
 1. The user opens the one-use, 72-hour fragment link and creates a password of at least 14 characters.
-2. The browser receives a new TOTP secret over TLS and asks the user to add it to an authenticator. The user and membership remain inactive until a valid six-digit code is confirmed within 15 minutes.
+2. The browser receives a new TOTP secret and locally generated QR image over TLS. The user may confirm a valid six-digit code within 30 minutes, or explicitly activate password-only access and enroll later from **Account & security**.
 
 No password, invitation token, setup token, TOTP secret, or email plaintext is written to application logs.
 
 ## MFA and step-up
 
-Invited users must enroll TOTP. Login verifies password and TOTP before issuing an opaque database-backed session. Each accepted TOTP counter is stored atomically, so the same code cannot be replayed for login, recovery, approval, or step-up.
+TOTP is recommended but optional for ordinary workspace access. Accounts that enabled it must provide password and TOTP at login. Accounts that explicitly skipped it receive a password-only opaque database-backed session with null MFA and step-up timestamps. Enabling TOTP later requires the signed-in user to re-enter the current password before a new secret is issued; confirmation atomically rotates the current bearer token, upgrades that session, revokes the user’s other sessions, consumes every older password-reset token, denies any pending or approved recovery request, and makes future logins require TOTP. The pre-enrollment token becomes invalid before the replacement cookie is returned, so a copied password-only token cannot inherit MFA assurance, and an older factorless reset link cannot downgrade the new recovery posture. Each accepted TOTP counter is stored atomically, so the same code cannot be replayed for login, recovery, approval, or step-up.
+
+Privileged accounting and administration operations are not downgraded for password-only accounts. Period reopening or sealing, role and accounting-configuration changes, sensitive banking operations, recovery approval, and every other existing step-up-protected mutation still require an active TOTP factor and a fresh ten-minute step-up. A password-only user must enroll from **Account & security** before performing those operations. Reserved platform-administrator grants also continue to require verified active MFA before linkage.
 
 `POST /api/auth/mfa/step-up` performs reusable step-up and marks the current session for ten minutes. Privileged application services must call `hasRecentStepUp` in addition to normal authorization immediately before a sensitive mutation. Recovery approval performs its own fresh TOTP verification even if the session was recently stepped up.
 
@@ -78,14 +80,14 @@ Every request returns the same generic text. Valid requests enqueue a one-use li
 - If no other eligible recovery administrator exists, escalation applies a 72-hour security delay; the link remains valid for 96 hours. This is an emergency fallback and must trigger an operations alert.
 - An ordinary account that has no enrolled factor may continue from its one-hour email link, but it must enroll and verify a replacement factor before the password reset completes.
 
-A co-owner-approved, delayed, or factorless recovery does not merely remove MFA. The browser receives a new TOTP secret over TLS, and the reset completes only after a valid code from that replacement authenticator is verified. The database then atomically revokes the old factor, activates the replacement, changes `users.password_hash` and `password_changed_at`, consumes the token, revokes every active user session, records immutable events, and queues password-and-factor security notifications. Organization encryption keys and accounting records are untouched.
+A co-owner-approved, delayed, or factorless recovery does not merely remove MFA. The browser receives a new TOTP secret over TLS, and the reset completes only after a valid code from that replacement authenticator is verified. The database then atomically revokes the old factor, activates the replacement, sets `users.mfa_required=true`, changes `users.password_hash` and `password_changed_at`, consumes competing reset and setup tokens, revokes every active user session, records immutable events, and queues password-and-factor security notifications. Organization encryption keys and accounting records are untouched.
 
 ## Enablement checklist
 
-- Replay the complete canonical migration journal through `0013_self_service_owner_signup` on a fresh database, then run both explicit post-migration role reconcilers and test with the non-owner app and worker roles.
+- Replay the complete canonical migration journal through `0023_optional_authenticator_enrollment` on a fresh database, then run both explicit post-migration role reconcilers and test with the non-owner app and worker roles.
 - Restore the database together with the exact identity secret and organization wrapping key in an isolated drill. Without the identity secret, emails, TOTP factors, and queued token payloads cannot be decrypted; without the organization key, accounting data cannot be decrypted.
 - Verify the worker health/age alert and force a retryable provider failure and a permanent failure.
-- Complete an invitation and TOTP enrollment, login, explicit step-up, logout, password reset, co-owner approval, delayed sole-owner recovery, session revocation, and security-notification delivery.
+- Complete both MFA and password-only signup/invitation paths; verify password-only login has no step-up; enroll MFA later with current-password reauthentication; then verify MFA login, explicit step-up, logout, password reset, co-owner approval, delayed sole-owner recovery, session revocation, and security-notification delivery.
 - Verify direct runtime-role reads of auth tables fail.
 - Keep `ACCOUNT_SIGNUP_ENABLED=false` until the Resend sender, live worker, Turnstile hostname/action configuration, mounted Turnstile secret, generic duplicate-email behavior, atomic rollback test, and full password/TOTP activation flow are verified.
 - Only then set `ACCOUNT_LOGIN_ENABLED=true` and, in a separate change, `ACCOUNT_SIGNUP_ENABLED=true`; keep `BUSINESS_WRITES_ENABLED=false` until the separate accounting write gates pass.

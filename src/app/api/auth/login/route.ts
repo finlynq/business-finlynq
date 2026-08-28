@@ -2,7 +2,14 @@ import { randomUUID } from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { readAuthMutationJson } from "@/app/api/_shared/auth-mutation-route";
-import { assertEmailDeliveryReady, consumeRateLimit, issueMfaUserSession, lookupLogin, recordLoginFailure } from "@/modules/identity/auth-store";
+import {
+  assertEmailDeliveryReady,
+  consumeRateLimit,
+  issueMfaUserSession,
+  issuePasswordUserSession,
+  lookupLogin,
+  recordLoginFailure,
+} from "@/modules/identity/auth-store";
 import { assertAccountAuthenticationConfigured } from "@/modules/identity/email-provider";
 import { consumeDummyPasswordCheck, verifyPassword } from "@/modules/identity/passwords";
 import { requestFingerprints, validateSameOriginMutation } from "@/modules/identity/request-security";
@@ -81,19 +88,6 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "Invalid email address or password." }, { status: 401, headers: noStoreHeaders });
     }
 
-    if (!identity.mfa_required || !identity.mfa_factor_id || !identity.mfa_secret_ciphertext) {
-      return NextResponse.json({ error: "Account security setup is incomplete. Ask an administrator to issue a new invitation." }, { status: 403, headers: noStoreHeaders });
-    }
-    if (!parsed.data.otp) {
-      return NextResponse.json({ error: "Enter the six-digit code from your authenticator.", mfaRequired: true }, { status: 401, headers: noStoreHeaders });
-    }
-    const secret = decryptAuthPayload(identity.mfa_secret_ciphertext, "totp-secret", identity.mfa_factor_id);
-    const mfaCounter = verifyTotp(secret, parsed.data.otp);
-    if (mfaCounter === null) {
-      await recordLoginFailure(requestId);
-      return NextResponse.json({ error: "Invalid email address, password, or authenticator code.", mfaRequired: true }, { status: 401, headers: noStoreHeaders });
-    }
-
     const token = createOpaqueToken();
     const sessionInput = {
       userId: identity.user_id,
@@ -105,7 +99,28 @@ export async function POST(request: NextRequest) {
       requestId,
       replacedDemoSessionTokenHash,
     };
-    const sessionId = await issueMfaUserSession({ ...sessionInput, factorId: identity.mfa_factor_id, totpCounter: mfaCounter });
+    let sessionId: string | null;
+    if (identity.mfa_required) {
+      if (!identity.mfa_factor_id || !identity.mfa_secret_ciphertext) {
+        return NextResponse.json({ error: "Account security setup is incomplete. Ask an administrator to issue a new invitation." }, { status: 403, headers: noStoreHeaders });
+      }
+      if (!parsed.data.otp) {
+        return NextResponse.json({ error: "Enter the six-digit code from your authenticator.", mfaRequired: true }, { status: 401, headers: noStoreHeaders });
+      }
+      const secret = decryptAuthPayload(identity.mfa_secret_ciphertext, "totp-secret", identity.mfa_factor_id);
+      const mfaCounter = verifyTotp(secret, parsed.data.otp);
+      if (mfaCounter === null) {
+        await recordLoginFailure(requestId);
+        return NextResponse.json({ error: "Invalid email address, password, or authenticator code.", mfaRequired: true }, { status: 401, headers: noStoreHeaders });
+      }
+      sessionId = await issueMfaUserSession({
+        ...sessionInput,
+        factorId: identity.mfa_factor_id,
+        totpCounter: mfaCounter,
+      });
+    } else {
+      sessionId = await issuePasswordUserSession(sessionInput);
+    }
     if (!sessionId) throw new Error("The selected membership is no longer available");
 
     const response = NextResponse.json({ success: true, next: safeAppPath(parsed.data.next) }, { headers: noStoreHeaders });

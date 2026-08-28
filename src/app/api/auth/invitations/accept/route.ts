@@ -3,6 +3,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { readAuthMutationJson } from "@/app/api/_shared/auth-mutation-route";
 import { acceptInvitation, assertEmailDeliveryReady, consumeRateLimit } from "@/modules/identity/auth-store";
+import { authenticatorQrCodeDataUrl } from "@/modules/identity/authenticator-qr";
 import { assertAccountAuthenticationConfigured } from "@/modules/identity/email-provider";
 import { hashPassword } from "@/modules/identity/passwords";
 import { requestFingerprints, validateSameOriginMutation } from "@/modules/identity/request-security";
@@ -39,10 +40,12 @@ export async function POST(request: NextRequest) {
     });
     if (!result) return NextResponse.json({ error: "This invitation is invalid, expired, or has already been used." }, { status: 400, headers });
     const email = decryptIdentityField(result.email_ciphertext, "email", result.user_id);
+    const enrollmentUri = totpEnrollmentUri({ secret, account: email });
     return NextResponse.json({
       setupToken: setupToken.raw,
       secret,
-      enrollmentUri: totpEnrollmentUri({ secret, account: email }),
+      enrollmentUri,
+      qrCodeDataUrl: await authenticatorQrCodeDataUrl(enrollmentUri),
       organizationName: result.organization_name,
     }, { headers });
   } catch (error) {

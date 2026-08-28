@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useMemo, useState, useTransition, type FormEvent } from "react";
 import { useRouter } from "next/navigation";
 import type {
@@ -9,6 +10,7 @@ import type {
   SubledgerWorkspaceDocumentDto,
   SubledgerWorkspaceDto,
 } from "@/modules/subledger/workspace";
+import type { SettlementDocumentSnapshot } from "@/modules/subledger/document-model";
 import {
   displayExactMoney,
   exactAllocationTotal,
@@ -311,11 +313,151 @@ async function mutate(url: string, method: "POST" | "PATCH", body: unknown): Pro
   if (!response.ok) throw new Error(result.error ?? "The accounting operation could not be completed");
 }
 
-function focusComposer(): void {
-  requestAnimationFrame(() => document.getElementById("subledger-composer")?.scrollIntoView({
-    behavior: "smooth",
-    block: "start",
-  }));
+function focusPanel(id = "subledger-composer"): void {
+  requestAnimationFrame(() => {
+    const panel = document.getElementById(id);
+    panel?.focus({ preventScroll: true });
+    panel?.scrollIntoView({
+      behavior: "smooth",
+      block: "start",
+    });
+  });
+}
+
+function journalLinkLabel(prefix: "View entry" | "View journal entry", journalNumber: number | null): string {
+  return journalNumber === null ? prefix : `${prefix} #${journalNumber}`;
+}
+
+function accountLabel(
+  entity: SubledgerEntityOptionDto | undefined,
+  combinationId: string | null,
+): string {
+  if (!combinationId) return "None";
+  const account = [
+    ...(entity?.lineAccounts ?? []),
+    ...(entity?.taxAccounts ?? []),
+    ...(entity?.bankAccounts ?? []),
+    ...(entity?.fxGainAccounts ?? []),
+    ...(entity?.fxLossAccounts ?? []),
+    ...(entity?.roundingAccounts ?? []),
+  ].find((candidate) => candidate.combinationId === combinationId);
+  if (account) return `${account.code} · ${account.displayName}`;
+  const partyControl = entity?.partyAccounts.find((party) => party.controlAccountCombinationId === combinationId);
+  return partyControl ? `Control account for ${partyControl.accountNumber}` : `Combination ${combinationId}`;
+}
+
+export function DocumentDetails({
+  workspace,
+  document,
+  onClose,
+  onEdit,
+}: Readonly<{
+  workspace: SubledgerWorkspaceDto;
+  document: SubledgerWorkspaceDocumentDto;
+  onClose: () => void;
+  onEdit: () => void;
+}>) {
+  const snapshot = document.snapshot;
+  const entity = currentEntity(workspace, snapshot.legalEntityId);
+  const businessSnapshot = snapshot.kind === "SALES_INVOICE" || snapshot.kind === "SUPPLIER_BILL"
+    ? snapshot
+    : null;
+  const settlementSnapshot: SettlementDocumentSnapshot | null = businessSnapshot
+    ? null
+    : snapshot as SettlementDocumentSnapshot;
+  const documentLabel = businessSnapshot
+    ? workspace.ownerModule === "receivables" ? "Invoice" : "Bill"
+    : workspace.ownerModule === "receivables" ? "Receipt" : "Payment";
+
+  return (
+    <section className={`panel form-panel ${styles.detailPanel}`} id="subledger-detail" aria-labelledby="subledger-detail-title" tabIndex={-1}>
+      <div className="panel-heading">
+        <div>
+          <p className="eyebrow">Read-only source detail · immutable version {document.version}</p>
+          <h2 id="subledger-detail-title">{documentLabel} {document.sourceNumber}</h2>
+        </div>
+        <StatusPill status={document.status} />
+      </div>
+      <div className={styles.detailGrid}>
+        <div><span>Party</span><strong>{document.partyName}</strong></div>
+        <div><span>Legal entity</span><strong>{document.entityCode} · {entity?.displayName ?? "Unknown"}</strong></div>
+        <div><span>Currency</span><strong>{snapshot.currency}</strong></div>
+        <div><span>Functional currency</span><strong>{snapshot.functionalCurrency}</strong></div>
+        <div><span>Accounting date</span><strong>{snapshot.accountingDate}</strong></div>
+        <div><span>Journal entry</span><strong>{document.journalId ? <Link href={`/app/journals/${document.journalId}`}>{journalLinkLabel("View journal entry", document.journalNumber)}</Link> : "Not posted"}</strong></div>
+      </div>
+      <p className={styles.detailNarrative}>{snapshot.description}</p>
+
+      {businessSnapshot ? (
+        <>
+          <div className={styles.detailGrid}>
+            <div><span>Document date</span><strong>{businessSnapshot.documentDate}</strong></div>
+            <div><span>Due date</span><strong>{businessSnapshot.dueOn}</strong></div>
+            <div><span>Subtotal</span><strong>{displayExactMoney(businessSnapshot.currency, businessSnapshot.subtotal)}</strong></div>
+            <div><span>Tax</span><strong>{displayExactMoney(businessSnapshot.currency, businessSnapshot.taxTotal)}</strong></div>
+            <div><span>Total</span><strong>{displayExactMoney(businessSnapshot.currency, businessSnapshot.grossTotal)}</strong></div>
+            <div><span>Open amount</span><strong>{document.openAmount === null ? "Not issued" : displayExactMoney(businessSnapshot.currency, document.openAmount)}</strong></div>
+          </div>
+          <div className="table-scroll" tabIndex={0}>
+            <table className={styles.detailTable}>
+              <caption className="sr-only">{documentLabel} accounting and tax lines</caption>
+              <thead><tr><th scope="col">Line</th><th scope="col">Description</th><th scope="col">Account</th><th scope="col">Tax treatment</th><th scope="col">Net</th><th scope="col">Tax</th></tr></thead>
+              <tbody>{businessSnapshot.lines.map((line) => (
+                <tr key={line.lineNumber}>
+                  <td>{line.lineNumber}</td>
+                  <td>{line.description}</td>
+                  <td>{accountLabel(entity, line.accountCombinationId)}</td>
+                  <td>{line.tax.category.replaceAll("_", " ")}</td>
+                  <td className={styles.amountCell}>{displayExactMoney(businessSnapshot.currency, line.netAmount)}</td>
+                  <td className={styles.amountCell}>{displayExactMoney(businessSnapshot.currency, line.taxDecision.totalTax)}</td>
+                </tr>
+              ))}</tbody>
+            </table>
+          </div>
+          <details className="mapping-details">
+            <summary>Accounting and FX evidence</summary>
+            <div className={styles.detailGrid}>
+              <div><span>Control account</span><strong>{accountLabel(entity, businessSnapshot.controlAccountCombinationId)}</strong></div>
+              <div><span>Tax account</span><strong>{accountLabel(entity, businessSnapshot.taxAccountCombinationId)}</strong></div>
+              <div><span>FX rate</span><strong>{businessSnapshot.fx.rate} {businessSnapshot.functionalCurrency}/{businessSnapshot.currency}</strong></div>
+              <div><span>FX source</span><strong>{businessSnapshot.fx.source}</strong></div>
+              <div><span>FX effective time</span><strong>{businessSnapshot.fx.effectiveAt}</strong></div>
+              <div><span>Functional total</span><strong>{displayExactMoney(businessSnapshot.functionalCurrency, businessSnapshot.grossFunctional)}</strong></div>
+            </div>
+          </details>
+        </>
+      ) : settlementSnapshot ? (
+        <>
+          <div className={styles.detailGrid}>
+            <div><span>Settlement date</span><strong>{settlementSnapshot.settlementDate}</strong></div>
+            <div><span>Amount</span><strong>{displayExactMoney(settlementSnapshot.currency, settlementSnapshot.amount)}</strong></div>
+            <div><span>Functional amount</span><strong>{displayExactMoney(settlementSnapshot.functionalCurrency, settlementSnapshot.settlementFunctionalAmount)}</strong></div>
+            <div><span>Bank / cash account</span><strong>{accountLabel(entity, settlementSnapshot.bankAccountCombinationId)}</strong></div>
+            <div><span>FX rate</span><strong>{settlementSnapshot.fx.rate} {settlementSnapshot.functionalCurrency}/{settlementSnapshot.currency}</strong></div>
+            <div><span>FX source</span><strong>{settlementSnapshot.fx.source}</strong></div>
+          </div>
+          <div className="table-scroll" tabIndex={0}>
+            <table className={styles.detailTable}>
+              <caption className="sr-only">Open-item allocations</caption>
+              <thead><tr><th scope="col">Allocated source</th><th scope="col">Transaction amount</th><th scope="col">Functional amount</th><th scope="col">Realized FX</th></tr></thead>
+              <tbody>{settlementSnapshot.allocations.map((allocation) => {
+                const item = workspace.openItems.find((candidate) => candidate.id === allocation.openItemId);
+                const sourceDocument = workspace.documents.find((candidate) => candidate.openItemId === allocation.openItemId);
+                return <tr key={allocation.openItemId}><td>{item?.sourceNumber ?? sourceDocument?.sourceNumber ?? allocation.openItemId}</td><td className={styles.amountCell}>{displayExactMoney(settlementSnapshot.currency, allocation.transactionAmount)}</td><td className={styles.amountCell}>{displayExactMoney(settlementSnapshot.functionalCurrency, allocation.settlementFunctionalAmount)}</td><td className={styles.amountCell}>{displayExactMoney(settlementSnapshot.functionalCurrency, allocation.realizedFxFunctional)}</td></tr>;
+              })}</tbody>
+            </table>
+          </div>
+        </>
+      ) : null}
+
+      {document.status !== "DRAFT" && <p className="currency-warning"><span aria-hidden="true">i</span><span>Posted and voided source documents are immutable. Correct posted records through the source module with a void and reversing entry; the general ledger remains read-only.</span></p>}
+      <div className={`form-actions ${styles.detailActions}`}>
+        {businessSnapshot && document.status === "DRAFT" && workspace.canManage && <button className="primary-button" type="button" onClick={onEdit}>Edit draft</button>}
+        {document.journalId && <Link className="secondary-button" href={`/app/journals/${document.journalId}`}>View debit and credit lines</Link>}
+        <button className="secondary-button" type="button" onClick={onClose}>Close details</button>
+      </div>
+    </section>
+  );
 }
 
 function AccountSelect({
@@ -411,6 +553,7 @@ export function ArApWorkspace({
   const [documentDraft, setDocumentDraft] = useState<BusinessDraft>(() => defaultDocumentDraft(workspace));
   const [settlementDraft, setSettlementDraft] = useState<SettlementDraft>(() => defaultSettlementDraft(workspace));
   const [voidDraft, setVoidDraft] = useState<VoidDraft | null>(null);
+  const [detailDocument, setDetailDocument] = useState<SubledgerWorkspaceDocumentDto | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [registerFilter, setRegisterFilter] = useState<SubledgerRegisterFilter>(() => workspace.registerFilter ?? ({
@@ -483,6 +626,7 @@ export function ArApWorkspace({
     setMessage(messageText);
     setComposer(null);
     setVoidDraft(null);
+    setDetailDocument(null);
     startTransition(() => router.refresh());
   }
 
@@ -490,18 +634,29 @@ export function ArApWorkspace({
     setDocumentDraft(defaultDocumentDraft(workspace, document));
     setComposer("DOCUMENT");
     setVoidDraft(null);
+    setDetailDocument(null);
     setError(null);
     setMessage(null);
-    focusComposer();
+    focusPanel();
   }
 
   function openSettlement(partyAccountId?: string, currency?: string): void {
     setSettlementDraft(defaultSettlementDraft(workspace, partyAccountId, currency));
     setComposer("SETTLEMENT");
     setVoidDraft(null);
+    setDetailDocument(null);
     setError(null);
     setMessage(null);
-    focusComposer();
+    focusPanel();
+  }
+
+  function viewDocument(document: SubledgerWorkspaceDocumentDto): void {
+    setDetailDocument(document);
+    setComposer(null);
+    setVoidDraft(null);
+    setError(null);
+    setMessage(null);
+    focusPanel("subledger-detail");
   }
 
   function chooseDocumentEntity(legalEntityId: string): void {
@@ -819,10 +974,11 @@ export function ArApWorkspace({
       description: `Void ${document.sourceNumber}`,
     });
     setComposer(null);
+    setDetailDocument(null);
     setError(null);
     setMessage(null);
     setBusy(false);
-    focusComposer();
+    focusPanel();
   }
 
   async function submitVoid(event: FormEvent<HTMLFormElement>): Promise<void> {
@@ -877,6 +1033,15 @@ export function ArApWorkspace({
         {message && <p className="validation-message validation-success">{message}</p>}
         {error && <p className="validation-message validation-error">{error}</p>}
       </div>
+
+      {detailDocument && (
+        <DocumentDetails
+          workspace={workspace}
+          document={detailDocument}
+          onClose={() => setDetailDocument(null)}
+          onEdit={() => openDocument(detailDocument)}
+        />
+      )}
 
       {composer === "DOCUMENT" && documentEntity && (
         <section className="panel form-panel" id="subledger-composer" aria-labelledby="document-composer-title">
@@ -1285,9 +1450,14 @@ export function ArApWorkspace({
                             )}
                             {settlementSnapshot && <small>{settlementSnapshot.allocations.length} open item{settlementSnapshot.allocations.length === 1 ? "" : "s"}</small>}
                           </td>
-                          <td className={styles.journalCell}>{document.journalNumber ? `#${document.journalNumber}` : "Not posted"}</td>
+                          <td className={styles.journalCell}>
+                            {document.journalId
+                              ? <Link href={`/app/journals/${document.journalId}`}>{journalLinkLabel("View entry", document.journalNumber)}</Link>
+                              : "Not posted"}
+                          </td>
                           <td className={styles.actionsCell}>
                             <div className={styles.rowActions}>
+                              <button className="secondary-button compact-button" type="button" onClick={() => viewDocument(document)} disabled={busy || pending}>View details</button>
                               {business && document.status === "DRAFT" && workspace.canManage && <button className="secondary-button compact-button" type="button" onClick={() => openDocument(document)} disabled={busy || pending}>Edit draft</button>}
                               {business && document.status === "DRAFT" && workspace.canPost && <button className="primary-button compact-button" type="button" onClick={() => void issueDocument(document)} disabled={busy || pending}>Issue</button>}
                               {business && document.status === "POSTED" && workspace.canSettle && document.openAmount && isPositiveExactAmount(document.openAmount) && <button className="secondary-button compact-button" type="button" onClick={() => openSettlement(document.snapshot.partyAccountId, document.snapshot.currency)} disabled={busy || pending}>Record {settlementLabel}</button>}

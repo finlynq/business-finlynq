@@ -105,14 +105,24 @@ const mocks = vi.hoisted(() => {
     ends_on: "2026-08-31",
     state: "OPEN" as const,
   }];
+  const accountPostingRows = [{
+    journal_entry_id: "30000000-0000-4000-8000-000000000001",
+    canonical_key: "CA01.6100.0000.MKT.0000.0000.0000.0000.0000.0000.0000.0000.0000",
+    debit_functional: "100.00",
+    credit_functional: "0.00",
+    ending_balance_functional: "475.00",
+    ending_side: "DEBIT" as const,
+  }];
   const client = {
-    query: vi.fn(async (statement: string) => {
+    query: vi.fn(async (statement: string, _params?: readonly unknown[]) => {
+      void _params;
       if (statement.includes("FROM organization_memberships membership")) {
         return { rows: [{ is_demo: true }] };
       }
       if (statement.includes("AS entity_count")) {
         return { rows: [{ entity_count: 1, ledger_count: 1, active_key_count: 1 }] };
       }
+      if (statement.includes("WITH current_postings AS")) return { rows: accountPostingRows };
       if (statement.includes("FROM journal_entries entry")) return { rows: journalRows };
       if (statement.includes("FROM fiscal_periods period")) return { rows: periodRows };
       throw new Error(`Unexpected tenant workspace query: ${statement}`);
@@ -208,6 +218,27 @@ describe("tenant journal action capabilities", () => {
         { key: "department", displayName: "Cost center", code: "MKT" },
       ]),
     });
+    expect(workspace.journals[0]?.accountPostings[0]).toMatchObject({
+      displayKey: "CA01.6100.MKT.0000",
+      debitFunctional: "100.00",
+      creditFunctional: "0.00",
+      endingBalanceFunctional: "475.00",
+      endingSide: "DEBIT",
+    });
+    const postingQuery = mocks.client.query.mock.calls.find(([statement]) => (
+      String(statement).includes("WITH current_postings AS")
+    ));
+    expect(postingQuery?.[0]).not.toContain("account.class::text AS account_class");
+    expect(postingQuery?.[0]).toContain("history_line.debit_functional - history_line.credit_functional");
+    expect(postingQuery?.[0]).toContain("account_balance.net_functional > 0 THEN 'DEBIT'");
+    expect(postingQuery?.[0]).toContain("account_balance.net_functional < 0 THEN 'CREDIT'");
+    expect(postingQuery?.[0]).toContain("abs(account_balance.net_functional)::text");
+    expect(postingQuery?.[0]).toContain("history_entry.status = 'POSTED'");
+    expect(postingQuery?.[0]).toContain("history_entry.accounting_date <= current_entry.accounting_date");
+    expect(postingQuery?.[1]).toEqual([
+      principal.organizationId,
+      workspace.journals.map((journal) => journal.id),
+    ]);
     expect(workspace.journals[3]).toMatchObject({
       ownerModule: "receivables",
       sourceNumber: "INV-1001",

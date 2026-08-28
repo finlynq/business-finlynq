@@ -31,11 +31,13 @@ describe("deferred banking template permission trigger migration", () => {
   });
 
   it("registers the forward migration after the banking foundation", () => {
-    expect(journal.entries.at(-2)).toMatchObject({
+    const foundationIndex = journal.entries.findIndex((entry) => entry.tag === "0021_banking_foundation");
+    expect(foundationIndex).toBeGreaterThanOrEqual(0);
+    expect(journal.entries[foundationIndex]).toMatchObject({
       idx: 21,
       tag: "0021_banking_foundation",
     });
-    expect(journal.entries.at(-1)).toMatchObject({
+    expect(journal.entries[foundationIndex + 1]).toMatchObject({
       idx: 22,
       tag: "0022_defer_banking_template_permissions",
     });

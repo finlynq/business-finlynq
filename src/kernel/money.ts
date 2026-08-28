@@ -53,7 +53,7 @@ export function sumExact(values: readonly DecimalInput[]): Decimal {
   return values.reduce<Decimal>((total, value) => total.plus(exact(value)), new Decimal(0));
 }
 
-export function formatMoney(value: DecimalInput, currency: string): string {
+export function formatMoneyAmount(value: DecimalInput, currency: string): string {
   const code = currency.toUpperCase();
   const amount = quantizeMoney(value, code);
   const fixed = amount.toFixed(minorUnits(code));
@@ -61,5 +61,13 @@ export function formatMoney(value: DecimalInput, currency: string): string {
   const unsigned = negative ? fixed.slice(1) : fixed;
   const [whole, fraction] = unsigned.split(".");
   const grouped = whole.replace(/\B(?=(\d{3})+(?!\d))/g, ",");
-  return `${negative ? "-" : ""}${code} ${grouped}${fraction === undefined ? "" : `.${fraction}`}`;
+  return `${negative ? "-" : ""}${grouped}${fraction === undefined ? "" : `.${fraction}`}`;
+}
+
+export function formatMoney(value: DecimalInput, currency: string): string {
+  const code = currency.toUpperCase();
+  const amount = formatMoneyAmount(value, code);
+  return amount.startsWith("-")
+    ? `-${code} ${amount.slice(1)}`
+    : `${code} ${amount}`;
 }

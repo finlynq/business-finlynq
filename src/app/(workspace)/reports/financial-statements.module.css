@@ -1,0 +1,35 @@
+.sectionHeading th,
+.sectionHeading td {
+  border-top: 2px solid #9fb5c6;
+  background: #eef4f7;
+  font-weight: 850;
+}
+
+.sectionHeading th {
+  color: var(--ink);
+  font-size: 13px;
+  letter-spacing: .02em;
+}
+
+.leafName {
+  padding-left: 28px;
+}
+
+.hierarchyGroup th,
+.hierarchyGroup td {
+  background: color-mix(in srgb, var(--surface-muted) 74%, white);
+  border-top: 1px solid var(--line);
+  font-weight: 750;
+}
+
+.subtotal th,
+.subtotal td {
+  border-top: 1px solid #b7c8d4;
+  background: #f8fafb;
+  font-weight: 850;
+}
+
+.grandTotal th,
+.grandTotal td {
+  border-top: 2px solid var(--ink);
+}

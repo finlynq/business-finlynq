@@ -14,7 +14,7 @@ export default function CompleteSignupPage() {
       eyebrow="Email verified setup"
       title={enabled ? "Secure your owner account" : "Account activation is not enabled"}
       description={enabled
-        ? "Create a password and enroll a TOTP authenticator. The business owner stays disabled until both steps finish."
+        ? "Create a password, then scan an authenticator QR code for stronger security or continue with password-only sign-in."
         : "Real account activation is disabled on this deployment."}
     >
       {enabled

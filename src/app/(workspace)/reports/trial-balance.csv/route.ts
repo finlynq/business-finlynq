@@ -20,7 +20,10 @@ export async function GET(request: Request) {
     ...filterInput,
     entity: filterInput.entity ?? entityContext.selectedEntity?.id,
   });
-  const csv = `${trialBalanceCsv(selection ? await loadTrialBalance(principal, selection) : [])}\r\n`;
+  const csv = `${trialBalanceCsv(
+    selection ? await loadTrialBalance(principal, selection) : [],
+    dimensions.segments,
+  )}\r\n`;
   const entityPart = (selection?.entityCode ?? "organization").replace(/[^a-z0-9_-]/gi, "-").toLowerCase();
   return new Response(csv, {
     headers: {

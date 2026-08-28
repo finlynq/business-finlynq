@@ -8,6 +8,10 @@ import {
 } from "@/modules/demo/accounting-clock";
 import { DEMO_BASELINE_DATE, DEMO_ORGANIZATION_ID, DEMO_USER_ID } from "@/modules/demo/constants";
 import { postJournalInTransaction } from "@/modules/ledger/posting-engine";
+import {
+  defaultFinancialStatementGroupCode,
+  defaultFinancialStatementGroups,
+} from "@/modules/ledger/accounting-hierarchy-contract";
 import { buildIssueJournalLines } from "@/modules/subledger/journal-line-builders";
 import {
   assertSnapshotTaxDecisionsCurrent,
@@ -35,7 +39,7 @@ export { DEMO_ORGANIZATION_ID } from "@/modules/demo/constants";
 // Increment whenever the exact reconstructed sandbox fixture changes. Bootstrap
 // may refresh only unclaimed READY slots on an older version; assigned visitor
 // workspaces remain untouched until the ordinary nightly reset.
-const DEMO_BASELINE_VERSION = 4;
+const DEMO_BASELINE_VERSION = 5;
 const DEMO_CALENDAR = demoAccountingCalendar();
 const DEMO_FISCAL_YEAR = DEMO_CALENDAR.fiscalYear;
 const DEMO_CURRENT_PERIOD = DEMO_CALENDAR.periodNumber;
@@ -557,6 +561,96 @@ async function seedSegmentDefinitions(client: PoolClient, identity: SeedIdentity
        ) VALUES ($1, $2, $3, $4, $5, $6, false, $7, NULL)
        ON CONFLICT (organization_id, key) DO NOTHING`,
       [fixtureId(identity, `segment:${key}`), identity.organizationId, key, ordinal, displayName, state, visible],
+    );
+  }
+}
+
+async function seedPublishedAccountHierarchies(
+  client: PoolClient,
+  identity: SeedIdentity,
+  foundations: ReadonlyMap<string, SeededFoundation>,
+): Promise<void> {
+  const roots = [
+    ["ASSETS", "Assets", "ASSET"],
+    ["LIABILITIES", "Liabilities", "LIABILITY"],
+    ["EQUITY", "Equity", "EQUITY"],
+    ["REVENUE", "Revenue", "REVENUE"],
+    ["EXPENSES", "Expenses", "EXPENSE"],
+  ] as const;
+  for (const foundation of FOUNDATIONS) {
+    const seeded = foundations.get(foundation.entityCode);
+    if (!seeded) throw new Error(`Missing ${foundation.entityCode} hierarchy foundation`);
+    const hierarchyId = fixtureId(identity, `hierarchy:${foundation.entityCode}:primary-reporting:v1`);
+    const existing = await client.query<{ status: string }>(
+      `SELECT status FROM accounting_hierarchies
+       WHERE organization_id = $1 AND ledger_id = $2
+         AND dimension_key = 'account' AND code = 'PRIMARY_REPORTING'
+         AND version = 1`,
+      [identity.organizationId, seeded.ledgerId],
+    );
+    if (existing.rows[0]) {
+      if (existing.rows[0].status !== "PUBLISHED") {
+        throw new Error(`${foundation.entityCode} demo hierarchy is not published`);
+      }
+      continue;
+    }
+    await client.query(
+      `INSERT INTO accounting_hierarchies(
+         id, organization_id, ledger_id, dimension_key, code, display_name,
+         version, revision, status, created_by, created_at
+       ) VALUES ($1,$2,$3,'account','PRIMARY_REPORTING',$4,1,1,'DRAFT',$5,$6)`,
+      [hierarchyId, identity.organizationId, seeded.ledgerId,
+        `${foundation.entityCode} primary financial statements`, identity.userId, BASELINE_TIMESTAMP],
+    );
+    const rootIds = new Map<string, string>();
+    for (const [index, [code, displayName, statementClass]] of roots.entries()) {
+      const rootId = fixtureId(identity, `hierarchy-node:${foundation.entityCode}:${code}`);
+      rootIds.set(statementClass, rootId);
+      await client.query(
+        `INSERT INTO accounting_hierarchy_nodes(
+           id, organization_id, hierarchy_id, parent_id, code, display_name,
+           sort_order, statement_class, member_type
+         ) VALUES ($1,$2,$3,NULL,$4,$5,$6,$7,NULL)`,
+        [rootId, identity.organizationId, hierarchyId, code, displayName,
+          (index + 1) * 100, statementClass],
+      );
+    }
+    const groupIds = new Map<string, string>();
+    for (const [index, group] of defaultFinancialStatementGroups.entries()) {
+      const groupId = fixtureId(identity, `hierarchy-node:${foundation.entityCode}:${group.code}`);
+      const parentId = rootIds.get(group.statementClass);
+      if (!parentId) throw new Error(`Missing ${group.statementClass} demo hierarchy root`);
+      groupIds.set(group.code, groupId);
+      await client.query(
+        `INSERT INTO accounting_hierarchy_nodes(
+           id, organization_id, hierarchy_id, parent_id, code, display_name,
+           sort_order, statement_class, member_type
+         ) VALUES ($1,$2,$3,$4,$5,$6,$7,NULL,NULL)`,
+        [groupId, identity.organizationId, hierarchyId, parentId, group.code,
+          group.displayName, (index + 1) * 100],
+      );
+    }
+    for (const [index, [code, displayName, accountClass]] of BASE_ACCOUNTS.entries()) {
+      const accountId = seeded.accountIds.get(code);
+      const parentId = groupIds.get(defaultFinancialStatementGroupCode(accountClass, code));
+      if (!accountId || !parentId) throw new Error(`Missing demo hierarchy account ${foundation.entityCode}.${code}`);
+      await client.query(
+        `INSERT INTO accounting_hierarchy_nodes(
+           id, organization_id, hierarchy_id, parent_id, code, display_name,
+           sort_order, statement_class, member_type, gl_account_id
+         ) VALUES ($1,$2,$3,$4,$5,$6,$7,NULL,'ACCOUNT',$8)`,
+        [fixtureId(identity, `hierarchy-node:${foundation.entityCode}:account:${code}`),
+          identity.organizationId, hierarchyId, parentId, `A_${code}`, displayName,
+          (index + 1) * 10, accountId],
+      );
+    }
+    await client.query(
+      `UPDATE accounting_hierarchies SET
+         status = 'PUBLISHED', revision = 2, effective_from = $4,
+         published_by = $5, published_at = $6
+       WHERE organization_id = $1 AND id = $2 AND ledger_id = $3 AND status = 'DRAFT'`,
+      [identity.organizationId, hierarchyId, seeded.ledgerId,
+        `${DEMO_BASELINE_DATE.slice(0, 4)}-01-01`, identity.userId, BASELINE_TIMESTAMP],
     );
   }
 }
@@ -1498,6 +1592,7 @@ async function seedOrganizationBaseline(
     foundations.set(foundation.entityCode, await seedLedgerFoundation(client, identity, foundation));
   }
   await seedSegmentDefinitions(client, identity);
+  await seedPublishedAccountHierarchies(client, identity, foundations);
   const partyData = await seedEncryptedPartyData(client, identity, foundations);
 
   const ca = foundations.get("CA01");
@@ -1729,6 +1824,10 @@ async function verifySandboxBaseline(client: PoolClient, organizationId: string)
        (SELECT count(*) FROM gl_accounts WHERE organization_id = $1)::text AS accounts,
        (SELECT count(*) FROM account_combinations WHERE organization_id = $1)::text AS combinations,
        (SELECT count(*) FROM segment_definitions WHERE organization_id = $1)::text AS segments,
+       (SELECT count(*) FROM accounting_hierarchies
+          WHERE organization_id = $1 AND status = 'PUBLISHED')::text AS published_hierarchies,
+       (SELECT count(*) FROM accounting_hierarchy_nodes
+          WHERE organization_id = $1)::text AS hierarchy_nodes,
        (SELECT count(*) FROM parties WHERE organization_id = $1)::text AS parties,
        (SELECT count(*) FROM party_addresses WHERE organization_id = $1)::text AS addresses,
        (SELECT count(*) FROM party_accounts WHERE organization_id = $1)::text AS party_accounts,
@@ -1784,6 +1883,8 @@ async function verifySandboxBaseline(client: PoolClient, organizationId: string)
     accounts: "26",
     combinations: "26",
     segments: "10",
+    published_hierarchies: "2",
+    hierarchy_nodes: "50",
     parties: "4",
     addresses: "4",
     party_accounts: "4",

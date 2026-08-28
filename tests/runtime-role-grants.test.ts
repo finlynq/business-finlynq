@@ -41,6 +41,16 @@ describe("runtime role reconciliation contract", () => {
     expect(script).toContain("app.auth_begin_organization_signup(uuid,uuid,uuid,uuid,text,text,text,text,text,text,text,text,text,text,accounting_profile,integer,manual_posting_mode,text,text,text,text,uuid,text,text,text)");
     expect(script).toContain("app.auth_consume_signup_accept_limits(text)");
     expect(script).toContain("app.auth_accept_organization_signup(text,text,uuid,text,text,text)");
+    for (const signature of [
+      "app.auth_skip_mfa_enrollment(text,text)",
+      "app.auth_issue_password_user_session(uuid,uuid,uuid,text,text,text,text)",
+      "app.auth_mfa_status_for_session(uuid)",
+      "app.auth_begin_session_mfa_enrollment(uuid,uuid,text,text,text)",
+      "app.auth_finish_session_mfa_enrollment(uuid,text,uuid,bigint,text,text)",
+      "app.auth_password_for_session(uuid)",
+      "app.auth_record_session_reauthentication_failure(uuid,text)",
+      "app.auth_finish_password_reset_with_mfa(text,text,uuid,bigint,text)",
+    ]) expect(script).toContain(signature);
     expect(script).toContain("app.assert_current_demo_session_lease()");
     expect(script).toContain("app.auth_lookup_login(text)");
     expect(script).toContain("app.auth_resolve_session(text,text)");

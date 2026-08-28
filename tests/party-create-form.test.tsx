@@ -7,35 +7,16 @@ vi.mock("next/navigation", () => ({
 
 import { PartyCreateForm } from "@/app/_components/party-create-form.client";
 
-const option = {
-  legalEntityId: "30000000-0000-4000-8000-000000000001",
-  entityCode: "CA01",
-  ledgerId: "30000000-0000-4000-8000-000000000002",
-  ledgerCode: "PRIMARY",
-  functionalCurrency: "CAD",
-  role: "CUSTOMER" as const,
-  controlAccountId: "30000000-0000-4000-8000-000000000003",
-  controlAccountCode: "1100",
-  controlAccountName: "Accounts receivable",
-};
-
 describe("party creation form", () => {
-  it("requires an entity-bound AR/AP account setup alongside encrypted master data", () => {
-    const markup = renderToStaticMarkup(<PartyCreateForm accountOptions={[option]} />);
+  it("creates the organization-wide master independently of entity accounting roles", () => {
+    const markup = renderToStaticMarkup(<PartyCreateForm />);
 
-    expect(markup).toContain("Customer or supplier setup");
-    expect(markup).toContain("CA01 · Customer · 1100 Accounts receivable");
-    expect(markup).toContain("AR/AP account number");
-    expect(markup).toContain("Currency restriction (optional)");
-    expect(markup).toContain("Create party and first role");
-    expect(markup).toContain("Do not recreate this party for another company");
-  });
-
-  it("fails closed when no active control-account combination is available", () => {
-    const markup = renderToStaticMarkup(<PartyCreateForm accountOptions={[]} />);
-
-    expect(markup).toContain("No configured AR/AP control account");
-    expect(markup).toContain("Create an active AR or AP control account combination");
-    expect(markup).toContain("disabled");
+    expect(markup).toContain("Create an address-book party");
+    expect(markup).toContain("One organization-wide identifier");
+    expect(markup).toContain("Add a shared address now");
+    expect(markup).toContain("Create shared party");
+    expect(markup).toContain("added later as accounting roles");
+    expect(markup).not.toContain("Customer or supplier setup");
+    expect(markup).not.toContain("AR/AP account number");
   });
 });

@@ -46,7 +46,7 @@ export type CreatePartyCommand = Readonly<{
   displayName: string;
   idempotencyKey: string;
   internalLegalEntityId?: string;
-  account: z.input<typeof partyAccountSchema>;
+  account?: z.input<typeof partyAccountSchema>;
   address?: z.input<typeof addressSchema>;
 }>;
 
@@ -152,20 +152,20 @@ function accountToDto(row: StoredPartyAccount): PartyAccountDto {
 
 export async function createParty(
   command: CreatePartyCommand,
-): Promise<Readonly<{ party: PartyDto; partyAccount: PartyAccountDto; idempotentReplay: boolean }>> {
+): Promise<Readonly<{ party: PartyDto; partyAccount: PartyAccountDto | null; idempotentReplay: boolean }>> {
   assertTenantWritesEnabled(command.context);
   const partyNumber = partyNumberSchema.parse(command.partyNumber);
   const displayName = displayNameSchema.parse(command.displayName);
   const idempotencyKey = idempotencyKeySchema.parse(command.idempotencyKey);
-  const account = partyAccountSchema.parse(command.account);
-  const transactionCurrency = account.transactionCurrency ?? null;
+  const account = command.account ? partyAccountSchema.parse(command.account) : undefined;
+  const transactionCurrency = account?.transactionCurrency ?? null;
   const address = command.address ? addressSchema.parse(command.address) : undefined;
   const commandHash = createHash("sha256").update(JSON.stringify({
     partyNumber,
     displayName,
     idempotencyKey,
     internalLegalEntityId: command.internalLegalEntityId ?? null,
-    account: { ...account, transactionCurrency },
+    account: account ? { ...account, transactionCurrency } : null,
     address: address ?? null,
   }), "utf8").digest("hex");
 
@@ -237,35 +237,37 @@ export async function createParty(
         if (!stored || stored.command_hash !== commandHash) {
           throw new Error("Party number is already bound to different master data");
         }
-        const replayAccount = await client.query<StoredPartyAccount>(
-          `SELECT id, legal_entity_id, ledger_id, role, account_number,
-             control_account_id, transaction_currency
-           FROM party_accounts
-           WHERE organization_id = $1
-             AND party_id = $2
-             AND legal_entity_id = $3
-             AND ledger_id = $4
-             AND role = $5
-             AND account_number = $6
-             AND control_account_id = $7
-             AND transaction_currency IS NOT DISTINCT FROM $8::text
-           FOR SHARE`,
-          [
-            command.context.organizationId,
-            stored.id,
-            account.legalEntityId,
-            account.ledgerId,
-            account.role,
-            account.accountNumber,
-            account.controlAccountId,
-            transactionCurrency,
-          ],
-        );
-        storedAccount = replayAccount.rows[0];
-        if (!storedAccount) {
-          throw new Error("Party replay is missing its bound customer or supplier account");
+        if (account) {
+          const replayAccount = await client.query<StoredPartyAccount>(
+            `SELECT id, legal_entity_id, ledger_id, role, account_number,
+               control_account_id, transaction_currency
+             FROM party_accounts
+             WHERE organization_id = $1
+               AND party_id = $2
+               AND legal_entity_id = $3
+               AND ledger_id = $4
+               AND role = $5
+               AND account_number = $6
+               AND control_account_id = $7
+               AND transaction_currency IS NOT DISTINCT FROM $8::text
+             FOR SHARE`,
+            [
+              command.context.organizationId,
+              stored.id,
+              account.legalEntityId,
+              account.ledgerId,
+              account.role,
+              account.accountNumber,
+              account.controlAccountId,
+              transactionCurrency,
+            ],
+          );
+          storedAccount = replayAccount.rows[0];
+          if (!storedAccount) {
+            throw new Error("Party replay is missing its bound customer or supplier account");
+          }
         }
-      } else {
+      } else if (account) {
         const accountingSetup = await client.query(
           `SELECT 1
            FROM legal_entities entity
@@ -366,7 +368,7 @@ export async function createParty(
 
       return {
         party: toDto(stored, decryptPartyName(stored, command.context.organizationId, activeKey.dek)),
-        partyAccount: accountToDto(storedAccount),
+        partyAccount: storedAccount ? accountToDto(storedAccount) : null,
         idempotentReplay,
       };
     } finally {

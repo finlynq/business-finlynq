@@ -3,6 +3,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { readAuthMutationJson } from "@/app/api/_shared/auth-mutation-route";
 import { assertEmailDeliveryReady, consumeRateLimit } from "@/modules/identity/auth-store";
+import { authenticatorQrCodeDataUrl } from "@/modules/identity/authenticator-qr";
 import { assertAccountAuthenticationConfigured } from "@/modules/identity/email-provider";
 import { requestFingerprints, validateSameOriginMutation } from "@/modules/identity/request-security";
 import { settleSensitiveResponse } from "@/modules/identity/response-timing";
@@ -68,6 +69,7 @@ export async function POST(request: NextRequest) {
       setupToken: accepted.setupToken,
       secret: accepted.secret,
       enrollmentUri: accepted.enrollmentUri,
+      qrCodeDataUrl: await authenticatorQrCodeDataUrl(accepted.enrollmentUri),
       organizationName: accepted.organizationName,
     }, { headers });
   } catch (error) {

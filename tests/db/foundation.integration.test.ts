@@ -207,6 +207,7 @@ runDatabaseTests("PostgreSQL accounting controls", () => {
            ($1, $2, 'ledger.journal.submit'),
            ($1, $2, 'ledger.journal.approve'),
            ($1, $2, 'ledger.posting_policy.manage'),
+           ($1, $2, 'ledger.segments.manage'),
            ($1, $2, 'ledger.period.close'),
            ($1, $2, 'ledger.period.reopen'),
             ($1, $2, 'ledger.period.seal'),
@@ -363,6 +364,62 @@ runDatabaseTests("PostgreSQL accounting controls", () => {
       if (previousRootKeyFile === undefined) delete process.env.ORGANIZATION_ROOT_KEK_FILE;
       else process.env.ORGANIZATION_ROOT_KEK_FILE = previousRootKeyFile;
     }
+  });
+
+  it("atomically replaces an already populated hierarchy draft tree", async () => {
+    const hierarchyCode = `TEST_${randomUUID().replaceAll("-", "").slice(0, 12).toUpperCase()}`;
+    await asTenant(async (client) => {
+      await client.query("SELECT set_config('app.session_id', $1, true)", [ids.validSession]);
+      await client.query("SELECT set_config('app.session_mode', 'real', true)");
+      await client.query("SELECT set_config('app.auth_method', 'password+mfa', true)");
+      await client.query("SELECT set_config('app.request_id', $1, true)", [randomUUID()]);
+      await client.query("SELECT set_config('app.source_surface', 'UI', true)");
+      await client.query("SELECT set_config('app.reason', 'Replace populated hierarchy integration tree', true)");
+      const created = await client.query<{ id: string; revision: number }>(
+        "SELECT * FROM app.accounting_create_hierarchy_draft('account', $1, $2, 'Integration hierarchy', NULL)",
+        [ids.ledger, hierarchyCode],
+      );
+      const hierarchy = created.rows[0];
+      expect(hierarchy).toBeDefined();
+      await client.query("SAVEPOINT hierarchy_null_revision");
+      await expect(client.query(
+        "SELECT app.accounting_replace_hierarchy_draft($1,NULL,'[]'::jsonb)",
+        [hierarchy!.id],
+      )).rejects.toMatchObject({ code: "22023" });
+      await client.query("ROLLBACK TO SAVEPOINT hierarchy_null_revision");
+      await expect(client.query(
+        "SELECT * FROM app.accounting_publish_hierarchy($1,NULL,$2::date)",
+        [hierarchy!.id, "2026-09-01"],
+      )).rejects.toMatchObject({ code: "22023" });
+      await client.query("ROLLBACK TO SAVEPOINT hierarchy_null_revision");
+      const firstRoot = randomUUID();
+      const firstMember = randomUUID();
+      const firstRevision = await client.query<{ revision: number }>(
+        "SELECT app.accounting_replace_hierarchy_draft($1,$2,$3::jsonb) AS revision",
+        [hierarchy!.id, hierarchy!.revision, JSON.stringify([
+          { id: firstRoot, parentId: null, code: "ASSETS", displayName: "Assets", sortOrder: 100, statementClass: "ASSET", memberType: null, glAccountId: null, segmentValueId: null, legalEntityId: null },
+          { id: firstMember, parentId: firstRoot, code: "A_1000", displayName: "Cash", sortOrder: 10, statementClass: null, memberType: "ACCOUNT", glAccountId: ids.creditAccount, segmentValueId: null, legalEntityId: null },
+        ])],
+      );
+      const secondRoot = randomUUID();
+      const secondMember = randomUUID();
+      const replaced = await client.query<{ revision: number }>(
+        "SELECT app.accounting_replace_hierarchy_draft($1,$2,$3::jsonb) AS revision",
+        [hierarchy!.id, firstRevision.rows[0]!.revision, JSON.stringify([
+          { id: secondRoot, parentId: null, code: "CURRENT_ASSETS", displayName: "Current assets", sortOrder: 100, statementClass: "ASSET", memberType: null, glAccountId: null, segmentValueId: null, legalEntityId: null },
+          { id: secondMember, parentId: secondRoot, code: "A_1000", displayName: "Cash and equivalents", sortOrder: 10, statementClass: null, memberType: "ACCOUNT", glAccountId: ids.creditAccount, segmentValueId: null, legalEntityId: null },
+        ])],
+      );
+      expect(replaced.rows[0]?.revision).toBe(firstRevision.rows[0]!.revision + 1);
+      const nodes = await client.query<{ id: string; parent_id: string | null }>(
+        "SELECT id, parent_id FROM accounting_hierarchy_nodes WHERE organization_id = $1 AND hierarchy_id = $2 ORDER BY parent_id NULLS FIRST",
+        [ids.orgA, hierarchy!.id],
+      );
+      expect(nodes.rows).toEqual([
+        { id: secondRoot, parent_id: null },
+        { id: secondMember, parent_id: secondRoot },
+      ]);
+    });
   });
 
   it("posts an exact balanced journal and writes audit in the same transaction", async () => {

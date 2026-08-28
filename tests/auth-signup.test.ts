@@ -139,6 +139,9 @@ describe("self-service signup security", () => {
       expect(rendered.text).toContain("/complete-signup#token=one-use-secret");
       expect(rendered.text).not.toContain("?token=");
       expect(rendered.text).toContain("Example Books");
+      expect(rendered.text).toContain("can enroll an authenticator for stronger security now or later");
+      expect(rendered.html).toContain("authenticator enrollment is recommended");
+      expect(rendered.text).not.toContain("account remains disabled");
     } finally {
       if (previousOrigin === undefined) delete process.env.APP_ORIGIN;
       else process.env.APP_ORIGIN = previousOrigin;

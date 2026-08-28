@@ -50,8 +50,8 @@ export function renderAuthenticationEmail(input: {
     const link = actionLink("/accept-invitation", "token", token);
     return {
       subject: "Set up your Business Finlynq account",
-      text: `You were invited to Business Finlynq. Set your password and authenticator within 72 hours:\n\n${link}\n\nIf you were not expecting this invitation, ignore it.`,
-      html: wrapHtml("Set up your account", `<p>You were invited to Business Finlynq.</p><p><a href="${escapeHtml(link)}">Accept invitation</a></p><p>This one-use invitation expires in 72 hours. You will set a password and enroll an authenticator before the account becomes active.</p>`),
+      text: `You were invited to Business Finlynq. Set your password within 72 hours. You can also enroll an authenticator for stronger security:\n\n${link}\n\nIf you were not expecting this invitation, ignore it.`,
+      html: wrapHtml("Set up your account", `<p>You were invited to Business Finlynq.</p><p><a href="${escapeHtml(link)}">Accept invitation</a></p><p>This one-use invitation expires in 72 hours. You will set a password and can enroll an authenticator now or later.</p>`),
     };
   }
   if (input.templateType === "ORGANIZATION_SIGNUP") {
@@ -63,8 +63,8 @@ export function renderAuthenticationEmail(input: {
       : "your business";
     return {
       subject: "Verify your Business Finlynq account",
-      text: `Verify your email to create the ${organizationName} workspace:\n\n${link}\n\nThis one-use link expires in 24 hours. You will create a password and enroll an authenticator before the owner account becomes active. If you did not request this, ignore the email.`,
-      html: wrapHtml("Verify your business account", `<p>Verify your email to create the <strong>${escapeHtml(organizationName)}</strong> workspace.</p><p><a href="${escapeHtml(link)}">Verify and secure account</a></p><p>This one-use link expires in 24 hours. The business is not provisioned until you use it, and the owner remains disabled until authenticator enrollment succeeds.</p><p>If you did not request this, ignore the email.</p>`),
+      text: `Verify your email to create the ${organizationName} workspace:\n\n${link}\n\nThis one-use link expires in 24 hours. You will create a password and can enroll an authenticator for stronger security now or later. If you did not request this, ignore the email.`,
+      html: wrapHtml("Verify your business account", `<p>Verify your email to create the <strong>${escapeHtml(organizationName)}</strong> workspace.</p><p><a href="${escapeHtml(link)}">Verify and secure account</a></p><p>This one-use link expires in 24 hours. The business is provisioned after password setup; authenticator enrollment is recommended and can be completed now or later.</p><p>If you did not request this, ignore the email.</p>`),
     };
   }
   if (input.templateType === "RECOVERY_APPROVAL") {
@@ -79,9 +79,9 @@ export function renderAuthenticationEmail(input: {
   }
   const securityMessages: Record<string, { subject: string; message: string }> = {
     SECURITY_PASSWORD_CHANGED: { subject: "Your Business Finlynq password changed", message: "Your password was changed and every existing session was revoked." },
-    SECURITY_MFA_ENABLED: { subject: "Authenticator enabled for Business Finlynq", message: "A TOTP authenticator was enabled and your account is now active." },
+    SECURITY_MFA_ENABLED: { subject: "Authenticator enabled for Business Finlynq", message: "A TOTP authenticator was enabled for your account." },
     SECURITY_MFA_REPLACED: { subject: "Your Business Finlynq authenticator changed", message: "Your previous authenticator was revoked and a replacement authenticator was enabled during protected account recovery." },
-    SECURITY_NEW_LOGIN: { subject: "New Business Finlynq sign-in", message: "A new password and authenticator sign-in succeeded for your account." },
+    SECURITY_NEW_LOGIN: { subject: "New Business Finlynq sign-in", message: "A new sign-in succeeded for your account." },
     SECURITY_RECOVERY_ESCALATED: { subject: "Business Finlynq recovery protection changed", message: "A password-reset holder reported that the authenticator was unavailable. Co-owner approval or the sole-owner security delay is now required." },
   };
   const selected = securityMessages[input.templateType];

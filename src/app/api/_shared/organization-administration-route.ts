@@ -77,9 +77,10 @@ export async function prepareOrganizationAdminMutation(
 export async function readOrganizationAdminJson<Output>(
   request: NextRequest,
   schema: ZodType<Output>,
+  maxBytes = 16_384,
 ): Promise<Readonly<{ data: Output; response?: never }> | Readonly<{ data?: never; response: NextResponse }>> {
   try {
-    const parsed = schema.safeParse(await readBoundedJson(request, 16_384));
+    const parsed = schema.safeParse(await readBoundedJson(request, maxBytes));
     if (!parsed.success) {
       return {
         response: NextResponse.json(

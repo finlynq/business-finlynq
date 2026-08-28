@@ -12,6 +12,7 @@ import {
   passwordResetChallenge,
   prepareRecoveryMfa,
 } from "@/modules/identity/auth-store";
+import { authenticatorQrCodeDataUrl } from "@/modules/identity/authenticator-qr";
 import { assertAccountAuthenticationConfigured } from "@/modules/identity/email-provider";
 import { hashPassword } from "@/modules/identity/passwords";
 import { requestFingerprints, validateSameOriginMutation } from "@/modules/identity/request-security";
@@ -98,10 +99,12 @@ export async function POST(request: NextRequest) {
         }
       }
       const email = decryptIdentityField(challenge.email_ciphertext, "email", challenge.user_id);
+      const enrollmentUri = totpEnrollmentUri({ secret, account: email });
       const enrollment = {
         mfaEnrollmentRequired: true,
         secret,
-        enrollmentUri: totpEnrollmentUri({ secret, account: email }),
+        enrollmentUri,
+        qrCodeDataUrl: await authenticatorQrCodeDataUrl(enrollmentUri),
         organizationName: challenge.organization_name,
       };
       if (!parsed.data.otp) {

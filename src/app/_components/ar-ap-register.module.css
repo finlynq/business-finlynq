@@ -98,6 +98,48 @@
   gap: 7px;
 }
 
+.detailPanel {
+  overflow: hidden;
+}
+
+.detailGrid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(170px, 1fr));
+  gap: 14px;
+  padding: 16px 18px;
+}
+
+.detailGrid div {
+  display: grid;
+  gap: 4px;
+}
+
+.detailGrid span {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+}
+
+.detailGrid strong {
+  overflow-wrap: anywhere;
+}
+
+.detailNarrative {
+  margin: 0;
+  padding: 0 18px 16px;
+  color: var(--muted);
+}
+
+.detailTable {
+  min-width: 880px;
+}
+
+.detailActions {
+  padding: 0 18px 18px;
+}
+
 .emptyFilter {
   padding: 32px 18px;
 }
@@ -110,6 +152,10 @@
 
 @media (max-width: 860px) {
   .dateFilters {
+    grid-template-columns: repeat(2, minmax(150px, 1fr));
+  }
+
+  .detailGrid {
     grid-template-columns: repeat(2, minmax(150px, 1fr));
   }
 }
@@ -127,5 +173,9 @@
 
   .dateFilters button {
     width: 100%;
+  }
+
+  .detailGrid {
+    grid-template-columns: 1fr;
   }
 }

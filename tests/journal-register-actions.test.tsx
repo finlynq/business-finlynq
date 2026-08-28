@@ -78,6 +78,33 @@ const baseJournal = {
       { key: "intercompany", displayName: "Intercompany", code: "0000" },
     ],
   }],
+  accountPostings: [{
+    canonicalKey: "CA01.6100.0000.MKT.0000.0000.0000.0000.0000.0000.0000.0000.0000",
+    displayKey: "CA01.6100.MKT.0000",
+    displaySegments: [
+      { key: "entity", displayName: "Entity", code: "CA01" },
+      { key: "account", displayName: "Account", code: "6100" },
+      { key: "department", displayName: "Cost center", code: "MKT" },
+      { key: "intercompany", displayName: "Intercompany", code: "0000" },
+    ],
+    debitFunctional: "100.00",
+    creditFunctional: "0.00",
+    endingBalanceFunctional: "475.00",
+    endingSide: "DEBIT" as const,
+  }, {
+    canonicalKey: "CA01.2000.0000.MKT.0000.0000.0000.0000.0000.0000.0000.0000.0000",
+    displayKey: "CA01.2000.MKT.0000",
+    displaySegments: [
+      { key: "entity", displayName: "Entity", code: "CA01" },
+      { key: "account", displayName: "Account", code: "2000" },
+      { key: "department", displayName: "Cost center", code: "MKT" },
+      { key: "intercompany", displayName: "Intercompany", code: "0000" },
+    ],
+    debitFunctional: "0.00",
+    creditFunctional: "100.00",
+    endingBalanceFunctional: "250.00",
+    endingSide: "CREDIT" as const,
+  }],
   reversalOfNumber: null,
   reversedByNumber: null,
 };
@@ -195,13 +222,23 @@ describe("journal register actions", () => {
       const href = (element.props as { href?: unknown }).href;
       return typeof href === "string" ? [href] : [];
     });
+    const journalEvidenceLinks = tree.filter((element) => {
+      const href = (element.props as { href?: unknown }).href;
+      return typeof href === "string" && href.startsWith("/app/journals/") &&
+        textContent(element) === "View journal entry";
+    });
 
     expect(actions).toEqual(["post", "reverse"]);
     expect(hrefs).toContain("/app/receivables/invoices?q=INV-1001");
     expect(hrefs).toContain("/app/payables/bills?q=BILL-1001");
     expect(hrefs).toContain("/app/journals/30000000-0000-4000-8000-000000000002");
-    expect(textContent(page)).toContain("Functional debit");
-    expect(textContent(page)).toContain("Functional credit");
+    expect(journalEvidenceLinks).toHaveLength(5);
+    expect(textContent(page)).toContain("Journal debit");
+    expect(textContent(page)).toContain("Journal credit");
+    expect(textContent(page)).toMatch(/Ending balance\s+·\s+debit/);
+    expect(textContent(page)).toMatch(/Ending balance\s+·\s+credit/);
+    expect(textContent(page)).toContain("CAD 475.00");
+    expect(textContent(page)).toContain("CAD 250.00");
     expect(textContent(page)).toContain("CA01.6100.MKT.0000");
     expect(textContent(page)).toContain("reversed by 42");
     expect(textContent(page).toLowerCase()).not.toContain("delete");

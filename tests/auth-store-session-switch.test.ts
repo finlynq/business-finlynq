@@ -4,7 +4,10 @@ const mocks = vi.hoisted(() => ({ queryDatabase: vi.fn() }));
 
 vi.mock("@/db/transaction", () => ({ queryDatabase: mocks.queryDatabase }));
 
-import { issueMfaUserSession } from "@/modules/identity/auth-store";
+import {
+  finishSessionMfaEnrollment,
+  issueMfaUserSession,
+} from "@/modules/identity/auth-store";
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -52,5 +55,23 @@ describe("MFA session issuance", () => {
 
     const [, values] = mocks.queryDatabase.mock.calls[0] as [string, unknown[]];
     expect(values[9]).toBeNull();
+  });
+
+  it("passes a fresh bearer hash into atomic later-enrollment completion", async () => {
+    mocks.queryDatabase.mockResolvedValue({ rows: [{ finished: true }] });
+
+    await expect(finishSessionMfaEnrollment({
+      sessionId: "30000000-0000-4000-8000-000000000001",
+      setupTokenHash: "setup-token-hash",
+      factorId: "30000000-0000-4000-8000-000000000004",
+      counter: 103,
+      replacementSessionTokenHash: "replacement-session-token-hash",
+      requestId: "request-id",
+    })).resolves.toBe(true);
+
+    const [statement, values] = mocks.queryDatabase.mock.calls[0] as [string, unknown[]];
+    expect(statement).toContain("app.auth_finish_session_mfa_enrollment($1,$2,$3,$4,$5,$6)");
+    expect(values).toHaveLength(6);
+    expect(values[4]).toBe("replacement-session-token-hash");
   });
 });

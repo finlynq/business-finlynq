@@ -1,0 +1,9 @@
+.stack { display:grid; gap:16px; padding:20px; }
+.success { margin:20px; padding:13px 15px; border:1px solid #a9d2c7; border-radius:8px; color:#175b4c; background:#eaf6f2; line-height:1.55; }
+.error { padding:12px 14px; border:1px solid #e4b6b2; border-radius:8px; color:#7b3733; background:#fcf0ef; line-height:1.55; }
+.note { margin:0; color:#58687e; font-size:12px; line-height:1.6; }
+.field { display:grid; gap:8px; max-width:420px; }
+.field>span { color:#34485f; font-size:12px; font-weight:780; }
+.field input { width:100%; min-height:48px; padding:0 13px; border:1px solid #becbd3; border-radius:8px; color:#15263b; background:#fff; }
+.field input:focus { border-color:#167c72; outline:3px solid rgba(22,124,114,.14); outline-offset:0; }
+.field small { color:#728092; font-size:11px; }

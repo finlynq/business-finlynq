@@ -37,10 +37,13 @@ vi.mock("@/modules/identity/session", () => ({
 import { PERMISSIONS } from "@/modules/identity/permissions";
 import {
   balanceSheetRows,
+  financialStatementDisplayLines,
+  loadEffectiveAccountHierarchy,
   loadAccountingOverview,
   loadTaxDeterminations,
   loadTrialBalance,
   profitAndLossRows,
+  reportSearchParams,
   resolveReportSelection,
   trialBalanceCsv,
   type ReportDimensions,
@@ -108,6 +111,31 @@ describe("tenant reporting authorization and tax exception evidence", () => {
     expect(mocks.query.mock.calls[1]?.[0]).toContain("current_draft_decisions");
   });
 
+  it("scopes every overview data class to the validated working entity when one is selected", async () => {
+    const entityId = "10000000-0000-4000-8000-000000000020";
+    mocks.query
+      .mockResolvedValueOnce({ rows: [{ posted: 2, unposted: 1 }] })
+      .mockResolvedValueOnce({ rows: [{ total: 3, manual_review: 1 }] })
+      .mockResolvedValueOnce({ rows: [{ role: "CUSTOMER", currency: "CAD", amount: "75.00" }] });
+
+    const overview = await loadAccountingOverview(principal, entityId);
+
+    expect(overview).toMatchObject({
+      postedJournalCount: 2,
+      unpostedJournalCount: 1,
+      taxDecisionCount: 3,
+      manualReviewTaxCount: 1,
+      openReceivables: [{ currency: "CAD", amount: "75.00" }],
+    });
+    expect(mocks.query.mock.calls[0]?.[0]).toContain("legal_entity_id = $2::uuid");
+    expect(mocks.query.mock.calls[0]?.[1]).toEqual([principal.organizationId, entityId]);
+    expect(mocks.query.mock.calls[1]?.[0]).toContain("source.legal_entity_id = $2::uuid");
+    expect(mocks.query.mock.calls[1]?.[0]).toContain("snapshot.legal_entity_id = $2::uuid");
+    expect(mocks.query.mock.calls[1]?.[1]).toEqual([principal.organizationId, entityId]);
+    expect(mocks.query.mock.calls[2]?.[0]).toContain("account.legal_entity_id = $4::uuid");
+    expect(mocks.query.mock.calls[2]?.[1]).toEqual([principal.organizationId, true, true, entityId]);
+  });
+
   it("queries and returns only the overview metrics allowed to a scoped role", async () => {
     mocks.hasPermission.mockImplementation(async (_client, request) => (
       request.permission === PERMISSIONS.readReceivables
@@ -125,7 +153,7 @@ describe("tenant reporting authorization and tax exception evidence", () => {
     expect(overview.openReceivables).toEqual([{ currency: "USD", amount: "25.00" }]);
     expect(overview.openPayables).toEqual([]);
     expect(mocks.query).toHaveBeenCalledTimes(1);
-    expect(mocks.query.mock.calls[0]?.[1]).toEqual([principal.organizationId, true, false]);
+    expect(mocks.query.mock.calls[0]?.[1]).toEqual([principal.organizationId, true, false, null]);
   });
 
   it("surfaces immutable current-draft manual-review decisions through the tax queue", async () => {
@@ -181,6 +209,8 @@ describe("tenant reporting authorization and tax exception evidence", () => {
       fromPeriodId: null,
       toPeriodId: null,
       accountId: null,
+      accountCode: "1000",
+      segmentFilters: { department: "OPS", custom8: "0000" },
     };
     mocks.query.mockResolvedValueOnce({ rows: [{
       entity_id: selection.entityId,
@@ -212,11 +242,24 @@ describe("tenant reporting authorization and tax exception evidence", () => {
 
     expect(mocks.query.mock.calls[0]?.[0]).toContain("entry.status = 'POSTED'");
     expect(mocks.query.mock.calls[0]?.[0]).toContain("entry.legal_entity_id = $2::uuid");
+    expect(mocks.query.mock.calls[0]?.[0]).toContain("coalesce(department.code, '0000') = $7::text");
     expect(mocks.query.mock.calls[0]?.[1]).toEqual([
       principal.organizationId,
       selection.entityId,
       selection.fromDate,
       selection.toDate,
+      "1000",
+      null,
+      "OPS",
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      "0000",
     ]);
     expect(rows[0]).toMatchObject({
       canonicalKey: "US01.1000.0000.0000.0000.0000.0000.0000.0000.0000.0000.0000.0000",
@@ -227,8 +270,58 @@ describe("tenant reporting authorization and tax exception evidence", () => {
     });
   });
 
+  it("loads the deterministic effective primary reporting hierarchy for the ledger and as-of date", async () => {
+    const selection: ReportSelection = {
+      entityId: "30000000-0000-4000-8000-000000000010",
+      entityCode: "US01",
+      entityName: "US company",
+      ledgerId: "30000000-0000-4000-8000-000000000011",
+      ledgerCode: "US01-PRIMARY",
+      currency: "USD",
+      basis: "date",
+      fromDate: "2026-08-01",
+      toDate: "2026-08-31",
+      fromPeriodId: null,
+      toPeriodId: null,
+      accountId: null,
+      accountCode: null,
+      segmentFilters: {},
+    };
+    mocks.query.mockResolvedValueOnce({ rows: [{
+      hierarchy_id: "30000000-0000-4000-8000-000000000020",
+      hierarchy_code: "PRIMARY_REPORTING",
+      hierarchy_name: "Primary statements",
+      version: 2,
+      effective_from: "2026-07-01",
+      node_id: "30000000-0000-4000-8000-000000000021",
+      parent_id: null,
+      node_name: "Assets",
+      sort_order: 100,
+      statement_class: "ASSET",
+      account_code: null,
+    }] });
+
+    await expect(loadEffectiveAccountHierarchy(principal, selection)).resolves.toEqual(
+      expect.objectContaining({ code: "PRIMARY_REPORTING", version: 2, effectiveFrom: "2026-07-01" }),
+    );
+    expect(mocks.query.mock.calls[0]?.[0]).toContain("(hierarchy.code = 'PRIMARY_REPORTING') DESC");
+    expect(mocks.query.mock.calls[0]?.[0]).toContain("hierarchy.effective_from <= $3::date");
+    expect(mocks.query.mock.calls[0]?.[1]).toEqual([
+      principal.organizationId,
+      selection.ledgerId,
+      selection.toDate,
+    ]);
+    expect(mocks.assertPermission).toHaveBeenCalledWith(expect.anything(), {
+      organizationId: principal.organizationId,
+      actorId: principal.userId,
+      permission: PERMISSIONS.readMcpLedger,
+    });
+  });
+
   it("normalizes report filters inside the selected tenant entity and orders reversed ranges", () => {
-    const dimensions: ReportDimensions = { entities: [{
+    const dimensions: ReportDimensions = {
+      segments: [{ key: "department", displayName: "Cost center" }],
+      entities: [{
       id: "30000000-0000-4000-8000-000000000010",
       code: "US01",
       displayName: "US company",
@@ -248,7 +341,8 @@ describe("tenant reporting authorization and tax exception evidence", () => {
         displayName: "Cash",
         accountClass: "ASSET",
       }],
-    }] };
+      }],
+    };
 
     const selection = resolveReportSelection(dimensions, {
       entity: dimensions.entities[0]?.id,
@@ -257,6 +351,8 @@ describe("tenant reporting authorization and tax exception evidence", () => {
       to: "2026-08-01",
       fromPeriod: "ffffffff-ffff-4fff-8fff-ffffffffffff",
       account: "ffffffff-ffff-4fff-8fff-ffffffffffff",
+      accountCode: "1000",
+      segmentFilters: { department: "ops", custom1: "invalid value" },
     });
 
     expect(selection).toMatchObject({
@@ -265,7 +361,10 @@ describe("tenant reporting authorization and tax exception evidence", () => {
       toDate: "2026-08-31",
       fromPeriodId: dimensions.entities[0]?.defaultPeriodId,
       accountId: dimensions.entities[0]?.accounts[0]?.id,
+      accountCode: "1000",
+      segmentFilters: { department: "OPS" },
     });
+    expect(reportSearchParams(selection!).toString()).toContain("segment_department=OPS");
   });
 
   it("builds natural-sign financial statements and protects every CSV cell from formulas", () => {
@@ -281,6 +380,7 @@ describe("tenant reporting authorization and tax exception evidence", () => {
       displaySegments: [
         { key: "entity", displayName: "Entity", code: "US01" },
         { key: "account", displayName: "Account", code: "1000" },
+        { key: "department", displayName: "Cost center", code: "OPS" },
       ],
       synthetic: false,
     };
@@ -289,6 +389,7 @@ describe("tenant reporting authorization and tax exception evidence", () => {
       { ...base, accountCode: "2000", accountName: "Payables", accountClass: "LIABILITY", periodDebit: "0", periodCredit: "50", debit: "0", credit: "50" },
       { ...base, accountCode: "4100", accountName: "Revenue", accountClass: "REVENUE", periodDebit: "0", periodCredit: "120", debit: "0", credit: "120" },
       { ...base, accountCode: "6100", accountName: "Expense", accountClass: "EXPENSE", periodDebit: "20", periodCredit: "0", debit: "20", credit: "0" },
+      { ...base, accountCode: "1999", accountName: "Zero balance", accountClass: "ASSET", periodDebit: "10", periodCredit: "10", debit: "0", credit: "0" },
     ];
 
     expect(profitAndLossRows(rows).map((row) => [row.accountClass, row.amount])).toEqual([
@@ -301,10 +402,34 @@ describe("tenant reporting authorization and tax exception evidence", () => {
       amount: "100",
       synthetic: true,
     }));
+    expect(balanceSheetRows(rows)).not.toContainEqual(expect.objectContaining({ accountName: "Zero balance" }));
+    const pnlRows = profitAndLossRows(rows);
+    const hierarchyLines = financialStatementDisplayLines(pnlRows, {
+      id: "30000000-0000-4000-8000-000000000020",
+      code: "PRIMARY_REPORTING",
+      displayName: "Primary statements",
+      version: 1,
+      effectiveFrom: "2026-01-01",
+      nodes: [
+        { id: "root", parentId: null, displayName: "Revenue", sortOrder: 100, statementClass: "REVENUE", accountCode: null },
+        { id: "group", parentId: "root", displayName: "Services", sortOrder: 100, statementClass: null, accountCode: null },
+        { id: "account", parentId: "group", displayName: "Service revenue", sortOrder: 10, statementClass: null, accountCode: "4100" },
+      ],
+    }, "REVENUE");
+    expect(hierarchyLines).toEqual([
+      expect.objectContaining({ kind: "GROUP", label: "Services", depth: 0, amount: "120" }),
+      expect.objectContaining({ kind: "ACCOUNT", depth: 1, row: expect.objectContaining({ accountCode: "4100" }) }),
+    ]);
+    expect(financialStatementDisplayLines(pnlRows, null, "REVENUE"))
+      .toEqual([expect.objectContaining({ kind: "ACCOUNT", depth: 0 })]);
     const csv = trialBalanceCsv(rows);
     expect(csv).toContain("\"'=FORMULA\"");
-    expect(csv).toContain("\"Displayed key\",\"Canonical key\"");
+    expect(csv).toContain("\"Entity\",\"Account\",\"Cost center\",\"Ledger\",\"Currency\"");
+    expect(csv).not.toContain("Displayed key");
+    expect(csv).not.toContain("Canonical key");
     expect(csv).toContain("\"Opening debit\"");
     expect(csv).toContain("\"Ending credit\"");
+    expect(trialBalanceCsv([], [{ key: "department", displayName: "Cost center" }]))
+      .toContain("\"Entity\",\"Account\",\"Cost center\",\"Ledger\",\"Currency\"");
   });
 });

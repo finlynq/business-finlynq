@@ -113,6 +113,71 @@ export type TrialBalanceRow = Readonly<{
   credit: string;
 }>;
 
+export type ReportSegmentColumn = Readonly<{
+  key: string;
+  displayName: string;
+}>;
+
+const reportSegmentOrder = [
+  "entity",
+  "account",
+  "subaccount",
+  "department",
+  "intercompany",
+  "custom1",
+  "custom2",
+  "custom3",
+  "custom4",
+  "custom5",
+  "custom6",
+  "custom7",
+  "custom8",
+] as const;
+
+/**
+ * Account-combination identity remains canonical internally. Reports expose the
+ * organization's visible dimensions as ordinary columns instead of requiring
+ * users to parse a concatenated display key.
+ */
+export function reportSegmentColumns(
+  rows: readonly Pick<TrialBalanceRow, "displaySegments">[],
+  configuredSegments: readonly ReportSegmentDefinition[] = [],
+): readonly ReportSegmentColumn[] {
+  const columns = new Map<string, ReportSegmentColumn>([
+    ["entity", { key: "entity", displayName: "Entity" }],
+    ["account", { key: "account", displayName: "Account" }],
+  ]);
+  for (const segment of configuredSegments) {
+    columns.set(segment.key, {
+      key: segment.key,
+      displayName: segment.displayName,
+    });
+  }
+  for (const row of rows) {
+    for (const segment of row.displaySegments) {
+      if (!columns.has(segment.key)) {
+        columns.set(segment.key, {
+          key: segment.key,
+          displayName: segment.displayName,
+        });
+      }
+    }
+  }
+  return [...columns.values()].sort((left, right) => {
+    const leftIndex = reportSegmentOrder.indexOf(left.key as (typeof reportSegmentOrder)[number]);
+    const rightIndex = reportSegmentOrder.indexOf(right.key as (typeof reportSegmentOrder)[number]);
+    return (leftIndex === -1 ? Number.MAX_SAFE_INTEGER : leftIndex)
+      - (rightIndex === -1 ? Number.MAX_SAFE_INTEGER : rightIndex);
+  });
+}
+
+export function reportSegmentCode(
+  row: Readonly<{ displaySegments: readonly DisplayedAccountSegment[] }>,
+  key: string,
+): string {
+  return row.displaySegments.find((segment) => segment.key === key)?.code ?? "0000";
+}
+
 export type ReportPeriodOption = Readonly<{
   id: string;
   label: string;
@@ -139,8 +204,32 @@ export type ReportEntityOption = Readonly<{
   accounts: readonly ReportAccountOption[];
 }>;
 
+export const reportDimensionKeys = [
+  "subaccount",
+  "department",
+  "intercompany",
+  "custom1",
+  "custom2",
+  "custom3",
+  "custom4",
+  "custom5",
+  "custom6",
+  "custom7",
+  "custom8",
+] as const;
+
+export type ReportDimensionKey = (typeof reportDimensionKeys)[number];
+
+export type ReportSegmentDefinition = Readonly<{
+  key: ReportDimensionKey;
+  displayName: string;
+}>;
+
+export type ReportSegmentFilters = Readonly<Partial<Record<ReportDimensionKey, string>>>;
+
 export type ReportDimensions = Readonly<{
   entities: readonly ReportEntityOption[];
+  segments?: readonly ReportSegmentDefinition[];
 }>;
 
 export type ReportFilterInput = Readonly<{
@@ -151,6 +240,8 @@ export type ReportFilterInput = Readonly<{
   fromPeriod?: string;
   toPeriod?: string;
   account?: string;
+  accountCode?: string;
+  segmentFilters?: ReportSegmentFilters;
 }>;
 
 export function reportFilterInput(
@@ -168,6 +259,11 @@ export function reportFilterInput(
     fromPeriod: one("fromPeriod"),
     toPeriod: one("toPeriod"),
     account: one("account"),
+    accountCode: one("accountCode"),
+    segmentFilters: Object.fromEntries(reportDimensionKeys.flatMap((key) => {
+      const value = one(`segment_${key}`);
+      return value ? [[key, value]] : [];
+    })) as ReportSegmentFilters,
   };
 }
 
@@ -184,6 +280,8 @@ export type ReportSelection = Readonly<{
   fromPeriodId: string | null;
   toPeriodId: string | null;
   accountId: string | null;
+  accountCode?: string | null;
+  segmentFilters?: ReportSegmentFilters;
 }>;
 
 export async function loadReportDimensions(principal: SessionPrincipal): Promise<ReportDimensions> {
@@ -249,7 +347,29 @@ export async function loadReportDimensions(principal: SessionPrincipal): Promise
        ORDER BY combination.entity_id, account.code`,
       [principal.organizationId],
     );
+    const segmentResult = await client.query<{
+      key: ReportDimensionKey;
+      display_name: string;
+    }>(
+      `SELECT definition.key, definition.display_name
+       FROM segment_definitions definition
+       WHERE definition.organization_id = $1
+         AND definition.visible
+         AND definition.state <> 'EMPTY'
+         AND definition.key = ANY($2::text[])
+       ORDER BY definition.ordinal`,
+      [principal.organizationId, reportDimensionKeys],
+    );
     return {
+      segments: [
+        ...segmentResult.rows.map((segment) => ({
+          key: segment.key,
+          displayName: segment.display_name,
+        })),
+        { key: "intercompany" as const, displayName: "Intercompany" },
+      ].sort((left, right) => (
+        reportDimensionKeys.indexOf(left.key) - reportDimensionKeys.indexOf(right.key)
+      )),
       entities: entityResult.rows.map((entity) => {
         const periods = periodResult.rows
           .filter((period) => period.ledger_id === entity.ledger_id)
@@ -285,6 +405,11 @@ export async function loadReportDimensions(principal: SessionPrincipal): Promise
   });
 }
 
+function normalizedReportCode(value: string | undefined): string | null {
+  const code = value?.trim().toUpperCase();
+  return code && /^[A-Z0-9][A-Z0-9_-]{0,15}$/.test(code) ? code : null;
+}
+
 function validDate(value: string | undefined): string | null {
   if (!value || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return null;
   const parsed = new Date(`${value}T00:00:00.000Z`);
@@ -318,8 +443,17 @@ export function resolveReportSelection(
     [fromDate, toDate] = [toDate, fromDate];
     [fromPeriodId, toPeriodId] = [toPeriodId, fromPeriodId];
   }
-  const account = entity.accounts.find((candidate) => candidate.id === input.account)
+  const accountCode = normalizedReportCode(input.accountCode);
+  const account = (accountCode
+    ? entity.accounts.find((candidate) => candidate.code === accountCode)
+    : entity.accounts.find((candidate) => candidate.id === input.account))
     ?? entity.accounts[0];
+  const allowedSegmentKeys = new Set((dimensions.segments ?? []).map((segment) => segment.key));
+  const segmentFilters = Object.fromEntries(reportDimensionKeys.flatMap((key) => {
+    if (!allowedSegmentKeys.has(key)) return [];
+    const code = normalizedReportCode(input.segmentFilters?.[key]);
+    return code ? [[key, code]] : [];
+  })) as ReportSegmentFilters;
   return {
     entityId: entity.id,
     entityCode: entity.code,
@@ -333,6 +467,10 @@ export function resolveReportSelection(
     fromPeriodId,
     toPeriodId,
     accountId: account?.id ?? null,
+    accountCode: accountCode && entity.accounts.some((candidate) => candidate.code === accountCode)
+      ? accountCode
+      : null,
+    segmentFilters,
   };
 }
 
@@ -346,6 +484,11 @@ export function reportSearchParams(selection: ReportSelection): URLSearchParams 
   if (selection.fromPeriodId) params.set("fromPeriod", selection.fromPeriodId);
   if (selection.toPeriodId) params.set("toPeriod", selection.toPeriodId);
   if (selection.accountId) params.set("account", selection.accountId);
+  if (selection.accountCode) params.set("accountCode", selection.accountCode);
+  for (const key of reportDimensionKeys) {
+    const value = selection.segmentFilters?.[key];
+    if (value) params.set(`segment_${key}`, value);
+  }
   return params;
 }
 
@@ -424,6 +567,18 @@ export async function loadTrialBalance(
        WHERE line.organization_id = $1
          AND ($2::uuid IS NULL OR entry.legal_entity_id = $2::uuid)
          AND ($4::date IS NULL OR entry.accounting_date <= $4::date)
+         AND ($5::text IS NULL OR account.code = $5::text)
+         AND ($6::text IS NULL OR coalesce(subaccount.code, '0000') = $6::text)
+         AND ($7::text IS NULL OR coalesce(department.code, '0000') = $7::text)
+         AND ($8::text IS NULL OR coalesce(intercompany.code, '0000') = $8::text)
+         AND ($9::text IS NULL OR coalesce(custom1.code, '0000') = $9::text)
+         AND ($10::text IS NULL OR coalesce(custom2.code, '0000') = $10::text)
+         AND ($11::text IS NULL OR coalesce(custom3.code, '0000') = $11::text)
+         AND ($12::text IS NULL OR coalesce(custom4.code, '0000') = $12::text)
+         AND ($13::text IS NULL OR coalesce(custom5.code, '0000') = $13::text)
+         AND ($14::text IS NULL OR coalesce(custom6.code, '0000') = $14::text)
+         AND ($15::text IS NULL OR coalesce(custom7.code, '0000') = $15::text)
+         AND ($16::text IS NULL OR coalesce(custom8.code, '0000') = $16::text)
        GROUP BY entity.id, entity.code, ledger.code, ledger.functional_currency,
          account.code, account.display_name, account.class, combination.id,
          subaccount.code, department.code, intercompany.code,
@@ -437,6 +592,18 @@ export async function loadTrialBalance(
         selection?.entityId ?? null,
         selection?.fromDate ?? null,
         selection?.toDate ?? null,
+        selection?.accountCode ?? null,
+        selection?.segmentFilters?.subaccount ?? null,
+        selection?.segmentFilters?.department ?? null,
+        selection?.segmentFilters?.intercompany ?? null,
+        selection?.segmentFilters?.custom1 ?? null,
+        selection?.segmentFilters?.custom2 ?? null,
+        selection?.segmentFilters?.custom3 ?? null,
+        selection?.segmentFilters?.custom4 ?? null,
+        selection?.segmentFilters?.custom5 ?? null,
+        selection?.segmentFilters?.custom6 ?? null,
+        selection?.segmentFilters?.custom7 ?? null,
+        selection?.segmentFilters?.custom8 ?? null,
       ],
     );
     return result.rows.map((row) => {
@@ -476,6 +643,174 @@ export type FinancialStatementRow = Readonly<{
   synthetic: boolean;
 }>;
 
+export type EffectiveAccountHierarchy = Readonly<{
+  id: string;
+  code: string;
+  displayName: string;
+  version: number;
+  effectiveFrom: string;
+  nodes: readonly Readonly<{
+    id: string;
+    parentId: string | null;
+    displayName: string;
+    sortOrder: number;
+    statementClass: FinancialStatementRow["accountClass"] | null;
+    accountCode: string | null;
+  }>[];
+}>;
+
+export async function loadEffectiveAccountHierarchy(
+  principal: SessionPrincipal,
+  selection: ReportSelection,
+): Promise<EffectiveAccountHierarchy | null> {
+  return withWorkspaceTenantRead(readContext(principal), "/app/reports/financial-statements", async (client) => {
+    await assertReportPermission(client, principal, PERMISSIONS.readMcpLedger);
+    const result = await client.query<{
+      hierarchy_id: string;
+      hierarchy_code: string;
+      hierarchy_name: string;
+      version: number;
+      effective_from: string;
+      node_id: string;
+      parent_id: string | null;
+      node_name: string;
+      sort_order: number;
+      statement_class: FinancialStatementRow["accountClass"] | null;
+      account_code: string | null;
+    }>(
+      `WITH selected_hierarchy AS (
+         SELECT hierarchy.*
+         FROM accounting_hierarchies hierarchy
+         WHERE hierarchy.organization_id = $1
+           AND hierarchy.ledger_id = $2
+           AND hierarchy.dimension_key = 'account'
+           AND hierarchy.status = 'PUBLISHED'
+           AND hierarchy.effective_from <= $3::date
+         ORDER BY (hierarchy.code = 'PRIMARY_REPORTING') DESC,
+           hierarchy.effective_from DESC, hierarchy.version DESC, hierarchy.id
+         LIMIT 1
+       )
+       SELECT hierarchy.id AS hierarchy_id, hierarchy.code AS hierarchy_code,
+         hierarchy.display_name AS hierarchy_name, hierarchy.version,
+         hierarchy.effective_from::text, node.id AS node_id,
+         node.parent_id, node.display_name AS node_name, node.sort_order,
+         node.statement_class, account.code AS account_code
+       FROM selected_hierarchy hierarchy
+       JOIN accounting_hierarchy_nodes node
+         ON node.organization_id = hierarchy.organization_id
+        AND node.hierarchy_id = hierarchy.id
+       LEFT JOIN gl_accounts account
+         ON account.organization_id = node.organization_id
+        AND account.id = node.gl_account_id
+       ORDER BY node.sort_order, node.code, node.id`,
+      [principal.organizationId, selection.ledgerId, selection.toDate],
+    );
+    const first = result.rows[0];
+    if (!first) return null;
+    return {
+      id: first.hierarchy_id,
+      code: first.hierarchy_code,
+      displayName: first.hierarchy_name,
+      version: first.version,
+      effectiveFrom: first.effective_from,
+      nodes: result.rows.map((row) => ({
+        id: row.node_id,
+        parentId: row.parent_id,
+        displayName: row.node_name,
+        sortOrder: row.sort_order,
+        statementClass: row.statement_class,
+        accountCode: row.account_code,
+      })),
+    };
+  });
+}
+
+export type FinancialStatementDisplayLine =
+  | Readonly<{ kind: "GROUP"; id: string; label: string; depth: number; amount: string }>
+  | Readonly<{ kind: "ACCOUNT"; id: string; depth: number; row: FinancialStatementRow }>;
+
+/**
+ * Applies an effective published presentation tree without changing posting
+ * identity. If none is effective, statement-class ordering remains the safe
+ * fallback. Any synthetic or unexpectedly unassigned row is kept visible.
+ */
+export function financialStatementDisplayLines(
+  rows: readonly FinancialStatementRow[],
+  hierarchy: EffectiveAccountHierarchy | null,
+  statementClass: FinancialStatementRow["accountClass"],
+): readonly FinancialStatementDisplayLine[] {
+  const selectedRows = rows.filter((row) => row.accountClass === statementClass);
+  if (!hierarchy) {
+    return selectedRows.map((row) => ({
+      kind: "ACCOUNT" as const,
+      id: row.canonicalKey,
+      depth: 0,
+      row,
+    }));
+  }
+  const nodes = new Map(hierarchy.nodes.map((node) => [node.id, node]));
+  const children = new Map<string, typeof hierarchy.nodes[number][]>();
+  for (const node of hierarchy.nodes) {
+    if (!node.parentId) continue;
+    const siblings = children.get(node.parentId) ?? [];
+    siblings.push(node);
+    children.set(node.parentId, siblings);
+  }
+  for (const siblings of children.values()) {
+    siblings.sort((left, right) => left.sortOrder - right.sortOrder
+      || left.displayName.localeCompare(right.displayName) || left.id.localeCompare(right.id));
+  }
+  const rowsByAccount = new Map<string, FinancialStatementRow[]>();
+  for (const row of selectedRows.filter((candidate) => !candidate.synthetic)) {
+    const accountRows = rowsByAccount.get(row.accountCode) ?? [];
+    accountRows.push(row);
+    rowsByAccount.set(row.accountCode, accountRows);
+  }
+  const renderedRows = new Set<FinancialStatementRow>();
+  const output: FinancialStatementDisplayLine[] = [];
+
+  const appendNode = (nodeId: string, depth: number, includeGroup: boolean): string[] => {
+    const node = nodes.get(nodeId);
+    if (!node) return [];
+    if (node.accountCode) {
+      const accountRows = rowsByAccount.get(node.accountCode) ?? [];
+      for (const row of accountRows) {
+        renderedRows.add(row);
+        output.push({ kind: "ACCOUNT", id: `${node.id}:${row.canonicalKey}`, depth, row });
+      }
+      return accountRows.map((row) => row.amount);
+    }
+    const groupIndex = output.length;
+    if (includeGroup) output.push({ kind: "GROUP", id: node.id, label: node.displayName, depth, amount: "0" });
+    const amounts = (children.get(node.id) ?? []).flatMap((child) => (
+      appendNode(child.id, includeGroup ? depth + 1 : depth, true)
+    ));
+    if (includeGroup && amounts.length > 0) {
+      output[groupIndex] = {
+        kind: "GROUP",
+        id: node.id,
+        label: node.displayName,
+        depth,
+        amount: amounts.reduce((sum, amount) => sum.plus(amount), exact(0)).toFixed(),
+      };
+    } else if (includeGroup) {
+      output.splice(groupIndex, 1);
+    }
+    return amounts;
+  };
+
+  const roots = hierarchy.nodes
+    .filter((node) => node.parentId === null && node.statementClass === statementClass)
+    .sort((left, right) => left.sortOrder - right.sortOrder || left.id.localeCompare(right.id));
+  for (const root of roots) appendNode(root.id, 0, false);
+  for (const row of selectedRows) {
+    if (!renderedRows.has(row)) {
+      output.push({ kind: "ACCOUNT", id: `fallback:${row.canonicalKey}`, depth: 0, row });
+    }
+  }
+  return output;
+}
+
 function statementAmount(row: TrialBalanceRow, periodActivity: boolean): string {
   const debit = exact(periodActivity ? row.periodDebit : row.debit);
   const credit = exact(periodActivity ? row.periodCredit : row.credit);
@@ -499,7 +834,8 @@ export function balanceSheetRows(rows: readonly TrialBalanceRow[]): readonly Fin
       displaySegments: row.displaySegments,
       amount: statementAmount(row, false),
       synthetic: false,
-    }));
+    }))
+    .filter((row) => !exact(row.amount).isZero());
   const earnings = new Map<string, { entityCode: string; ledgerCode: string; currency: string; amount: ReturnType<typeof exact> }>();
   for (const row of rows.filter((candidate) => candidate.accountClass === "REVENUE" || candidate.accountClass === "EXPENSE")) {
     const key = `${row.entityCode}:${row.ledgerCode}:${row.currency}`;
@@ -516,6 +852,7 @@ export function balanceSheetRows(rows: readonly TrialBalanceRow[]): readonly Fin
     earnings.set(key, existing);
   }
   for (const earning of earnings.values()) {
+    if (earning.amount.isZero()) continue;
     statementRows.push({
       entityCode: earning.entityCode,
       ledgerCode: earning.ledgerCode,
@@ -743,7 +1080,10 @@ export type AccountingOverview = Readonly<{
   openPayables: readonly Readonly<{ currency: string; amount: string }>[];
 }>;
 
-export async function loadAccountingOverview(principal: SessionPrincipal): Promise<AccountingOverview> {
+export async function loadAccountingOverview(
+  principal: SessionPrincipal,
+  selectedEntityId: string | null = null,
+): Promise<AccountingOverview> {
   return withWorkspaceTenantRead(readContext(principal), "/app", async (client) => {
     const canReadLedger = await actorHasActivePermission(client, {
       organizationId: principal.organizationId,
@@ -768,7 +1108,10 @@ export async function loadAccountingOverview(principal: SessionPrincipal): Promi
     const journalCounts = canReadLedger ? await client.query<{ posted: number; unposted: number }>(
         `SELECT count(*) FILTER (WHERE status = 'POSTED')::int AS posted,
            count(*) FILTER (WHERE status IN ('DRAFT','SUBMITTED','APPROVED'))::int AS unposted
-         FROM journal_entries WHERE organization_id = $1`, [principal.organizationId],
+         FROM journal_entries
+         WHERE organization_id = $1
+           AND ($2::uuid IS NULL OR legal_entity_id = $2::uuid)`,
+        [principal.organizationId, selectedEntityId],
       ) : { rows: [{ posted: 0, unposted: 0 }] };
     const taxCounts = canReadTax ? await client.query<{ total: number; manual_review: number }>(
         `WITH current_draft_decisions AS (
@@ -776,6 +1119,7 @@ export async function loadAccountingOverview(principal: SessionPrincipal): Promi
            FROM source_documents source
            CROSS JOIN LATERAL jsonb_array_elements(source.snapshot -> 'lines') AS line(value)
            WHERE source.organization_id = $1
+             AND ($2::uuid IS NULL OR source.legal_entity_id = $2::uuid)
              AND source.status = 'DRAFT'
              AND source.source_type IN ('receivables.sales-invoice', 'payables.supplier-bill')
              AND NOT EXISTS (
@@ -787,14 +1131,16 @@ export async function loadAccountingOverview(principal: SessionPrincipal): Promi
              )
          )
          SELECT ((SELECT count(*) FROM tax_determination_snapshots snapshot
-                    WHERE snapshot.organization_id = $1)
-                 + (SELECT count(*) FROM current_draft_decisions))::int AS total,
+                    WHERE snapshot.organization_id = $1
+                      AND ($2::uuid IS NULL OR snapshot.legal_entity_id = $2::uuid))
+             + (SELECT count(*) FROM current_draft_decisions))::int AS total,
            ((SELECT count(*) FROM tax_determination_snapshots snapshot
                WHERE snapshot.organization_id = $1
+                 AND ($2::uuid IS NULL OR snapshot.legal_entity_id = $2::uuid)
                  AND snapshot.status IN ('MANUAL_REVIEW', 'MANUAL_REVIEW_REQUIRED'))
              + (SELECT count(*) FROM current_draft_decisions
                   WHERE status = 'MANUAL_REVIEW_REQUIRED'))::int AS manual_review`,
-        [principal.organizationId],
+        [principal.organizationId, selectedEntityId],
       ) : { rows: [{ total: 0, manual_review: 0 }] };
     const openBalances = canReadReceivables || canReadPayables
         ? await client.query<{ role: "CUSTOMER" | "SUPPLIER"; currency: string; amount: string }>(
@@ -806,9 +1152,10 @@ export async function loadAccountingOverview(principal: SessionPrincipal): Promi
          WHERE balance.organization_id = $1 AND balance.open_transaction_amount > 0
            AND ((account.role = 'CUSTOMER' AND $2::boolean)
              OR (account.role = 'SUPPLIER' AND $3::boolean))
+           AND ($4::uuid IS NULL OR account.legal_entity_id = $4::uuid)
          GROUP BY account.role, balance.transaction_currency
          ORDER BY account.role, balance.transaction_currency`,
-        [principal.organizationId, canReadReceivables, canReadPayables],
+        [principal.organizationId, canReadReceivables, canReadPayables, selectedEntityId],
       ) : { rows: [] as { role: "CUSTOMER" | "SUPPLIER"; currency: string; amount: string }[] };
     return {
       access: {
@@ -834,12 +1181,17 @@ function csvValue(value: string): string {
   return `"${spreadsheetSafeValue.replaceAll('"', '""')}"`;
 }
 
-export function trialBalanceCsv(rows: readonly TrialBalanceRow[]): string {
+export function trialBalanceCsv(
+  rows: readonly TrialBalanceRow[],
+  configuredSegments: readonly ReportSegmentDefinition[] = [],
+): string {
+  const segmentColumns = reportSegmentColumns(rows, configuredSegments);
   return [
-    ["Entity", "Ledger", "Currency", "Account", "Displayed key", "Canonical key", "Name", "Class",
+    [...segmentColumns.map((column) => column.displayName), "Ledger", "Currency", "Name", "Class",
       "Opening debit", "Opening credit", "Period debit", "Period credit", "Ending debit", "Ending credit"],
-    ...rows.map((row) => [row.entityCode, row.ledgerCode, row.currency, row.accountCode,
-      row.displayKey, row.canonicalKey, row.accountName, row.accountClass,
+    ...rows.map((row) => [
+      ...segmentColumns.map((column) => reportSegmentCode(row, column.key)),
+      row.ledgerCode, row.currency, row.accountName, row.accountClass,
       row.openingDebit, row.openingCredit, row.periodDebit, row.periodCredit, row.debit, row.credit]),
   ].map((row) => row.map(csvValue).join(",")).join("\r\n");
 }

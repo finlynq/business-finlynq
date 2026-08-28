@@ -162,6 +162,20 @@
       "when": 1787850000000,
       "tag": "0022_defer_banking_template_permissions",
       "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "7",
+      "when": 1787851000000,
+      "tag": "0023_optional_authenticator_enrollment",
+      "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1787852000000,
+      "tag": "0024_accounting_hierarchies",
+      "breakpoints": true
     }
   ]
 }

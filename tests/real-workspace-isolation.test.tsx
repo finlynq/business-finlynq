@@ -264,7 +264,10 @@ describe("real organization workspace isolation", () => {
     expect(serialized(pages[5])).toContain("No posted balances");
     expect(serialized(pages[6])).toContain("No recorded tax decisions");
     expect(mocks.loadEntitySummaries).toHaveBeenCalledWith(mocks.principal);
-    expect(mocks.loadAccountingOverview).toHaveBeenCalledWith(mocks.principal);
+    expect(mocks.loadAccountingOverview).toHaveBeenCalledWith(
+      mocks.principal,
+      "30000000-0000-4000-8000-000000000001",
+    );
     expect(mocks.loadTrialBalance).toHaveBeenCalledWith(
       mocks.principal,
       expect.objectContaining({ entityCode: "SECOND", currency: "USD" }),
@@ -282,6 +285,21 @@ describe("real organization workspace isolation", () => {
       expect.objectContaining({ entityCode: "SECOND" }),
       "30000000-0000-4000-8000-000000000001",
     );
+  });
+
+  it("uses the working entity by default and exposes an explicit all-entity dashboard scope", async () => {
+    const selected = await OverviewPage();
+    expect(serialized(selected)).toContain("SECOND · Second Organization LLC");
+    expect(mocks.loadAccountingOverview).toHaveBeenLastCalledWith(
+      mocks.principal,
+      "30000000-0000-4000-8000-000000000001",
+    );
+
+    const allEntities = await OverviewPage({
+      searchParams: Promise.resolve({ scope: "all" }),
+    });
+    expect(serialized(allEntities)).toContain("All entities");
+    expect(mocks.loadAccountingOverview).toHaveBeenLastCalledWith(mocks.principal, null);
   });
 
   it("renders CSV exports as native downloads outside Next App Router prefetching", async () => {
@@ -350,10 +368,10 @@ describe("real organization workspace isolation", () => {
     const children = (parties.props as { children: unknown[] }).children;
     const form = children.find((child) => (
       typeof child === "object" && child !== null && "type" in child && child.type === PartyCreateForm
-    )) as { props?: { accountOptions?: readonly { role: string; entityCode: string }[] } } | undefined;
-    expect(form?.props?.accountOptions).toEqual([
-      expect.objectContaining({ role: "CUSTOMER", entityCode: "SECOND" }),
-    ]);
+    )) as { props?: Record<string, unknown> } | undefined;
+    expect(form).toBeDefined();
+    expect(form?.props).not.toHaveProperty("accountOptions");
+    expect(mocks.loadPartyAccountCreationOptions).toHaveBeenCalledWith(mocks.principal);
     expect(serialized(parties)).not.toContain("Northstar");
   });
 
@@ -388,7 +406,7 @@ describe("real organization workspace isolation", () => {
     const response = await trialBalanceCsv(new NextRequest("http://localhost/app/reports/trial-balance.csv"));
     expect(response.status).toBe(200);
     const csv = await response.text();
-    expect(csv).toContain('"Entity","Ledger","Currency"');
+    expect(csv).toContain('"Entity","Account","Ledger","Currency"');
     expect(csv).not.toContain("Northstar");
   });
 });

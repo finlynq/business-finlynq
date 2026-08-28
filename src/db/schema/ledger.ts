@@ -2,6 +2,8 @@ import {
   bigint,
   boolean,
   date,
+  foreignKey,
+  index,
   integer,
   numeric,
   pgEnum,
@@ -306,6 +308,122 @@ export const segmentValues = pgTable(
   (table) => [
     uniqueIndex("segment_values_definition_code_unique").on(table.definitionId, table.code),
     uniqueIndex("segment_values_org_id_unique").on(table.organizationId, table.id),
+  ],
+);
+
+export const accountingHierarchies = pgTable(
+  "accounting_hierarchies",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    organizationId: uuid("organization_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "restrict" }),
+    ledgerId: uuid("ledger_id").references(() => ledgers.id, { onDelete: "restrict" }),
+    dimensionKey: text("dimension_key").notNull(),
+    code: text("code").notNull(),
+    displayName: text("display_name").notNull(),
+    version: integer("version").notNull(),
+    revision: integer("revision").notNull().default(1),
+    status: text("status").notNull().default("DRAFT"),
+    basedOnHierarchyId: uuid("based_on_hierarchy_id"),
+    effectiveFrom: date("effective_from"),
+    createdBy: uuid("created_by").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    publishedBy: uuid("published_by"),
+    publishedAt: timestamp("published_at", { withTimezone: true }),
+  },
+  (table) => [
+    uniqueIndex("accounting_hierarchies_org_id_unique").on(table.organizationId, table.id),
+    uniqueIndex("accounting_hierarchies_org_ledger_id_unique").on(
+      table.organizationId,
+      table.ledgerId,
+      table.id,
+    ),
+    index("accounting_hierarchies_published_lookup").on(
+      table.organizationId,
+      table.ledgerId,
+      table.dimensionKey,
+      table.code,
+      table.effectiveFrom,
+    ),
+    foreignKey({
+      columns: [table.organizationId, table.basedOnHierarchyId],
+      foreignColumns: [table.organizationId, table.id],
+      name: "accounting_hierarchies_based_on_fk",
+    }).onDelete("restrict"),
+  ],
+);
+
+export const accountingHierarchyNodes = pgTable(
+  "accounting_hierarchy_nodes",
+  {
+    id: uuid("id").primaryKey(),
+    organizationId: uuid("organization_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "restrict" }),
+    hierarchyId: uuid("hierarchy_id").notNull(),
+    parentId: uuid("parent_id"),
+    code: text("code").notNull(),
+    displayName: text("display_name").notNull(),
+    sortOrder: integer("sort_order").notNull(),
+    statementClass: text("statement_class"),
+    memberType: text("member_type"),
+    glAccountId: uuid("gl_account_id"),
+    segmentValueId: uuid("segment_value_id"),
+    legalEntityId: uuid("legal_entity_id"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("accounting_hierarchy_nodes_org_hierarchy_id_unique").on(
+      table.organizationId,
+      table.hierarchyId,
+      table.id,
+    ),
+    uniqueIndex("accounting_hierarchy_nodes_code_unique").on(table.hierarchyId, table.code),
+    uniqueIndex("accounting_hierarchy_nodes_account_member_unique").on(
+      table.hierarchyId,
+      table.glAccountId,
+    ),
+    uniqueIndex("accounting_hierarchy_nodes_segment_member_unique").on(
+      table.hierarchyId,
+      table.segmentValueId,
+    ),
+    uniqueIndex("accounting_hierarchy_nodes_entity_member_unique").on(
+      table.hierarchyId,
+      table.legalEntityId,
+    ),
+    index("accounting_hierarchy_nodes_tree_order").on(
+      table.hierarchyId,
+      table.parentId,
+      table.sortOrder,
+      table.code,
+      table.id,
+    ),
+    foreignKey({
+      columns: [table.organizationId, table.hierarchyId],
+      foreignColumns: [accountingHierarchies.organizationId, accountingHierarchies.id],
+      name: "accounting_hierarchy_nodes_hierarchy_fk",
+    }).onDelete("cascade"),
+    foreignKey({
+      columns: [table.organizationId, table.hierarchyId, table.parentId],
+      foreignColumns: [table.organizationId, table.hierarchyId, table.id],
+      name: "accounting_hierarchy_nodes_parent_fk",
+    }).onDelete("no action"),
+    foreignKey({
+      columns: [table.organizationId, table.glAccountId],
+      foreignColumns: [glAccounts.organizationId, glAccounts.id],
+      name: "accounting_hierarchy_nodes_account_fk",
+    }).onDelete("restrict"),
+    foreignKey({
+      columns: [table.organizationId, table.segmentValueId],
+      foreignColumns: [segmentValues.organizationId, segmentValues.id],
+      name: "accounting_hierarchy_nodes_segment_value_fk",
+    }).onDelete("restrict"),
+    foreignKey({
+      columns: [table.organizationId, table.legalEntityId],
+      foreignColumns: [legalEntities.organizationId, legalEntities.id],
+      name: "accounting_hierarchy_nodes_entity_fk",
+    }).onDelete("restrict"),
   ],
 );
 

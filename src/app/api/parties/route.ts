@@ -21,7 +21,7 @@ const bodySchema = z.object({
     accountNumber: z.string().trim().regex(/^[A-Za-z0-9][A-Za-z0-9_-]{0,31}$/),
     controlAccountId: z.uuid(),
     transactionCurrency: z.string().trim().regex(/^[A-Za-z]{3}$/).nullable().optional(),
-  }),
+  }).optional(),
   address: z.object({
     kind: z.enum(["BILLING", "SHIPPING", "REMIT_TO", "REGISTERED"]),
     line1: z.string().trim().min(1).max(200),

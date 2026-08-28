@@ -9,7 +9,7 @@ vi.mock("next/navigation", () => ({
   useRouter: () => ({ refresh: vi.fn() }),
 }));
 
-import { ArApWorkspace } from "@/app/_components/ar-ap-workspace.client";
+import { ArApWorkspace, DocumentDetails } from "@/app/_components/ar-ap-workspace.client";
 import { filterSubledgerDocuments } from "@/modules/subledger/register-filter";
 
 function invoice(overrides: Partial<SubledgerWorkspaceDocumentDto> = {}): SubledgerWorkspaceDocumentDto {
@@ -135,7 +135,15 @@ describe("scalable AR/AP transaction register", () => {
           effectiveTo: null,
         },
       }],
-      documents: [invoice()],
+      documents: [
+        invoice(),
+        invoice({
+          id: "10000000-0000-4000-8000-000000000003",
+          sourceNumber: "INV-UNNUMBERED",
+          journalId: "30000000-0000-4000-8000-000000000003",
+          journalNumber: null,
+        }),
+      ],
       openItems: [],
     } as unknown as SubledgerWorkspaceDto;
 
@@ -150,6 +158,59 @@ describe("scalable AR/AP transaction register", () => {
     expect(markup).toContain("Due state");
     expect(markup).toContain("<table>");
     expect(markup).toContain("INV-1001");
+    expect(markup).toContain("View details");
+    expect(markup).toContain("View entry #42");
+    expect(markup).toContain(">View entry</a>");
+    expect(markup).not.toContain("View entry #</a>");
+    expect(markup).not.toContain("Edit draft");
+    expect(markup).toContain("/app/journals/30000000-0000-4000-8000-000000000001");
     expect(markup).not.toContain("<article");
+  });
+
+  it("keeps settled allocation details readable after an item leaves the open-item list", () => {
+    const source = invoice();
+    const settlement = receipt();
+    const workspace = {
+      ownerModule: "receivables",
+      canManage: true,
+      entities: [{
+        id: "50000000-0000-4000-8000-000000000001",
+        code: "CA01",
+        displayName: "Northstar Canada",
+        lineAccounts: [],
+        taxAccounts: [],
+        bankAccounts: [],
+        fxGainAccounts: [],
+        fxLossAccounts: [],
+        roundingAccounts: [],
+        partyAccounts: [],
+      }],
+      documents: [source, settlement],
+      openItems: [],
+    } as unknown as SubledgerWorkspaceDto;
+    const completeSettlement = {
+      ...settlement,
+      snapshot: {
+        ...settlement.snapshot,
+        legalEntityId: "50000000-0000-4000-8000-000000000001",
+        functionalCurrency: "CAD",
+        accountingDate: "2026-08-27",
+        settlementFunctionalAmount: "67.50",
+        bankAccountCombinationId: "60000000-0000-4000-8000-000000000001",
+        fx: { rate: "1.35", source: "Manual", effectiveAt: "2026-08-27T12:00:00.000Z" },
+        allocations: [{
+          openItemId: source.openItemId,
+          transactionAmount: "50.00",
+          settlementFunctionalAmount: "67.50",
+          realizedFxFunctional: "0.00",
+        }],
+      },
+    } as SubledgerWorkspaceDocumentDto;
+
+    const markup = renderToStaticMarkup(
+      <DocumentDetails workspace={workspace} document={completeSettlement} onClose={vi.fn()} onEdit={vi.fn()} />,
+    );
+    expect(markup).toContain("INV-1001");
+    expect(markup).not.toContain(source.openItemId);
   });
 });
