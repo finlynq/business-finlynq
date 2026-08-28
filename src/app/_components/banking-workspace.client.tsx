@@ -4,6 +4,7 @@ import { useRouter } from "next/navigation";
 import { useState, type FormEvent } from "react";
 import type { BankingWorkspaceDto } from "@/modules/banking/banking-workspace";
 import { formatExactCurrencyAmount } from "@/modules/banking/exact-money";
+import { formatBankingTimestamp } from "@/modules/banking/presentation";
 import { StatusPill } from "./ui";
 import styles from "./banking-workspace.module.css";
 
@@ -21,9 +22,7 @@ async function mutation(url: string, method: "POST" | "PUT", body: unknown) {
 }
 
 function displayDate(value: string | null): string {
-  if (!value) return "Never";
-  const parsed = new Date(value);
-  return Number.isNaN(parsed.getTime()) ? value : new Intl.DateTimeFormat("en-CA", { dateStyle: "medium", timeStyle: "short" }).format(parsed);
+  return formatBankingTimestamp(value);
 }
 
 function displayAmount(amount: string, currency: string): string {
