@@ -91,7 +91,7 @@ async function createBillDraft(
   await line.getByLabel("Tax treatment").selectOption("OUT_OF_SCOPE");
   await page.getByRole("button", { name: "Save draft" }).click();
 
-  const bill = page.getByRole("article").filter({ hasText: input.number });
+  const bill = page.getByRole("row").filter({ hasText: input.number });
   await expect(bill).toContainText("DRAFT");
 }
 
