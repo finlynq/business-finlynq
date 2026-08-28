@@ -257,7 +257,7 @@ runDatabaseTests("organization administration concurrency", () => {
     await pool.query(
       `INSERT INTO organization_memberships(
          id,organization_id,user_id,active,administration_version
-       ) VALUES($1,$2,$3,false,1)`,
+       ) VALUES($1,$2,$3,true,1)`,
       [membershipId, ids.organization, userId],
     );
     await pool.query(
@@ -280,12 +280,19 @@ runDatabaseTests("organization administration concurrency", () => {
       ],
     );
 
-    const reactivated = await invokeAdministration<{ version: number }>(
-      "SELECT app.organization_set_member_active($1,1,true) AS version",
+    const initiallySuspended = await invokeAdministration<{ version: number }>(
+      "SELECT app.organization_set_member_active($1,1,false) AS version",
       [membershipId],
       randomUUID(),
     );
-    expect(reactivated.rows[0]?.version).toBe(2);
+    expect(initiallySuspended.rows[0]?.version).toBe(2);
+
+    const reactivated = await invokeAdministration<{ version: number }>(
+      "SELECT app.organization_set_member_active($1,2,true) AS version",
+      [membershipId],
+      randomUUID(),
+    );
+    expect(reactivated.rows[0]?.version).toBe(3);
     expect((await pool.query(
       `SELECT membership.active, membership.administration_version,
         session.revoked_at,
@@ -299,21 +306,21 @@ runDatabaseTests("organization administration concurrency", () => {
       [membershipId, targetSessionId],
     )).rows[0]).toMatchObject({
       active: true,
-      administration_version: 2,
+      administration_version: 3,
       revoked_at: expect.any(Date),
       audit_count: 1,
     });
 
     const suspended = await invokeAdministration<{ version: number }>(
-      "SELECT app.organization_set_member_active($1,2,false) AS version",
+      "SELECT app.organization_set_member_active($1,3,false) AS version",
       [membershipId],
       randomUUID(),
     );
-    expect(suspended.rows[0]?.version).toBe(3);
+    expect(suspended.rows[0]?.version).toBe(4);
 
     await pool.query("UPDATE users SET password_hash='!invitation-pending!' WHERE id=$1", [userId]);
     await expect(invokeAdministration(
-      "SELECT app.organization_set_member_active($1,3,true)",
+      "SELECT app.organization_set_member_active($1,4,true)",
       [membershipId],
       randomUUID(),
     )).rejects.toMatchObject({
@@ -323,7 +330,7 @@ runDatabaseTests("organization administration concurrency", () => {
 
     await pool.query("UPDATE users SET password_hash=$2,mfa_required=true WHERE id=$1", [userId, passwordHash]);
     await expect(invokeAdministration(
-      "SELECT app.organization_set_member_active($1,3,true)",
+      "SELECT app.organization_set_member_active($1,4,true)",
       [membershipId],
       randomUUID(),
     )).rejects.toMatchObject({
@@ -339,7 +346,7 @@ runDatabaseTests("organization administration concurrency", () => {
       [randomUUID(), userId, `authv1:${"q".repeat(80)}`],
     );
     await expect(invokeAdministration(
-      "SELECT app.organization_set_member_active($1,3,true)",
+      "SELECT app.organization_set_member_active($1,4,true)",
       [membershipId],
       randomUUID(),
     )).rejects.toMatchObject({
@@ -349,15 +356,15 @@ runDatabaseTests("organization administration concurrency", () => {
     expect((await pool.query(
       `SELECT active,administration_version FROM organization_memberships WHERE id=$1`,
       [membershipId],
-    )).rows[0]).toEqual({ active: false, administration_version: 3 });
+    )).rows[0]).toEqual({ active: false, administration_version: 4 });
 
     await pool.query("UPDATE users SET mfa_required=true WHERE id=$1", [userId]);
     const mfaReactivated = await invokeAdministration<{ version: number }>(
-      "SELECT app.organization_set_member_active($1,3,true) AS version",
+      "SELECT app.organization_set_member_active($1,4,true) AS version",
       [membershipId],
       randomUUID(),
     );
-    expect(mfaReactivated.rows[0]?.version).toBe(4);
+    expect(mfaReactivated.rows[0]?.version).toBe(5);
   });
 
   it("rejects hidden second-role assignments behind the fixed-role surface", async () => {

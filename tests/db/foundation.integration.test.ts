@@ -394,6 +394,7 @@ runDatabaseTests("PostgreSQL accounting controls", () => {
       await client.query("ROLLBACK TO SAVEPOINT hierarchy_null_revision");
       const firstRoot = randomUUID();
       const firstMember = randomUUID();
+      await client.query("SELECT set_config('app.request_id', $1, true)", [randomUUID()]);
       const firstRevision = await client.query<{ revision: number }>(
         "SELECT app.accounting_replace_hierarchy_draft($1,$2,$3::jsonb) AS revision",
         [hierarchy!.id, hierarchy!.revision, JSON.stringify([
@@ -403,6 +404,7 @@ runDatabaseTests("PostgreSQL accounting controls", () => {
       );
       const secondRoot = randomUUID();
       const secondMember = randomUUID();
+      await client.query("SELECT set_config('app.request_id', $1, true)", [randomUUID()]);
       const replaced = await client.query<{ revision: number }>(
         "SELECT app.accounting_replace_hierarchy_draft($1,$2,$3::jsonb) AS revision",
         [hierarchy!.id, firstRevision.rows[0]!.revision, JSON.stringify([
