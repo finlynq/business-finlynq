@@ -58,11 +58,11 @@ async function openDemo(page: Page, destination: string): Promise<void> {
 async function readSandboxName(page: Page): Promise<string> {
   const accountButton = page.getByRole("button", { name: "Open account and security menu" });
   await accountButton.click();
-  const details = page.getByRole("region", { name: "Account details" });
+  const details = page.getByRole("dialog");
   await expect(details).toBeVisible();
   const match = (await details.textContent())?.match(/Northstar Demo Sandbox \d{3}/);
   expect(match, "The account menu must expose the leased synthetic organization name").not.toBeNull();
-  await accountButton.click();
+  await page.getByRole("button", { name: "Close account menu" }).click();
   return match?.[0] ?? "";
 }
 
@@ -75,7 +75,11 @@ async function revokeDemoSession(page: Page): Promise<void> {
 }
 
 async function bestEffortRevokeDemoSession(page: Page): Promise<void> {
-  await revokeDemoSession(page).catch(() => undefined);
+  const currentUrl = page.url();
+  if (!currentUrl.startsWith("http") || !new URL(currentUrl).pathname.startsWith("/app")) return;
+  await page.getByRole("button", { name: "Open account and security menu" }).click({ timeout: 1_000 }).catch(() => undefined);
+  await page.getByRole("button", { name: "Sign out" }).click({ timeout: 1_000 }).catch(() => undefined);
+  await page.waitForURL(/\/$/, { timeout: 2_000 }).catch(() => undefined);
 }
 
 async function createBillDraft(
@@ -215,7 +219,7 @@ test("demo session protects workspace routes and is revoked by sign-out", async 
   await expect(page.getByRole("heading", { level: 1, name: "Accounting overview" })).toBeVisible();
   await expect(page.getByRole("link", { name: "Create a permanent business account" })).toBeVisible();
   await page.getByRole("button", { name: "Open account and security menu" }).click();
-  await expect(page.getByRole("region", { name: "Account details" })).toContainText("Public synthetic sandbox");
+  await expect(page.getByRole("dialog")).toContainText("Public synthetic sandbox");
   await expect(page.getByRole("link", { name: "Create account", exact: true })).toBeVisible();
   await page.getByRole("button", { name: "Sign out" }).click();
   await expect(page).toHaveURL(/\/$/);
