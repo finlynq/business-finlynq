@@ -56,7 +56,7 @@ async function openDemo(page: Page, destination: string): Promise<void> {
 }
 
 async function readSandboxName(page: Page): Promise<string> {
-  const accountButton = page.getByRole("button", { name: "Open account menu" });
+  const accountButton = page.getByRole("button", { name: "Open account and security menu" });
   await accountButton.click();
   const details = page.getByRole("region", { name: "Account details" });
   await expect(details).toBeVisible();
@@ -69,7 +69,7 @@ async function readSandboxName(page: Page): Promise<string> {
 async function revokeDemoSession(page: Page): Promise<void> {
   const currentUrl = page.url();
   if (!currentUrl.startsWith("http") || !new URL(currentUrl).pathname.startsWith("/app")) return;
-  await page.getByRole("button", { name: "Open account menu" }).click();
+  await page.getByRole("button", { name: "Open account and security menu" }).click();
   await page.getByRole("button", { name: "Sign out" }).click();
   await expect(page).toHaveURL(/\/$/);
 }
@@ -214,7 +214,7 @@ test("demo session protects workspace routes and is revoked by sign-out", async 
   await page.goto("/app");
   await expect(page.getByRole("heading", { level: 1, name: "Accounting overview" })).toBeVisible();
   await expect(page.getByRole("link", { name: "Create a permanent business account" })).toBeVisible();
-  await page.getByRole("button", { name: "Open account menu" }).click();
+  await page.getByRole("button", { name: "Open account and security menu" }).click();
   await expect(page.getByRole("region", { name: "Account details" })).toContainText("Public synthetic sandbox");
   await expect(page.getByRole("link", { name: "Create account", exact: true })).toBeVisible();
   await page.getByRole("button", { name: "Sign out" }).click();
@@ -258,7 +258,7 @@ test("writable demo can create, post, and void an AR invoice", async ({ page }) 
   await expect(page.getByText("Release acceptance reversal", { exact: true })).toBeVisible();
   await expect(voidPanel).toBeHidden();
 
-  await page.getByRole("button", { name: "Open account menu" }).click();
+  await page.getByRole("button", { name: "Open account and security menu" }).click();
   await page.getByRole("button", { name: "Sign out" }).click();
   expect(errors).toEqual([]);
 });
