@@ -196,6 +196,12 @@ describe("production recovery evidence contract", () => {
     expect(trigger).toContain("audit.request_id = request_context");
     expect(trigger).toContain("NEW.topic <> 'ledger.journal-posted'");
     expect(trigger).toContain("request_context := NEW.request_id");
+    const outboxTrigger = migration.slice(
+      migration.indexOf("CREATE TRIGGER outbox_events_request_correlation"),
+      migration.indexOf("CREATE OR REPLACE FUNCTION app.enforce_paired_audit_outbox"),
+    );
+    expect(outboxTrigger).toContain("BEFORE INSERT OR UPDATE");
+    expect(outboxTrigger).not.toContain("UPDATE OF");
   });
 
   it("enforces paired audits in both directions while retaining audit-only actions", () => {
