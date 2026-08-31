@@ -19,6 +19,10 @@ const tenantPolicyMigration = readFileSync(
   join(repositoryRoot, "migrations", "drizzle", "0025_tenant_rls_completion.sql"),
   "utf8",
 );
+const restoreSafetyMigration = readFileSync(
+  join(repositoryRoot, "migrations", "drizzle", "0029_restore_safe_currency_lookup.sql"),
+  "utf8",
+);
 
 describe("CI predecessor-upgrade and restore verification", () => {
   it("can create or drop only fixed loopback sibling test databases behind an explicit guard", () => {
@@ -60,7 +64,7 @@ describe("CI predecessor-upgrade and restore verification", () => {
     );
   });
 
-  it("replays exactly 0000-0024 before preserving a tenant sentinel through 0028", () => {
+  it("replays exactly 0000-0024 before preserving a tenant sentinel through 0029", () => {
     expect(migrationJournal.entries.find((entry) => entry.idx === 25)?.tag).toBe(
       "0025_tenant_rls_completion",
     );
@@ -72,6 +76,9 @@ describe("CI predecessor-upgrade and restore verification", () => {
     );
     expect(migrationJournal.entries.find((entry) => entry.idx === 28)?.tag).toBe(
       "0028_bank_match_allocation_idempotency",
+    );
+    expect(migrationJournal.entries.find((entry) => entry.idx === 29)?.tag).toBe(
+      "0029_restore_safe_currency_lookup",
     );
     expect(tenantPolicyMigration).toContain("ALTER TABLE public.%I ENABLE ROW LEVEL SECURITY");
     expect(tenantPolicyMigration).toContain("ALTER TABLE public.%I FORCE ROW LEVEL SECURITY");
@@ -86,9 +93,9 @@ describe("CI predecessor-upgrade and restore verification", () => {
     expect(lifecycleScript).toContain(
       'run_migrations "$predecessor_database" "$repository_root/migrations/drizzle"',
     );
-    expect(lifecycleScript).toContain('[[ "$upgraded_count" == "29" ]]');
+    expect(lifecycleScript).toContain('[[ "$upgraded_count" == "30" ]]');
     expect(lifecycleScript).toContain(
-      "tenant sentinel was not preserved through migrations 0025 through 0028",
+      "tenant sentinel was not preserved through migrations 0025 through 0029",
     );
     expect(lifecycleScript).toContain('reconcile_roles "$predecessor_database"');
     expect(lifecycleScript).toContain(
@@ -105,6 +112,18 @@ describe("CI predecessor-upgrade and restore verification", () => {
   });
 
   it("performs a real custom-format dump and transactional restore of populated data", () => {
+    expect(restoreSafetyMigration).toContain(
+      'DROP CONSTRAINT "auth_organization_signups_supported_currency_check"',
+    );
+    expect(restoreSafetyMigration).toContain("SET search_path = pg_catalog");
+    expect(restoreSafetyMigration).toContain("FROM public.currency_definitions AS definition");
+    expect(restoreSafetyMigration).toContain("pg_catalog.upper(currency_code)");
+    expect(restoreSafetyMigration).toContain(
+      'ADD CONSTRAINT "auth_organization_signups_functional_currency_fk"',
+    );
+    expect(restoreSafetyMigration).toContain(
+      'FOREIGN KEY ("functional_currency") REFERENCES "public"."currency_definitions"("code")',
+    );
     expect(lifecycleScript).toContain("source database has no populated organization data to restore");
     expect(lifecycleScript).toContain(
       "source database is missing the bootstrapped demo organization sentinel",

@@ -204,6 +204,13 @@
       "when": 1788164461287,
       "tag": "0028_bank_match_allocation_idempotency",
       "breakpoints": true
+    },
+    {
+      "idx": 29,
+      "version": "7",
+      "when": 1788174576947,
+      "tag": "0029_restore_safe_currency_lookup",
+      "breakpoints": true
     }
   ]
 }

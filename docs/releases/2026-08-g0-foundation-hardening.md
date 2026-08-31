@@ -16,6 +16,7 @@ No new product feature flag is introduced. Existing real-account write activatio
 - `0026_snapshot_baseline.sql` establishes the repaired Drizzle snapshot baseline without changing runtime data.
 - `0027_session_user_agent_binding.sql` requires new sessions to carry a user-agent binding and prevents an existing binding from being removed. Legacy unbound sessions remain compatible until they expire or are revoked.
 - `0028_bank_match_allocation_idempotency.sql` binds manual allocation retries to a reconciliation-scoped key and canonical v2 command fingerprint, accepts the precise pre-canonicalization v1 retry fingerprint, and rejects changed payloads without blocking independent split allocations.
+- `0029_restore_safe_currency_lookup.sql` removes the unsafe cross-table signup CHECK, pins the currency minor-unit lookup to trusted schemas, and replaces the existence rule with a validated signup-to-currency foreign key so populated archives restore safely in one transaction regardless of COPY order.
 
 The release must pass both a clean migration replay and an upgrade from the predecessor migration before promotion.
 

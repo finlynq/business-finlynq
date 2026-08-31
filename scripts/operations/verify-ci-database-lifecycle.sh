@@ -420,23 +420,23 @@ SQL
   run_migrations "$predecessor_database" "$repository_root/migrations/drizzle"
   upgraded_count="$(psql_value "$predecessor_database" \
     "SELECT count(*) FROM drizzle.__drizzle_migrations;")"
-  [[ "$upgraded_count" == "29" ]] ||
-    fail "predecessor upgrade recorded $upgraded_count migrations instead of 29"
+  [[ "$upgraded_count" == "30" ]] ||
+    fail "predecessor upgrade recorded $upgraded_count migrations instead of 30"
   preserved_sentinel="$(psql_value "$predecessor_database" \
     "SELECT slug || '|' || display_name FROM organizations WHERE id = '$predecessor_sentinel_id';")"
   [[ "$preserved_sentinel" == "ci-predecessor-sentinel|CI predecessor tenant sentinel" ]] ||
-    fail "tenant sentinel was not preserved through migrations 0025 through 0028"
+    fail "tenant sentinel was not preserved through migrations 0025 through 0029"
 
   reconcile_roles "$predecessor_database"
   verify_fail_closed_default_privileges "$predecessor_database"
   verify_schema_and_grants "$predecessor_database"
   printf '%s\n' \
-    "Predecessor upgrade verification passed: replayed 0000-0024, preserved tenant sentinel, upgraded through 0028, and verified schema/grants/journal types."
+    "Predecessor upgrade verification passed: replayed 0000-0024, preserved tenant sentinel, upgraded through 0029, and verified schema/grants/journal types."
 else
   source_migration_count="$(psql_value "$POSTGRES_DB" \
     "SELECT count(*) FROM drizzle.__drizzle_migrations;")"
-  [[ "$source_migration_count" == "29" ]] ||
-    fail "source database is not fully migrated through 0028 (found $source_migration_count records)"
+  [[ "$source_migration_count" == "30" ]] ||
+    fail "source database is not fully migrated through 0029 (found $source_migration_count records)"
   source_organization_count="$(psql_value "$POSTGRES_DB" "SELECT count(*) FROM organizations;")"
   [[ "$source_organization_count" =~ ^[1-9][0-9]*$ ]] ||
     fail "source database has no populated organization data to restore"

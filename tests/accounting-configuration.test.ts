@@ -18,6 +18,10 @@ const signupMigration = readFileSync(
   join(process.cwd(), "migrations/drizzle/0019_global_signup_foundation.sql"),
   "utf8",
 );
+const restoreSafetyMigration = readFileSync(
+  join(process.cwd(), "migrations/drizzle/0029_restore_safe_currency_lookup.sql"),
+  "utf8",
+);
 const runtimeRole = readFileSync(
   join(process.cwd(), "deploy/postgres/010-runtime-role.sh"),
   "utf8",
@@ -232,6 +236,12 @@ describe("accounting configuration foundation", () => {
     expect(signupMigration).toContain("DROP CONSTRAINT auth_organization_signups_country_profile_check");
     expect(signupMigration).toContain("auth_organization_signups_supported_currency_check");
     expect(signupMigration).toContain("validation no longer matches the reviewed predecessor");
+    expect(restoreSafetyMigration).toContain(
+      'DROP CONSTRAINT "auth_organization_signups_supported_currency_check"',
+    );
+    expect(restoreSafetyMigration).toContain(
+      'ADD CONSTRAINT "auth_organization_signups_functional_currency_fk"',
+    );
   });
 
   it("installs the generic manual-review tax policy used by unsupported jurisdictions", () => {

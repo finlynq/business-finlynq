@@ -706,7 +706,7 @@ describe("database schema verifier", () => {
       }),
       { checks: 0, foreignKeys: 0, indexes: 0, uniqueConstraints: 0 },
     );
-    expect(counts).toEqual({ checks: 174, foreignKeys: 106, indexes: 115, uniqueConstraints: 53 });
+    expect(counts).toEqual({ checks: 173, foreignKeys: 106, indexes: 115, uniqueConstraints: 53 });
     expect(migrationContract.get("bank_connections")?.checks.get("bank_connections_provider_check"))
       .toMatchObject({ expression: "provider='SIMPLEFIN'" });
     expect(migrationContract.get("bank_match_allocations")?.checks.get("bank_match_allocations_command_hash_sha256"))
@@ -721,6 +721,8 @@ describe("database schema verifier", () => {
         name: "auth_organization_signups_organization_id_key",
         nullsNotDistinct: false,
       });
+    expect(migrationContract.get("auth_organization_signups")?.checks.has("auth_organization_signups_supported_currency_check"))
+      .toBe(false);
     expect([
       migrationContract.get("fiscal_periods")?.exclusionConstraints?.get("fiscal_periods_no_overlapping_dates"),
       migrationContract.get("entity_tax_registrations")?.exclusionConstraints?.get("entity_tax_registrations_regime_window_exclusion"),

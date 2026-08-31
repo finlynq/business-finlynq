@@ -17,6 +17,7 @@ import { sql } from "drizzle-orm";
 import { organizationMemberships, organizations, roles, users } from "./identity";
 import {
   accountingProfile as accountingProfileEnum,
+  currencyDefinitions,
   manualPostingMode as manualPostingModeEnum,
 } from "./ledger";
 
@@ -170,7 +171,14 @@ export const authOrganizationSignups = pgTable(
     acceptedAt: timestamp("accepted_at", { withTimezone: true }),
     completedAt: timestamp("completed_at", { withTimezone: true }),
   },
-  (table) => [index("auth_organization_signups_status_expiry_idx").on(table.status, table.expiresAt)],
+  (table) => [
+    index("auth_organization_signups_status_expiry_idx").on(table.status, table.expiresAt),
+    foreignKey({
+      columns: [table.functionalCurrency],
+      foreignColumns: [currencyDefinitions.code],
+      name: "auth_organization_signups_functional_currency_fk",
+    }).onDelete("restrict"),
+  ],
 );
 
 export const organizationInvitations = pgTable(
