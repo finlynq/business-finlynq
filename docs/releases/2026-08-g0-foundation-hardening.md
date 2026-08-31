@@ -1,6 +1,6 @@
 # G0 foundation hardening release note
 
-Status: pre-release verification on `codex/g0-foundation-hardening`.
+Status: review-ready on `codex/g0-foundation-hardening`; production promotion remains a deliberate release decision.
 
 ## Impact
 
@@ -29,7 +29,7 @@ The release must pass both a clean migration replay and an upgrade from the pred
 
 ## Known limitations
 
-- This branch is not eligible for production until its local quality gate and live PostgreSQL/browser CI jobs are green.
+- Commit `bcdab17` passed the local quality gate and the complete live PostgreSQL/browser [quality-gate run 33386617605](https://github.com/finlynq/business-finlynq/actions/runs/33386617605). Production still requires reviewed merge and the release-runbook promotion gates.
 - G0-03 per-organization real-account activation, G0-04 key rotation, and the remaining product packages are intentionally outside this release.
 - The two `public.digest` overloads required by invoker-security database code are the only intended public-schema functions executable by the runtime role.
 
