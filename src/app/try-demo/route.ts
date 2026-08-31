@@ -1,6 +1,7 @@
-import { randomUUID } from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
 import { logRouteFailure } from "@/app/api/_shared/route-failure-log";
+import { requestIdFor } from "@/observability/request-correlation";
+import { observeRouteHandler } from "@/observability/request-observability";
 import { consumeRateLimit, issueDemoSession } from "@/modules/identity/auth-store";
 import { configuredAppOrigin, isSpeculativeNavigation, requestFingerprints } from "@/modules/identity/request-security";
 import { safeAppPath } from "@/modules/identity/safe-redirect";
@@ -22,12 +23,12 @@ function loginError(code: string): NextResponse {
   return response;
 }
 
-export async function GET(request: NextRequest) {
+async function get(request: NextRequest) {
   if (isSpeculativeNavigation(request)) return new NextResponse(null, { status: 204, headers: { "Cache-Control": "private, no-store" } });
   if (process.env.DEMO_LOGIN_ENABLED !== "true") return loginError("disabled");
   const fetchSite = request.headers.get("sec-fetch-site");
   if (fetchSite && fetchSite !== "same-origin" && fetchSite !== "none") return loginError("unavailable");
-  const requestId = randomUUID();
+  const requestId = requestIdFor(request);
 
   try {
     const existing = await requestPrincipal(request);
@@ -71,3 +72,5 @@ export async function GET(request: NextRequest) {
     return loginError("unavailable");
   }
 }
+
+export const GET = observeRouteHandler("demo-login", get);

@@ -225,6 +225,13 @@
       "when": 1788180443333,
       "tag": "0031_audit_graph_leaf_index",
       "breakpoints": true
+    },
+    {
+      "idx": 32,
+      "version": "7",
+      "when": 1788184493320,
+      "tag": "0032_observability_correlation_metrics",
+      "breakpoints": true
     }
   ]
 }

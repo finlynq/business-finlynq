@@ -157,7 +157,7 @@ describe("mutation route setup failure boundaries", () => {
 
   it("contains and redacts organization administration setup failures", async () => {
     const logging = vi.spyOn(console, "error").mockImplementation(() => undefined);
-    const response = await organizationAdminMutationRoute(async () => {
+    const response = await organizationAdminMutationRoute(request(), async () => {
       throw sensitiveFailure;
     });
 

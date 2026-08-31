@@ -1,4 +1,3 @@
-import { randomUUID } from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
 import type { z } from "zod";
 import { demoSessionLeaseLostResponse } from "@/app/api/_shared/demo-session-error-response";
@@ -9,6 +8,7 @@ import { SimpleFinClientError } from "@/modules/banking/simplefin-client";
 import { validateSameOriginMutation } from "@/modules/identity/request-security";
 import { requestPrincipal, type SessionPrincipal } from "@/modules/identity/session";
 import { MutationBodyError, readBoundedJson } from "@/modules/ledger/request-body";
+import { observeRoute } from "@/observability/request-observability";
 
 const bankingHeaders = {
   "Cache-Control": "private, no-store",
@@ -34,8 +34,8 @@ export function createBankingMutationRoute<TBody, TResult, TParams = undefined>(
     request: NextRequest,
     routeContext?: { params: Promise<unknown> },
   ) {
-    const requestId = randomUUID();
-    try {
+    return observeRoute(request, "banking-mutation", async (requestId) => {
+      try {
       if (!validateSameOriginMutation(request)) {
         return NextResponse.json({ error: "The banking request could not be verified." }, { status: 403, headers: bankingHeaders });
       }
@@ -81,26 +81,27 @@ export function createBankingMutationRoute<TBody, TResult, TParams = undefined>(
         ? options.successStatus(result)
         : options.successStatus ?? 200;
       return NextResponse.json(result, { status: successStatus, headers: bankingHeaders });
-    } catch (error) {
-      const expiredSession = demoSessionLeaseLostResponse(error);
-      if (expiredSession) return expiredSession;
-      if (error instanceof BankingServiceError) {
-        const headers = error.retryAfterSeconds === undefined
-          ? bankingHeaders
-          : { ...bankingHeaders, "Retry-After": String(error.retryAfterSeconds) };
-        return NextResponse.json({ error: error.message, code: error.code, requestId }, { status: error.status, headers });
+      } catch (error) {
+        const expiredSession = demoSessionLeaseLostResponse(error);
+        if (expiredSession) return expiredSession;
+        if (error instanceof BankingServiceError) {
+          const headers = error.retryAfterSeconds === undefined
+            ? bankingHeaders
+            : { ...bankingHeaders, "Retry-After": String(error.retryAfterSeconds) };
+          return NextResponse.json({ error: error.message, code: error.code, requestId }, { status: error.status, headers });
+        }
+        if (error instanceof SimpleFinClientError) {
+          const status = error.code === "PROVIDER_TIMEOUT" ? 504
+            : error.code === "INVALID_SETUP_TOKEN" || error.code === "UNSAFE_ENDPOINT" ? 400
+              : 502;
+          return NextResponse.json({ error: error.message, code: error.code, requestId }, { status, headers: bankingHeaders });
+        }
+        logRouteFailure("banking-mutation", requestId, error);
+        return NextResponse.json(
+          { error: "The banking operation could not be completed safely.", requestId },
+          { status: 409, headers: bankingHeaders },
+        );
       }
-      if (error instanceof SimpleFinClientError) {
-        const status = error.code === "PROVIDER_TIMEOUT" ? 504
-          : error.code === "INVALID_SETUP_TOKEN" || error.code === "UNSAFE_ENDPOINT" ? 400
-            : 502;
-        return NextResponse.json({ error: error.message, code: error.code, requestId }, { status, headers: bankingHeaders });
-      }
-      logRouteFailure("banking-mutation", requestId, error);
-      return NextResponse.json(
-        { error: "The banking operation could not be completed safely.", requestId },
-        { status: 409, headers: bankingHeaders },
-      );
-    }
+    });
   };
 }

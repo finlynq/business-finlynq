@@ -17,7 +17,7 @@ export async function POST(
   request: NextRequest,
   { params }: { params: Promise<{ invitationId: string }> },
 ) {
-  return organizationAdminMutationRoute(async (requestId) => {
+  return organizationAdminMutationRoute(request, async (requestId) => {
     const access = await prepareOrganizationAdminMutation(request, "invite-cancel");
     if (access.response) return access.response;
     const body = await readOrganizationAdminJson(request, schema);

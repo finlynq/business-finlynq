@@ -3,6 +3,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { readAuthMutationJson } from "@/app/api/_shared/auth-mutation-route";
 import { logRouteFailure } from "@/app/api/_shared/route-failure-log";
+import { requestIdFor } from "@/observability/request-correlation";
+import { observeRouteHandler } from "@/observability/request-observability";
 import { acceptInvitation, assertEmailDeliveryReady, consumeRateLimit } from "@/modules/identity/auth-store";
 import { authenticatorQrCodeDataUrl } from "@/modules/identity/authenticator-qr";
 import { assertAccountAuthenticationConfigured } from "@/modules/identity/email-provider";
@@ -15,8 +17,8 @@ import { decryptIdentityField, encryptAuthPayload } from "@/security/identity-se
 const schema = z.object({ token: z.string().min(32).max(200), password: z.string().min(14).max(128) });
 const headers = { "Cache-Control": "private, no-store", "X-Robots-Tag": "noindex" };
 
-export async function POST(request: NextRequest) {
-  const requestId = randomUUID();
+async function post(request: NextRequest) {
+  const requestId = requestIdFor(request);
   try {
     if (!validateSameOriginMutation(request)) return NextResponse.json({ error: "The request could not be verified." }, { status: 403, headers });
     if (process.env.ACCOUNT_LOGIN_ENABLED !== "true") return NextResponse.json({ error: "Account invitations are not enabled." }, { status: 403, headers });
@@ -54,3 +56,5 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "Invitation acceptance is temporarily unavailable." }, { status: 503, headers });
   }
 }
+
+export const POST = observeRouteHandler("invitation-acceptance", post);

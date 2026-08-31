@@ -1,0 +1,169 @@
+groups:
+  - name: business-finlynq-availability
+    rules:
+      - alert: BusinessFinlynqSyntheticFailure
+        expr: business_finlynq_observability_drill_failure == 1
+        labels:
+          severity: moderate
+        annotations:
+          summary: Business Finlynq synthetic observability failure drill is active
+      - alert: BusinessFinlynqMetricsMissing
+        expr: absent(business_finlynq_metrics_snapshot_unixtime) == 1
+        for: 10m
+        labels:
+          severity: high
+        annotations:
+          summary: Business Finlynq application telemetry is unavailable
+      - alert: BusinessFinlynqHostMonitorFailed
+        expr: absent(business_finlynq_host_monitor_success) == 1 or absent(business_finlynq_host_monitor_last_run_unixtime) == 1 or business_finlynq_host_monitor_success == 0 or time() - business_finlynq_host_monitor_last_run_unixtime > 900
+        for: 2m
+        labels:
+          severity: high
+        annotations:
+          summary: Business Finlynq host readiness checks are failing or stale
+      - alert: BusinessFinlynqApiErrors
+        expr: increase(business_finlynq_api_server_errors_total[5m]) >= 5 or increase(business_finlynq_api_route_failures_total[5m]) >= 5
+        for: 5m
+        labels:
+          severity: moderate
+        annotations:
+          summary: Business Finlynq API server errors are sustained
+      - alert: BusinessFinlynqApiLatency
+        expr: histogram_quantile(0.95, sum(rate(business_finlynq_api_request_duration_seconds_bucket[5m])) by (le)) > 2.5 and increase(business_finlynq_api_request_duration_seconds_count[5m]) >= 20
+        for: 10m
+        labels:
+          severity: moderate
+        annotations:
+          summary: Business Finlynq API latency exceeds the reviewed threshold
+
+  - name: business-finlynq-durable-work
+    rules:
+      - alert: BusinessFinlynqOutboxLag
+        expr: business_finlynq_outbox_oldest_unpublished_age_seconds > 900 and on() business_finlynq_outbox_publisher_expected == 1
+        for: 5m
+        labels:
+          severity: moderate
+        annotations:
+          summary: Business Finlynq durable outbox publication is delayed
+      - alert: BusinessFinlynqOutboxLineageBroken
+        expr: business_finlynq_outbox_unmatched_audit > 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: A business outbox record has no correlated audit event
+      - alert: BusinessFinlynqLegacyRequestCorrelation
+        expr: business_finlynq_outbox_legacy_request_ids > 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: A business outbox record retains a legacy request identifier
+      - alert: BusinessFinlynqAuthenticationFailures
+        expr: business_finlynq_auth_failures_5m >= 10
+        for: 5m
+        labels:
+          severity: moderate
+        annotations:
+          summary: Authentication failures exceed the reviewed threshold
+      - alert: BusinessFinlynqEmailDeadLetter
+        expr: business_finlynq_auth_email_dead > 0
+        for: 1m
+        labels:
+          severity: high
+        annotations:
+          summary: Authentication email delivery has a dead-letter record
+      - alert: BusinessFinlynqEmailWorkerStale
+        expr: business_finlynq_auth_email_worker_expected == 1 and on() (business_finlynq_auth_email_worker_heartbeat_present == 0 or business_finlynq_auth_email_worker_heartbeat_age_seconds > 120)
+        for: 2m
+        labels:
+          severity: high
+        annotations:
+          summary: Authentication email delivery heartbeat is stale
+
+  - name: business-finlynq-operations
+    rules:
+      - alert: BusinessFinlynqAccountingEvidenceInvalid
+        expr: absent(business_finlynq_accounting_evidence_verification_success) == 1 or absent(business_finlynq_accounting_evidence_verification_last_run_unixtime) == 1 or absent(business_finlynq_accounting_evidence_verification_last_success_unixtime) == 1 or business_finlynq_accounting_evidence_verification_success == 0 or time() - business_finlynq_accounting_evidence_verification_last_run_unixtime >= 21600 or business_finlynq_accounting_evidence_verification_last_success_unixtime == 0 or time() - business_finlynq_accounting_evidence_verification_last_success_unixtime >= 21600
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: Audit graph or request-to-audit/outbox lineage verification failed
+      - alert: BusinessFinlynqBackupReceiverHealthFailed
+        expr: absent(business_finlynq_backup_receiver_health_success) == 1 or absent(business_finlynq_backup_receiver_health_last_run_unixtime) == 1 or business_finlynq_backup_receiver_health_success == 0 or time() - business_finlynq_backup_receiver_health_last_run_unixtime > 900
+        for: 2m
+        labels:
+          severity: high
+        annotations:
+          summary: Independent backup receiver health is failing or stale
+      - alert: BusinessFinlynqBackupReceiverQuarantine
+        expr: business_finlynq_backup_receiver_quarantined_sets > 0
+        for: 1m
+        labels:
+          severity: high
+        annotations:
+          summary: The independent backup receiver quarantined a completed set
+      - alert: BusinessFinlynqBackupReceiverReceiptStale
+        expr: business_finlynq_backup_receiver_latest_accepted_receipt_age_seconds < 0 or business_finlynq_backup_receiver_latest_accepted_receipt_age_seconds >= 21600
+        for: 5m
+        labels:
+          severity: high
+        annotations:
+          summary: The independent receiver lacks a fresh accepted backup receipt
+      - alert: BusinessFinlynqBackupVerificationFailed
+        expr: business_finlynq_backup_verification_status == 0
+        for: 1m
+        labels:
+          severity: high
+        annotations:
+          summary: The isolated encrypted-backup verification failed
+      - alert: BusinessFinlynqBackupJobFailed
+        expr: business_finlynq_scheduled_job_last_run_success{job="encrypted_backup"} == 0
+        for: 1m
+        labels:
+          severity: high
+        annotations:
+          summary: The latest encrypted-backup job failed
+      - alert: BusinessFinlynqBackupJobStale
+        expr: business_finlynq_scheduled_job_last_run_unixtime{job="encrypted_backup"} <= 0 or time() - business_finlynq_scheduled_job_last_run_unixtime{job="encrypted_backup"} >= 21600
+        for: 5m
+        labels:
+          severity: high
+        annotations:
+          summary: No encrypted backup has completed within the six-hour recovery threshold
+      - alert: BusinessFinlynqDemoReconciliationFailed
+        expr: business_finlynq_scheduled_job_last_run_success{job="demo_reconciliation"} == 0
+        for: 1m
+        labels:
+          severity: moderate
+        annotations:
+          summary: The latest nightly demo reconciliation failed
+      - alert: BusinessFinlynqScheduledTimerInactive
+        expr: business_finlynq_scheduled_job_timer_active == 0
+        for: 5m
+        labels:
+          severity: moderate
+        annotations:
+          summary: A reviewed Business Finlynq systemd timer is inactive
+      - alert: BusinessFinlynqDemoCapacityLow
+        expr: business_finlynq_demo_slots_ready < 4
+        for: 10m
+        labels:
+          severity: moderate
+        annotations:
+          summary: Fewer than four demo sandboxes are ready
+      - alert: BusinessFinlynqDemoQuarantine
+        expr: business_finlynq_demo_slots_quarantined > 0
+        for: 1m
+        labels:
+          severity: moderate
+        annotations:
+          summary: A demo sandbox is quarantined
+      - alert: BusinessFinlynqDemoResetOverdue
+        expr: business_finlynq_demo_pool_reset_due == 1
+        for: 15m
+        labels:
+          severity: moderate
+        annotations:
+          summary: The nightly demo reset is overdue

@@ -2,6 +2,7 @@
 Description=Validate and vault completed Business Finlynq encrypted backup sets
 RequiresMountsFor=/srv/business-finlynq-backup
 After=local-fs.target
+OnFailure=business-finlynq-backup-receiver-notify@%n.service
 
 [Service]
 Type=oneshot
@@ -33,4 +34,3 @@ RestrictRealtime=true
 RestrictSUIDSGID=true
 SystemCallArchitectures=native
 TimeoutStartSec=2h
-

@@ -1,0 +1,33 @@
+[Unit]
+Description=Verify Business Finlynq receiver acceptance and quarantine health
+RequiresMountsFor=/srv/business-finlynq-backup
+After=local-fs.target business-finlynq-backup-receiver.service
+OnFailure=business-finlynq-backup-receiver-notify@%n.service
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+EnvironmentFile=/etc/business-finlynq/backup-receiver.conf
+StateDirectory=business-finlynq-backup-receiver-metrics
+ExecStart=/usr/local/libexec/business-finlynq-backup-receiver/check-health.sh
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/business-finlynq-backup-receiver-metrics
+RestrictAddressFamilies=AF_UNIX
+LockPersonality=true
+MemoryDenyWriteExecute=true
+ProtectClock=true
+ProtectControlGroups=true
+ProtectKernelLogs=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ProtectProc=invisible
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+SystemCallArchitectures=native
+TimeoutStartSec=5m

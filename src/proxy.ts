@@ -1,5 +1,10 @@
-import { randomBytes } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
+import {
+  normalizedRequestId,
+  REQUEST_ID_HEADER,
+  REQUEST_ID_INPUT_HEADER,
+} from "@/observability/request-correlation";
 
 const TURNSTILE_ORIGIN = "https://challenges.cloudflare.com";
 
@@ -26,8 +31,9 @@ function contentSecurityPolicy(nonce: string): string {
   ].join("; ") + productionUpgrade;
 }
 
-function withContentSecurityPolicy(response: NextResponse, policy: string): NextResponse {
+function withResponseHeaders(response: NextResponse, policy: string, requestId: string): NextResponse {
   response.headers.set("Content-Security-Policy", policy);
+  response.headers.set(REQUEST_ID_HEADER, requestId);
   return response;
 }
 
@@ -38,10 +44,12 @@ function cookieName(): string {
 
 export function proxy(request: NextRequest) {
   const nonce = randomBytes(16).toString("base64");
+  const requestId = normalizedRequestId(request.headers.get(REQUEST_ID_INPUT_HEADER)) ?? randomUUID();
   const policy = contentSecurityPolicy(nonce);
   const requestHeaders = new Headers(request.headers);
   requestHeaders.set("x-nonce", nonce);
   requestHeaders.set("Content-Security-Policy", policy);
+  requestHeaders.set(REQUEST_ID_INPUT_HEADER, requestId);
 
   const workspaceRequest = request.nextUrl.pathname === "/app" ||
     request.nextUrl.pathname.startsWith("/app/");
@@ -49,9 +57,10 @@ export function proxy(request: NextRequest) {
     if (workspaceRequest) {
       requestHeaders.set("x-business-finlynq-request-path", `${request.nextUrl.pathname}${request.nextUrl.search}`);
     }
-    return withContentSecurityPolicy(
+    return withResponseHeaders(
       NextResponse.next({ request: { headers: requestHeaders } }),
       policy,
+      requestId,
     );
   }
 
@@ -59,9 +68,9 @@ export function proxy(request: NextRequest) {
   login.pathname = "/login";
   login.search = "";
   login.searchParams.set("next", `${request.nextUrl.pathname}${request.nextUrl.search}`);
-  return withContentSecurityPolicy(NextResponse.redirect(login, 307), policy);
+  return withResponseHeaders(NextResponse.redirect(login, 307), policy, requestId);
 }
 
 export const config = {
-  matcher: ["/((?!api|_next/static|_next/image|favicon.ico|.*\\.[^/]+$).*)"],
+  matcher: ["/((?!_next/static|_next/image|favicon.ico|.*\\.[^/]+$).*)"],
 };

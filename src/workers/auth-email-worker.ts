@@ -19,8 +19,19 @@ async function main(): Promise<void> {
 }
 
 main().catch((error) => {
-  console.error("Business Finlynq authentication email worker stopped", {
-    error: error instanceof Error ? error.message : "unknown worker error",
-  });
+  const errorType = error instanceof TypeError
+    ? "TypeError"
+    : error instanceof RangeError
+      ? "RangeError"
+      : error instanceof SyntaxError
+        ? "SyntaxError"
+        : error instanceof Error
+          ? "Error"
+          : "Unknown";
+  console.error(JSON.stringify({
+    event: "job.failure",
+    job: "authentication-email-delivery",
+    errorType,
+  }));
   process.exitCode = 1;
 });

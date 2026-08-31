@@ -21,6 +21,7 @@
     "db:generate:custom": "drizzle-kit generate --custom",
     "db:check-drift": "node scripts/operations/check-drizzle-drift.mjs",
     "db:verify-schema": "node scripts/operations/verify-database-schema.mjs",
+    "release:verify-rehearsals": "node scripts/operations/verify-release-rehearsals.mjs",
     "journal-types:generate-seed": "tsx scripts/operations/generate-journal-type-seed.ts --write",
     "journal-types:check-seed": "tsx scripts/operations/generate-journal-type-seed.ts --check",
     "journal-types:verify-db": "tsx scripts/operations/verify-journal-type-registry.ts",

@@ -1,0 +1,11 @@
+[Unit]
+Description=Verify Business Finlynq immutable accounting evidence every four hours
+
+[Timer]
+OnCalendar=*-*-* 01,05,09,13,17,21:47:00 UTC
+RandomizedDelaySec=10m
+Persistent=true
+Unit=business-finlynq-accounting-evidence.service
+
+[Install]
+WantedBy=timers.target

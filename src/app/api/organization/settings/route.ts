@@ -15,7 +15,7 @@ const schema = z.object({
 });
 
 export async function PATCH(request: NextRequest) {
-  return organizationAdminMutationRoute(async (requestId) => {
+  return organizationAdminMutationRoute(request, async (requestId) => {
     const access = await prepareOrganizationAdminMutation(request, "settings");
     if (access.response) return access.response;
     const body = await readOrganizationAdminJson(request, schema);

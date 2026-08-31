@@ -1,0 +1,155 @@
+rule_files:
+  - prometheus-alerts.yml
+
+evaluation_interval: 1m
+
+tests:
+  - name: synthetic failure reaches the reviewed alert contract
+    interval: 1m
+    input_series:
+      - series: business_finlynq_observability_drill_failure
+        values: 0 1 1
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: BusinessFinlynqSyntheticFailure
+        exp_alerts:
+          - exp_labels:
+              severity: moderate
+            exp_annotations:
+              summary: Business Finlynq synthetic observability failure drill is active
+
+  - name: contained route failures contribute to the API error alert
+    interval: 1m
+    input_series:
+      - series: business_finlynq_api_route_failures_total
+        values: 0 1 2 3 4 5 6 7 8 9 10 11
+      - series: business_finlynq_api_server_errors_total
+        values: 0 0 0 0 0 0 0 0 0 0 0 0
+    alert_rule_test:
+      - eval_time: 11m
+        alertname: BusinessFinlynqApiErrors
+        exp_alerts:
+          - exp_labels:
+              severity: moderate
+            exp_annotations:
+              summary: Business Finlynq API server errors are sustained
+
+  - name: missing host textfile telemetry alerts
+    interval: 1m
+    alert_rule_test:
+      - eval_time: 12m
+        alertname: BusinessFinlynqHostMonitorFailed
+        exp_alerts:
+          - exp_labels:
+              severity: high
+            exp_annotations:
+              summary: Business Finlynq host readiness checks are failing or stale
+
+  - name: accounting evidence failure alerts immediately
+    interval: 1m
+    input_series:
+      - series: business_finlynq_accounting_evidence_verification_success
+        values: 1 0 0
+      - series: business_finlynq_accounting_evidence_verification_last_run_unixtime
+        values: 0 60 120
+      - series: business_finlynq_accounting_evidence_verification_last_success_unixtime
+        values: 0 60 60
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: BusinessFinlynqAccountingEvidenceInvalid
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+            exp_annotations:
+              summary: Audit graph or request-to-audit/outbox lineage verification failed
+
+  - name: receiver quarantine alerts without set labels
+    interval: 1m
+    input_series:
+      - series: business_finlynq_backup_receiver_health_success
+        values: 1 0 0
+      - series: business_finlynq_backup_receiver_health_last_run_unixtime
+        values: 0 60 120
+      - series: business_finlynq_backup_receiver_quarantined_sets
+        values: 0 1 1
+      - series: business_finlynq_backup_receiver_latest_accepted_receipt_age_seconds
+        values: 100 160 220
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: BusinessFinlynqBackupReceiverHealthFailed
+        exp_alerts:
+          - exp_labels:
+              severity: high
+            exp_annotations:
+              summary: Independent backup receiver health is failing or stale
+      - eval_time: 2m
+        alertname: BusinessFinlynqBackupReceiverQuarantine
+        exp_alerts:
+          - exp_labels:
+              severity: high
+            exp_annotations:
+              summary: The independent backup receiver quarantined a completed set
+
+  - name: expected email worker that never starts alerts
+    interval: 1m
+    input_series:
+      - series: business_finlynq_auth_email_worker_expected
+        values: 1 1 1 1
+      - series: business_finlynq_auth_email_worker_heartbeat_present
+        values: 0 0 0 0
+      - series: business_finlynq_auth_email_worker_heartbeat_age_seconds
+        values: 0 0 0 0
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: BusinessFinlynqEmailWorkerStale
+        exp_alerts:
+          - exp_labels:
+              severity: high
+            exp_annotations:
+              summary: Authentication email delivery heartbeat is stale
+
+  - name: unavailable backup completion timestamp cannot suppress stale alert
+    interval: 1m
+    input_series:
+      - series: business_finlynq_scheduled_job_last_run_unixtime{job="encrypted_backup"}
+        values: -1 -1 -1 -1 -1 -1 -1
+    alert_rule_test:
+      - eval_time: 6m
+        alertname: BusinessFinlynqBackupJobStale
+        exp_alerts:
+          - exp_labels:
+              job: encrypted_backup
+              severity: high
+            exp_annotations:
+              summary: No encrypted backup has completed within the six-hour recovery threshold
+
+  - name: healthy cron fallback completion is not permanently stale
+    interval: 1m
+    input_series:
+      - series: business_finlynq_scheduled_job_last_run_unixtime{job="encrypted_backup"}
+        values: 60 60 60 60 60 60 60 60 60 60 60
+      - series: business_finlynq_scheduled_job_last_run_success{job="encrypted_backup"}
+        values: 1 1 1 1 1 1 1 1 1 1 1
+      - series: business_finlynq_scheduled_job_timer_active{job="encrypted_backup"}
+        values: 1 1 1 1 1 1 1 1 1 1 1
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: BusinessFinlynqBackupJobStale
+        exp_alerts: []
+      - eval_time: 10m
+        alertname: BusinessFinlynqBackupJobFailed
+        exp_alerts: []
+
+  - name: legacy request correlation alerts
+    interval: 1m
+    input_series:
+      - series: business_finlynq_outbox_legacy_request_ids
+        values: 0 1 1
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: BusinessFinlynqLegacyRequestCorrelation
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+            exp_annotations:
+              summary: A business outbox record retains a legacy request identifier

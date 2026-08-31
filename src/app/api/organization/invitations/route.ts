@@ -16,7 +16,7 @@ const schema = z.object({
 });
 
 export async function POST(request: NextRequest) {
-  return organizationAdminMutationRoute(async (requestId) => {
+  return organizationAdminMutationRoute(request, async (requestId) => {
     const access = await prepareOrganizationAdminMutation(request, "invite");
     if (access.response) return access.response;
     const body = await readOrganizationAdminJson(request, schema);

@@ -1,0 +1,5 @@
+services:
+  app:
+    image: ${BUSINESS_FINLYNQ_ROLLBACK_APP_IMAGE:?set BUSINESS_FINLYNQ_ROLLBACK_APP_IMAGE to the retained sha256 image ID}
+    pull_policy: never
+    build: !reset null

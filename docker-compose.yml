@@ -35,9 +35,13 @@ services:
         max-file: "5"
 
   provision_auth_worker_role:
+    image: business-finlynq-operations:${BUSINESS_FINLYNQ_IMAGE_REVISION:?set BUSINESS_FINLYNQ_IMAGE_REVISION}
+    pull_policy: never
     build:
       context: .
       target: operations
+      args:
+        BUSINESS_FINLYNQ_IMAGE_REVISION: ${BUSINESS_FINLYNQ_IMAGE_REVISION:?set BUSINESS_FINLYNQ_IMAGE_REVISION}
     command: ["/usr/local/bin/business-finlynq-provision-auth-worker-role"]
     environment:
       PGHOST: database
@@ -71,9 +75,13 @@ services:
         max-file: "3"
 
   migrate:
+    image: business-finlynq-migrator:${BUSINESS_FINLYNQ_IMAGE_REVISION:?set BUSINESS_FINLYNQ_IMAGE_REVISION}
+    pull_policy: never
     build:
       context: .
       target: migrator
+      args:
+        BUSINESS_FINLYNQ_IMAGE_REVISION: ${BUSINESS_FINLYNQ_IMAGE_REVISION:?set BUSINESS_FINLYNQ_IMAGE_REVISION}
     environment:
       BUSINESS_FINLYNQ_MIGRATION_DB_HOST: database
       BUSINESS_FINLYNQ_MIGRATION_DB_PORT: "5432"
@@ -102,9 +110,13 @@ services:
         max-file: "3"
 
   reconcile_runtime_grants:
+    image: business-finlynq-operations:${BUSINESS_FINLYNQ_IMAGE_REVISION:?set BUSINESS_FINLYNQ_IMAGE_REVISION}
+    pull_policy: never
     build:
       context: .
       target: operations
+      args:
+        BUSINESS_FINLYNQ_IMAGE_REVISION: ${BUSINESS_FINLYNQ_IMAGE_REVISION:?set BUSINESS_FINLYNQ_IMAGE_REVISION}
     command: ["/usr/local/bin/business-finlynq-reconcile-runtime-role"]
     environment:
       PGHOST: database
@@ -138,9 +150,13 @@ services:
         max-file: "3"
 
   reconcile_auth_worker_grants:
+    image: business-finlynq-operations:${BUSINESS_FINLYNQ_IMAGE_REVISION:?set BUSINESS_FINLYNQ_IMAGE_REVISION}
+    pull_policy: never
     build:
       context: .
       target: operations
+      args:
+        BUSINESS_FINLYNQ_IMAGE_REVISION: ${BUSINESS_FINLYNQ_IMAGE_REVISION:?set BUSINESS_FINLYNQ_IMAGE_REVISION}
     command: ["/usr/local/bin/business-finlynq-provision-auth-worker-role"]
     environment:
       PGHOST: database
@@ -174,9 +190,13 @@ services:
         max-file: "3"
 
   reconcile_backup_grants:
+    image: business-finlynq-operations:${BUSINESS_FINLYNQ_IMAGE_REVISION:?set BUSINESS_FINLYNQ_IMAGE_REVISION}
+    pull_policy: never
     build:
       context: .
       target: operations
+      args:
+        BUSINESS_FINLYNQ_IMAGE_REVISION: ${BUSINESS_FINLYNQ_IMAGE_REVISION:?set BUSINESS_FINLYNQ_IMAGE_REVISION}
     command: ["/usr/local/bin/business-finlynq-provision-backup-role"]
     environment:
       PGHOST: database
@@ -209,10 +229,52 @@ services:
         max-size: "10m"
         max-file: "3"
 
-  bootstrap_demo:
+  verify_database_contract:
+    image: business-finlynq-migrator:${BUSINESS_FINLYNQ_IMAGE_REVISION:?set BUSINESS_FINLYNQ_IMAGE_REVISION}
+    pull_policy: never
     build:
       context: .
       target: migrator
+      args:
+        BUSINESS_FINLYNQ_IMAGE_REVISION: ${BUSINESS_FINLYNQ_IMAGE_REVISION:?set BUSINESS_FINLYNQ_IMAGE_REVISION}
+    command:
+      - /bin/sh
+      - -ec
+      - npm run db:verify-schema && npm run journal-types:verify-db
+    environment:
+      BUSINESS_FINLYNQ_MIGRATION_DB_HOST: database
+      BUSINESS_FINLYNQ_MIGRATION_DB_PORT: "5432"
+      BUSINESS_FINLYNQ_MIGRATION_DB_NAME: business_finlynq
+      BUSINESS_FINLYNQ_MIGRATION_DB_USER: business_finlynq_owner
+      BUSINESS_FINLYNQ_MIGRATION_DB_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+    depends_on:
+      reconcile_backup_grants:
+        condition: service_completed_successfully
+    restart: "no"
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    security_opt:
+      - no-new-privileges:true
+    cap_drop: [ALL]
+    networks: [business_finlynq_private]
+    cpus: "0.75"
+    mem_limit: 768m
+    pids_limit: 128
+    logging:
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  bootstrap_demo:
+    image: business-finlynq-migrator:${BUSINESS_FINLYNQ_IMAGE_REVISION:?set BUSINESS_FINLYNQ_IMAGE_REVISION}
+    pull_policy: never
+    build:
+      context: .
+      target: migrator
+      args:
+        BUSINESS_FINLYNQ_IMAGE_REVISION: ${BUSINESS_FINLYNQ_IMAGE_REVISION:?set BUSINESS_FINLYNQ_IMAGE_REVISION}
     command: ["npm", "run", "demo:bootstrap"]
     environment:
       BUSINESS_FINLYNQ_MIGRATION_DB_HOST: database
@@ -226,7 +288,7 @@ services:
     group_add:
       - ${BUSINESS_FINLYNQ_SECRET_GID:?set BUSINESS_FINLYNQ_SECRET_GID}
     depends_on:
-      reconcile_backup_grants:
+      verify_database_contract:
         condition: service_completed_successfully
     restart: "no"
     init: true
@@ -247,9 +309,13 @@ services:
 
   reconcile_demo_sandboxes:
     profiles: [demo-maintenance]
+    image: business-finlynq-migrator:${BUSINESS_FINLYNQ_IMAGE_REVISION:?set BUSINESS_FINLYNQ_IMAGE_REVISION}
+    pull_policy: never
     build:
       context: .
       target: migrator
+      args:
+        BUSINESS_FINLYNQ_IMAGE_REVISION: ${BUSINESS_FINLYNQ_IMAGE_REVISION:?set BUSINESS_FINLYNQ_IMAGE_REVISION}
     command: ["npm", "run", "demo:reset"]
     environment:
       BUSINESS_FINLYNQ_MIGRATION_DB_HOST: database
@@ -284,6 +350,8 @@ services:
         max-file: "3"
 
   app:
+    image: business-finlynq-app:${BUSINESS_FINLYNQ_IMAGE_REVISION:?set BUSINESS_FINLYNQ_IMAGE_REVISION}
+    pull_policy: never
     build:
       context: .
       target: runner
@@ -295,10 +363,10 @@ services:
       BUSINESS_FINLYNQ_DB_NAME: business_finlynq
       BUSINESS_FINLYNQ_DB_USER: business_finlynq_app
       BUSINESS_FINLYNQ_DB_PASSWORD_FILE: /run/secrets/business_finlynq_app_db_password
-      APP_ORIGIN: https://${BUSINESS_FINLYNQ_HOSTNAME:-business.finlynq.com}
+      APP_ORIGIN: ${BUSINESS_FINLYNQ_APP_ORIGIN:-https://${BUSINESS_FINLYNQ_HOSTNAME:-business.finlynq.com}}
       TRUSTED_PROXY_HOPS: ${TRUSTED_PROXY_HOPS:-0}
-      SESSION_COOKIE_NAME: __Host-business_finlynq_session
-      DEMO_CLAIM_COOKIE_NAME: __Host-business_finlynq_demo_claim
+      SESSION_COOKIE_NAME: ${SESSION_COOKIE_NAME:-__Host-business_finlynq_session}
+      DEMO_CLAIM_COOKIE_NAME: ${DEMO_CLAIM_COOKIE_NAME:-__Host-business_finlynq_demo_claim}
       DEMO_LOGIN_ENABLED: ${DEMO_LOGIN_ENABLED:-false}
       DEMO_WRITES_ENABLED: ${DEMO_WRITES_ENABLED:-false}
       ACCOUNT_LOGIN_ENABLED: ${ACCOUNT_LOGIN_ENABLED:-false}
@@ -323,7 +391,7 @@ services:
     group_add:
       - ${BUSINESS_FINLYNQ_SECRET_GID:?set BUSINESS_FINLYNQ_SECRET_GID}
     ports:
-      - "127.0.0.1:3100:3000"
+      - "127.0.0.1:${BUSINESS_FINLYNQ_APP_PORT:-3100}:3000"
     depends_on:
       bootstrap_demo:
         condition: service_completed_successfully
@@ -349,9 +417,13 @@ services:
 
   auth_email_worker:
     profiles: [auth-email]
+    image: business-finlynq-auth-worker:${BUSINESS_FINLYNQ_IMAGE_REVISION:?set BUSINESS_FINLYNQ_IMAGE_REVISION}
+    pull_policy: never
     build:
       context: .
       target: worker
+      args:
+        BUSINESS_FINLYNQ_IMAGE_REVISION: ${BUSINESS_FINLYNQ_IMAGE_REVISION:?set BUSINESS_FINLYNQ_IMAGE_REVISION}
     command: ["node", "auth-email-worker.mjs"]
     environment:
       BUSINESS_FINLYNQ_DB_HOST: database
@@ -359,7 +431,7 @@ services:
       BUSINESS_FINLYNQ_DB_NAME: business_finlynq
       BUSINESS_FINLYNQ_DB_USER: business_finlynq_auth_worker
       BUSINESS_FINLYNQ_DB_PASSWORD_FILE: /run/secrets/business_finlynq_auth_worker_db_password
-      APP_ORIGIN: https://${BUSINESS_FINLYNQ_HOSTNAME:-business.finlynq.com}
+      APP_ORIGIN: ${BUSINESS_FINLYNQ_APP_ORIGIN:-https://${BUSINESS_FINLYNQ_HOSTNAME:-business.finlynq.com}}
       ACCOUNT_LOGIN_ENABLED: ${ACCOUNT_LOGIN_ENABLED:-false}
       AUTH_EMAIL_DELIVERY_ENABLED: ${AUTH_EMAIL_DELIVERY_ENABLED:-false}
       AUTH_EMAIL_PROVIDER: ${AUTH_EMAIL_PROVIDER:-resend}
@@ -397,9 +469,13 @@ services:
 
   invite_account:
     profiles: [account-operations]
+    image: business-finlynq-migrator:${BUSINESS_FINLYNQ_IMAGE_REVISION:?set BUSINESS_FINLYNQ_IMAGE_REVISION}
+    pull_policy: never
     build:
       context: .
       target: migrator
+      args:
+        BUSINESS_FINLYNQ_IMAGE_REVISION: ${BUSINESS_FINLYNQ_IMAGE_REVISION:?set BUSINESS_FINLYNQ_IMAGE_REVISION}
     entrypoint: ["npm", "run", "auth:invite", "--"]
     environment:
       BUSINESS_FINLYNQ_MIGRATION_DB_HOST: database
@@ -407,7 +483,7 @@ services:
       BUSINESS_FINLYNQ_MIGRATION_DB_NAME: business_finlynq
       BUSINESS_FINLYNQ_MIGRATION_DB_USER: business_finlynq_owner
       BUSINESS_FINLYNQ_MIGRATION_DB_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
-      APP_ORIGIN: https://${BUSINESS_FINLYNQ_HOSTNAME:-business.finlynq.com}
+      APP_ORIGIN: ${BUSINESS_FINLYNQ_APP_ORIGIN:-https://${BUSINESS_FINLYNQ_HOSTNAME:-business.finlynq.com}}
       AUTH_EMAIL_DELIVERY_ENABLED: ${AUTH_EMAIL_DELIVERY_ENABLED:-false}
       AUTH_EMAIL_PROVIDER: ${AUTH_EMAIL_PROVIDER:-resend}
       AUTH_EMAIL_FROM: ${AUTH_EMAIL_FROM:-}
@@ -439,9 +515,13 @@ services:
 
   grant_platform_administrator:
     profiles: [account-operations]
+    image: business-finlynq-migrator:${BUSINESS_FINLYNQ_IMAGE_REVISION:?set BUSINESS_FINLYNQ_IMAGE_REVISION}
+    pull_policy: never
     build:
       context: .
       target: migrator
+      args:
+        BUSINESS_FINLYNQ_IMAGE_REVISION: ${BUSINESS_FINLYNQ_IMAGE_REVISION:?set BUSINESS_FINLYNQ_IMAGE_REVISION}
     entrypoint: ["npm", "run", "auth:grant-platform-admin", "--"]
     environment:
       BUSINESS_FINLYNQ_MIGRATION_DB_HOST: database
@@ -516,9 +596,13 @@ services:
 
   provision_backup:
     profiles: [operations]
+    image: business-finlynq-operations:${BUSINESS_FINLYNQ_IMAGE_REVISION:?set BUSINESS_FINLYNQ_IMAGE_REVISION}
+    pull_policy: never
     build:
       context: .
       target: operations
+      args:
+        BUSINESS_FINLYNQ_IMAGE_REVISION: ${BUSINESS_FINLYNQ_IMAGE_REVISION:?set BUSINESS_FINLYNQ_IMAGE_REVISION}
     command: ["/usr/local/bin/business-finlynq-provision-backup-role"]
     environment:
       PGHOST: database
@@ -574,6 +658,7 @@ services:
       BACKUP_REQUIRE_OFFSITE: ${BACKUP_REQUIRE_OFFSITE:-false}
       BACKUP_RCLONE_REMOTE: ${BACKUP_RCLONE_REMOTE:-}
       BUSINESS_FINLYNQ_IMAGE_REVISION: ${BUSINESS_FINLYNQ_IMAGE_REVISION:-unknown}
+      BACKUP_SOURCE_APPLICATION_REVISION: ${BACKUP_SOURCE_APPLICATION_REVISION:-}
     secrets:
       - business_finlynq_backup_db_password
       - business_finlynq_backup_age_recipient
@@ -615,8 +700,8 @@ services:
     command: ["/usr/local/bin/business-finlynq-check-latest-backup"]
     environment:
       BACKUP_OUTPUT_DIR: /backups
-      BACKUP_MAX_AGE_HOURS: ${MONITOR_MAX_BACKUP_AGE_HOURS:-8}
-      BACKUP_MAX_ACTIVE_SECONDS: ${MONITOR_MAX_BACKUP_ACTIVE_SECONDS:-7200}
+      BACKUP_MAX_AGE_HOURS: ${MONITOR_MAX_BACKUP_AGE_HOURS:-6}
+      BACKUP_MAX_ACTIVE_SECONDS: ${MONITOR_MAX_BACKUP_ACTIVE_SECONDS:-4800}
       BACKUP_REQUIRE_OFFSITE_MARKER: ${MONITOR_REQUIRE_OFFSITE:-true}
     volumes:
       - type: bind
@@ -637,6 +722,43 @@ services:
       - no-new-privileges:true
     cap_drop: [ALL]
     restart: "no"
+    cpus: "0.25"
+    mem_limit: 128m
+    pids_limit: 32
+    logging:
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  verify_accounting_evidence:
+    profiles: [operations]
+    image: business-finlynq-operations:${BUSINESS_FINLYNQ_IMAGE_REVISION:?set BUSINESS_FINLYNQ_IMAGE_REVISION}
+    pull_policy: never
+    command: ["/usr/local/bin/business-finlynq-verify-accounting-evidence"]
+    environment:
+      PGHOST: database
+      PGPORT: "5432"
+      PGDATABASE: business_finlynq
+      PGUSER: business_finlynq_backup
+      ACCOUNTING_EVIDENCE_DATABASE_PASSWORD_FILE: /run/secrets/business_finlynq_backup_db_password
+    secrets:
+      - business_finlynq_backup_db_password
+    group_add:
+      - ${BUSINESS_FINLYNQ_SECRET_GID:?set BUSINESS_FINLYNQ_SECRET_GID}
+    depends_on:
+      reconcile_backup_grants:
+        condition: service_completed_successfully
+    stdin_open: false
+    tty: false
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    security_opt:
+      - no-new-privileges:true
+    cap_drop: [ALL]
+    restart: "no"
+    networks: [business_finlynq_private]
     cpus: "0.25"
     mem_limit: 128m
     pids_limit: 32
@@ -680,9 +802,13 @@ services:
 
   restore_verify:
     profiles: [restore-drill]
+    image: business-finlynq-operations:${BUSINESS_FINLYNQ_IMAGE_REVISION:?set BUSINESS_FINLYNQ_IMAGE_REVISION}
+    pull_policy: never
     build:
       context: .
       target: operations
+      args:
+        BUSINESS_FINLYNQ_IMAGE_REVISION: ${BUSINESS_FINLYNQ_IMAGE_REVISION:?set BUSINESS_FINLYNQ_IMAGE_REVISION}
     command: ["/usr/local/bin/business-finlynq-verify-restore"]
     environment:
       PGHOST: restore_database
@@ -726,9 +852,13 @@ services:
 
   restore_migrate:
     profiles: [restore-drill]
+    image: business-finlynq-migrator:${BUSINESS_FINLYNQ_IMAGE_REVISION:?set BUSINESS_FINLYNQ_IMAGE_REVISION}
+    pull_policy: never
     build:
       context: .
       target: migrator
+      args:
+        BUSINESS_FINLYNQ_IMAGE_REVISION: ${BUSINESS_FINLYNQ_IMAGE_REVISION:?set BUSINESS_FINLYNQ_IMAGE_REVISION}
     command: ["sh", "deploy/backup/run-restored-migrations.sh"]
     environment:
       BUSINESS_FINLYNQ_MIGRATION_DB_HOST: restore_database
@@ -763,9 +893,13 @@ services:
 
   restore_runtime_grants:
     profiles: [restore-drill]
+    image: business-finlynq-operations:${BUSINESS_FINLYNQ_IMAGE_REVISION:?set BUSINESS_FINLYNQ_IMAGE_REVISION}
+    pull_policy: never
     build:
       context: .
       target: operations
+      args:
+        BUSINESS_FINLYNQ_IMAGE_REVISION: ${BUSINESS_FINLYNQ_IMAGE_REVISION:?set BUSINESS_FINLYNQ_IMAGE_REVISION}
     command: ["/usr/local/bin/business-finlynq-reconcile-restored-role"]
     environment:
       PGHOST: restore_database
@@ -803,9 +937,13 @@ services:
 
   restore_auth_worker_grants:
     profiles: [restore-drill]
+    image: business-finlynq-operations:${BUSINESS_FINLYNQ_IMAGE_REVISION:?set BUSINESS_FINLYNQ_IMAGE_REVISION}
+    pull_policy: never
     build:
       context: .
       target: operations
+      args:
+        BUSINESS_FINLYNQ_IMAGE_REVISION: ${BUSINESS_FINLYNQ_IMAGE_REVISION:?set BUSINESS_FINLYNQ_IMAGE_REVISION}
     command: ["/usr/local/bin/business-finlynq-reconcile-restored-role"]
     environment:
       PGHOST: restore_database
@@ -843,9 +981,13 @@ services:
 
   restore_backup_grants:
     profiles: [restore-drill]
+    image: business-finlynq-operations:${BUSINESS_FINLYNQ_IMAGE_REVISION:?set BUSINESS_FINLYNQ_IMAGE_REVISION}
+    pull_policy: never
     build:
       context: .
       target: operations
+      args:
+        BUSINESS_FINLYNQ_IMAGE_REVISION: ${BUSINESS_FINLYNQ_IMAGE_REVISION:?set BUSINESS_FINLYNQ_IMAGE_REVISION}
     command: ["/usr/local/bin/business-finlynq-reconcile-restored-role"]
     environment:
       PGHOST: restore_database
@@ -881,11 +1023,69 @@ services:
         max-size: "10m"
         max-file: "3"
 
+  restore_accounting_verify:
+    profiles: [restore-drill]
+    image: business-finlynq-operations:${BUSINESS_FINLYNQ_IMAGE_REVISION:?set BUSINESS_FINLYNQ_IMAGE_REVISION}
+    pull_policy: never
+    build:
+      context: .
+      target: operations
+      args:
+        BUSINESS_FINLYNQ_IMAGE_REVISION: ${BUSINESS_FINLYNQ_IMAGE_REVISION:?set BUSINESS_FINLYNQ_IMAGE_REVISION}
+    command: ["/usr/local/bin/business-finlynq-verify-accounting-evidence"]
+    environment:
+      PGHOST: restore_database
+      PGPORT: "5432"
+      PGDATABASE: business_finlynq_restore_drill
+      PGUSER: business_finlynq_backup
+      ACCOUNTING_EVIDENCE_DATABASE_PASSWORD_FILE: /run/secrets/business_finlynq_backup_db_password
+      ACCOUNTING_EVIDENCE_OUTPUT_DIR: ${RESTORE_EVIDENCE_DIR:-}
+      ACCOUNTING_EVIDENCE_PHASE: post-grants-pre-bootstrap
+      RESTORE_EVIDENCE_ID: ${RESTORE_EVIDENCE_ID:-}
+      RESTORE_SELECTED_SHA256: ${RESTORE_SELECTED_SHA256:-}
+      RESTORE_SELECTED_ARCHIVE: ${RESTORE_SELECTED_ARCHIVE:-}
+    secrets:
+      - business_finlynq_backup_db_password
+    group_add:
+      - ${BUSINESS_FINLYNQ_SECRET_GID:?set BUSINESS_FINLYNQ_SECRET_GID}
+    user: "70:70"
+    volumes:
+      - type: bind
+        source: ${BACKUP_LOCAL_DIR:-./.backups}
+        target: /backups
+        bind:
+          create_host_path: false
+    depends_on:
+      restore_backup_grants:
+        condition: service_completed_successfully
+    stdin_open: false
+    tty: false
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    security_opt:
+      - no-new-privileges:true
+    cap_drop: [ALL]
+    restart: "no"
+    networks: [business_finlynq_restore_drill]
+    cpus: "0.25"
+    mem_limit: 128m
+    pids_limit: 32
+    logging:
+      options:
+        max-size: "10m"
+        max-file: "3"
+
   restore_demo_bootstrap:
     profiles: [restore-drill]
+    image: business-finlynq-migrator:${BUSINESS_FINLYNQ_IMAGE_REVISION:?set BUSINESS_FINLYNQ_IMAGE_REVISION}
+    pull_policy: never
     build:
       context: .
       target: migrator
+      args:
+        BUSINESS_FINLYNQ_IMAGE_REVISION: ${BUSINESS_FINLYNQ_IMAGE_REVISION:?set BUSINESS_FINLYNQ_IMAGE_REVISION}
     command:
       - sh
       - -c
@@ -923,9 +1123,13 @@ services:
 
   restore_key_verify:
     profiles: [restore-drill]
+    image: business-finlynq-migrator:${BUSINESS_FINLYNQ_IMAGE_REVISION:?set BUSINESS_FINLYNQ_IMAGE_REVISION}
+    pull_policy: never
     build:
       context: .
       target: migrator
+      args:
+        BUSINESS_FINLYNQ_IMAGE_REVISION: ${BUSINESS_FINLYNQ_IMAGE_REVISION:?set BUSINESS_FINLYNQ_IMAGE_REVISION}
     command:
       - sh
       - -c
@@ -938,15 +1142,29 @@ services:
       ORGANIZATION_ROOT_KEK_FILE: /run/secrets/business_finlynq_root_kek
       IDENTITY_SECRET_FILE: /run/secrets/business_finlynq_identity_secret
       RESTORE_REQUIRE_WRAPPED_KEYS: ${RESTORE_REQUIRE_WRAPPED_KEYS:-true}
-      RESTORE_REQUIRE_ENCRYPTED_IDENTITIES: ${RESTORE_REQUIRE_ENCRYPTED_IDENTITIES:-false}
+      RESTORE_ALLOW_EMPTY_SECRET_FIXTURES: ${RESTORE_ALLOW_EMPTY_SECRET_FIXTURES:-false}
+      RESTORE_EVIDENCE_DIR: ${RESTORE_EVIDENCE_DIR:-}
+      RESTORE_EVIDENCE_ID: ${RESTORE_EVIDENCE_ID:-}
+      RESTORE_SELECTED_SHA256: ${RESTORE_SELECTED_SHA256:-}
+      RESTORE_SELECTED_ARCHIVE: ${RESTORE_SELECTED_ARCHIVE:-}
     secrets:
       - business_finlynq_restore_db_password
       - business_finlynq_root_kek
       - business_finlynq_identity_secret
     group_add:
       - ${BUSINESS_FINLYNQ_SECRET_GID:?set BUSINESS_FINLYNQ_SECRET_GID}
+    # The operations verifier creates /backups/restore-reports as uid 70 with
+    # a private umask. Use that same non-root uid for the Node key verifier so
+    # the first drill can append its evidence without relaxing the directory.
+    user: "70:70"
+    volumes:
+      - type: bind
+        source: ${BACKUP_LOCAL_DIR:-./.backups}
+        target: /backups
+        bind:
+          create_host_path: false
     depends_on:
-      restore_backup_grants:
+      restore_accounting_verify:
         condition: service_completed_successfully
     init: true
     read_only: true
@@ -967,9 +1185,13 @@ services:
 
   restore_app:
     profiles: [restore-drill]
+    image: business-finlynq-app:${BUSINESS_FINLYNQ_IMAGE_REVISION:?set BUSINESS_FINLYNQ_IMAGE_REVISION}
+    pull_policy: never
     build:
       context: .
       target: runner
+      args:
+        BUSINESS_FINLYNQ_IMAGE_REVISION: ${BUSINESS_FINLYNQ_IMAGE_REVISION:?set BUSINESS_FINLYNQ_IMAGE_REVISION}
     environment:
       BUSINESS_FINLYNQ_DB_HOST: restore_database
       BUSINESS_FINLYNQ_DB_PORT: "5432"
@@ -1029,9 +1251,13 @@ services:
 
   restore_runtime_verify:
     profiles: [restore-drill]
+    image: business-finlynq-operations:${BUSINESS_FINLYNQ_IMAGE_REVISION:?set BUSINESS_FINLYNQ_IMAGE_REVISION}
+    pull_policy: never
     build:
       context: .
       target: operations
+      args:
+        BUSINESS_FINLYNQ_IMAGE_REVISION: ${BUSINESS_FINLYNQ_IMAGE_REVISION:?set BUSINESS_FINLYNQ_IMAGE_REVISION}
     command: ["/usr/local/bin/business-finlynq-verify-restored-runtime"]
     environment:
       PGHOST: restore_database
@@ -1044,12 +1270,23 @@ services:
       RESTORE_EXPECTED_APP_ORIGIN: https://${BUSINESS_FINLYNQ_HOSTNAME:-business.finlynq.com}
       RESTORE_ALLOWED_HOST: restore_database
       RESTORE_CONFIRM_DISPOSABLE: business-finlynq-restore-drill
+      RESTORE_EVIDENCE_DIR: ${RESTORE_EVIDENCE_DIR:-}
+      RESTORE_EVIDENCE_ID: ${RESTORE_EVIDENCE_ID:-}
+      RESTORE_SELECTED_SHA256: ${RESTORE_SELECTED_SHA256:-}
+      RESTORE_SELECTED_ARCHIVE: ${RESTORE_SELECTED_ARCHIVE:-}
+      RESTORE_DRILL_STARTED_AT: ${RESTORE_DRILL_STARTED_AT:-}
     secrets:
       - business_finlynq_app_db_password
       - business_finlynq_auth_worker_db_password
       - business_finlynq_backup_db_password
     group_add:
       - ${BUSINESS_FINLYNQ_SECRET_GID:?set BUSINESS_FINLYNQ_SECRET_GID}
+    volumes:
+      - type: bind
+        source: ${BACKUP_LOCAL_DIR:-./.backups}
+        target: /backups
+        bind:
+          create_host_path: false
     depends_on:
       restore_app:
         condition: service_healthy
@@ -1065,6 +1302,54 @@ services:
     cpus: "0.25"
     mem_limit: 128m
     pids_limit: 64
+    logging:
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  restore_evidence:
+    profiles: [restore-drill]
+    image: business-finlynq-operations:${BUSINESS_FINLYNQ_IMAGE_REVISION:?set BUSINESS_FINLYNQ_IMAGE_REVISION}
+    pull_policy: never
+    command: ["/usr/local/bin/business-finlynq-record-restore-evidence"]
+    environment:
+      BACKUP_OUTPUT_DIR: /backups
+      BACKUP_MANIFEST: ${RESTORE_BACKUP_MANIFEST:-}
+      RESTORE_DRILL_STARTED_AT: ${RESTORE_DRILL_STARTED_AT:-}
+      RESTORE_DRILL_COMPLETED_AT: ${RESTORE_DRILL_COMPLETED_AT:-}
+      RESTORE_RPO_SECONDS: ${RESTORE_RPO_SECONDS:-21600}
+      RESTORE_RTO_SECONDS: ${RESTORE_RTO_SECONDS:-14400}
+      RESTORE_REQUIRE_OFFSITE_EVIDENCE: ${RESTORE_REQUIRE_OFFSITE_EVIDENCE:-true}
+      RESTORE_ALLOW_EMPTY_SECRET_FIXTURES: ${RESTORE_ALLOW_EMPTY_SECRET_FIXTURES:-false}
+      BACKUP_RECEIVER_RECEIPT_PUBLIC_KEY_FILE: /run/secrets/business_finlynq_backup_receiver_receipt_public_key
+      BACKUP_RECEIVER_RECEIPT_PUBLIC_KEY_SHA256: ${BACKUP_RECEIVER_RECEIPT_PUBLIC_KEY_SHA256:-}
+      BUSINESS_FINLYNQ_IMAGE_REVISION: ${BUSINESS_FINLYNQ_IMAGE_REVISION:?set BUSINESS_FINLYNQ_IMAGE_REVISION}
+      RESTORE_APP_IMAGE_ID: ${RESTORE_APP_IMAGE_ID:-}
+      RESTORE_MIGRATOR_IMAGE_ID: ${RESTORE_MIGRATOR_IMAGE_ID:-}
+      RESTORE_OPERATIONS_IMAGE_ID: ${RESTORE_OPERATIONS_IMAGE_ID:-}
+    secrets:
+      - business_finlynq_backup_receiver_receipt_public_key
+    volumes:
+      - type: bind
+        source: ${BACKUP_LOCAL_DIR:-./.backups}
+        target: /backups
+        bind:
+          create_host_path: false
+    network_mode: none
+    user: "70:70"
+    stdin_open: false
+    tty: false
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    security_opt:
+      - no-new-privileges:true
+    cap_drop: [ALL]
+    restart: "no"
+    cpus: "0.25"
+    mem_limit: 128m
+    pids_limit: 32
     logging:
       options:
         max-size: "10m"
@@ -1101,6 +1386,8 @@ secrets:
     file: ${BACKUP_RECEIVER_SSH_PRIVATE_KEY_FILE:-./deploy/backup/not-configured}
   business_finlynq_backup_receiver_known_hosts:
     file: ${BACKUP_RECEIVER_KNOWN_HOSTS_FILE:-./deploy/backup/not-configured}
+  business_finlynq_backup_receiver_receipt_public_key:
+    file: ${BACKUP_RECEIVER_RECEIPT_PUBLIC_KEY_FILE:-./deploy/backup/not-configured}
   business_finlynq_backup_age_identity:
     file: ${BACKUP_AGE_IDENTITY_FILE:-./deploy/backup/not-configured}
   business_finlynq_restore_db_password:

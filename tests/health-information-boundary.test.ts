@@ -67,7 +67,7 @@ afterAll(() => {
 
 describe("health information boundary", () => {
   it("keeps public liveness minimal and non-cacheable", async () => {
-    const response = await live();
+    const response = await live(new NextRequest("https://business.finlynq.com/api/live"));
 
     expect(response.status).toBe(200);
     expect(response.headers.get("cache-control")).toBe("no-store");
@@ -143,14 +143,12 @@ describe("health information boundary", () => {
       expect(response.status).toBe(503);
       await expect(response.json()).resolves.toEqual({ status: "unavailable" });
       expect(log).toHaveBeenCalledOnce();
-      expect(log).toHaveBeenCalledWith(
-        "Business Finlynq route failure",
-        {
-          operation: "health-readiness",
-          requestId: expect.stringMatching(/^[0-9a-f-]{36}$/),
-          errorType: "Error",
-        },
-      );
+      expect(JSON.parse(String(log.mock.calls[0]?.[0]))).toEqual({
+        event: "route.failure",
+        operation: "health-readiness",
+        requestId: expect.stringMatching(/^[0-9a-f-]{36}$/),
+        errorType: "Error",
+      });
       const serializedLog = JSON.stringify(log.mock.calls);
       expect(serializedLog).not.toContain("sensitive internal failure");
       expect(serializedLog).not.toMatch(/\bat\s+.+:\d+:\d+/);
@@ -183,10 +181,14 @@ describe("health information boundary", () => {
 
     expect(monitor).toContain('"$MONITOR_BASE_URL/api/live"');
     expect(monitor).toContain('"$MONITOR_BASE_URL/api/health"');
+    expect(monitor).toContain("X-Business-Finlynq-Internal-Health: 1");
+    expect(monitor).toContain("X-Business-Finlynq-Internal-Metrics: 1");
+    expect(monitor).toContain('"X-Request-Id: $spoofed_request_id"');
+    expect(monitor).toContain('"$MONITOR_BASE_URL/api/metrics"');
     expect(monitor).toContain('keys == ["status"] and .status == "ready"');
     expect(monitor).toContain('"http://127.0.0.1:3100/api/health"');
     expect(monitor).toContain("--header 'X-Business-Finlynq-Internal-Health: 1'");
-    expect(compose).toContain('"127.0.0.1:3100:3000"');
+    expect(compose).toContain('"127.0.0.1:${BUSINESS_FINLYNQ_APP_PORT:-3100}:3000"');
     expect(healthRoute).not.toMatch(/x-forwarded-for|x-real-ip/i);
   });
 });

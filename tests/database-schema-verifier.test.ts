@@ -14,6 +14,7 @@ import {
   informationSchemaColumnType,
   loadMigrationOwnedConstraintContract,
   loadLatestJournalSnapshot,
+  migrationConnectionConfig,
   normalizeColumnDefault,
   normalizeCheckExpression,
   normalizePostgresConstraintIdentifier,
@@ -189,6 +190,37 @@ afterEach(() => {
 });
 
 describe("database schema verifier", () => {
+  it("builds a migration-owner connection from individual environment settings", () => {
+    expect(migrationConnectionConfig({
+      NODE_ENV: "test",
+      BUSINESS_FINLYNQ_MIGRATION_DB_HOST: " database ",
+      BUSINESS_FINLYNQ_MIGRATION_DB_NAME: " business_finlynq ",
+      BUSINESS_FINLYNQ_MIGRATION_DB_USER: " business_finlynq_owner ",
+      BUSINESS_FINLYNQ_MIGRATION_DB_PASSWORD: "owner-password",
+      BUSINESS_FINLYNQ_MIGRATION_DB_PORT: "5433",
+    })).toEqual({
+      database: "business_finlynq",
+      host: "database",
+      password: "owner-password",
+      port: 5433,
+      user: "business_finlynq_owner",
+    });
+  });
+
+  it("prefers an explicit migration URL and rejects an incomplete individual configuration", () => {
+    expect(migrationConnectionConfig({
+      NODE_ENV: "test",
+      DATABASE_MIGRATION_URL: "postgresql://owner:redacted@database/business_finlynq",
+      BUSINESS_FINLYNQ_MIGRATION_DB_HOST: "ignored",
+    })).toEqual({
+      connectionString: "postgresql://owner:redacted@database/business_finlynq",
+    });
+    expect(() => migrationConnectionConfig({
+      NODE_ENV: "test",
+      BUSINESS_FINLYNQ_MIGRATION_DB_HOST: "database",
+    })).toThrow(/complete BUSINESS_FINLYNQ_MIGRATION_DB_\*/);
+  });
+
   it("removes PUBLIC object and default privileges before applying the runtime allowlist", () => {
     expect(runtimeRoleReconciler).toContain(
       "REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA public FROM PUBLIC",
@@ -706,7 +738,7 @@ describe("database schema verifier", () => {
       }),
       { checks: 0, foreignKeys: 0, indexes: 0, uniqueConstraints: 0 },
     );
-    expect(counts).toEqual({ checks: 174, foreignKeys: 106, indexes: 116, uniqueConstraints: 53 });
+    expect(counts).toEqual({ checks: 177, foreignKeys: 107, indexes: 123, uniqueConstraints: 54 });
     expect(migrationContract.get("bank_connections")?.checks.get("bank_connections_provider_check"))
       .toMatchObject({ expression: "provider='SIMPLEFIN'" });
     expect(migrationContract.get("bank_match_allocations")?.checks.get("bank_match_allocations_command_hash_sha256"))

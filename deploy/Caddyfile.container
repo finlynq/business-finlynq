@@ -17,18 +17,27 @@
 		# Only direct private-network/loopback probes may request the detailed
 		# readiness payload. Remove any client attempt before proxying.
 		header_up -X-Business-Finlynq-Internal-Health
+		header_up -X-Business-Finlynq-Internal-Metrics
+		# Overwrite every client-supplied correlation value at the public edge.
+		header_up -X-Request-Id
+		header_up X-Request-Id {http.request.uuid}
 		health_uri /api/health
 		health_interval 30s
 		health_timeout 5s
 	}
 
 	header {
+		X-Request-Id "{http.request.uuid}"
 		Strict-Transport-Security "max-age=31536000; includeSubDomains"
 		X-Content-Type-Options "nosniff"
 		X-Frame-Options "DENY"
 		Referrer-Policy "strict-origin-when-cross-origin"
 		-Server
 	}
+
+	# Bind the access event to the same edge UUID sent upstream and returned by
+	# the application. Never use the untrusted inbound header as correlation.
+	log_append request_id {http.request.uuid}
 
 	log {
 		output stdout

@@ -1,0 +1,22 @@
+[Unit]
+Description=Verify Business Finlynq immutable accounting evidence
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+OnFailure=business-finlynq-monitor-notify@%n.service
+
+[Service]
+Type=oneshot
+Group=deploy
+WorkingDirectory=/home/deploy/business-finlynq
+EnvironmentFile=/etc/business-finlynq/operations.env
+StateDirectory=business-finlynq
+StateDirectoryMode=0775
+ExecCondition=/bin/bash /home/deploy/business-finlynq/deploy/systemd/check-scheduler-boundary.sh
+ExecStart=/bin/bash /home/deploy/business-finlynq/deploy/monitoring/run-accounting-evidence-check.sh
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=read-only
+TimeoutStartSec=16m

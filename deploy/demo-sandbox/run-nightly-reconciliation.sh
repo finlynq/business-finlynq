@@ -5,7 +5,7 @@ umask 077
 
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 repository_root="$(cd -- "$script_dir/../.." && pwd -P)"
-lock_file="${DEMO_RESET_LOCK_FILE:-/run/lock/business-finlynq-demo-reset.lock}"
+lock_file="${DEMO_RESET_LOCK_FILE:-/home/deploy/.local/state/business-finlynq/cron/demo-sandbox-maintenance.lock}"
 
 command -v flock >/dev/null 2>&1 || {
   printf '%s\n' "flock is required for demo-sandbox maintenance" >&2

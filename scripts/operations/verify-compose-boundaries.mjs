@@ -28,6 +28,7 @@ const workerDatabaseSecret = "business_finlynq_auth_worker_db_password";
 const backupDatabaseSecret = "business_finlynq_backup_db_password";
 const backupReceiverPrivateKeySecret = "business_finlynq_backup_receiver_ssh_private_key";
 const backupReceiverKnownHostsSecret = "business_finlynq_backup_receiver_known_hosts";
+const backupReceiverReceiptPublicKey = "business_finlynq_backup_receiver_receipt_public_key";
 const rootKekSecret = "business_finlynq_root_kek";
 
 function secretSources(service) {
@@ -81,6 +82,28 @@ if ((worker.networks ?? {}).business_finlynq_edge) fail("auth_email_worker is at
 
 const app = services.app;
 if (!app) fail("app service is missing");
+const expectedReleaseImages = {
+  app: `business-finlynq-app:${process.env.BUSINESS_FINLYNQ_IMAGE_REVISION}`,
+  auth_email_worker: `business-finlynq-auth-worker:${process.env.BUSINESS_FINLYNQ_IMAGE_REVISION}`,
+  backup: `business-finlynq-operations:${process.env.BUSINESS_FINLYNQ_IMAGE_REVISION}`,
+  bootstrap_demo: `business-finlynq-migrator:${process.env.BUSINESS_FINLYNQ_IMAGE_REVISION}`,
+  migrate: `business-finlynq-migrator:${process.env.BUSINESS_FINLYNQ_IMAGE_REVISION}`,
+  provision_auth_worker_role: `business-finlynq-operations:${process.env.BUSINESS_FINLYNQ_IMAGE_REVISION}`,
+  provision_backup: `business-finlynq-operations:${process.env.BUSINESS_FINLYNQ_IMAGE_REVISION}`,
+  reconcile_auth_worker_grants: `business-finlynq-operations:${process.env.BUSINESS_FINLYNQ_IMAGE_REVISION}`,
+  reconcile_backup_grants: `business-finlynq-operations:${process.env.BUSINESS_FINLYNQ_IMAGE_REVISION}`,
+  reconcile_runtime_grants: `business-finlynq-operations:${process.env.BUSINESS_FINLYNQ_IMAGE_REVISION}`,
+  verify_database_contract: `business-finlynq-migrator:${process.env.BUSINESS_FINLYNQ_IMAGE_REVISION}`,
+};
+for (const [serviceName, expectedImage] of Object.entries(expectedReleaseImages)) {
+  const service = services[serviceName];
+  if (!service) fail(`commit-addressed release service is missing: ${serviceName}`);
+  if (service.image !== expectedImage) fail(`${serviceName} is not tagged with the full release revision`);
+  if (service.pull_policy !== "never") fail(`${serviceName} may pull or replace its reviewed release image`);
+  if (service.build?.args?.BUSINESS_FINLYNQ_IMAGE_REVISION !== process.env.BUSINESS_FINLYNQ_IMAGE_REVISION) {
+    fail(`${serviceName} does not embed the full release revision in its OCI label`);
+  }
+}
 if (app.build?.args?.BUSINESS_FINLYNQ_IMAGE_REVISION !== process.env.BUSINESS_FINLYNQ_IMAGE_REVISION) {
   fail("app image build does not embed the configured release revision");
 }
@@ -131,8 +154,26 @@ if ((backupReconciler.ports ?? []).length > 0) fail("backup-role reconciler publ
 if (Object.keys(backupReconciler.networks ?? {}).join(",") !== "business_finlynq_private") {
   fail("backup-role reconciler is not isolated to the private database network");
 }
-if (dependencyCondition(services.bootstrap_demo, "reconcile_backup_grants") !== "service_completed_successfully") {
-  fail("demo bootstrap can start before grant reconciliation completes");
+const databaseContractVerifier = services.verify_database_contract;
+if (!databaseContractVerifier) fail("pre-traffic database contract verifier is missing");
+if (dependencyCondition(databaseContractVerifier, "reconcile_backup_grants") !== "service_completed_successfully") {
+  fail("database contract verification can start before all grant reconciliations complete");
+}
+if ((databaseContractVerifier.command ?? []).join(" ") !== "/bin/sh -ec npm run db:verify-schema && npm run journal-types:verify-db") {
+  fail("database contract verifier does not run both exact schema/grant and journal registry checks");
+}
+if (databaseContractVerifier.environment?.BUSINESS_FINLYNQ_MIGRATION_DB_USER !== "business_finlynq_owner") {
+  fail("database contract verifier is not bound to the migration owner");
+}
+if (Object.keys(databaseContractVerifier.networks ?? {}).join(",") !== "business_finlynq_private") {
+  fail("database contract verifier is not isolated to the private database network");
+}
+if ((databaseContractVerifier.ports ?? []).length > 0 || databaseContractVerifier.read_only !== true
+  || databaseContractVerifier.restart !== "no" || !(databaseContractVerifier.cap_drop ?? []).includes("ALL")) {
+  fail("database contract verifier is not a hardened one-shot");
+}
+if (dependencyCondition(services.bootstrap_demo, "verify_database_contract") !== "service_completed_successfully") {
+  fail("demo bootstrap can start before schema, journal, and grant verification completes");
 }
 
 const backup = services.backup;
@@ -215,6 +256,38 @@ if (!/target: \/backups\s+read_only: true\s+bind:\s+create_host_path: false/.tes
   fail("latest-backup verifier can create a missing host backup path");
 }
 
+const accountingEvidenceVerifier = services.verify_accounting_evidence;
+if (!accountingEvidenceVerifier) fail("accounting-evidence verifier service is missing");
+if (accountingEvidenceVerifier.image !== expectedOperationsImage
+  || accountingEvidenceVerifier.pull_policy !== "never") {
+  fail("accounting-evidence verifier is not pinned to the reviewed operations image");
+}
+if ((accountingEvidenceVerifier.command ?? []).join(" ")
+  !== "/usr/local/bin/business-finlynq-verify-accounting-evidence") {
+  fail("accounting-evidence verifier does not run the reviewed checker");
+}
+if (accountingEvidenceVerifier.environment?.PGUSER !== "business_finlynq_backup"
+  || accountingEvidenceVerifier.environment?.ACCOUNTING_EVIDENCE_DATABASE_PASSWORD_FILE
+    !== "/run/secrets/business_finlynq_backup_db_password") {
+  fail("accounting-evidence verifier is not bound to the read-only backup role");
+}
+if (secretSources(accountingEvidenceVerifier).join(",") !== backupDatabaseSecret) {
+  fail("accounting-evidence verifier receives credentials beyond the backup role");
+}
+if (Object.keys(accountingEvidenceVerifier.networks ?? {}).join(",") !== "business_finlynq_private"
+  || (accountingEvidenceVerifier.ports ?? []).length > 0) {
+  fail("accounting-evidence verifier is not isolated to the private database network");
+}
+if (accountingEvidenceVerifier.read_only !== true || accountingEvidenceVerifier.restart !== "no"
+  || !(accountingEvidenceVerifier.cap_drop ?? []).includes("ALL")
+  || accountingEvidenceVerifier.stdin_open === true || accountingEvidenceVerifier.tty === true) {
+  fail("accounting-evidence verifier is not a hardened noninteractive one-shot");
+}
+if (dependencyCondition(accountingEvidenceVerifier, "reconcile_backup_grants")
+  !== "service_completed_successfully") {
+  fail("accounting-evidence verifier can run before backup-role reconciliation");
+}
+
 if (services.reset_demo_sandboxes) fail("incremental demo reset service must not exist");
 for (const [name, expectedMode] of [["reconcile_demo_sandboxes", "nightly"]]) {
   const service = services[name];
@@ -244,6 +317,12 @@ for (const [name, expectedMode] of [["reconcile_demo_sandboxes", "nightly"]]) {
 }
 
 for (const [name, service] of Object.entries(services).filter(([serviceName]) => serviceName.startsWith("restore_"))) {
+  if (name === "restore_evidence") {
+    if (service.network_mode !== "none" || Object.keys(service.networks ?? {}).length > 0) {
+      fail("restore_evidence has network access");
+    }
+    continue;
+  }
   const networkNames = Object.keys(service.networks ?? {});
   if (networkNames.length !== 1 || networkNames[0] !== "business_finlynq_restore_drill") {
     fail(`${name} is not isolated to the restore-drill network`);
@@ -291,8 +370,40 @@ const expectedRestoreDemoSecrets = ["business_finlynq_restore_db_password", root
 if (restoreDemoSecrets.join(",") !== expectedRestoreDemoSecrets.join(",")) {
   fail("restore demo bootstrap receives credentials outside the restore owner and wrapping key");
 }
-if (dependencyCondition(services.restore_key_verify, "restore_backup_grants") !== "service_completed_successfully") {
-  fail("restore key verification can race archive restore or role reconciliation");
+const restoreAccountingVerifier = services.restore_accounting_verify;
+if (!restoreAccountingVerifier) fail("pre-bootstrap restored accounting verifier is missing");
+if (restoreAccountingVerifier.image !== expectedOperationsImage
+  || restoreAccountingVerifier.pull_policy !== "never"
+  || (restoreAccountingVerifier.command ?? []).join(" ")
+    !== "/usr/local/bin/business-finlynq-verify-accounting-evidence") {
+  fail("pre-bootstrap restored accounting verifier is not the reviewed operations checker");
+}
+if (dependencyCondition(restoreAccountingVerifier, "restore_backup_grants")
+  !== "service_completed_successfully") {
+  fail("pre-bootstrap accounting verification can run before grant reconciliation");
+}
+if (restoreAccountingVerifier.environment?.PGUSER !== "business_finlynq_backup"
+  || restoreAccountingVerifier.environment?.ACCOUNTING_EVIDENCE_DATABASE_PASSWORD_FILE
+    !== "/run/secrets/business_finlynq_backup_db_password"
+  || restoreAccountingVerifier.environment?.ACCOUNTING_EVIDENCE_PHASE
+    !== "post-grants-pre-bootstrap") {
+  fail("pre-bootstrap accounting verification is not bound to its read-only phase contract");
+}
+if (secretSources(restoreAccountingVerifier).join(",") !== backupDatabaseSecret) {
+  fail("pre-bootstrap accounting verification receives credentials beyond the backup role");
+}
+if (restoreAccountingVerifier.user !== "70:70" || restoreAccountingVerifier.read_only !== true
+  || restoreAccountingVerifier.restart !== "no"
+  || !(restoreAccountingVerifier.cap_drop ?? []).includes("ALL")
+  || restoreAccountingVerifier.stdin_open === true || restoreAccountingVerifier.tty === true) {
+  fail("pre-bootstrap accounting verification is not a hardened noninteractive one-shot");
+}
+if (dependencyCondition(services.restore_key_verify, "restore_accounting_verify")
+  !== "service_completed_successfully") {
+  fail("restore key verification can run before retained pre-bootstrap accounting evidence");
+}
+if (services.restore_key_verify?.environment?.RESTORE_ALLOW_EMPTY_SECRET_FIXTURES !== "false") {
+  fail("production restore key verification enables the empty-fixture diagnostic escape by default");
 }
 if (dependencyCondition(services.restore_runtime_verify, "restore_app") !== "service_healthy") {
   fail("restored runtime acceptance can run before the restored app is healthy");
@@ -310,6 +421,57 @@ if (services.restore_runtime_verify?.environment?.BACKUP_DATABASE_PASSWORD_FILE 
 }
 if (!secretSources(services.restore_runtime_verify).includes(backupDatabaseSecret)) {
   fail("restored runtime acceptance does not mount the backup-role credential");
+}
+for (const serviceName of ["restore_accounting_verify", "restore_key_verify", "restore_runtime_verify"]) {
+  const evidenceMount = (services[serviceName]?.volumes ?? [])
+    .find((volume) => typeof volume === "object" && volume.target === "/backups");
+  if (!evidenceMount || evidenceMount.type !== "bind" || evidenceMount.read_only === true
+    || evidenceMount.bind?.create_host_path !== false) {
+    fail(`${serviceName} cannot safely write explicit restore evidence`);
+  }
+  const evidenceEnvironmentKey = serviceName === "restore_accounting_verify"
+    ? "ACCOUNTING_EVIDENCE_OUTPUT_DIR"
+    : "RESTORE_EVIDENCE_DIR";
+  if (services[serviceName]?.environment?.[evidenceEnvironmentKey] !== "") {
+    fail(`${serviceName} enables restore evidence outside the guarded drill wrapper`);
+  }
+}
+const restoreEvidence = services.restore_evidence;
+if (!restoreEvidence) fail("restore-objective evidence service is missing");
+if (restoreEvidence.image !== expectedOperationsImage || restoreEvidence.pull_policy !== "never") {
+  fail("restore-objective evidence does not use the reviewed operations image");
+}
+if ((restoreEvidence.command ?? []).join(" ")
+  !== "/usr/local/bin/business-finlynq-record-restore-evidence") {
+  fail("restore-objective evidence does not run the reviewed recorder");
+}
+if (restoreEvidence.environment?.RESTORE_ALLOW_EMPTY_SECRET_FIXTURES !== "false") {
+  fail("restore-objective evidence enables the empty-secret-fixture diagnostic escape by default");
+}
+if (secretSources(restoreEvidence).join(",") !== backupReceiverReceiptPublicKey) {
+  fail("restore-objective evidence receives anything other than the pinned public receipt-verification key");
+}
+if (restoreEvidence.environment?.BACKUP_RECEIVER_RECEIPT_PUBLIC_KEY_FILE
+  !== "/run/secrets/business_finlynq_backup_receiver_receipt_public_key") {
+  fail("restore-objective evidence does not read the pinned receiver receipt public key from its mounted file");
+}
+const receiptPublicKeyConsumers = Object.entries(services)
+  .filter(([, service]) => secretSources(service).includes(backupReceiverReceiptPublicKey))
+  .map(([name]) => name)
+  .sort();
+if (receiptPublicKeyConsumers.join(",") !== "restore_evidence") {
+  fail(`receiver receipt public key consumers must be only restore_evidence; found ${receiptPublicKeyConsumers.join(",") || "none"}`);
+}
+if (restoreEvidence.user !== "70:70" || restoreEvidence.read_only !== true
+  || restoreEvidence.restart !== "no" || !(restoreEvidence.cap_drop ?? []).includes("ALL")
+  || restoreEvidence.stdin_open === true || restoreEvidence.tty === true) {
+  fail("restore-objective evidence is not a hardened noninteractive one-shot");
+}
+const restoreEvidenceMount = (restoreEvidence.volumes ?? [])
+  .find((volume) => typeof volume === "object" && volume.target === "/backups");
+if (!restoreEvidenceMount || restoreEvidenceMount.type !== "bind"
+  || restoreEvidenceMount.read_only === true || restoreEvidenceMount.bind?.create_host_path !== false) {
+  fail("restore-objective evidence cannot safely write its report");
 }
 
 const rollbackRendered = execFileSync(
@@ -390,6 +552,74 @@ for (const disabledFlag of ["DEMO_LOGIN_ENABLED", "DEMO_WRITES_ENABLED", "ACCOUN
 if ((rehearsalVerify.secrets ?? []).length > 0) fail("legacy restore verifier receives a secret");
 if (dependencyCondition(rehearsalVerify, "rollback_rehearsal_app") !== "service_healthy") {
   fail("legacy restore verification can run before the hard-pinned app is healthy");
+}
+
+const releaseRehearsalProject = "business-finlynq-rehearsal-contract";
+const releaseRehearsalRendered = execFileSync(
+  "docker",
+  [
+    "compose",
+    "--project-name", releaseRehearsalProject,
+    "-f", "docker-compose.yml",
+    "-f", "deploy/release/docker-compose.rehearsal.yml",
+    "--profile", "operations",
+    "--profile", "auth-email",
+    "config",
+    "--format", "json",
+  ],
+  {
+    encoding: "utf8",
+    maxBuffer: 16 * 1024 * 1024,
+    env: {
+      ...process.env,
+      BACKUP_LOCAL_DIR: "/tmp/business-finlynq-release-evidence/rehearsal-backup",
+      BACKUP_REQUIRE_OFFSITE: "false",
+      BUSINESS_FINLYNQ_APP_ORIGIN: "http://127.0.0.1:3311",
+      BUSINESS_FINLYNQ_APP_PORT: "3311",
+      DEMO_CLAIM_COOKIE_NAME: "business_finlynq_rehearsal_claim",
+      MONITOR_BACKUP_DIR: "/tmp/business-finlynq-release-evidence/rehearsal-backup",
+      MONITOR_REQUIRE_OFFSITE: "false",
+      RELEASE_REHEARSAL_PROJECT: releaseRehearsalProject,
+      SESSION_COOKIE_NAME: "business_finlynq_rehearsal_session",
+    },
+  },
+);
+const releaseRehearsal = JSON.parse(releaseRehearsalRendered);
+for (const resource of [
+  ...Object.values(releaseRehearsal.volumes ?? {}),
+  ...Object.values(releaseRehearsal.networks ?? {}),
+]) {
+  if (!resource.name?.startsWith(`${releaseRehearsalProject}-`)) {
+    fail(`release rehearsal resource is not run-isolated: ${resource.name ?? "unnamed"}`);
+  }
+}
+const rehearsalAppPort = (releaseRehearsal.services?.app?.ports ?? []).find((port) => port.target === 3000);
+if (rehearsalAppPort?.host_ip !== "127.0.0.1" || rehearsalAppPort?.published !== "3311") {
+  fail("release rehearsal app is not restricted to its unique loopback port");
+}
+
+const rollbackImageId = `sha256:${"b".repeat(64)}`;
+const applicationRollbackRendered = execFileSync(
+  "docker",
+  [
+    "compose",
+    "-f", "docker-compose.yml",
+    "-f", "deploy/release/docker-compose.application-rollback.yml",
+    "config",
+    "--format", "json",
+  ],
+  {
+    encoding: "utf8",
+    maxBuffer: 16 * 1024 * 1024,
+    env: { ...process.env, BUSINESS_FINLYNQ_ROLLBACK_APP_IMAGE: rollbackImageId },
+  },
+);
+const applicationRollbackApp = JSON.parse(applicationRollbackRendered).services?.app;
+if (applicationRollbackApp?.image !== rollbackImageId || applicationRollbackApp?.build) {
+  fail("application rollback override does not select only the retained immutable image ID");
+}
+if (applicationRollbackApp?.pull_policy !== "never") {
+  fail("application rollback override may pull an unreviewed image");
 }
 
 process.stdout.write("Compose credential and network boundaries verified\n");

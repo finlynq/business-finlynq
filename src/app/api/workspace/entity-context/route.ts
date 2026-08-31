@@ -1,8 +1,9 @@
-import { randomUUID } from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { demoSessionLeaseLostResponse } from "@/app/api/_shared/demo-session-error-response";
 import { logRouteFailure } from "@/app/api/_shared/route-failure-log";
+import { requestIdFor } from "@/observability/request-correlation";
+import { observeRouteHandler } from "@/observability/request-observability";
 import { validateSameOriginMutation } from "@/modules/identity/request-security";
 import { requestPrincipal } from "@/modules/identity/session";
 import { MutationBodyError, readBoundedJson } from "@/modules/ledger/request-body";
@@ -20,8 +21,8 @@ const selectionSchema = z.object({
   entityId: z.uuid(),
 }).strict();
 
-export async function PUT(request: NextRequest) {
-  const requestId = randomUUID();
+async function put(request: NextRequest) {
+  const requestId = requestIdFor(request);
   try {
     if (!validateSameOriginMutation(request)) {
       return NextResponse.json(
@@ -86,3 +87,5 @@ export async function PUT(request: NextRequest) {
     );
   }
 }
+
+export const PUT = observeRouteHandler("entity-context-selection", put);

@@ -1,8 +1,9 @@
-import { randomUUID } from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { readAuthMutationJson } from "@/app/api/_shared/auth-mutation-route";
 import { logRouteFailure } from "@/app/api/_shared/route-failure-log";
+import { requestIdFor } from "@/observability/request-correlation";
+import { observeRouteHandler } from "@/observability/request-observability";
 import { assertEmailDeliveryReady, consumeRateLimit } from "@/modules/identity/auth-store";
 import { assertAccountAuthenticationConfigured } from "@/modules/identity/email-provider";
 import {
@@ -45,9 +46,9 @@ const schema = z.object({
   }
 });
 
-export async function POST(request: NextRequest) {
+async function post(request: NextRequest) {
   const startedAt = Date.now();
-  const requestId = randomUUID();
+  const requestId = requestIdFor(request);
   try {
     if (!validateSameOriginMutation(request)) {
       return NextResponse.json({ error: "The request could not be verified." }, { status: 403, headers });
@@ -135,3 +136,5 @@ export async function POST(request: NextRequest) {
     );
   }
 }
+
+export const POST = observeRouteHandler("account-signup-request", post);

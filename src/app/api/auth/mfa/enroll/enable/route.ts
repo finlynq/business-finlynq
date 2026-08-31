@@ -1,8 +1,9 @@
-import { randomUUID } from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { readAuthMutationJson } from "@/app/api/_shared/auth-mutation-route";
 import { logRouteFailure } from "@/app/api/_shared/route-failure-log";
+import { requestIdFor } from "@/observability/request-correlation";
+import { observeRouteHandler } from "@/observability/request-observability";
 import {
   consumeMfaEnrollmentLimits,
   consumeRateLimit,
@@ -25,8 +26,8 @@ const schema = z.object({
 });
 const headers = { "Cache-Control": "private, no-store", "X-Robots-Tag": "noindex" };
 
-export async function POST(request: NextRequest) {
-  const requestId = randomUUID();
+async function post(request: NextRequest) {
+  const requestId = requestIdFor(request);
   try {
     if (!validateSameOriginMutation(request)) {
       return NextResponse.json({ error: "The request could not be verified." }, { status: 403, headers });
@@ -90,3 +91,5 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "Authenticator enrollment is temporarily unavailable." }, { status: 503, headers });
   }
 }
+
+export const POST = observeRouteHandler("session-mfa-enrollment-confirmation", post);

@@ -359,6 +359,7 @@ BEGIN
     'app.auth_totp_for_session(uuid)',
     'app.auth_mark_step_up(uuid,uuid,bigint,text)',
     'app.auth_email_delivery_readiness(integer)',
+    'app.operations_metrics()',
     'app.auth_consume_mfa_step_up_limits(uuid)',
     'app.auth_consume_password_reset_limits(text)',
     'app.auth_consume_password_reset_escalation_limits(text)',

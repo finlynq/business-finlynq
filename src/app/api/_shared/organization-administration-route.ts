@@ -1,4 +1,3 @@
-import { randomUUID } from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
 import type { ZodType } from "zod";
 import { demoSessionLeaseLostResponse } from "@/app/api/_shared/demo-session-error-response";
@@ -13,6 +12,7 @@ import { requestPrincipal, type SessionPrincipal } from "@/modules/identity/sess
 import { readBoundedJson, MutationBodyError } from "@/modules/ledger/request-body";
 import { demoWritesEnabled } from "@/modules/workspace/write-policy";
 import { identityLookupHash } from "@/security/identity-secret";
+import { observeRoute } from "@/observability/request-observability";
 
 export const organizationAdminHeaders = {
   "Cache-Control": "private, no-store",
@@ -124,12 +124,14 @@ export function organizationAdminErrorResponse(error: unknown, requestId: string
  * response.
  */
 export async function organizationAdminMutationRoute(
+  request: NextRequest,
   invoke: (requestId: string) => Promise<NextResponse>,
 ): Promise<NextResponse> {
-  const requestId = randomUUID();
-  try {
-    return await invoke(requestId);
-  } catch (error) {
-    return organizationAdminErrorResponse(error, requestId);
-  }
+  return observeRoute(request, "organization-administration", async (requestId) => {
+    try {
+      return await invoke(requestId);
+    } catch (error) {
+      return organizationAdminErrorResponse(error, requestId);
+    }
+  });
 }

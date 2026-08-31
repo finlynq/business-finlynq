@@ -7,12 +7,16 @@ OnFailure=business-finlynq-monitor-notify@%n.service
 
 [Service]
 Type=oneshot
+Group=deploy
 WorkingDirectory=/home/deploy/business-finlynq
 EnvironmentFile=/etc/business-finlynq/operations.env
+StateDirectory=business-finlynq
+StateDirectoryMode=0775
+ExecCondition=/bin/bash /home/deploy/business-finlynq/deploy/systemd/check-scheduler-boundary.sh
 ExecStart=/home/deploy/business-finlynq/deploy/monitoring/check-production.sh
 UMask=0077
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=full
 ProtectHome=read-only
-TimeoutStartSec=2m
+TimeoutStartSec=5m

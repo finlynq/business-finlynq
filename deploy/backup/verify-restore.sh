@@ -12,7 +12,7 @@ fail() {
   exit 1
 }
 
-for command_name in age jq pg_restore psql sha256sum; do
+for command_name in age find jq pg_restore psql readlink sha256sum; do
   command -v "$command_name" >/dev/null 2>&1 || fail "Required command is unavailable: $command_name"
 done
 
@@ -35,10 +35,18 @@ RESTORE_REPORT_DIR="${RESTORE_REPORT_DIR:-$BACKUP_OUTPUT_DIR/restore-reports}"
 [[ -s "$RESTORE_DATABASE_PASSWORD_FILE" ]] || fail "Restore database password file is missing or empty"
 [[ -s "$BACKUP_AGE_IDENTITY_FILE" ]] || fail "Age identity file is missing or empty"
 
+[[ -d "$BACKUP_OUTPUT_DIR" && ! -L "$BACKUP_OUTPUT_DIR" ]] \
+  || fail "Backup directory is missing or is a symbolic link"
 BACKUP_OUTPUT_DIR="$(cd -- "$BACKUP_OUTPUT_DIR" && pwd -P)"
 [[ "$BACKUP_OUTPUT_DIR" != "/" ]] || fail "Refusing to use the filesystem root as the backup directory"
+[[ ! -e "$RESTORE_REPORT_DIR" || ! -L "$RESTORE_REPORT_DIR" ]] \
+  || fail "Restore report directory is a symbolic link"
 mkdir -p -- "$RESTORE_REPORT_DIR"
 RESTORE_REPORT_DIR="$(cd -- "$RESTORE_REPORT_DIR" && pwd -P)"
+case "$RESTORE_REPORT_DIR" in
+  "$BACKUP_OUTPUT_DIR"/*) ;;
+  *) fail "Restore report directory resolves outside the configured backup directory" ;;
+esac
 
 if [[ -n "${BACKUP_MANIFEST:-}" ]]; then
   if [[ "$BACKUP_MANIFEST" = /* ]]; then
@@ -55,7 +63,8 @@ else
   done < <(find "$BACKUP_OUTPUT_DIR" -maxdepth 1 -type f -name 'business_finlynq_*.manifest.json' -print0)
 fi
 
-[[ -n "${manifest_path:-}" && -f "$manifest_path" ]] || fail "No backup manifest was selected"
+[[ -n "${manifest_path:-}" && -f "$manifest_path" && ! -L "$manifest_path" ]] \
+  || fail "No regular, non-symbolic-link backup manifest was selected"
 manifest_path="$(readlink -f -- "$manifest_path")"
 case "$manifest_path" in
   "$BACKUP_OUTPUT_DIR"/*) ;;
@@ -69,7 +78,8 @@ expected_sha256="$(jq -r '.sha256 // empty' "$manifest_path")"
 [[ "$archive_name" =~ ^business_finlynq_[A-Za-z0-9_.-]+\.dump\.age$ ]] || fail "Manifest archive name is unsafe"
 [[ "$expected_sha256" =~ ^[a-f0-9]{64}$ ]] || fail "Manifest checksum is invalid"
 archive_path="$BACKUP_OUTPUT_DIR/$archive_name"
-[[ -f "$archive_path" ]] || fail "Encrypted archive referenced by the manifest is missing"
+[[ -f "$archive_path" && ! -L "$archive_path" ]] \
+  || fail "Encrypted archive referenced by the manifest is missing or is a symbolic link"
 archive_path="$(readlink -f -- "$archive_path")"
 case "$archive_path" in
   "$BACKUP_OUTPUT_DIR"/*) ;;
@@ -123,6 +133,7 @@ verified_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 report_name="restore_${verified_at//[:\-]/}_${expected_sha256:0:12}.json"
 report_path="$RESTORE_REPORT_DIR/$report_name"
 partial_report="$RESTORE_REPORT_DIR/.${report_name}.partial.$$"
+[[ ! -e "$report_path" ]] || fail "Refusing to overwrite an existing database-restore report"
 jq -n \
   --arg verifiedAt "$verified_at" \
   --arg archive "$archive_name" \
@@ -137,8 +148,18 @@ jq -n \
     encryptedArchive: $archive,
     sha256: $sha256,
     applicationTableCount: $tableCount,
-    migrationCount: $migrationCount
+    migrationCount: $migrationCount,
+    checks: {
+      encryptedChecksum: true,
+      archiveReadable: true,
+      emptyDisposableTarget: true,
+      transactionalRestore: true,
+      applicationTables: true,
+      organizationsTable: true,
+      migrationHistory: true
+    }
   }' > "$partial_report"
+chmod 0600 -- "$partial_report"
 mv -- "$partial_report" "$report_path"
 
 log "Restore verification passed: tables=$table_count migrations=$migration_count report=$report_name"

@@ -15,6 +15,9 @@ readonly AUTHORIZED_KEYS_FILE="$AUTHORIZED_KEYS_DIRECTORY/$RECEIVER_USER"
 readonly SSHD_DROP_IN="/etc/ssh/sshd_config.d/00-business-finlynq-backup-receiver.conf"
 readonly RECEIVER_CONFIG="/etc/business-finlynq/backup-receiver.conf"
 readonly ALLOWED_REVISIONS_FILE="/etc/business-finlynq/backup-receiver-allowed-revisions"
+readonly RECEIPT_SIGNING_PRIVATE_KEY_FILE="/etc/business-finlynq/backup-receiver-receipt-signing-key.pem"
+readonly RECEIPT_SIGNING_PUBLIC_KEY_FILE="/etc/business-finlynq/backup-receiver-receipt-signing-public-key.pem"
+readonly TRUSTED_RECEIPT_KEYS_DIRECTORY="/etc/business-finlynq/backup-receiver-trusted-receipt-keys"
 readonly INSTALL_DIRECTORY="/usr/local/libexec/business-finlynq-backup-receiver"
 readonly FSTAB_MARKER="# Business Finlynq backup receiver - dedicated 10 GiB loopback filesystem"
 
@@ -99,7 +102,7 @@ source /etc/os-release
 [[ "${ID:-}" == "ubuntu" && "${VERSION_ID:-}" == "24.04" ]] || fail "This provisioner supports Ubuntu 24.04 only"
 
 missing_packages=()
-for package_name in openssh-server e2fsprogs jq util-linux python3; do
+for package_name in curl openssh-server e2fsprogs jq openssl util-linux python3; do
   dpkg-query -W -f='${Status}' "$package_name" 2>/dev/null | grep -Fq 'install ok installed' || missing_packages+=("$package_name")
 done
 if (( ${#missing_packages[@]} > 0 )); then
@@ -108,7 +111,7 @@ if (( ${#missing_packages[@]} > 0 )); then
   DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "${missing_packages[@]}"
 fi
 
-for command_name in awk blkid find findmnt flock getent grep id install jq losetup mkfs.ext4 mount passwd python3 readlink sha256sum ssh-keygen sshd stat systemctl truncate useradd usermod; do
+for command_name in awk blkid cmp find findmnt flock getent grep id install jq losetup mkfs.ext4 mount openssl passwd python3 readlink sha256sum ssh-keygen sshd stat systemctl truncate useradd usermod; do
   command -v "$command_name" >/dev/null 2>&1 || fail "Required command is unavailable: $command_name"
 done
 
@@ -208,14 +211,88 @@ done
 install -d -o root -g root -m 0755 "$INSTALL_DIRECTORY"
 install -o root -g root -m 0755 "$script_directory/ingest-backups.sh" "$INSTALL_DIRECTORY/ingest-backups.sh"
 install -o root -g root -m 0755 "$script_directory/verify-receiver.sh" "$INSTALL_DIRECTORY/verify-receiver.sh"
+install -o root -g root -m 0755 "$script_directory/check-health.sh" "$INSTALL_DIRECTORY/check-health.sh"
+install -o root -g root -m 0644 "$script_directory/recovery-point-freshness.sh" "$INSTALL_DIRECTORY/recovery-point-freshness.sh"
+install -o root -g root -m 0755 "$script_directory/notify-failure.sh" "$INSTALL_DIRECTORY/notify-failure.sh"
+install -o root -g root -m 0755 "$script_directory/acknowledge-quarantine.sh" "$INSTALL_DIRECTORY/acknowledge-quarantine.sh"
 install -d -o root -g root -m 0755 /etc/business-finlynq
+
+# The detached-receipt signing key is generated only on the receiver. A
+# pre-existing configured key may never be silently replaced: losing it is an
+# attestation-key incident that requires an explicit rotation and public-pin
+# change, not an automatic provisioning repair.
+receipt_signing_was_configured="false"
+if [[ -e "$RECEIVER_CONFIG" ]]; then
+  [[ -f "$RECEIVER_CONFIG" && ! -L "$RECEIVER_CONFIG" ]] \
+    || fail "Existing receiver configuration is not a regular file"
+  grep -Fqx "RECEIVER_RECEIPT_SIGNING_KEY_FILE=$RECEIPT_SIGNING_PRIVATE_KEY_FILE" "$RECEIVER_CONFIG" \
+    && receipt_signing_was_configured="true"
+fi
+if [[ ! -e "$RECEIPT_SIGNING_PRIVATE_KEY_FILE" ]]; then
+  [[ ! -e "$RECEIPT_SIGNING_PUBLIC_KEY_FILE" ]] \
+    || fail "Receipt signing public key exists without its receiver-only private key"
+  [[ "$receipt_signing_was_configured" == "false" ]] \
+    || fail "Configured receipt signing key is missing; refusing to rotate trust automatically"
+  receipt_private_temporary="$(mktemp /etc/business-finlynq/.receipt-signing-key.XXXXXX)"
+  openssl genpkey -algorithm ED25519 -out "$receipt_private_temporary" \
+    || fail "Could not generate the receiver receipt signing key"
+  install -o root -g root -m 0400 "$receipt_private_temporary" "$RECEIPT_SIGNING_PRIVATE_KEY_FILE"
+  rm -f -- "$receipt_private_temporary"
+fi
+[[ -f "$RECEIPT_SIGNING_PRIVATE_KEY_FILE" && ! -L "$RECEIPT_SIGNING_PRIVATE_KEY_FILE" \
+  && "$(stat -c '%u:%g:%a' "$RECEIPT_SIGNING_PRIVATE_KEY_FILE")" == "0:0:400" ]] \
+  || fail "Receipt signing private key must be root:root mode 0400"
+openssl pkey -in "$RECEIPT_SIGNING_PRIVATE_KEY_FILE" -check -noout >/dev/null 2>&1 \
+  || fail "Receipt signing private key is invalid"
+openssl pkey -in "$RECEIPT_SIGNING_PRIVATE_KEY_FILE" -text_pub -noout 2>/dev/null \
+  | grep -Fqi 'ED25519' || fail "Receipt signing key must use Ed25519"
+
+receipt_public_temporary="$(mktemp /etc/business-finlynq/.receipt-signing-public-key.XXXXXX)"
+openssl pkey -in "$RECEIPT_SIGNING_PRIVATE_KEY_FILE" -pubout -out "$receipt_public_temporary" \
+  || fail "Could not derive the receiver receipt public key"
+if [[ -e "$RECEIPT_SIGNING_PUBLIC_KEY_FILE" ]]; then
+  [[ -f "$RECEIPT_SIGNING_PUBLIC_KEY_FILE" && ! -L "$RECEIPT_SIGNING_PUBLIC_KEY_FILE" \
+    && "$(stat -c '%u:%g:%a' "$RECEIPT_SIGNING_PUBLIC_KEY_FILE")" == "0:0:644" ]] \
+    || fail "Receipt signing public key must be root:root mode 0644"
+  cmp -s -- "$receipt_public_temporary" "$RECEIPT_SIGNING_PUBLIC_KEY_FILE" \
+    || fail "Receipt signing public key does not match the receiver-only private key"
+else
+  install -o root -g root -m 0644 "$receipt_public_temporary" "$RECEIPT_SIGNING_PUBLIC_KEY_FILE"
+fi
+rm -f -- "$receipt_public_temporary"
+receipt_signing_public_key_sha256="$(sha256sum "$RECEIPT_SIGNING_PUBLIC_KEY_FILE" | awk '{print $1}')"
+[[ "$receipt_signing_public_key_sha256" =~ ^[a-f0-9]{64}$ ]] \
+  || fail "Receipt signing public-key fingerprint is invalid"
+
+# Keep every reviewed public verification key for at least as long as receipts
+# signed by it remain in the 60-day vault. Provisioning adds the active key but
+# deliberately never prunes older trust pins during rotation.
+install -d -o root -g root -m 0755 "$TRUSTED_RECEIPT_KEYS_DIRECTORY"
+trusted_current_key="$TRUSTED_RECEIPT_KEYS_DIRECTORY/$receipt_signing_public_key_sha256.pem"
+if [[ -e "$trusted_current_key" ]]; then
+  [[ -f "$trusted_current_key" && ! -L "$trusted_current_key" \
+    && "$(stat -c '%u:%g:%a' "$trusted_current_key")" == "0:0:644" ]] \
+    || fail "Active trusted receipt key must be root:root mode 0644"
+  cmp -s -- "$RECEIPT_SIGNING_PUBLIC_KEY_FILE" "$trusted_current_key" \
+    || fail "Active receipt key fingerprint collides with different trusted material"
+else
+  install -o root -g root -m 0644 "$RECEIPT_SIGNING_PUBLIC_KEY_FILE" "$trusted_current_key"
+fi
+
 config_temporary="$(mktemp /etc/business-finlynq/.backup-receiver.conf.XXXXXX)"
 cat > "$config_temporary" <<EOF
 RECEIVER_SOURCE_CIDR=$normalized_source_cidr
 RECEIVER_SOURCE_PROBE=$source_probe
 RECEIVER_ALLOWED_REVISIONS_FILE=$ALLOWED_REVISIONS_FILE
+RECEIVER_RECEIPT_SIGNING_KEY_FILE=$RECEIPT_SIGNING_PRIVATE_KEY_FILE
+RECEIVER_RECEIPT_SIGNING_PUBLIC_KEY_FILE=$RECEIPT_SIGNING_PUBLIC_KEY_FILE
+RECEIVER_RECEIPT_SIGNING_PUBLIC_KEY_SHA256=$receipt_signing_public_key_sha256
+RECEIVER_TRUSTED_RECEIPT_KEYS_DIRECTORY=$TRUSTED_RECEIPT_KEYS_DIRECTORY
 RECEIVER_RETENTION_DAYS=60
 RECEIVER_SETTLE_SECONDS=60
+RECEIVER_HEALTH_MAX_AGE_HOURS=6
+RECEIVER_HEALTH_METRICS_FILE=/var/lib/business-finlynq-backup-receiver-metrics/receiver.prom
+RECEIVER_ALERT_WEBHOOK_URL_FILE=/etc/business-finlynq/backup-receiver-alert-webhook-url
 EOF
 install -o root -g root -m 0644 "$config_temporary" "$RECEIVER_CONFIG"
 rm -f -- "$config_temporary"
@@ -301,12 +378,16 @@ rm -f -- "$sshd_previous"
 
 install -o root -g root -m 0644 "$script_directory/business-finlynq-backup-receiver.service" /etc/systemd/system/business-finlynq-backup-receiver.service
 install -o root -g root -m 0644 "$script_directory/business-finlynq-backup-receiver.timer" /etc/systemd/system/business-finlynq-backup-receiver.timer
+install -o root -g root -m 0644 "$script_directory/business-finlynq-backup-receiver-health.service" /etc/systemd/system/business-finlynq-backup-receiver-health.service
+install -o root -g root -m 0644 "$script_directory/business-finlynq-backup-receiver-health.timer" /etc/systemd/system/business-finlynq-backup-receiver-health.timer
+install -o root -g root -m 0644 "$script_directory/business-finlynq-backup-receiver-notify@.service" /etc/systemd/system/business-finlynq-backup-receiver-notify@.service
 systemctl daemon-reload
 systemctl reload ssh.service
-systemctl enable --now business-finlynq-backup-receiver.timer
+systemctl enable --now business-finlynq-backup-receiver.timer business-finlynq-backup-receiver-health.timer
 systemctl start business-finlynq-backup-receiver.service
 "$INSTALL_DIRECTORY/verify-receiver.sh"
 
 created_image="false"
 log "Business Finlynq backup receiver provisioned successfully"
+log "Pin this receiver receipt public-key SHA-256 on recovery hosts: $receipt_signing_public_key_sha256"
 log "The receiver stores encrypted artifacts only; no age identity or application recovery key was installed"

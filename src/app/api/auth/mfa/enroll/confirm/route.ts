@@ -1,8 +1,9 @@
-import { randomUUID } from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { readAuthMutationJson } from "@/app/api/_shared/auth-mutation-route";
 import { logRouteFailure } from "@/app/api/_shared/route-failure-log";
+import { requestIdFor } from "@/observability/request-correlation";
+import { observeRouteHandler } from "@/observability/request-observability";
 import { consumeMfaEnrollmentLimits, consumeRateLimit, finishMfaEnrollment, mfaSetupChallenge } from "@/modules/identity/auth-store";
 import { requestFingerprints, validateSameOriginMutation } from "@/modules/identity/request-security";
 import { hashOpaqueToken } from "@/modules/identity/session";
@@ -12,8 +13,8 @@ import { decryptAuthPayload } from "@/security/identity-secret";
 const schema = z.object({ setupToken: z.string().min(32).max(200), otp: z.string().regex(/^\d{6}$/) });
 const headers = { "Cache-Control": "private, no-store", "X-Robots-Tag": "noindex" };
 
-export async function POST(request: NextRequest) {
-  const requestId = randomUUID();
+async function post(request: NextRequest) {
+  const requestId = requestIdFor(request);
   try {
     if (!validateSameOriginMutation(request)) return NextResponse.json({ error: "The request could not be verified." }, { status: 403, headers });
     if (process.env.ACCOUNT_LOGIN_ENABLED !== "true") return NextResponse.json({ error: "Authenticator enrollment is not enabled." }, { status: 403, headers });
@@ -50,3 +51,5 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "Authenticator enrollment is temporarily unavailable." }, { status: 503, headers });
   }
 }
+
+export const POST = observeRouteHandler("mfa-enrollment-confirmation", post);

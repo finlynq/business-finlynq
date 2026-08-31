@@ -3,6 +3,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { readAuthMutationJson } from "@/app/api/_shared/auth-mutation-route";
 import { logRouteFailure } from "@/app/api/_shared/route-failure-log";
+import { requestIdFor } from "@/observability/request-correlation";
+import { observeRouteHandler } from "@/observability/request-observability";
 import { assertEmailDeliveryReady, consumeRateLimit, queuePasswordReset } from "@/modules/identity/auth-store";
 import { assertAccountAuthenticationConfigured } from "@/modules/identity/email-provider";
 import { requestFingerprints, validateSameOriginMutation } from "@/modules/identity/request-security";
@@ -13,9 +15,9 @@ import { emailLookupHash, encryptAuthPayload, identityLookupHash } from "@/secur
 const schema = z.object({ email: z.email().max(254) });
 const genericMessage = "If an eligible account matches that email, a reset link will be sent shortly.";
 
-export async function POST(request: NextRequest) {
+async function post(request: NextRequest) {
   const startedAt = Date.now();
-  const requestId = randomUUID();
+  const requestId = requestIdFor(request);
   const headers = { "Cache-Control": "private, no-store", "X-Robots-Tag": "noindex" };
   try {
     if (!validateSameOriginMutation(request)) return NextResponse.json({ error: "The request could not be verified." }, { status: 403, headers });
@@ -64,3 +66,5 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ message: genericMessage }, { headers });
   }
 }
+
+export const POST = observeRouteHandler("password-reset-request", post);

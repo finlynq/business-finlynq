@@ -1,0 +1,65 @@
+services:
+  app:
+    image: ${BUSINESS_FINLYNQ_RELEASE_APP_IMAGE:?set BUSINESS_FINLYNQ_RELEASE_APP_IMAGE to the verified immutable image ID}
+    pull_policy: never
+    build: !reset null
+
+  auth_email_worker:
+    image: ${BUSINESS_FINLYNQ_RELEASE_AUTH_WORKER_IMAGE:?set BUSINESS_FINLYNQ_RELEASE_AUTH_WORKER_IMAGE to the verified immutable image ID}
+    pull_policy: never
+    build: !reset null
+
+  migrate:
+    image: ${BUSINESS_FINLYNQ_RELEASE_MIGRATOR_IMAGE:?set BUSINESS_FINLYNQ_RELEASE_MIGRATOR_IMAGE to the verified immutable image ID}
+    pull_policy: never
+    build: !reset null
+
+  verify_database_contract:
+    image: ${BUSINESS_FINLYNQ_RELEASE_MIGRATOR_IMAGE:?set BUSINESS_FINLYNQ_RELEASE_MIGRATOR_IMAGE to the verified immutable image ID}
+    pull_policy: never
+    build: !reset null
+
+  bootstrap_demo:
+    image: ${BUSINESS_FINLYNQ_RELEASE_MIGRATOR_IMAGE:?set BUSINESS_FINLYNQ_RELEASE_MIGRATOR_IMAGE to the verified immutable image ID}
+    pull_policy: never
+    build: !reset null
+
+  provision_auth_worker_role:
+    image: ${BUSINESS_FINLYNQ_RELEASE_OPERATIONS_IMAGE:?set BUSINESS_FINLYNQ_RELEASE_OPERATIONS_IMAGE to the verified immutable image ID}
+    pull_policy: never
+    build: !reset null
+
+  reconcile_runtime_grants:
+    image: ${BUSINESS_FINLYNQ_RELEASE_OPERATIONS_IMAGE:?set BUSINESS_FINLYNQ_RELEASE_OPERATIONS_IMAGE to the verified immutable image ID}
+    pull_policy: never
+    build: !reset null
+
+  reconcile_auth_worker_grants:
+    image: ${BUSINESS_FINLYNQ_RELEASE_OPERATIONS_IMAGE:?set BUSINESS_FINLYNQ_RELEASE_OPERATIONS_IMAGE to the verified immutable image ID}
+    pull_policy: never
+    build: !reset null
+
+  provision_backup:
+    image: ${BUSINESS_FINLYNQ_RELEASE_OPERATIONS_IMAGE:?set BUSINESS_FINLYNQ_RELEASE_OPERATIONS_IMAGE to the verified immutable image ID}
+    pull_policy: never
+    build: !reset null
+
+  reconcile_backup_grants:
+    image: ${BUSINESS_FINLYNQ_RELEASE_OPERATIONS_IMAGE:?set BUSINESS_FINLYNQ_RELEASE_OPERATIONS_IMAGE to the verified immutable image ID}
+    pull_policy: never
+    build: !reset null
+
+  backup:
+    image: ${BUSINESS_FINLYNQ_RELEASE_OPERATIONS_IMAGE:?set BUSINESS_FINLYNQ_RELEASE_OPERATIONS_IMAGE to the verified immutable image ID}
+    pull_policy: never
+    build: !reset null
+
+  verify_latest_backup:
+    image: ${BUSINESS_FINLYNQ_RELEASE_OPERATIONS_IMAGE:?set BUSINESS_FINLYNQ_RELEASE_OPERATIONS_IMAGE to the verified immutable image ID}
+    pull_policy: never
+    build: !reset null
+
+  verify_accounting_evidence:
+    image: ${BUSINESS_FINLYNQ_RELEASE_OPERATIONS_IMAGE:?set BUSINESS_FINLYNQ_RELEASE_OPERATIONS_IMAGE to the verified immutable image ID}
+    pull_policy: never
+    build: !reset null

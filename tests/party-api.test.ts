@@ -233,8 +233,8 @@ describe("tenant party mutation route", () => {
 
     expect(response.status).toBe(409);
     expect(consoleError).toHaveBeenCalledOnce();
-    expect(consoleError.mock.calls[0]?.[0]).toBe("Business Finlynq route failure");
-    expect(consoleError.mock.calls[0]?.[1]).toEqual({
+    expect(JSON.parse(String(consoleError.mock.calls[0]?.[0]))).toEqual({
+      event: "route.failure",
       operation: "subledger-mutation",
       requestId: expect.stringMatching(/^[0-9a-f-]{36}$/),
       errorType: "Error",

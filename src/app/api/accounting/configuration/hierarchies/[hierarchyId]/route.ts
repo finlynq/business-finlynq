@@ -15,7 +15,7 @@ export async function PATCH(
   request: NextRequest,
   { params }: { params: Promise<{ hierarchyId: string }> },
 ) {
-  return organizationAdminMutationRoute(async (requestId) => {
+  return organizationAdminMutationRoute(request, async (requestId) => {
     const hierarchyId = z.uuid().safeParse((await params).hierarchyId);
     if (!hierarchyId.success) {
       return NextResponse.json(

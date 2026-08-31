@@ -1,12 +1,13 @@
-import { randomUUID } from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
 import { logRouteFailure } from "@/app/api/_shared/route-failure-log";
+import { requestIdFor } from "@/observability/request-correlation";
+import { observeRouteHandler } from "@/observability/request-observability";
 import { revokeStoredSession } from "@/modules/identity/auth-store";
 import { configuredAppOrigin, validateSameOriginMutation } from "@/modules/identity/request-security";
 import { clearSessionCookie, hashOpaqueToken, sessionCookieName } from "@/modules/identity/session";
 
-export async function POST(request: NextRequest) {
-  const requestId = randomUUID();
+async function post(request: NextRequest) {
+  const requestId = requestIdFor(request);
   try {
     if (!validateSameOriginMutation(request)) {
       return NextResponse.json({ error: "The sign-out request could not be verified." }, { status: 403, headers: { "Cache-Control": "private, no-store" } });
@@ -29,3 +30,5 @@ export async function POST(request: NextRequest) {
     );
   }
 }
+
+export const POST = observeRouteHandler("session-revocation", post);

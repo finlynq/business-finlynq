@@ -282,7 +282,15 @@ export const authEmailOutbox = pgTable(
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     sentAt: timestamp("sent_at", { withTimezone: true }),
   },
-  (table) => [index("auth_email_outbox_user_created_idx").on(table.userId, table.createdAt)],
+  (table) => [
+    index("auth_email_outbox_user_created_idx").on(table.userId, table.createdAt),
+    index("auth_email_outbox_sent_at_idx")
+      .on(table.sentAt)
+      .where(sql`${table.status} = 'SENT'`),
+    index("auth_email_outbox_delivery_dead_idx")
+      .on(table.createdAt)
+      .where(sql`${table.status} = 'DEAD' AND upper(coalesce(${table.lastErrorCode}, '')) NOT IN ('CANCELLED', 'INVALIDATED_BY_MFA_ENROLLMENT', 'SUPERSEDED', 'SUPERSEDED_BY_INVITATION', 'SUPERSEDED_BY_SIGNUP')`),
+  ],
 );
 
 export const authEmailWorkerStatus = pgTable(

@@ -1,7 +1,7 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { join, relative } from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import { logRouteFailure } from "@/app/api/_shared/route-failure-log";
+import { logRouteAccess, logRouteFailure } from "@/app/api/_shared/route-failure-log";
 
 function sourceFiles(directory: string): string[] {
   return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
@@ -44,7 +44,8 @@ describe("redacted application route failure logging", () => {
       logRouteFailure("account-login", "user@example.com\nsecret", error);
 
       expect(logging).toHaveBeenCalledOnce();
-      expect(logging).toHaveBeenCalledWith("Business Finlynq route failure", {
+      expect(JSON.parse(String(logging.mock.calls[0]?.[0]))).toEqual({
+        event: "route.failure",
         operation: "account-login",
         requestId: "invalid-request-id",
         errorType: "Error",
@@ -66,13 +67,41 @@ describe("redacted application route failure logging", () => {
 
     try {
       logRouteFailure("health-readiness", "11111111-1111-4111-8111-111111111111", error);
-      expect(logging.mock.calls[0]?.[1]).toEqual({
+      expect(JSON.parse(String(logging.mock.calls[0]?.[0]))).toEqual({
+        event: "route.failure",
         operation: "health-readiness",
         requestId: "11111111-1111-4111-8111-111111111111",
         errorType,
       });
     } finally {
       logging.mockRestore();
+    }
+  });
+
+  it("emits one bounded JSON access event without request content or arbitrary labels", () => {
+    vi.stubEnv("BUSINESS_FINLYNQ_TEST_ACCESS_LOGS", "true");
+    const logging = vi.spyOn(console, "info").mockImplementation(() => undefined);
+    try {
+      logRouteAccess(
+        "accounting-mutation",
+        "11111111-1111-4111-8111-111111111111",
+        "POST\nuser@example.com",
+        9_999,
+        Number.POSITIVE_INFINITY,
+      );
+      expect(logging).toHaveBeenCalledOnce();
+      expect(JSON.parse(String(logging.mock.calls[0]?.[0]))).toEqual({
+        event: "route.access",
+        operation: "accounting-mutation",
+        requestId: "11111111-1111-4111-8111-111111111111",
+        method: "OTHER",
+        status: 500,
+        durationMs: 0,
+      });
+      expect(String(logging.mock.calls[0]?.[0])).not.toContain("user@example.com");
+    } finally {
+      logging.mockRestore();
+      vi.unstubAllEnvs();
     }
   });
 });

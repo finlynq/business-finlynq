@@ -32,8 +32,13 @@ const mocks = vi.hoisted(() => {
 
 vi.mock("@/app/api/_shared/organization-administration-route", () => ({
   organizationAdminHeaders: { "Cache-Control": "private, no-store" },
-  organizationAdminMutationRoute: (invoke: (requestId: string) => Promise<NextResponse>) =>
-    invoke("11111111-1111-4111-8111-111111111111"),
+  organizationAdminMutationRoute: (
+    request: NextRequest,
+    invoke: (requestId: string) => Promise<NextResponse>,
+  ) => {
+    void request;
+    return invoke("11111111-1111-4111-8111-111111111111");
+  },
   prepareOrganizationAdminMutation: mocks.prepare,
   readOrganizationAdminJson: mocks.readJson,
   organizationAdminErrorResponse: () => NextResponse.json({ error: "failed" }, { status: 503 }),

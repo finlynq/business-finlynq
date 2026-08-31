@@ -1,4 +1,3 @@
-import { randomUUID } from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
 import type { z } from "zod";
 import { demoSessionLeaseLostResponse } from "@/app/api/_shared/demo-session-error-response";
@@ -12,6 +11,7 @@ import {
 import { consumeLedgerMutationRateLimit } from "@/modules/ledger/mutation-rate-limit";
 import { MutationBodyError, readBoundedJson } from "@/modules/ledger/request-body";
 import { mutationContext, principalCanWrite } from "@/modules/workspace/write-policy";
+import { observeRoute } from "@/observability/request-observability";
 
 const noStoreHeaders = {
   "Cache-Control": "private, no-store",
@@ -91,8 +91,8 @@ export function createMutationRoute<TBody, TResult extends MutationResult, TPara
     request: NextRequest,
     routeContext?: { params: Promise<unknown> },
   ) {
-    const requestId = randomUUID();
-    try {
+    return observeRoute(request, "accounting-mutation", async (requestId) => {
+      try {
       if (!validateSameOriginMutation(request)) {
         return jsonError(
           options.sameOriginMessage ?? "The accounting request could not be verified.",
@@ -174,15 +174,16 @@ export function createMutationRoute<TBody, TResult extends MutationResult, TPara
         status: result.idempotentReplay ? 200 : (options.successStatus ?? 201),
         headers: noStoreHeaders,
       });
-    } catch (error) {
-      const expiredSession = demoSessionLeaseLostResponse(error);
-      if (expiredSession) return expiredSession;
-      logRouteFailure("subledger-mutation", requestId, error);
-      return NextResponse.json(
-        { error: options.failureMessage, requestId },
-        { status: 409, headers: noStoreHeaders },
-      );
-    }
+      } catch (error) {
+        const expiredSession = demoSessionLeaseLostResponse(error);
+        if (expiredSession) return expiredSession;
+        logRouteFailure("subledger-mutation", requestId, error);
+        return NextResponse.json(
+          { error: options.failureMessage, requestId },
+          { status: 409, headers: noStoreHeaders },
+        );
+      }
+    });
   };
 }
 

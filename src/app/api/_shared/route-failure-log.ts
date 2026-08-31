@@ -1,3 +1,5 @@
+import { recordRequestObservation, recordRouteFailure } from "@/observability/runtime-metrics";
+
 export type RouteFailureOperation =
   | "account-login"
   | "account-signup-acceptance"
@@ -10,6 +12,7 @@ export type RouteFailureOperation =
   | "invitation-acceptance"
   | "mfa-enrollment-confirmation"
   | "mfa-step-up"
+  | "metrics-readiness"
   | "optional-mfa-activation"
   | "organization-administration"
   | "password-reset-confirmation"
@@ -21,8 +24,13 @@ export type RouteFailureOperation =
   | "session-revocation"
   | "subledger-mutation";
 
+export type ObservedRouteOperation = RouteFailureOperation
+  | "accounting-mutation"
+  | "service-liveness";
+
 type RouteErrorType = "Error" | "RangeError" | "SyntaxError" | "TypeError" | "Unknown";
 const requestIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const allowedMethods = new Set(["DELETE", "GET", "HEAD", "OPTIONS", "PATCH", "POST", "PUT"]);
 
 function routeErrorType(error: unknown): RouteErrorType {
   if (error instanceof TypeError) return "TypeError";
@@ -41,9 +49,40 @@ export function logRouteFailure(
   requestId: string,
   error: unknown,
 ): void {
-  console.error("Business Finlynq route failure", {
+  recordRouteFailure();
+  console.error(JSON.stringify({
+    event: "route.failure",
     operation,
     requestId: requestIdPattern.test(requestId) ? requestId : "invalid-request-id",
     errorType: routeErrorType(error),
-  });
+  }));
+}
+
+/**
+ * Access telemetry is a fixed-cardinality, content-free event. Caddy remains
+ * the canonical all-request access log; this event covers observed application
+ * handlers and feeds the in-process Prometheus counters.
+ */
+export function logRouteAccess(
+  operation: ObservedRouteOperation,
+  requestId: string,
+  method: string,
+  status: number,
+  durationMilliseconds: number,
+): void {
+  const safeStatus = Number.isInteger(status) && status >= 100 && status <= 599 ? status : 500;
+  const safeDuration = Number.isFinite(durationMilliseconds) && durationMilliseconds >= 0
+    ? Math.min(Math.round(durationMilliseconds), 3_600_000)
+    : 0;
+  recordRequestObservation(safeStatus, safeDuration);
+  if (process.env.NODE_ENV !== "test" || process.env.BUSINESS_FINLYNQ_TEST_ACCESS_LOGS === "true") {
+    console.info(JSON.stringify({
+      event: "route.access",
+      operation,
+      requestId: requestIdPattern.test(requestId) ? requestId : "invalid-request-id",
+      method: allowedMethods.has(method) ? method : "OTHER",
+      status: safeStatus,
+      durationMs: safeDuration,
+    }));
+  }
 }

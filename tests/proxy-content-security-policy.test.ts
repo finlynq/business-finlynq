@@ -32,10 +32,32 @@ describe("request-scoped content security policy", () => {
     expect(response.headers.get("content-security-policy")).toContain("'nonce-");
   });
 
-  it("runs on HTML pages while excluding API and immutable asset routes", () => {
+  it("runs on HTML and API routes while excluding immutable asset routes", () => {
     expect(config.matcher).toEqual([
-      "/((?!api|_next/static|_next/image|favicon.ico|.*\\.[^/]+$).*)",
+      "/((?!_next/static|_next/image|favicon.ico|.*\\.[^/]+$).*)",
     ]);
+  });
+
+  it("assigns and returns a UUID request ID for direct requests", () => {
+    const request = new NextRequest("https://business.finlynq.com/api/live", {
+      headers: { "X-Request-Id": "not-a-uuid" },
+    });
+    const response = proxy(request);
+
+    expect(response.headers.get("X-Request-Id")).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+    );
+  });
+
+  it("forces the public Caddy edge to replace correlation and internal markers", () => {
+    for (const path of ["deploy/Caddyfile.container", "deploy/Caddyfile.example"]) {
+      const caddyfile = readFileSync(join(process.cwd(), path), "utf8");
+      expect(caddyfile).toContain("header_up -X-Request-Id");
+      expect(caddyfile).toContain("header_up X-Request-Id {http.request.uuid}");
+      expect(caddyfile).toContain('X-Request-Id "{http.request.uuid}"');
+      expect(caddyfile).toContain("log_append request_id {http.request.uuid}");
+      expect(caddyfile).toContain("header_up -X-Business-Finlynq-Internal-Metrics");
+    }
   });
 
   it("passes the request nonce to the third-party Turnstile script", () => {

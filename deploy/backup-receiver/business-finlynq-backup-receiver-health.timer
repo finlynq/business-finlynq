@@ -1,0 +1,13 @@
+[Unit]
+Description=Verify Business Finlynq backup receiver health every five minutes
+
+[Timer]
+OnBootSec=3m
+OnUnitInactiveSec=5m
+RandomizedDelaySec=30s
+AccuracySec=15s
+Persistent=true
+Unit=business-finlynq-backup-receiver-health.service
+
+[Install]
+WantedBy=timers.target

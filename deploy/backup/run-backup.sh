@@ -33,12 +33,17 @@ BACKUP_LOCAL_RETENTION_DAYS="${BACKUP_LOCAL_RETENTION_DAYS:-14}"
 BACKUP_REQUIRE_OFFSITE="${BACKUP_REQUIRE_OFFSITE:-false}"
 BACKUP_RCLONE_REMOTE="${BACKUP_RCLONE_REMOTE:-}"
 BACKUP_RCLONE_CONFIG_FILE="${BACKUP_RCLONE_CONFIG_FILE:-/run/secrets/business_finlynq_rclone_config}"
-BACKUP_IMAGE_REVISION="$BUSINESS_FINLYNQ_IMAGE_REVISION"
+# A release uses the candidate operations image to back up the still-running
+# previous application before migrations. Keep the tool-image revision and the
+# backed-up application revision separate so rollback evidence is truthful.
+BACKUP_TOOL_REVISION="$BUSINESS_FINLYNQ_IMAGE_REVISION"
+BACKUP_IMAGE_REVISION="${BACKUP_SOURCE_APPLICATION_REVISION:-$BACKUP_TOOL_REVISION}"
 
 [[ "$PGPORT" =~ ^[0-9]+$ ]] || fail "PGPORT must be numeric"
 [[ "$BACKUP_LOCAL_RETENTION_DAYS" =~ ^[0-9]+$ ]] || fail "BACKUP_LOCAL_RETENTION_DAYS must be a non-negative integer"
 [[ "$BACKUP_REQUIRE_OFFSITE" == "true" || "$BACKUP_REQUIRE_OFFSITE" == "false" ]] || fail "BACKUP_REQUIRE_OFFSITE must be true or false"
-[[ "$BACKUP_IMAGE_REVISION" =~ ^([a-f0-9]{40}|[a-f0-9]{64})$ && ! "$BACKUP_IMAGE_REVISION" =~ ^0+$ ]] || fail "BUSINESS_FINLYNQ_IMAGE_REVISION must be a full Git revision"
+[[ "$BACKUP_TOOL_REVISION" =~ ^([a-f0-9]{40}|[a-f0-9]{64})$ && ! "$BACKUP_TOOL_REVISION" =~ ^0+$ ]] || fail "BUSINESS_FINLYNQ_IMAGE_REVISION must be a full Git revision"
+[[ "$BACKUP_IMAGE_REVISION" =~ ^([a-f0-9]{40}|[a-f0-9]{64})$ && ! "$BACKUP_IMAGE_REVISION" =~ ^0+$ ]] || fail "BACKUP_SOURCE_APPLICATION_REVISION must be a full Git revision when set"
 
 [[ -s "$BACKUP_DATABASE_PASSWORD_FILE" ]] || fail "Backup database password file is missing or empty"
 [[ -s "$BACKUP_AGE_RECIPIENT_FILE" ]] || fail "Age recipient file is missing or empty"
@@ -80,10 +85,18 @@ uploaded_path="$BACKUP_OUTPUT_DIR/$uploaded_name"
 partial_archive="$BACKUP_OUTPUT_DIR/.${archive_name}.partial.$$"
 partial_manifest="$BACKUP_OUTPUT_DIR/.${manifest_name}.partial.$$"
 partial_checksum="$BACKUP_OUTPUT_DIR/.${checksum_name}.partial.$$"
+partial_uploaded="$BACKUP_OUTPUT_DIR/.${uploaded_name}.partial.$$"
+backup_committed=false
 
 cleanup() {
   unset PGPASSWORD
-  rm -f -- "$partial_archive" "$partial_manifest" "$partial_checksum"
+  rm -f -- "$partial_archive" "$partial_manifest" "$partial_checksum" "$partial_uploaded"
+  if [[ "$backup_committed" != "true" ]]; then
+    # These names are derived from this invocation's UTC timestamp and were
+    # proven absent above. Do not leave an incomplete set that a later monitor
+    # could mistake for a recovery point.
+    rm -f -- "$archive_path" "$checksum_path" "$uploaded_path" "$manifest_path"
+  fi
 }
 trap cleanup EXIT INT TERM
 
@@ -115,6 +128,8 @@ jq -n \
   --arg archive "$archive_name" \
   --arg sha256 "$archive_sha256" \
   --arg revision "$BACKUP_IMAGE_REVISION" \
+  --arg sourceApplicationRevision "$BACKUP_IMAGE_REVISION" \
+  --arg backupToolRevision "$BACKUP_TOOL_REVISION" \
   --arg pgDumpVersion "$pg_dump_version" \
   --argjson bytes "$archive_bytes" \
   --argjson localRetentionDays "$BACKUP_LOCAL_RETENTION_DAYS" \
@@ -125,6 +140,8 @@ jq -n \
     database: $database,
     sourceHost: $host,
     applicationRevision: $revision,
+    sourceApplicationRevision: $sourceApplicationRevision,
+    backupToolRevision: $backupToolRevision,
     format: "postgres-custom",
     compression: "zstd:9",
     encryption: "age",
@@ -138,7 +155,6 @@ jq -n \
 printf '%s  %s\n' "$archive_sha256" "$archive_name" > "$partial_checksum"
 mv -- "$partial_archive" "$archive_path"
 mv -- "$partial_checksum" "$checksum_path"
-mv -- "$partial_manifest" "$manifest_path"
 
 if [[ -n "$BACKUP_RCLONE_REMOTE" ]]; then
   remote_root="${BACKUP_RCLONE_REMOTE%/}"
@@ -148,12 +164,18 @@ if [[ -n "$BACKUP_RCLONE_REMOTE" ]]; then
   remote_sha256="$(rclone --config "$BACKUP_RCLONE_CONFIG_FILE" cat "$remote_root/$archive_name" | sha256sum | awk '{print $1}')"
   [[ "$remote_sha256" == "$archive_sha256" ]] || fail "Off-site archive checksum does not match the local encrypted archive"
   # The manifest is uploaded last and therefore acts as the completed-set marker.
-  rclone --config "$BACKUP_RCLONE_CONFIG_FILE" copyto "$manifest_path" "$remote_root/$manifest_name" --immutable
-  printf '%s remote=%s\n' "$created_at" "$remote_root" > "$uploaded_path"
+  rclone --config "$BACKUP_RCLONE_CONFIG_FILE" copyto "$partial_manifest" "$remote_root/$manifest_name" --immutable
+  printf '%s remote=%s\n' "$created_at" "$remote_root" > "$partial_uploaded"
+  mv -- "$partial_uploaded" "$uploaded_path"
   log "Off-site checksum verification completed"
 else
   log "No off-site remote configured; the backup remains local only"
 fi
+
+# The local manifest is also the completed-set marker. Publish it only after
+# all required remote work and the local off-site receipt have completed.
+mv -- "$partial_manifest" "$manifest_path"
+backup_committed=true
 
 prune_before_days="$BACKUP_LOCAL_RETENTION_DAYS"
 while IFS= read -r -d '' old_manifest; do

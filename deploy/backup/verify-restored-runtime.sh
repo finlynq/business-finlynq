@@ -30,6 +30,7 @@ RESTORE_CONFIRM_DISPOSABLE="${RESTORE_CONFIRM_DISPOSABLE:-}"
 RESTORE_APP_DATABASE_USER="${RESTORE_APP_DATABASE_USER:-business_finlynq_app}"
 RESTORE_AUTH_WORKER_DATABASE_USER="${RESTORE_AUTH_WORKER_DATABASE_USER:-business_finlynq_auth_worker}"
 RESTORE_BACKUP_DATABASE_USER="${RESTORE_BACKUP_DATABASE_USER:-business_finlynq_backup}"
+RESTORE_EVIDENCE_DIR="${RESTORE_EVIDENCE_DIR:-}"
 
 [[ "$RESTORE_CONFIRM_DISPOSABLE" == "business-finlynq-restore-drill" ]] || fail "Restore confirmation phrase is missing"
 [[ "$PGHOST" == "$RESTORE_ALLOWED_HOST" ]] || fail "Runtime verification target is not the explicitly allowed disposable host"
@@ -37,6 +38,61 @@ RESTORE_BACKUP_DATABASE_USER="${RESTORE_BACKUP_DATABASE_USER:-business_finlynq_b
 [[ "$PGPORT" =~ ^[0-9]+$ ]] || fail "PGPORT must be numeric"
 [[ "$RESTORE_APP_URL" =~ ^http://restore_app(:[0-9]+)?$ ]] || fail "Restore application URL is outside the isolated restore service"
 [[ "$RESTORE_EXPECTED_APP_ORIGIN" =~ ^https://[A-Za-z0-9.-]+(:[0-9]+)?$ ]] || fail "Expected restored application origin must be an HTTPS origin"
+
+write_runtime_evidence() {
+  [[ -n "$RESTORE_EVIDENCE_DIR" ]] || return 0
+  : "${RESTORE_EVIDENCE_ID:?RESTORE_EVIDENCE_ID is required when evidence output is enabled}"
+  : "${RESTORE_SELECTED_SHA256:?RESTORE_SELECTED_SHA256 is required when evidence output is enabled}"
+  : "${RESTORE_SELECTED_ARCHIVE:?RESTORE_SELECTED_ARCHIVE is required when evidence output is enabled}"
+  : "${RESTORE_DRILL_STARTED_AT:?RESTORE_DRILL_STARTED_AT is required when evidence output is enabled}"
+  [[ "$RESTORE_EVIDENCE_ID" =~ ^[0-9]{8}T[0-9]{6}Z_[a-f0-9]{12}$ ]] \
+    || fail "Restore evidence id is invalid"
+  [[ "$RESTORE_SELECTED_SHA256" =~ ^[a-f0-9]{64}$ ]] \
+    || fail "Restore evidence checksum is invalid"
+  [[ "$RESTORE_SELECTED_ARCHIVE" =~ ^business_finlynq_[A-Za-z0-9_.-]+\.dump\.age$ ]] \
+    || fail "Restore evidence archive name is invalid"
+  [[ "$RESTORE_DRILL_STARTED_AT" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] \
+    || fail "Restore evidence start time is invalid"
+  [[ ! -e "$RESTORE_EVIDENCE_DIR" || ! -L "$RESTORE_EVIDENCE_DIR" ]] \
+    || fail "Restore evidence directory is a symbolic link"
+  mkdir -p -- "$RESTORE_EVIDENCE_DIR"
+  RESTORE_EVIDENCE_DIR="$(cd -- "$RESTORE_EVIDENCE_DIR" && pwd -P)"
+  case "$RESTORE_EVIDENCE_DIR" in
+    /backups/*) ;;
+    *) fail "Restore evidence directory is outside the mounted backup path" ;;
+  esac
+
+  local verified_at report_name report_path partial_report
+  verified_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  report_name="runtime_${RESTORE_EVIDENCE_ID}.json"
+  report_path="$RESTORE_EVIDENCE_DIR/$report_name"
+  partial_report="$RESTORE_EVIDENCE_DIR/.${report_name}.partial.$$"
+  [[ ! -e "$report_path" ]] || fail "Refusing to overwrite restored-runtime evidence"
+  jq -n \
+    --arg verifiedAt "$verified_at" \
+    --arg drillStartedAt "$RESTORE_DRILL_STARTED_AT" \
+    --arg sha256 "$RESTORE_SELECTED_SHA256" \
+    --arg archive "$RESTORE_SELECTED_ARCHIVE" \
+    '{
+      schemaVersion: 1,
+      product: "business-finlynq",
+      result: "verified",
+      verifiedAt: $verifiedAt,
+      drillStartedAt: $drillStartedAt,
+      sha256: $sha256,
+      encryptedArchive: $archive,
+      checks: {
+        applicationReadiness: true,
+        demoSession: true,
+        applicationAcl: true,
+        authenticationWorkerAcl: true,
+        backupRoleAcl: true,
+        auditOutboxIntegrity: true
+      }
+    }' >"$partial_report"
+  chmod 0600 -- "$partial_report"
+  mv -- "$partial_report" "$report_path"
+}
 
 read_secret() {
   local secret_file="$1"
@@ -217,4 +273,14 @@ if psql --no-password --quiet --set=ON_ERROR_STOP=1 \
   fail "Restored backup role can write application data"
 fi
 
-log "Restored runtime verification passed: readiness, demo session, app ACL, worker ACL, and backup ACL"
+log "Checking restored audit graph and request/outbox lineage"
+ACCOUNTING_EVIDENCE_DATABASE_PASSWORD_FILE="$BACKUP_DATABASE_PASSWORD_FILE" \
+  PGHOST="$PGHOST" \
+  PGPORT="$PGPORT" \
+  PGDATABASE="$PGDATABASE" \
+  PGUSER="$RESTORE_BACKUP_DATABASE_USER" \
+  /usr/local/bin/business-finlynq-verify-accounting-evidence
+
+write_runtime_evidence
+
+log "Restored runtime verification passed: readiness, demo session, app ACL, worker ACL, backup ACL, and accounting evidence"

@@ -11,7 +11,7 @@ import {
 } from "@/modules/ledger/accounting-hierarchies";
 
 export async function POST(request: NextRequest) {
-  return organizationAdminMutationRoute(async (requestId) => {
+  return organizationAdminMutationRoute(request, async (requestId) => {
     const access = await prepareOrganizationAdminMutation(request, "accounting-hierarchy-create");
     if (access.response) return access.response;
     const body = await readOrganizationAdminJson(request, createAccountingHierarchySchema, 524_288);

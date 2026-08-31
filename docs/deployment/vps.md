@@ -17,11 +17,10 @@ Target hostname: `business.finlynq.com`.
 
 1. Build and test a pinned commit in CI.
 2. Produce Next.js standalone output and a migration artifact from the same commit.
-3. Run the encrypted backup workflow and confirm its remote checksum/off-site marker plus separate recovery-key availability. Follow [the backup and recovery runbook](../operations/backups-and-recovery.md).
-4. Run migrations in the one-shot `migrate` container using the database owner, then require the post-migration app, authentication-worker, and backup-role reconciliation services to succeed before bootstrap or application startup. Never grant migration privileges to a runtime role.
-5. Install the immutable release directory and restart only this service.
-6. Verify public `/api/live`, the minimal public `/api/health`, detailed loopback readiness, exact origin/security headers, tenant RLS, audit insertion, and a read-only smoke query. Readiness fails closed if PostgreSQL or either mounted encryption secret is unavailable.
-7. Roll back the application artifact if needed; database rollback uses an explicit forward repair migration.
+3. Use the commit-addressed [scripted release flow](../operations/release-runbook.md#scripted-release-contract). It pauses schedulers, produces and verifies the encrypted pre-migration backup, and records the prior immutable app image before migration.
+4. Keep app traffic stopped until the one-shot migration, all three role reconcilers, exact schema/RLS/grant verification, and journal-registry verification succeed from candidate images carrying the full Git revision.
+5. Accept the candidate only after its image ID/OCI label, public and detailed readiness, browser gate, final reviewed gate posture, resumed scheduler, and complete monitor are captured in the checksummed evidence bundle.
+6. Roll back only the application artifact from verified evidence if needed; database rollback uses an explicit forward repair migration.
 
 ## Writable demo deployment and rollback
 

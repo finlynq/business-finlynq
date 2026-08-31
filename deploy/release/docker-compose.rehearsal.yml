@@ -1,0 +1,22 @@
+# The production topology intentionally uses stable global resource names.
+# Every rehearsal replaces all of them with the validated run project so
+# scoped cleanup cannot attach to or remove production state.
+volumes:
+  business_finlynq_pgdata:
+    name: ${RELEASE_REHEARSAL_PROJECT:?set RELEASE_REHEARSAL_PROJECT}-pgdata
+  business_finlynq_caddy_data:
+    name: ${RELEASE_REHEARSAL_PROJECT:?set RELEASE_REHEARSAL_PROJECT}-caddy-data
+  business_finlynq_caddy_config:
+    name: ${RELEASE_REHEARSAL_PROJECT:?set RELEASE_REHEARSAL_PROJECT}-caddy-config
+
+networks:
+  business_finlynq_private:
+    name: ${RELEASE_REHEARSAL_PROJECT:?set RELEASE_REHEARSAL_PROJECT}-private
+    internal: true
+  business_finlynq_egress:
+    name: ${RELEASE_REHEARSAL_PROJECT:?set RELEASE_REHEARSAL_PROJECT}-egress
+  business_finlynq_edge:
+    name: ${RELEASE_REHEARSAL_PROJECT:?set RELEASE_REHEARSAL_PROJECT}-edge
+  business_finlynq_restore_drill:
+    name: ${RELEASE_REHEARSAL_PROJECT:?set RELEASE_REHEARSAL_PROJECT}-restore-drill
+    internal: true

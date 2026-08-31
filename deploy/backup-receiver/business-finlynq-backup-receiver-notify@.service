@@ -1,0 +1,19 @@
+[Unit]
+Description=Notify operators that receiver unit %i failed
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/business-finlynq/backup-receiver.conf
+Environment=RECEIVER_FAILED_UNIT=%i
+ExecStart=/usr/local/libexec/business-finlynq-backup-receiver/notify-failure.sh
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectProc=invisible
+ProcSubset=pid
+RestrictAddressFamilies=AF_INET AF_INET6
+TimeoutStartSec=1m

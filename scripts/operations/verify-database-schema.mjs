@@ -10,6 +10,7 @@ const defaultMetaDirectory = join(repositoryRoot, "migrations", "drizzle", "meta
 const defaultMigrationDirectory = join(repositoryRoot, "migrations", "drizzle");
 const runtimeRoleName = "business_finlynq_app";
 const ownerOnlyRlsTables = new Set([
+  "audit_outbox_pair_contract",
   "auth_email_outbox",
   "auth_one_time_tokens",
   "auth_organization_signups",
@@ -130,6 +131,7 @@ const runtimeExecuteFunctions = [
   "app.auth_totp_for_session(uuid)",
   "app.auth_mark_step_up(uuid, uuid, bigint, text)",
   "app.auth_email_delivery_readiness(integer)",
+  "app.operations_metrics()",
   "app.auth_consume_mfa_step_up_limits(uuid)",
   "app.auth_consume_password_reset_limits(text)",
   "app.auth_consume_password_reset_escalation_limits(text)",
@@ -2885,25 +2887,47 @@ export async function readDatabaseRuntimeGrantContract(client) {
   });
 }
 
-function safeErrorMessage(error, connectionString) {
+function safeErrorMessage(error, connectionConfig) {
   const message = error instanceof Error ? error.message : "Unknown verifier failure";
-  const withoutSelectedConnection = connectionString
-    ? message.replaceAll(connectionString, "[database-url-redacted]")
-    : message;
-  return withoutSelectedConnection.replace(
+  let redacted = message;
+  if (connectionConfig?.connectionString) {
+    redacted = redacted.replaceAll(connectionConfig.connectionString, "[database-url-redacted]");
+  }
+  if (connectionConfig?.password) {
+    redacted = redacted.replaceAll(connectionConfig.password, "[database-password-redacted]");
+  }
+  return redacted.replace(
     /postgres(?:ql)?:\/\/[^\s]+/gi,
     "[database-url-redacted]",
   );
 }
 
+export function migrationConnectionConfig(environment = process.env) {
+  const connectionString = environment.TEST_DATABASE_URL ?? environment.DATABASE_MIGRATION_URL;
+  if (connectionString) return { connectionString };
+
+  const host = environment.BUSINESS_FINLYNQ_MIGRATION_DB_HOST?.trim();
+  const database = environment.BUSINESS_FINLYNQ_MIGRATION_DB_NAME?.trim();
+  const user = environment.BUSINESS_FINLYNQ_MIGRATION_DB_USER?.trim();
+  const password = environment.BUSINESS_FINLYNQ_MIGRATION_DB_PASSWORD;
+  const port = Number(environment.BUSINESS_FINLYNQ_MIGRATION_DB_PORT ?? "5432");
+  if (!host || !database || !user || password === undefined
+    || !Number.isInteger(port) || port < 1 || port > 65535) {
+    throw new Error(
+      "TEST_DATABASE_URL, DATABASE_MIGRATION_URL, or complete BUSINESS_FINLYNQ_MIGRATION_DB_* settings "
+      + "are required for database schema verification",
+    );
+  }
+  return { database, host, password, port, user };
+}
+
 export async function verifyDatabaseSchema({
-  connectionString = process.env.TEST_DATABASE_URL ?? process.env.DATABASE_MIGRATION_URL,
+  connectionConfig,
+  connectionString,
   metaDirectory = defaultMetaDirectory,
 } = {}) {
-  if (!connectionString) {
-    throw new Error("TEST_DATABASE_URL or DATABASE_MIGRATION_URL is required for database schema verification");
-  }
-
+  const selectedConnection = connectionConfig
+    ?? (connectionString ? { connectionString } : migrationConnectionConfig());
   const latest = await loadLatestJournalSnapshot(metaDirectory);
   const snapshotContract = applyMigrationOwnedConstraintContract(
     buildSnapshotSchemaContract(latest.snapshot),
@@ -2911,7 +2935,7 @@ export async function verifyDatabaseSchema({
   );
   const client = new Client({
     application_name: "business-finlynq-schema-verifier",
-    connectionString,
+    ...selectedConnection,
     connectionTimeoutMillis: 5_000,
   });
 
@@ -2935,9 +2959,10 @@ export async function verifyDatabaseSchema({
 }
 
 async function main() {
-  const connectionString = process.env.TEST_DATABASE_URL ?? process.env.DATABASE_MIGRATION_URL;
+  let selectedConnection;
   try {
-    const result = await verifyDatabaseSchema({ connectionString });
+    selectedConnection = migrationConnectionConfig();
+    const result = await verifyDatabaseSchema({ connectionConfig: selectedConnection });
     if (result.diagnostics.length > 0) {
       console.error(
         `Database schema verification failed against ${result.latest.journalEntry.tag} `
@@ -2954,7 +2979,7 @@ async function main() {
       + `${result.grantRelationCount} relations in the exact ${runtimeRoleName} table/view grant matrix.`,
     );
   } catch (error) {
-    console.error(`Database schema verification could not complete: ${safeErrorMessage(error, connectionString ?? "")}`);
+    console.error(`Database schema verification could not complete: ${safeErrorMessage(error, selectedConnection)}`);
     process.exitCode = 1;
   }
 }

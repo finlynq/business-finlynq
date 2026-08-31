@@ -1,6 +1,7 @@
-import { randomUUID } from "node:crypto";
 import { NextResponse, type NextRequest } from "next/server";
 import { logRouteFailure } from "@/app/api/_shared/route-failure-log";
+import { requestIdFor } from "@/observability/request-correlation";
+import { observeRouteHandler } from "@/observability/request-observability";
 import { queryDatabase } from "@/db/transaction";
 import { emailDeliveryReadiness } from "@/modules/identity/auth-store";
 import { assertAccountAuthenticationConfigured } from "@/modules/identity/email-provider";
@@ -20,8 +21,8 @@ const internalHealthHeader = "x-business-finlynq-internal-health";
 // Caddy removes this non-secret marker from every public request. It is
 // accepted only on the app's loopback/private-network listener; forwarding
 // headers never participate in the decision.
-export async function GET(request: NextRequest) {
-  const requestId = randomUUID();
+async function get(request: NextRequest) {
+  const requestId = requestIdFor(request);
   const includeDetails = request.headers.get(internalHealthHeader) === "1";
   try {
     loadIdentitySecret();
@@ -65,3 +66,5 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ status: "unavailable" }, { status: 503, headers });
   }
 }
+
+export const GET = observeRouteHandler("health-readiness", get);

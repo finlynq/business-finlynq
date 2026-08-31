@@ -14,14 +14,16 @@ for command_name in awk basename date find flock jq readlink sha256sum stat tr w
 done
 
 BACKUP_OUTPUT_DIR="${BACKUP_OUTPUT_DIR:-/backups}"
-BACKUP_MAX_AGE_HOURS="${BACKUP_MAX_AGE_HOURS:-8}"
-BACKUP_MAX_ACTIVE_SECONDS="${BACKUP_MAX_ACTIVE_SECONDS:-7200}"
+BACKUP_MAX_AGE_HOURS="${BACKUP_MAX_AGE_HOURS:-6}"
+BACKUP_MAX_ACTIVE_SECONDS="${BACKUP_MAX_ACTIVE_SECONDS:-4800}"
 BACKUP_REQUIRE_OFFSITE_MARKER="${BACKUP_REQUIRE_OFFSITE_MARKER:-true}"
 
 [[ "$BACKUP_MAX_AGE_HOURS" =~ ^[0-9]+$ ]] \
   || fail "BACKUP_MAX_AGE_HOURS must be a non-negative integer"
-[[ "$BACKUP_MAX_ACTIVE_SECONDS" =~ ^[0-9]+$ ]] \
-  || fail "BACKUP_MAX_ACTIVE_SECONDS must be a non-negative integer"
+[[ "$BACKUP_MAX_ACTIVE_SECONDS" =~ ^[1-9][0-9]*$ \
+  && ${#BACKUP_MAX_ACTIVE_SECONDS} -le 4 \
+  && "$BACKUP_MAX_ACTIVE_SECONDS" -le 4800 ]] \
+  || fail "BACKUP_MAX_ACTIVE_SECONDS must be 1 to 4800 seconds"
 [[ "$BACKUP_REQUIRE_OFFSITE_MARKER" == "true" || "$BACKUP_REQUIRE_OFFSITE_MARKER" == "false" ]] \
   || fail "BACKUP_REQUIRE_OFFSITE_MARKER must be true or false"
 
@@ -33,6 +35,7 @@ backup_lock="$BACKUP_OUTPUT_DIR/.backup.lock"
 [[ -f "$backup_lock" && ! -L "$backup_lock" ]] \
   || fail "backup lock is missing or is not a regular file"
 exec 9<"$backup_lock"
+backup_active=false
 if ! flock --shared --nonblock 9; then
   current_epoch="$(date +%s)"
   lock_epoch="$(stat -c '%Y' -- "$backup_lock")"
@@ -41,8 +44,7 @@ if ! flock --shared --nonblock 9; then
   active_seconds=$((current_epoch - lock_epoch))
   (( active_seconds <= BACKUP_MAX_ACTIVE_SECONDS )) \
     || fail "backup has held its lock longer than the allowed active window"
-  printf '%s\n' "Backup verification deferred while an encrypted backup is active"
-  exit 75
+  backup_active=true
 fi
 latest_manifest=""
 latest_manifest_name=""
@@ -81,6 +83,8 @@ manifest_sha256="$(jq -r '.sha256 // empty' "$latest_manifest")"
 manifest_bytes="$(jq -r '.encryptedBytes // empty' "$latest_manifest")"
 manifest_created_at="$(jq -r '.createdAt // empty' "$latest_manifest")"
 manifest_revision="$(jq -r '.applicationRevision // empty' "$latest_manifest")"
+manifest_source_revision="$(jq -r '.sourceApplicationRevision // .applicationRevision // empty' "$latest_manifest")"
+manifest_tool_revision="$(jq -r '.backupToolRevision // .applicationRevision // empty' "$latest_manifest")"
 
 [[ "$schema_version" == "1" && "$product" == "business-finlynq" ]] \
   || fail "newest backup manifest has an invalid schema or product"
@@ -98,6 +102,10 @@ compact_created_at="${compact_created_at//:/}"
   || fail "newest backup creation timestamp does not match its filename"
 [[ "$manifest_revision" =~ ^([a-f0-9]{40}|[a-f0-9]{64})$ && ! "$manifest_revision" =~ ^0+$ ]] \
   || fail "newest backup manifest has an invalid application revision"
+[[ "$manifest_source_revision" == "$manifest_revision" ]] \
+  || fail "newest backup source revision is inconsistent with applicationRevision"
+[[ "$manifest_tool_revision" =~ ^([a-f0-9]{40}|[a-f0-9]{64})$ && ! "$manifest_tool_revision" =~ ^0+$ ]] \
+  || fail "newest backup manifest has an invalid backup-tool revision"
 
 current_epoch="$(date +%s)"
 created_epoch=""
@@ -140,6 +148,14 @@ if [[ "$BACKUP_REQUIRE_OFFSITE_MARKER" == "true" ]]; then
   [[ "$uploaded_record" == "$manifest_created_at remote="* \
     && "$uploaded_record" != "$manifest_created_at remote=" ]] \
     || fail "newest backup off-site upload marker is invalid"
+fi
+
+if [[ "$backup_active" == "true" ]]; then
+  # A running backup is not itself evidence of recoverability. Exit 75 only
+  # after the most recent completed recovery point has independently passed
+  # freshness, checksum, size, and required off-site verification above.
+  printf '%s\n' "Backup verification deferred while an encrypted backup is active"
+  exit 75
 fi
 
 printf '%s\n' "Business Finlynq encrypted backup verification passed"

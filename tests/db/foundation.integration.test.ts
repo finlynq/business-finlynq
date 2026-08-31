@@ -451,14 +451,38 @@ runDatabaseTests("PostgreSQL accounting controls", () => {
     expect(result).toMatchObject({ journalNumber: 1, status: "POSTED", idempotentReplay: false });
 
     const eventCounts = await asTenant(async (client) =>
-      client.query(
+      client.query<{
+        audit_count: number;
+        outbox_count: number;
+        audit_request_id: string;
+        outbox_request_id: string;
+      }>(
         `SELECT
            (SELECT count(*)::int FROM audit_events WHERE entity_id = $1) AS audit_count,
-           (SELECT count(*)::int FROM outbox_events WHERE aggregate_id = $1) AS outbox_count`,
+           (SELECT count(*)::int FROM outbox_events WHERE aggregate_id = $1) AS outbox_count,
+           (SELECT request_id FROM audit_events WHERE entity_id = $1 LIMIT 1) AS audit_request_id,
+           (SELECT request_id FROM outbox_events WHERE aggregate_id = $1 LIMIT 1) AS outbox_request_id`,
         [ids.postedJournal],
       ),
     );
-    expect(eventCounts.rows[0]).toEqual({ audit_count: 1, outbox_count: 1 });
+    expect(eventCounts.rows[0]).toEqual({
+      audit_count: 1,
+      outbox_count: 1,
+      audit_request_id: "post-1",
+      outbox_request_id: "post-1",
+    });
+
+    await expect(adminPool.query(
+      `INSERT INTO outbox_events(
+         organization_id, topic, aggregate_type, aggregate_id, payload
+       ) VALUES ($1, 'test.unscoped', 'test', 'test', '{}')`,
+      [ids.orgA],
+    )).rejects.toThrow(/outside the versioned contract/i);
+
+    const metrics = await runtimePool.query<{
+      outbox_unmatched_audit_count: string;
+    }>("SELECT outbox_unmatched_audit_count FROM app.operations_metrics()");
+    expect(metrics.rows[0]?.outbox_unmatched_audit_count).toBe("0");
   });
 
   it("posts FX converted at the database's functional minor-unit rule", async () => {
@@ -1358,13 +1382,25 @@ runDatabaseTests("PostgreSQL accounting controls", () => {
       events: number;
       audits: number;
       outbox: number;
+      uncorrelated: number;
     }>(
       `SELECT
          (SELECT count(*)::int FROM period_events WHERE period_id = $1) AS events,
          (SELECT count(*)::int FROM audit_events WHERE entity_type = 'fiscal_period' AND entity_id = $1::text) AS audits,
-         (SELECT count(*)::int FROM outbox_events WHERE topic = 'ledger.period-transitioned' AND aggregate_id = $1::text) AS outbox`,
+         (SELECT count(*)::int FROM outbox_events WHERE topic = 'ledger.period-transitioned' AND aggregate_id = $1::text) AS outbox,
+         (SELECT count(*)::int
+            FROM outbox_events outbox
+           WHERE outbox.topic = 'ledger.period-transitioned'
+             AND outbox.aggregate_id = $1::text
+             AND NOT EXISTS (
+               SELECT 1 FROM audit_events audit
+               WHERE audit.organization_id = outbox.organization_id
+                 AND audit.request_id = outbox.request_id
+                 AND audit.entity_type = outbox.aggregate_type
+                 AND audit.entity_id = outbox.aggregate_id
+             )) AS uncorrelated`,
       [ids.controlPeriod],
     ));
-    expect(evidence.rows[0]).toEqual({ events: 6, audits: 6, outbox: 6 });
+    expect(evidence.rows[0]).toEqual({ events: 6, audits: 6, outbox: 6, uncorrelated: 0 });
   });
 });

@@ -60,8 +60,8 @@ run_verifier() {
   local target_dir="$1"
   local require_offsite="$2"
   BACKUP_OUTPUT_DIR="$target_dir" \
-  BACKUP_MAX_AGE_HOURS=8 \
-  BACKUP_MAX_ACTIVE_SECONDS=7200 \
+  BACKUP_MAX_AGE_HOURS=6 \
+  BACKUP_MAX_ACTIVE_SECONDS=4800 \
   BACKUP_REQUIRE_OFFSITE_MARKER="$require_offsite" \
     /bin/bash "$verifier" </dev/null
 }
@@ -135,6 +135,35 @@ run_verifier "$valid_dir" false >"$lock_output" 2>&1 || lock_status=$?
 }
 grep -Fqx -- "Backup verification deferred while an encrypted backup is active" "$lock_output"
 : >"$lock_release"
+wait "$lock_holder_pid"
+lock_holder_pid=""
+
+stale_lock_ready="$fixture_root/stale-lock-ready"
+stale_lock_release="$fixture_root/stale-lock-release"
+(
+  exec 8>"$stale_dir/.backup.lock"
+  flock --exclusive 8
+  : >"$stale_lock_ready"
+  while [[ ! -e "$stale_lock_release" ]]; do
+    sleep 0.05
+  done
+) &
+lock_holder_pid=$!
+for _ in {1..100}; do
+  [[ -e "$stale_lock_ready" ]] && break
+  sleep 0.05
+done
+[[ -e "$stale_lock_ready" ]] || {
+  printf '%s\n' "Timed out preparing stale active-backup fixture" >&2
+  exit 1
+}
+stale_lock_status=0
+run_verifier "$stale_dir" true >/dev/null 2>&1 || stale_lock_status=$?
+[[ "$stale_lock_status" != "0" && "$stale_lock_status" != "75" ]] || {
+  printf 'Verifier masked a stale completed recovery point with active status %s\n' "$stale_lock_status" >&2
+  exit 1
+}
+: >"$stale_lock_release"
 wait "$lock_holder_pid"
 lock_holder_pid=""
 

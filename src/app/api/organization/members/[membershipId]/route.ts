@@ -32,7 +32,7 @@ export async function PATCH(
   request: NextRequest,
   { params }: { params: Promise<{ membershipId: string }> },
 ) {
-  return organizationAdminMutationRoute(async (requestId) => {
+  return organizationAdminMutationRoute(request, async (requestId) => {
     const access = await prepareOrganizationAdminMutation(request, "member");
     if (access.response) return access.response;
     const body = await readOrganizationAdminJson(request, schema);

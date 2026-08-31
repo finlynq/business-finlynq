@@ -13,6 +13,9 @@ RUN npm run build
 
 FROM dependencies AS migrator
 
+ARG BUSINESS_FINLYNQ_IMAGE_REVISION=unknown
+LABEL org.opencontainers.image.revision=$BUSINESS_FINLYNQ_IMAGE_REVISION
+
 COPY --chown=node:node . .
 ENV NODE_ENV=production
 USER node
@@ -39,6 +42,9 @@ RUN npm ci --omit=dev --ignore-scripts \
 
 FROM node:24-alpine@sha256:e67514e5d0f6c46656005e1b693b2ec9d52e80b641307de684d4a015ba7a4eaf AS worker
 
+ARG BUSINESS_FINLYNQ_IMAGE_REVISION=unknown
+LABEL org.opencontainers.image.revision=$BUSINESS_FINLYNQ_IMAGE_REVISION
+
 RUN apk add --no-cache libc6-compat
 WORKDIR /app
 ENV NODE_ENV=production
@@ -58,6 +64,9 @@ COPY --chmod=0555 deploy/backup/run-backup.sh /usr/local/bin/business-finlynq-ba
 COPY --chmod=0555 deploy/backup/check-latest-backup.sh /usr/local/bin/business-finlynq-check-latest-backup
 COPY --chmod=0555 deploy/backup/verify-restore.sh /usr/local/bin/business-finlynq-verify-restore
 COPY --chmod=0555 deploy/backup/verify-restored-runtime.sh /usr/local/bin/business-finlynq-verify-restored-runtime
+COPY --chmod=0555 deploy/backup/verify-accounting-evidence.sh /usr/local/bin/business-finlynq-verify-accounting-evidence
+COPY --chmod=0555 deploy/backup/record-restore-evidence.sh /usr/local/bin/business-finlynq-record-restore-evidence
+COPY --chmod=0444 scripts/operations/accounting-evidence-query.sql /usr/local/share/business-finlynq/accounting-evidence-query.sql
 COPY --chmod=0555 deploy/rollback/verify-legacy-app.sh /usr/local/bin/business-finlynq-verify-legacy-app
 COPY --chmod=0555 deploy/backup/reconcile-restored-role.sh /usr/local/bin/business-finlynq-reconcile-restored-role
 COPY --chmod=0555 deploy/postgres/010-runtime-role.sh /usr/local/bin/business-finlynq-reconcile-runtime-role
