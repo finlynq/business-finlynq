@@ -11,6 +11,35 @@ function source(path: string): string {
   return readFileSync(resolve(repositoryRoot, path), "utf8").replaceAll("\r\n", "\n");
 }
 
+function renderAppEnvironment(
+  composeFiles: string[],
+  environment: Readonly<Record<string, string | undefined>> = {},
+): Record<string, string> {
+  const composeArguments = composeFiles.flatMap((path) => ["-f", resolve(repositoryRoot, path)]);
+  const rendered = execFileSync("docker", [
+    "compose",
+    "--project-name", "business-finlynq-render-contract",
+    "--project-directory", repositoryRoot,
+    "--env-file", resolve(repositoryRoot, ".env.example"),
+    ...composeArguments,
+    "config", "--format", "json",
+  ], {
+    cwd: repositoryRoot,
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      ...environment,
+    },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  const configuration = JSON.parse(rendered) as {
+    services?: { app?: { environment?: Record<string, string> } };
+  };
+  const appEnvironment = configuration.services?.app?.environment;
+  if (!appEnvironment) throw new Error("Rendered Compose configuration has no app environment");
+  return appEnvironment;
+}
+
 function writeAcceptedRehearsal(directory: string, revision: string, runId: string): void {
   const writeJson = (name: string, value: unknown) => writeFileSync(join(directory, name), `${JSON.stringify(value)}\n`);
   const appImageId = `sha256:${"a".repeat(64)}`;
@@ -209,6 +238,27 @@ describe("commit-addressed release orchestration", () => {
     expect(service).not.toMatch(/^\s+secrets:/m);
     expect(service).not.toMatch(/^\s+volumes:/m);
     expect(service).not.toMatch(/^\s+ports:/m);
+  });
+
+  it("adds the insecure-loopback marker pair only to the rehearsal Compose render", () => {
+    const productionEnvironment = renderAppEnvironment(["docker-compose.yml"]);
+    const rehearsalEnvironment = renderAppEnvironment(
+      ["docker-compose.yml", "deploy/release/docker-compose.rehearsal.yml"],
+      {
+        RELEASE_REHEARSAL_PROJECT: "business-finlynq-rehearsal-render-contract",
+        BUSINESS_FINLYNQ_APP_ORIGIN: "http://127.0.0.1:3201",
+        BUSINESS_FINLYNQ_APP_PORT: "3201",
+        SESSION_COOKIE_NAME: "business_finlynq_rehearsal_session",
+        DEMO_CLAIM_COOKIE_NAME: "business_finlynq_rehearsal_demo_claim",
+      },
+    );
+
+    expect(rehearsalEnvironment).toMatchObject({
+      ALLOW_INSECURE_TEST_ORIGIN: "true",
+      BUSINESS_FINLYNQ_TEST_CONTEXT: "playwright",
+    });
+    expect(productionEnvironment).not.toHaveProperty("ALLOW_INSECURE_TEST_ORIGIN");
+    expect(productionEnvironment).not.toHaveProperty("BUSINESS_FINLYNQ_TEST_CONTEXT");
   });
 
   it("embeds the full revision in every release-owned image and retains both backup revision meanings", () => {

@@ -76,6 +76,8 @@ For the deploy-owned cron fallback, replace the last command with `SCHEDULER_BOU
 
 The pre-migration encrypted/off-site backup is wrapped in the same reviewed `SCHEDULED_BACKUP_TIMEOUT_SECONDS` ceiling as scheduled backups (90 minutes, maximum 5,400 seconds). A timeout fails the release with the application, worker, and schedulers still quiesced, stops and removes the exact one-off backup container within a second bound, proves it is gone, retains failure evidence, and keeps the shared coordination lock until cleanup completes.
 
+If a candidate is superseded after this bootstrap has paused the schedulers but before the canonical checkout changes, leave the protected marker and receipt in place. Fetch the newer descendant commit and rerun its exact archived bootstrap with a new acknowledgement. The bootstrap accepts this retarget only when the source checkout is still unchanged and clean, the prior receipt and marker have exact protected contents and ownership, the earlier candidate is an ancestor of the newer one, and every scheduler remains paused. It then atomically replaces the receipt without briefly reinstalling the legacy schedule. Any other partial or unrelated state fails closed.
+
 ### Two clean rehearsals
 
 A rehearsal uses the same image, backup, migration, grant, schema, readiness, and browser flow in a distinct Compose project. The mandatory override gives every named volume and network a run-specific name before the script performs scoped `down --volumes`; it cannot resolve to any production resource name. It never manipulates production schedulers or contacts an off-site backup remote, and it requires:

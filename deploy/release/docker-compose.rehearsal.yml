@@ -1,6 +1,16 @@
 # The production topology intentionally uses stable global resource names.
 # Every rehearsal replaces all of them with the validated run project so
 # scoped cleanup cannot attach to or remove production state.
+services:
+  app:
+    environment:
+      # The release runner permits plain HTTP only on its isolated loopback
+      # listener. These paired markers are accepted by request-origin
+      # validation only in the Playwright rehearsal context and never enter
+      # the production Compose render.
+      ALLOW_INSECURE_TEST_ORIGIN: "true"
+      BUSINESS_FINLYNQ_TEST_CONTEXT: playwright
+
 volumes:
   business_finlynq_pgdata:
     name: ${RELEASE_REHEARSAL_PROJECT:?set RELEASE_REHEARSAL_PROJECT}-pgdata
