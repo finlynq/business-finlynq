@@ -118,7 +118,7 @@ else
     || fail "rehearsal mode does not operate production schedulers or an operations environment"
 fi
 
-for command_name in awk bash chmod chown curl date docker env find flock git grep id install jq mkdir mktemp readlink rm sha256sum sleep sort stat tar tee timeout touch xargs; do
+for command_name in awk bash chmod chown curl date docker env find flock git grep id install jq mkdir mktemp readlink rm sed sha256sum sleep sort stat tar tee timeout touch xargs; do
   command -v "$command_name" >/dev/null 2>&1 || fail "required command is unavailable: $command_name"
 done
 docker compose version >/dev/null 2>&1 || fail "Docker Compose v2 is unavailable"
@@ -906,6 +906,7 @@ prepare_scheduler_state_directory() {
   local state_directory="/var/lib/business-finlynq"
   local shared_state_directory="/home/deploy/.local/state/business-finlynq/cron"
   local shared_demo_lock="$shared_state_directory/demo-sandbox-maintenance.lock"
+  local job_status_directory="$shared_state_directory/job-status"
   local deploy_uid deploy_gid selected_path owner group mode_bits
   deploy_uid="$(id -u deploy)"
   deploy_gid="$(id -g deploy)"
@@ -914,17 +915,20 @@ prepare_scheduler_state_directory() {
   [[ ! -L "$shared_state_directory" \
     && ( ! -e "$shared_state_directory" || -d "$shared_state_directory" ) \
     && ! -L "$shared_demo_lock" \
-    && ( ! -e "$shared_demo_lock" || -f "$shared_demo_lock" ) ]] \
+    && ( ! -e "$shared_demo_lock" || -f "$shared_demo_lock" ) \
+    && ! -L "$job_status_directory" \
+    && ( ! -e "$job_status_directory" || -d "$job_status_directory" ) ]] \
     || fail "shared scheduler state or demo lock is unsafe"
-  mkdir -p -- "$shared_state_directory"
-  chmod 0700 -- "$shared_state_directory"
+  mkdir -p -- "$shared_state_directory" "$job_status_directory"
+  chmod 0700 -- "$shared_state_directory" "$job_status_directory"
   touch -- "$shared_demo_lock"
   chmod 0600 -- "$shared_demo_lock"
   if [[ "$(id -u)" == "0" ]]; then
-    chown deploy:deploy -- "$shared_state_directory" "$shared_demo_lock"
+    chown deploy:deploy -- "$shared_state_directory" "$shared_demo_lock" "$job_status_directory"
   fi
   [[ "$(stat -c '%u:%g:%a' -- "$shared_state_directory")" == "$deploy_uid:$deploy_gid:700" \
-    && "$(stat -c '%u:%g:%a' -- "$shared_demo_lock")" == "$deploy_uid:$deploy_gid:600" ]] \
+    && "$(stat -c '%u:%g:%a' -- "$shared_demo_lock")" == "$deploy_uid:$deploy_gid:600" \
+    && "$(stat -c '%u:%g:%a' -- "$job_status_directory")" == "$deploy_uid:$deploy_gid:700" ]] \
     || fail "shared scheduler state and demo lock must be deploy-owned with restrictive modes"
   [[ ! -L "$state_directory" && ( ! -e "$state_directory" || -d "$state_directory" ) ]] \
     || fail "scheduler state directory is unsafe"
@@ -984,19 +988,286 @@ install_and_verify_systemd_schedule() {
   bash "$candidate_source_root/deploy/systemd/verify-backup-schedule.sh"
 }
 
+systemd_property_value=""
+read_systemd_property() {
+  local service_name="$1" property_name="$2"
+  [[ "$service_name" == "business-finlynq-accounting-evidence.service" \
+    || "$service_name" == "business-finlynq-monitor.service" ]] \
+    || fail "release acceptance requested an unsupported systemd service"
+  case "$property_name" in
+    ExecMainStartTimestampMonotonic|ExecMainExitTimestampMonotonic|Result|ExecMainStatus) ;;
+    *) fail "release acceptance requested an unsupported systemd property" ;;
+  esac
+  if ! systemd_property_value="$(systemctl show --property="$property_name" --value "$service_name")"; then
+    fail "could not inspect $property_name for $service_name"
+  fi
+  [[ -n "$systemd_property_value" ]] \
+    || fail "systemd returned an empty $property_name for $service_name"
+}
+
+run_fresh_systemd_oneshot() {
+  local service_name="$1" description="$2"
+  local previous_start current_start current_exit result main_status
+  read_systemd_property "$service_name" ExecMainStartTimestampMonotonic
+  previous_start="$systemd_property_value"
+  [[ "$previous_start" =~ ^[0-9]+$ ]] \
+    || fail "$description has an invalid previous systemd start timestamp"
+  systemctl start "$service_name" \
+    || fail "$description could not be started"
+  read_systemd_property "$service_name" ExecMainStartTimestampMonotonic
+  current_start="$systemd_property_value"
+  read_systemd_property "$service_name" ExecMainExitTimestampMonotonic
+  current_exit="$systemd_property_value"
+  read_systemd_property "$service_name" Result
+  result="$systemd_property_value"
+  read_systemd_property "$service_name" ExecMainStatus
+  main_status="$systemd_property_value"
+  [[ "$current_start" =~ ^[1-9][0-9]*$ && "$current_start" != "$previous_start" ]] \
+    || fail "$description did not execute a fresh systemd invocation"
+  [[ "$current_exit" =~ ^[1-9][0-9]*$ && "$current_exit" -gt "$current_start" ]] \
+    || fail "$description has no valid systemd exit timestamp after its fresh start"
+  [[ "$result" == "success" ]] \
+    || fail "$description did not report systemd Result=success"
+  [[ "$main_status" == "0" ]] \
+    || fail "$description exited with a nonzero systemd ExecMainStatus"
+  systemctl show --no-pager --property=ExecMainStartTimestampMonotonic \
+    --property=ExecMainExitTimestampMonotonic --property=Result \
+    --property=ExecMainStatus "$service_name"
+}
+
+verify_fresh_cron_job_status() {
+  local job_name="$1" started_at="$2"
+  local deploy_uid status_directory status_file completed_at now
+  [[ "$job_name" == "accounting-evidence" || "$job_name" == "monitor" ]] \
+    || fail "release cron acceptance requested an unsupported job"
+  [[ "$started_at" =~ ^[1-9][0-9]*$ ]] \
+    || fail "release cron acceptance start time is invalid"
+  deploy_uid="$(id -u deploy)"
+  [[ "$deploy_uid" =~ ^[0-9]+$ ]] \
+    || fail "the deploy account identity is unavailable for cron acceptance"
+  status_directory="/home/deploy/.local/state/business-finlynq/cron/job-status"
+  status_file="$status_directory/$job_name.json"
+  [[ -d "$status_directory" && ! -L "$status_directory" \
+    && "$(readlink -f -- "$status_directory")" == "$status_directory" \
+    && "$(stat -c '%u:%a' -- "$status_directory")" == "$deploy_uid:700" ]] \
+    || fail "cron job-status directory is unsafe"
+  [[ -f "$status_file" && ! -L "$status_file" \
+    && "$(readlink -f -- "$status_file")" == "$status_file" \
+    && "$(stat -c '%u:%a' -- "$status_file")" == "$deploy_uid:600" ]] \
+    || fail "cron $job_name completion record is missing or unsafe"
+  now="$(date +%s)"
+  [[ "$now" =~ ^[1-9][0-9]*$ ]] \
+    || fail "current time is invalid while verifying cron completion"
+  jq -e --arg job "$job_name" --argjson startedAt "$started_at" --argjson now "$now" '
+    type == "object" and
+    keys == ["completedAtUnixtime", "job", "product", "result", "schemaVersion"] and
+    .schemaVersion == 1 and .product == "business-finlynq" and
+    .job == $job and .result == "succeeded" and
+    (.completedAtUnixtime | type == "number" and . == floor and
+      . >= $startedAt and . <= $now)
+  ' "$status_file" >/dev/null \
+    || fail "cron $job_name did not produce a fresh successful completion record"
+  completed_at="$(jq -r '.completedAtUnixtime' "$status_file")"
+  printf 'Cron %s completion record accepted at %s (completedAt=%s).\n' \
+    "$job_name" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$completed_at"
+}
+
+clear_cron_job_status() {
+  local job_name="$1"
+  local deploy_uid status_directory status_file
+  [[ "$job_name" == "accounting-evidence" || "$job_name" == "monitor" ]] \
+    || fail "release cron acceptance requested an unsupported job"
+  deploy_uid="$(id -u deploy)"
+  [[ "$deploy_uid" =~ ^[0-9]+$ ]] \
+    || fail "the deploy account identity is unavailable for cron acceptance"
+  status_directory="/home/deploy/.local/state/business-finlynq/cron/job-status"
+  status_file="$status_directory/$job_name.json"
+  [[ -d "$status_directory" && ! -L "$status_directory" \
+    && "$(readlink -f -- "$status_directory")" == "$status_directory" \
+    && "$(stat -c '%u:%a' -- "$status_directory")" == "$deploy_uid:700" ]] \
+    || fail "cron job-status directory is unsafe"
+  if [[ -e "$status_file" || -L "$status_file" ]]; then
+    [[ -f "$status_file" && ! -L "$status_file" \
+      && "$(readlink -f -- "$status_file")" == "$status_file" \
+      && "$(stat -c '%u:%a' -- "$status_file")" == "$deploy_uid:600" ]] \
+      || fail "existing cron $job_name completion record is unsafe"
+    rm -- "$status_file"
+  fi
+  [[ ! -e "$status_file" && ! -L "$status_file" ]] \
+    || fail "cron $job_name completion record could not be cleared before acceptance"
+}
+
+release_metric_file=""
+resolve_release_metric_file() {
+  local environment_key="$1" default_path="$2"
+  case "$environment_key" in
+    ACCOUNTING_EVIDENCE_METRICS_FILE|MONITOR_METRICS_FILE) ;;
+    *) fail "release acceptance requested an unsupported metric path" ;;
+  esac
+  release_metric_file="$(read_operations_value "$environment_key")"
+  [[ -n "$release_metric_file" ]] || release_metric_file="$default_path"
+}
+
+assert_release_metric_path_safety() {
+  local metrics_file="$1" require_file="$2" description="$3"
+  local deploy_uid deploy_gid metrics_directory directory_owner directory_group directory_mode
+  local owner group mode_bits
+  [[ "$require_file" == "true" || "$require_file" == "false" ]] \
+    || fail "metric file requirement is invalid"
+  deploy_uid="$(id -u deploy)"
+  deploy_gid="$(id -g deploy)"
+  [[ "$deploy_uid" =~ ^[0-9]+$ && "$deploy_gid" =~ ^[0-9]+$ ]] \
+    || fail "the deploy account identity is unavailable for $description"
+  metrics_directory="${metrics_file%/*}"
+  [[ "$metrics_file" == /* && "$metrics_directory" != "$metrics_file" \
+    && -d "$metrics_directory" && ! -L "$metrics_directory" \
+    && "$(readlink -f -- "$metrics_directory")" == "$metrics_directory" ]] \
+    || fail "$description directory is missing or resolves through an unsafe path"
+  directory_owner="$(stat -c '%u' -- "$metrics_directory")"
+  directory_group="$(stat -c '%g' -- "$metrics_directory")"
+  directory_mode="$(stat -c '%a' -- "$metrics_directory")"
+  [[ ( "$directory_owner" == "0" || "$directory_owner" == "$deploy_uid" ) \
+    && "$directory_group" == "$deploy_gid" && "$directory_mode" == "775" ]] \
+    || fail "$description directory has unsafe ownership or mode"
+  if [[ ! -e "$metrics_file" && ! -L "$metrics_file" ]]; then
+    [[ "$require_file" == "false" ]] || fail "$description is missing"
+    return 0
+  fi
+  [[ -f "$metrics_file" && ! -L "$metrics_file" \
+    && "$(readlink -f -- "$metrics_file")" == "$metrics_file" ]] \
+    || fail "$description is not a safe regular file"
+  owner="$(stat -c '%u' -- "$metrics_file")"
+  group="$(stat -c '%g' -- "$metrics_file")"
+  mode_bits="$(stat -c '%a' -- "$metrics_file")"
+  [[ ( "$owner" == "0" || "$owner" == "$deploy_uid" ) \
+    && "$group" == "$deploy_gid" && "$mode_bits" == "644" ]] \
+    || fail "$description has unsafe ownership or mode"
+}
+
+clear_release_metric_file() {
+  local environment_key="$1" default_path="$2" description="$3"
+  resolve_release_metric_file "$environment_key" "$default_path"
+  assert_release_metric_path_safety "$release_metric_file" false "$description"
+  if [[ -e "$release_metric_file" || -L "$release_metric_file" ]]; then
+    rm -- "$release_metric_file"
+  fi
+  [[ ! -e "$release_metric_file" && ! -L "$release_metric_file" ]] \
+    || fail "$description could not be cleared before acceptance"
+}
+
+metric_value=""
+read_unique_release_metric() {
+  local metrics_file="$1" metric_name="$2" description="$3"
+  if ! metric_value="$(awk -v selected_metric="$metric_name" '
+    $1 == selected_metric {
+      count += 1; if (NF != 2) invalid = 1; value = $2
+    }
+    END { if (count != 1 || invalid) exit 1; print value }
+  ' "$metrics_file")"; then
+    fail "$description is missing, duplicated, or malformed"
+  fi
+}
+
+verify_fresh_metric_file() {
+  local metrics_file="$1" started_at="$2" description="$3"
+  local modified_at now
+  [[ "$started_at" =~ ^[1-9][0-9]*$ ]] \
+    || fail "$description start time is invalid"
+  assert_release_metric_path_safety "$metrics_file" true "$description"
+  modified_at="$(stat -c '%Y' -- "$metrics_file")"
+  now="$(date +%s)"
+  [[ "$modified_at" =~ ^[1-9][0-9]*$ && "$now" =~ ^[1-9][0-9]*$ \
+    && "$modified_at" -ge "$started_at" && "$modified_at" -le "$now" ]] \
+    || fail "$description was not freshly replaced by release acceptance"
+}
+
+verify_fresh_accounting_metrics() {
+  local started_at="$1"
+  local metrics_file now
+  local verification_success last_run last_success
+  resolve_release_metric_file ACCOUNTING_EVIDENCE_METRICS_FILE \
+    /var/lib/business-finlynq/accounting-evidence.prom
+  metrics_file="$release_metric_file"
+  verify_fresh_metric_file "$metrics_file" "$started_at" "accounting-evidence metric"
+  now="$(date +%s)"
+  read_unique_release_metric "$metrics_file" \
+    business_finlynq_accounting_evidence_verification_success \
+    "accounting-evidence success metric"
+  verification_success="$metric_value"
+  read_unique_release_metric "$metrics_file" \
+    business_finlynq_accounting_evidence_verification_last_run_unixtime \
+    "accounting-evidence last-run metric"
+  last_run="$metric_value"
+  read_unique_release_metric "$metrics_file" \
+    business_finlynq_accounting_evidence_verification_last_success_unixtime \
+    "accounting-evidence last-success metric"
+  last_success="$metric_value"
+  [[ "$verification_success" == "1" \
+    && "$last_run" =~ ^[1-9][0-9]*$ && "$last_success" =~ ^[1-9][0-9]*$ \
+    && "$last_run" -ge "$started_at" && "$last_run" -le "$now" \
+    && "$last_success" -ge "$started_at" && "$last_success" -le "$now" ]] \
+    || fail "accounting-evidence metric does not prove a fresh successful release seed"
+}
+
+verify_fresh_host_monitor_metrics() {
+  local started_at="$1"
+  local metrics_file now monitor_success last_run
+  resolve_release_metric_file MONITOR_METRICS_FILE /var/lib/business-finlynq/host.prom
+  metrics_file="$release_metric_file"
+  verify_fresh_metric_file "$metrics_file" "$started_at" "host-monitor metric"
+  now="$(date +%s)"
+  read_unique_release_metric "$metrics_file" business_finlynq_host_monitor_success \
+    "host-monitor success metric"
+  monitor_success="$metric_value"
+  read_unique_release_metric "$metrics_file" \
+    business_finlynq_host_monitor_last_run_unixtime "host-monitor last-run metric"
+  last_run="$metric_value"
+  [[ "$monitor_success" == "1" && "$last_run" =~ ^[1-9][0-9]*$ \
+    && "$last_run" -ge "$started_at" && "$last_run" -le "$now" ]] \
+    || fail "host-monitor metric does not prove a fresh successful acceptance run"
+}
+
 run_installed_monitor() {
+  local started_at
+  if [[ "$scheduler_mode" == "cron" ]]; then
+    clear_cron_job_status monitor
+  fi
+  clear_release_metric_file MONITOR_METRICS_FILE /var/lib/business-finlynq/host.prom \
+    "host-monitor metric"
+  started_at="$(date +%s)"
+  [[ "$started_at" =~ ^[1-9][0-9]*$ ]] \
+    || fail "monitor acceptance start time is invalid"
   if [[ "$scheduler_mode" == "systemd" ]]; then
-    systemctl start business-finlynq-monitor.service
-    [[ "$(systemctl show --property=Result --value business-finlynq-monitor.service)" == "success" ]] \
-      || fail "the resumed systemd monitor did not report success"
-    [[ "$(systemctl show --property=ExecMainStatus --value business-finlynq-monitor.service)" == "0" ]] \
-      || fail "the resumed systemd monitor exited nonzero"
-    systemctl show --no-pager --property=Result --property=ExecMainStatus \
-      --property=ExecMainExitTimestamp business-finlynq-monitor.service
+    run_fresh_systemd_oneshot business-finlynq-monitor.service \
+      "the resumed systemd monitor"
   else
     bash "$repository_root/deploy/cron/run-job.sh" monitor
+    verify_fresh_cron_job_status monitor "$started_at"
   fi
+  verify_fresh_host_monitor_metrics "$started_at"
   printf 'Installed %s monitor acceptance completed at %s.\n' \
+    "$scheduler_mode" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+}
+
+run_installed_accounting_evidence() {
+  local started_at
+  if [[ "$scheduler_mode" == "cron" ]]; then
+    clear_cron_job_status accounting-evidence
+  fi
+  clear_release_metric_file ACCOUNTING_EVIDENCE_METRICS_FILE \
+    /var/lib/business-finlynq/accounting-evidence.prom "accounting-evidence metric"
+  started_at="$(date +%s)"
+  [[ "$started_at" =~ ^[1-9][0-9]*$ ]] \
+    || fail "accounting-evidence seed start time is invalid"
+  if [[ "$scheduler_mode" == "systemd" ]]; then
+    run_fresh_systemd_oneshot business-finlynq-accounting-evidence.service \
+      "the resumed systemd accounting-evidence job"
+  else
+    bash "$repository_root/deploy/cron/run-job.sh" accounting-evidence
+    verify_fresh_cron_job_status accounting-evidence "$started_at"
+  fi
+  verify_fresh_accounting_metrics "$started_at"
+  printf 'Installed %s accounting-evidence seed completed at %s.\n' \
     "$scheduler_mode" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 }
 
@@ -1121,18 +1392,45 @@ run_backup() (
   return "$backup_status"
 )
 run_logged 31-encrypted-backup.log run_backup
-run_logged 32-backup-verification.log compose --profile operations run --rm --no-deps verify_latest_backup
-latest_backup_manifest=""
-while IFS= read -r -d '' backup_candidate; do
-  latest_backup_manifest="$backup_candidate"
-done < <(find "$backup_directory" -maxdepth 1 -type f -name 'business_finlynq_*.manifest.json' -print0 | sort -z)
-[[ -n "$latest_backup_manifest" && -f "$latest_backup_manifest" && ! -L "$latest_backup_manifest" ]] || fail "completed backup manifest was not found"
-[[ "$(jq -r '.applicationRevision // empty' "$latest_backup_manifest")" == "$backup_source_revision" ]] || fail "backup source revision does not match the pre-migration app"
-[[ "$(jq -r '.sourceApplicationRevision // empty' "$latest_backup_manifest")" == "$backup_source_revision" ]] || fail "backup manifest lacks the source application revision"
-[[ "$(jq -r '.backupToolRevision // empty' "$latest_backup_manifest")" == "$revision" ]] || fail "backup manifest lacks the candidate backup-tool revision"
-jq '{schemaVersion, product, createdAt, applicationRevision, sourceApplicationRevision, backupToolRevision, encryptedArchive, encryptedBytes, sha256, encryption, format}' \
-  "$latest_backup_manifest" >"$evidence_directory/33-backup-evidence.json"
-chmod 0600 -- "$evidence_directory/33-backup-evidence.json"
+verify_backup_and_record_evidence() {
+  local verifier_output evidence_json
+  local -a evidence_lines=()
+  if ! verifier_output="$(compose --profile operations run --rm --no-deps -T \
+    verify_latest_backup \
+    /usr/local/bin/business-finlynq-check-latest-backup --emit-evidence 2>&1)"; then
+    printf '%s\n' "$verifier_output"
+    return 1
+  fi
+  printf '%s\n' "$verifier_output"
+  mapfile -t evidence_lines < <(
+    printf '%s\n' "$verifier_output" \
+      | sed -n 's/^BUSINESS_FINLYNQ_BACKUP_EVIDENCE=//p'
+  )
+  (( ${#evidence_lines[@]} == 1 )) \
+    || fail "immutable backup verifier did not emit exactly one evidence record"
+  evidence_json="${evidence_lines[0]}"
+  jq -e --arg sourceRevision "$backup_source_revision" --arg toolRevision "$revision" '
+    type == "object" and
+    keys == ["applicationRevision", "backupToolRevision", "createdAt",
+      "encryptedArchive", "encryptedBytes", "encryption", "format", "product",
+      "schemaVersion", "sha256", "sourceApplicationRevision"] and
+    .schemaVersion == 1 and .product == "business-finlynq" and
+    .applicationRevision == $sourceRevision and
+    .sourceApplicationRevision == $sourceRevision and
+    .backupToolRevision == $toolRevision and
+    .encryption == "age" and .format == "postgres-custom" and
+    (.createdAt | type == "string" and
+      test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$")) and
+    (.encryptedArchive | type == "string" and
+      test("^business_finlynq_[0-9]{8}T[0-9]{6}Z_[A-Za-z0-9_.-]+\\.dump\\.age$")) and
+    (.encryptedBytes | type == "number" and . == floor and . > 0) and
+    (.sha256 | type == "string" and test("^[a-f0-9]{64}$"))
+  ' <<<"$evidence_json" >/dev/null \
+    || fail "immutable backup verifier emitted invalid release evidence"
+  jq '.' <<<"$evidence_json" >"$evidence_directory/33-backup-evidence.json"
+  chmod 0600 -- "$evidence_directory/33-backup-evidence.json"
+}
+run_logged 32-backup-verification.log verify_backup_and_record_evidence
 
 stage="pre-traffic-migration-and-contract-verification"
 pretraffic_services=(
@@ -1401,10 +1699,13 @@ if [[ "$mode" == "release" ]]; then
   run_logged 80-resume-schedulers.log resume_schedulers
   schedulers_paused="false"
   verify_live_checkout_matches_candidate
-  stage="production-monitor-acceptance"
-  run_logged 81-production-monitor.log run_installed_monitor
+  stage="accounting-evidence-seed"
+  run_logged 81-accounting-evidence-seed.log run_installed_accounting_evidence
   verify_live_checkout_matches_candidate
-  write_checkpoint 82-production-monitor.json installed-scheduled-monitor-passed
+  stage="production-monitor-acceptance"
+  run_logged 82-production-monitor.log run_installed_monitor
+  verify_live_checkout_matches_candidate
+  write_checkpoint 83-production-monitor.json installed-scheduled-monitor-passed
   stage="record-scheduler-boundary-version"
   record_scheduler_boundary_version
 else

@@ -48,9 +48,16 @@ create_fixture() {
       product: "business-finlynq",
       createdAt: $createdAt,
       applicationRevision: $revision,
+      sourceApplicationRevision: $revision,
+      backupToolRevision: $revision,
       encryptedArchive: $archive,
       encryptedBytes: $bytes,
-      sha256: $sha256
+      sha256: $sha256,
+      encryption: "age",
+      format: "postgres-custom",
+      database: "must-not-leak",
+      sourceHost: "must-not-leak",
+      arbitraryPrivateMetadata: {token: "must-not-leak"}
     }' >"$target_dir/$prefix.manifest.json"
   printf '%s remote=%s\n' "$created_at" "offsite:business-finlynq/database" >"$target_dir/$prefix.uploaded"
   chmod 0600 -- "$target_dir"/* "$target_dir/.backup.lock"
@@ -59,11 +66,14 @@ create_fixture() {
 run_verifier() {
   local target_dir="$1"
   local require_offsite="$2"
+  local emit_evidence="${3:-false}"
+  local -a verifier_arguments=()
+  [[ "$emit_evidence" == "false" ]] || verifier_arguments+=(--emit-evidence)
   BACKUP_OUTPUT_DIR="$target_dir" \
   BACKUP_MAX_AGE_HOURS=6 \
   BACKUP_MAX_ACTIVE_SECONDS=4800 \
   BACKUP_REQUIRE_OFFSITE_MARKER="$require_offsite" \
-    /bin/bash "$verifier" </dev/null
+    /bin/bash "$verifier" "${verifier_arguments[@]}" </dev/null
 }
 
 expect_failure() {
@@ -79,7 +89,44 @@ current_timestamp="$(date -u +%Y%m%dT%H%M%SZ)"
 current_created_at="${current_timestamp:0:4}-${current_timestamp:4:2}-${current_timestamp:6:2}T${current_timestamp:9:2}:${current_timestamp:11:2}:${current_timestamp:13:2}Z"
 valid_dir="$fixture_root/valid"
 create_fixture "$valid_dir" "$current_timestamp" "$current_created_at"
-run_verifier "$valid_dir" true >/dev/null
+default_output="$(run_verifier "$valid_dir" true)"
+[[ "$default_output" == "Business Finlynq encrypted backup verification passed" ]] || {
+  printf '%s\n' "Verifier default output contract changed unexpectedly" >&2
+  exit 1
+}
+evidence_output="$(run_verifier "$valid_dir" true true)"
+[[ "$(printf '%s\n' "$evidence_output" | grep -Fc 'BUSINESS_FINLYNQ_BACKUP_EVIDENCE=')" == "1" ]] || {
+  printf '%s\n' "Verifier did not emit exactly one evidence record" >&2
+  exit 1
+}
+evidence_json="$(printf '%s\n' "$evidence_output" | sed -n 's/^BUSINESS_FINLYNQ_BACKUP_EVIDENCE=//p')"
+[[ -n "$evidence_json" ]] || {
+  printf '%s\n' "Verifier did not emit sanitized backup evidence" >&2
+  exit 1
+}
+jq -e --arg revision "$revision" '
+  type == "object" and
+  (keys | sort) == ([
+    "applicationRevision", "backupToolRevision", "createdAt", "encryptedArchive",
+    "encryptedBytes", "encryption", "format", "product", "schemaVersion",
+    "sha256", "sourceApplicationRevision"
+  ] | sort) and
+  .schemaVersion == 1 and .product == "business-finlynq" and
+  .applicationRevision == $revision and .sourceApplicationRevision == $revision and
+  .backupToolRevision == $revision and .encryption == "age" and
+  .format == "postgres-custom" and
+  (.createdAt | type == "string" and test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$")) and
+  (.encryptedArchive | type == "string" and test("^business_finlynq_[0-9]{8}T[0-9]{6}Z_[A-Za-z0-9_.-]+\\.dump\\.age$")) and
+  (.encryptedBytes | type == "number" and . > 0) and
+  (.sha256 | type == "string" and test("^[a-f0-9]{64}$")) and
+  (tostring | contains("must-not-leak") | not)
+' <<<"$evidence_json" >/dev/null
+expect_failure "an unknown evidence option" env \
+  BACKUP_OUTPUT_DIR="$valid_dir" \
+  BACKUP_MAX_AGE_HOURS=6 \
+  BACKUP_MAX_ACTIVE_SECONDS=4800 \
+  BACKUP_REQUIRE_OFFSITE_MARKER=true \
+  /bin/bash "$verifier" --unknown
 
 valid_prefix="business_finlynq_${current_timestamp}_business_finlynq"
 printf '%s\n' "tampered" >>"$valid_dir/$valid_prefix.dump.age"

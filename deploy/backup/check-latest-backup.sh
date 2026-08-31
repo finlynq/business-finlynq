@@ -8,6 +8,15 @@ fail() {
   exit 1
 }
 
+emit_evidence="false"
+if (( $# > 1 )); then
+  fail "at most one verifier option is allowed"
+fi
+if (( $# == 1 )); then
+  [[ "$1" == "--emit-evidence" ]] || fail "unknown verifier option"
+  emit_evidence="true"
+fi
+
 for command_name in awk basename date find flock jq readlink sha256sum stat tr wc; do
   command -v "$command_name" >/dev/null 2>&1 \
     || fail "required command is unavailable: $command_name"
@@ -85,6 +94,8 @@ manifest_created_at="$(jq -r '.createdAt // empty' "$latest_manifest")"
 manifest_revision="$(jq -r '.applicationRevision // empty' "$latest_manifest")"
 manifest_source_revision="$(jq -r '.sourceApplicationRevision // .applicationRevision // empty' "$latest_manifest")"
 manifest_tool_revision="$(jq -r '.backupToolRevision // .applicationRevision // empty' "$latest_manifest")"
+manifest_encryption="$(jq -r '.encryption // empty' "$latest_manifest")"
+manifest_format="$(jq -r '.format // empty' "$latest_manifest")"
 
 [[ "$schema_version" == "1" && "$product" == "business-finlynq" ]] \
   || fail "newest backup manifest has an invalid schema or product"
@@ -106,6 +117,10 @@ compact_created_at="${compact_created_at//:/}"
   || fail "newest backup source revision is inconsistent with applicationRevision"
 [[ "$manifest_tool_revision" =~ ^([a-f0-9]{40}|[a-f0-9]{64})$ && ! "$manifest_tool_revision" =~ ^0+$ ]] \
   || fail "newest backup manifest has an invalid backup-tool revision"
+[[ "$manifest_encryption" == "age" ]] \
+  || fail "newest backup manifest has an unexpected encryption format"
+[[ "$manifest_format" == "postgres-custom" ]] \
+  || fail "newest backup manifest has an unexpected archive format"
 
 current_epoch="$(date +%s)"
 created_epoch=""
@@ -159,3 +174,24 @@ if [[ "$backup_active" == "true" ]]; then
 fi
 
 printf '%s\n' "Business Finlynq encrypted backup verification passed"
+if [[ "$emit_evidence" == "true" ]]; then
+  printf '%s' 'BUSINESS_FINLYNQ_BACKUP_EVIDENCE='
+  jq -cn \
+    --argjson schemaVersion "$schema_version" \
+    --arg product "$product" \
+    --arg createdAt "$manifest_created_at" \
+    --arg applicationRevision "$manifest_revision" \
+    --arg sourceApplicationRevision "$manifest_source_revision" \
+    --arg backupToolRevision "$manifest_tool_revision" \
+    --arg encryptedArchive "$manifest_archive" \
+    --argjson encryptedBytes "$manifest_bytes" \
+    --arg sha256 "$manifest_sha256" \
+    --arg encryption "$manifest_encryption" \
+    --arg format "$manifest_format" \
+    '{schemaVersion: $schemaVersion, product: $product, createdAt: $createdAt,
+      applicationRevision: $applicationRevision,
+      sourceApplicationRevision: $sourceApplicationRevision,
+      backupToolRevision: $backupToolRevision, encryptedArchive: $encryptedArchive,
+      encryptedBytes: $encryptedBytes, sha256: $sha256,
+      encryption: $encryption, format: $format}'
+fi

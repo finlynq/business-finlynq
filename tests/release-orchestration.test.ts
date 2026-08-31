@@ -285,20 +285,83 @@ describe("commit-addressed release orchestration", () => {
     expect(release).toContain('compose_timed_with_overrides "${release_backup_timeout_seconds}s"');
     expect(release).toContain('cleanup_failed_backup_containers');
     expect(release).toContain("operations backup runtime settings exceed the reviewed recovery envelope");
+    expect(release).toMatch(/for command_name in [^\n]*\bsed\b/);
+    expect(release).toContain(
+      "/usr/local/bin/business-finlynq-check-latest-backup --emit-evidence",
+    );
+    expect(release).toContain("compose --profile operations run --rm --no-deps -T");
+    expect(release).toContain("immutable backup verifier did not emit exactly one evidence record");
+    expect(release).toContain("BUSINESS_FINLYNQ_BACKUP_EVIDENCE=");
+    expect(release).toContain(
+      'keys == ["applicationRevision", "backupToolRevision", "createdAt",',
+    );
+    expect(release).toContain(
+      '"schemaVersion", "sha256", "sourceApplicationRevision"] and',
+    );
+    expect(release).not.toContain("latest_backup_manifest");
+    expect(release).not.toContain('find "$backup_directory"');
     expect(release).toContain('read_operations_value BUSINESS_FINLYNQ_IMAGE_REVISION');
     expect(release).toContain('operations_environment_sha256="$(sha256sum "$canonical_operations_environment_file"');
     expect(release).toContain("canonical operations environment changed during release; schedulers remain paused");
     expect(release).toContain("canonical operations image revision changed before scheduler resume");
     expect(release).toContain("run_installed_monitor");
-    expect(release).toContain("systemctl start business-finlynq-monitor.service");
+    expect(release).toContain("run_installed_accounting_evidence");
+    expect(release).toContain(
+      "run_fresh_systemd_oneshot business-finlynq-accounting-evidence.service",
+    );
+    expect(release).toContain('bash "$repository_root/deploy/cron/run-job.sh" accounting-evidence');
+    expect(release).toContain("run_fresh_systemd_oneshot business-finlynq-monitor.service");
     expect(release).toContain('bash "$repository_root/deploy/cron/run-job.sh" monitor');
-    expect(release).toContain("82-production-monitor.json");
+    expect(release).toContain("ExecMainStartTimestampMonotonic");
+    expect(release).toContain("ExecMainExitTimestampMonotonic");
+    expect(release).toContain('"$current_start" != "$previous_start"');
+    expect(release).toContain('"$current_exit" -gt "$current_start"');
+    expect(release).toContain('status_directory="/home/deploy/.local/state/business-finlynq/cron/job-status"');
+    expect(release).toContain('"$(stat -c \'%u:%a\' -- "$status_file")" == "$deploy_uid:600"');
+    expect(release).toContain(
+      'keys == ["completedAtUnixtime", "job", "product", "result", "schemaVersion"] and',
+    );
+    expect(release).toContain('.job == $job and .result == "succeeded"');
+    expect(release).toContain('. >= $startedAt and . <= $now');
+    expect(release).toContain('verify_fresh_cron_job_status accounting-evidence "$started_at"');
+    expect(release).toContain('verify_fresh_cron_job_status monitor "$started_at"');
+    expect(release).toContain("clear_cron_job_status() {");
+    expect(release).toContain('clear_cron_job_status accounting-evidence');
+    expect(release).toContain('clear_cron_job_status monitor');
+    expect(release).toContain('existing cron $job_name completion record is unsafe');
+    expect(release).toContain('[[ ! -e "$status_file" && ! -L "$status_file" ]]');
+    expect(release).toContain('release_metric_file="$(read_operations_value "$environment_key")"');
+    expect(release).toContain('|| fail "$description has unsafe ownership or mode"');
+    expect(release).toContain("was not freshly replaced by release acceptance");
+    expect(release).toContain(
+      'business_finlynq_accounting_evidence_verification_last_success_unixtime',
+    );
+    expect(release).toContain('verify_fresh_accounting_metrics "$started_at"');
+    expect(release).toContain(
+      "clear_release_metric_file ACCOUNTING_EVIDENCE_METRICS_FILE",
+    );
+    expect(release).toContain("clear_release_metric_file MONITOR_METRICS_FILE");
+    expect(release).toContain('verify_fresh_host_monitor_metrics "$started_at"');
+    expect(release).toContain("business_finlynq_host_monitor_success");
+    expect(release).toContain("business_finlynq_host_monitor_last_run_unixtime");
+    expect(release).toContain("83-production-monitor.json");
     expect(release.indexOf('schedulers_resumed="true"')).toBeLessThan(
       release.indexOf("run_logged 80-resume-schedulers.log resume_schedulers"),
     );
     expect(release.slice(release.indexOf('schedulers_resumed="true"')))
       .not.toContain('schedulers_resumed="false"');
-    expect(release).not.toContain("run_logged 81-production-monitor.log bash deploy/monitoring/check-production.sh");
+    const schedulerResume = release.indexOf("run_logged 80-resume-schedulers.log resume_schedulers");
+    const accountingSeed = release.indexOf(
+      "run_logged 81-accounting-evidence-seed.log run_installed_accounting_evidence",
+    );
+    const monitorAcceptance = release.indexOf(
+      "run_logged 82-production-monitor.log run_installed_monitor",
+    );
+    const boundaryRecord = release.indexOf('stage="record-scheduler-boundary-version"');
+    expect(schedulerResume).toBeLessThan(accountingSeed);
+    expect(accountingSeed).toBeLessThan(monitorAcceptance);
+    expect(monitorAcceptance).toBeLessThan(boundaryRecord);
+    expect(release).not.toContain("run_logged 82-production-monitor.log bash deploy/monitoring/check-production.sh");
     expect(release).not.toMatch(/docker compose[^\n]*pull/);
     expect(release).toContain('git -C "$repository_root" archive --format=tar "$revision"');
     expect(release).toContain('--project-directory "$candidate_source_root"');
@@ -408,6 +471,238 @@ describe("commit-addressed release orchestration", () => {
     expect(resume.indexOf('resume_complete="true"')).toBeGreaterThan(resume.indexOf('rm -- "$marker_file"'));
     expect(resume.indexOf('rm -- "$marker_file"')).toBeGreaterThan(resume.indexOf('systemctl enable --now'));
   });
+
+  it.skipIf(process.platform === "win32")(
+    "cannot reuse a same-second cron status and refuses unsafe status records",
+    () => {
+      const release = source("deploy/release/run-release.sh");
+      const extractFunction = (name: string, nextName: string): string => {
+        const start = release.indexOf(`${name}() {`);
+        const end = release.indexOf(`\n${nextName}() {`, start);
+        expect(start).toBeGreaterThanOrEqual(0);
+        expect(end).toBeGreaterThan(start);
+        return release.slice(start, end);
+      };
+      const root = mkdtempSync(join(tmpdir(), "business-finlynq-cron-acceptance-"));
+      const statusDirectory = join(root, "job-status").replaceAll("\\", "/");
+      const adapt = (value: string) => value
+        .replaceAll(
+          "/home/deploy/.local/state/business-finlynq/cron/job-status",
+          statusDirectory,
+        )
+        .replaceAll('deploy_uid="$(id -u deploy)"', 'deploy_uid="$(id -u)"');
+      const clearFunction = adapt(extractFunction(
+        "clear_cron_job_status",
+        "verify_fresh_accounting_metrics",
+      ));
+      const verifyFunction = adapt(extractFunction(
+        "verify_fresh_cron_job_status",
+        "clear_cron_job_status",
+      ));
+      const result = spawnSync("/bin/bash", ["-c", `
+set -Eeuo pipefail
+fail() { printf '%s\\n' "$1" >&2; exit 1; }
+${verifyFunction}
+${clearFunction}
+install -d -m 0700 -- '${statusDirectory}'
+started_at="$(date +%s)"
+printf '{"completedAtUnixtime":%s,"job":"monitor","product":"business-finlynq","result":"succeeded","schemaVersion":1}\\n' \
+  "$started_at" >'${statusDirectory}/monitor.json'
+chmod 0600 -- '${statusDirectory}/monitor.json'
+clear_cron_job_status monitor
+[[ ! -e '${statusDirectory}/monitor.json' && ! -L '${statusDirectory}/monitor.json' ]]
+if (verify_fresh_cron_job_status monitor "$started_at") >/dev/null 2>&1; then
+  printf '%s\\n' 'same-second stale status was accepted after the wrapper skipped' >&2
+  exit 1
+fi
+printf '{"completedAtUnixtime":%s,"job":"monitor","product":"business-finlynq","result":"succeeded","schemaVersion":1}\\n' \
+  "$(date +%s)" >'${statusDirectory}/monitor.json'
+chmod 0600 -- '${statusDirectory}/monitor.json'
+verify_fresh_cron_job_status monitor "$started_at" >/dev/null
+chmod 0644 -- '${statusDirectory}/monitor.json'
+if (clear_cron_job_status monitor) >/dev/null 2>&1; then
+  printf '%s\\n' 'wrong-mode status was deleted' >&2
+  exit 1
+fi
+[[ -f '${statusDirectory}/monitor.json' ]]
+rm -- '${statusDirectory}/monitor.json'
+printf '%s\\n' 'do-not-delete' >'${root.replaceAll("\\", "/")}/target'
+ln -s -- '${root.replaceAll("\\", "/")}/target' '${statusDirectory}/monitor.json'
+if (clear_cron_job_status monitor) >/dev/null 2>&1; then
+  printf '%s\\n' 'symbolic status was accepted' >&2
+  exit 1
+fi
+[[ -L '${statusDirectory}/monitor.json' ]]
+[[ "$(cat -- '${root.replaceAll("\\", "/")}/target')" == 'do-not-delete' ]]
+`], { encoding: "utf8" });
+
+      expect(result.status, result.stderr).toBe(0);
+    },
+  );
+
+  it.skipIf(process.platform === "win32")(
+    "requires a fresh systemd execution and newly written monitor metrics",
+    () => {
+      const release = source("deploy/release/run-release.sh");
+      const extractFunction = (name: string, nextName: string): string => {
+        const start = release.indexOf(`${name}() {`);
+        const end = release.indexOf(`\n${nextName}() {`, start);
+        expect(start).toBeGreaterThanOrEqual(0);
+        expect(end).toBeGreaterThan(start);
+        return release.slice(start, end);
+      };
+      const root = mkdtempSync(join(tmpdir(), "business-finlynq-systemd-acceptance-"));
+      const fakeBin = join(root, "bin");
+      const metricsDirectory = join(root, "metrics");
+      const metricsFile = join(metricsDirectory, "host.prom");
+      mkdirSync(fakeBin);
+      mkdirSync(metricsDirectory, { mode: 0o775 });
+      chmodSync(metricsDirectory, 0o775);
+      const currentUid = process.getuid?.() ?? 1000;
+      const currentGid = process.getgid?.() ?? 1000;
+      const normalizedMetricsFile = metricsFile.replaceAll("\\", "/");
+      const helpers = [
+        extractFunction("read_systemd_property", "run_fresh_systemd_oneshot"),
+        extractFunction("run_fresh_systemd_oneshot", "verify_fresh_cron_job_status"),
+        extractFunction("resolve_release_metric_file", "assert_release_metric_path_safety"),
+        extractFunction("assert_release_metric_path_safety", "clear_release_metric_file"),
+        extractFunction("clear_release_metric_file", "read_unique_release_metric"),
+        extractFunction("read_unique_release_metric", "verify_fresh_metric_file"),
+        extractFunction("verify_fresh_metric_file", "verify_fresh_accounting_metrics"),
+        extractFunction("verify_fresh_host_monitor_metrics", "run_installed_monitor"),
+      ].join("\n");
+
+      writeFileSync(join(fakeBin, "id"), `#!/usr/bin/env bash
+case "$*" in
+  "-u deploy") printf '%s\\n' '${currentUid}' ;;
+  "-g deploy") printf '%s\\n' '${currentGid}' ;;
+  *) /usr/bin/id "$@" ;;
+esac
+`);
+      writeFileSync(join(fakeBin, "systemctl"), `#!/usr/bin/env bash
+case "$1" in
+  start)
+    : >"$FAKE_SYSTEMD_STARTED_MARKER"
+    exit 0
+    ;;
+  show)
+    [[ "$*" != *"--no-pager"* ]] || exit 0
+    property=""
+    for argument in "$@"; do
+      case "$argument" in --property=*) property="\${argument#--property=}" ;; esac
+    done
+    case "$property" in
+      ExecMainStartTimestampMonotonic)
+        case "$FAKE_SYSTEMD_MODE" in
+          zero) printf '%s\\n' 0 ;;
+          unchanged) printf '%s\\n' 111 ;;
+          changed) [[ -e "$FAKE_SYSTEMD_STARTED_MARKER" ]] && printf '%s\\n' 333 || printf '%s\\n' 111 ;;
+          *) exit 91 ;;
+        esac
+        ;;
+      ExecMainExitTimestampMonotonic)
+        case "$FAKE_SYSTEMD_MODE" in
+          zero) printf '%s\\n' 1 ;;
+          unchanged) printf '%s\\n' 222 ;;
+          changed) printf '%s\\n' 444 ;;
+          *) exit 92 ;;
+        esac
+        ;;
+      Result) printf '%s\\n' success ;;
+      ExecMainStatus) printf '%s\\n' 0 ;;
+      *) exit 93 ;;
+    esac
+    ;;
+  *) exit 94 ;;
+esac
+`);
+      chmodSync(join(fakeBin, "id"), 0o755);
+      chmodSync(join(fakeBin, "systemctl"), 0o755);
+
+      const commonScript = `
+set -Eeuo pipefail
+fail() { printf '%s\\n' "$1" >&2; exit 1; }
+read_operations_value() {
+  [[ "$1" == MONITOR_METRICS_FILE ]] || exit 97
+  printf '%s' "$FAKE_MONITOR_METRICS_FILE"
+}
+systemd_property_value=""
+release_metric_file=""
+metric_value=""
+${helpers}
+`;
+      const runSystemdCase = (mode: "zero" | "unchanged" | "changed", script: string) => {
+        const startedMarker = join(root, `${mode}.started`).replaceAll("\\", "/");
+        return spawnSync("/bin/bash", ["-c", `${commonScript}\n${script}`], {
+          encoding: "utf8",
+          env: {
+            ...process.env,
+            FAKE_MONITOR_METRICS_FILE: normalizedMetricsFile,
+            FAKE_SYSTEMD_MODE: mode,
+            FAKE_SYSTEMD_STARTED_MARKER: startedMarker,
+            PATH: `${fakeBin}:${process.env.PATH ?? ""}`,
+          },
+        });
+      };
+
+      for (const mode of ["zero", "unchanged"] as const) {
+        const rejected = runSystemdCase(mode, `
+printf '%s\\n' 'stale metric' >'${normalizedMetricsFile}'
+chmod 0644 -- '${normalizedMetricsFile}'
+clear_release_metric_file MONITOR_METRICS_FILE /var/lib/business-finlynq/host.prom 'host-monitor metric'
+[[ ! -e '${normalizedMetricsFile}' && ! -L '${normalizedMetricsFile}' ]]
+run_fresh_systemd_oneshot business-finlynq-monitor.service 'systemd monitor acceptance'
+`);
+        expect(rejected.status).not.toBe(0);
+        expect(rejected.stderr).toContain("did not execute a fresh systemd invocation");
+      }
+
+      const accepted = runSystemdCase("changed", `
+printf '%s\\n' 'unsafe old metric' >'${normalizedMetricsFile}'
+chmod 0600 -- '${normalizedMetricsFile}'
+if (clear_release_metric_file MONITOR_METRICS_FILE /var/lib/business-finlynq/host.prom 'host-monitor metric') >/dev/null 2>&1; then
+  printf '%s\\n' 'wrong-mode metric was cleared' >&2
+  exit 1
+fi
+[[ -f '${normalizedMetricsFile}' ]]
+chmod 0644 -- '${normalizedMetricsFile}'
+clear_release_metric_file MONITOR_METRICS_FILE /var/lib/business-finlynq/host.prom 'host-monitor metric'
+started_at="$(date +%s)"
+run_fresh_systemd_oneshot business-finlynq-monitor.service 'systemd monitor acceptance'
+write_metric() {
+  local success="$1" last_run="$2"
+  printf 'business_finlynq_host_monitor_success %s\\n' "$success" >'${normalizedMetricsFile}'
+  printf 'business_finlynq_host_monitor_last_run_unixtime %s\\n' "$last_run" >>'${normalizedMetricsFile}'
+  chmod 0644 -- '${normalizedMetricsFile}'
+}
+write_metric 1 "$(date +%s)"
+verify_fresh_host_monitor_metrics "$started_at"
+printf '%s\\n' 'business_finlynq_host_monitor_success 1' >>'${normalizedMetricsFile}'
+if (verify_fresh_host_monitor_metrics "$started_at") >/dev/null 2>&1; then
+  printf '%s\\n' 'duplicate metric was accepted' >&2
+  exit 1
+fi
+write_metric 1 not-an-integer
+if (verify_fresh_host_monitor_metrics "$started_at") >/dev/null 2>&1; then
+  printf '%s\\n' 'noninteger metric was accepted' >&2
+  exit 1
+fi
+write_metric 1 "$(date +%s)"
+chmod 0600 -- '${normalizedMetricsFile}'
+if (verify_fresh_host_monitor_metrics "$started_at") >/dev/null 2>&1; then
+  printf '%s\\n' 'wrong-mode metric was accepted' >&2
+  exit 1
+fi
+write_metric 1 "$((started_at - 1))"
+touch --date="@$((started_at - 1))" '${normalizedMetricsFile}'
+if (verify_fresh_host_monitor_metrics "$started_at") >/dev/null 2>&1; then
+  printf '%s\\n' 'stale metric was accepted' >&2
+  exit 1
+fi
+`);
+      expect(accepted.status, accepted.stderr).toBe(0);
+    },
+  );
 
   it.skipIf(process.platform === "win32")("fails closed when the scheduled boundary cannot inspect Git status", () => {
     const root = mkdtempSync(join(tmpdir(), "business-finlynq-git-status-fault-"));
