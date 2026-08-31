@@ -7,6 +7,10 @@ const authWorkerScript = readFileSync(
   join(process.cwd(), "deploy", "postgres", "015-auth-worker-role.sh"),
   "utf8",
 );
+const backupRoleScript = readFileSync(
+  join(process.cwd(), "deploy", "postgres", "020-backup-role.sh"),
+  "utf8",
+);
 
 describe("runtime role reconciliation contract", () => {
   it("removes blanket current and future CRUD before reviewed grants", () => {
@@ -135,5 +139,19 @@ describe("runtime role reconciliation contract", () => {
     expect(authWorkerScript).toContain(
       "has_schema_privilege('business_finlynq_auth_worker', 'public', 'USAGE')",
     );
+  });
+
+  it("grants the backup verifier only its exact audit digest capability", () => {
+    expect(backupRoleScript).toContain(
+      "REVOKE EXECUTE ON FUNCTION public.digest(text, text) FROM PUBLIC",
+    );
+    expect(backupRoleScript).toContain(
+      "GRANT EXECUTE ON FUNCTION public.digest(text, text) TO business_finlynq_backup",
+    );
+    expect(backupRoleScript).toContain(
+      "routine.oid <> to_regprocedure('public.digest(text,text)')",
+    );
+    expect(backupRoleScript).toContain("backup role is missing the audit digest capability");
+    expect(backupRoleScript).not.toMatch(/GRANT\s+EXECUTE\s+ON\s+ALL\s+(?:FUNCTIONS|ROUTINES)/i);
   });
 });

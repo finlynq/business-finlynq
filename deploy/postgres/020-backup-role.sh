@@ -179,6 +179,13 @@ FROM pg_namespace
 WHERE nspname IN ('public', 'drizzle')
 \gexec
 
+-- Audit-hash verification recomputes the canonical SHA-256 material while
+-- connected as this read-only role. Keep that capability narrower than the
+-- application API surface: one immutable pgcrypto digest overload, granted
+-- directly and never through PUBLIC.
+REVOKE EXECUTE ON FUNCTION public.digest(text, text) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION public.digest(text, text) TO business_finlynq_backup;
+
 DO $$
 DECLARE
   selected_role oid;
@@ -263,15 +270,17 @@ BEGIN
     FROM pg_proc routine
     JOIN pg_namespace schema ON schema.oid = routine.pronamespace
     WHERE schema.nspname <> 'information_schema' AND schema.nspname !~ '^pg_'
-      AND NOT EXISTS (
-        SELECT 1 FROM pg_depend dependency
-        WHERE dependency.classid = 'pg_proc'::regclass
-          AND dependency.objid = routine.oid
-          AND dependency.deptype = 'e'
-      )
+      AND routine.oid <> to_regprocedure('public.digest(text,text)')
       AND has_function_privilege('business_finlynq_backup', routine.oid, 'EXECUTE')
   ) THEN
     RAISE EXCEPTION 'backup role has executable application routine privileges';
+  END IF;
+  IF NOT has_function_privilege(
+    'business_finlynq_backup',
+    'public.digest(text,text)',
+    'EXECUTE'
+  ) THEN
+    RAISE EXCEPTION 'backup role is missing the audit digest capability';
   END IF;
 END
 $$;
