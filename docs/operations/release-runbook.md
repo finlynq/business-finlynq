@@ -41,6 +41,7 @@ The browser test also requires the public `/api/health` response to be the minim
 ## Rollback
 
 - If the schema remains compatible, redeploy the prior immutable application artifact and repeat acceptance.
+- Before deploying any artifact that predates migration `0030` and the per-organization runtime gate, set `BUSINESS_WRITES_ENABLED=false` and keep it false. Those artifacts understand only the global switch and are safe against the forward schema only as read-only fallbacks; a true global gate would authorize every otherwise eligible real organization.
 - If the schema is incompatible, keep writes disabled and apply a reviewed forward repair migration. Do not run an ad hoc down migration.
 - Never delete the PostgreSQL volume, restore over the live database, or replace an encryption key to make an old artifact start.
 - A database restore is a disaster-recovery operation into an isolated empty destination, not the normal application rollback mechanism.
@@ -91,3 +92,7 @@ Before setting `ACCOUNT_LOGIN_ENABLED=true`:
 Create invitations only through the isolated owner-only operations container. With the identity secret and non-secret delivery metadata configured, run `docker compose --profile account-operations run --rm --no-deps invite_account` followed by the documented `--organization`, `--role`, `--email`, `--name`, and optional `--invited-by` arguments. The command only queues delivery in PostgreSQL, has no egress network, and never receives the provider key. The app and email worker never receive the owner database credential.
 
 Never pass a provider key inline in the production environment. The worker fails closed when its mounted provider secret is absent or invalid. The app never sees that key; when real accounts are enabled its readiness instead fails closed unless non-secret delivery metadata is valid and the database reports a fresh worker heartbeat with no stuck or seriously delayed delivery.
+
+## Organization write activation
+
+`ACCOUNT_LOGIN_ENABLED` and `BUSINESS_WRITES_ENABLED` do not activate a tenant by themselves. Real writes require the global gate and the exact active `REAL` organization UUID to be enabled through the audited owner-only operator command. Follow [Real-account activation and emergency write disable](./real-account-activation.md) for staging, two-person pilot acceptance, control-organization proof, audit evidence, support triage, and emergency disable. Never update `organizations.writes_enabled_at` directly.

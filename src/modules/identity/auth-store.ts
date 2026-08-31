@@ -30,6 +30,7 @@ export type StoredPrincipal = Readonly<{
   expires_at: Date;
   mfa_verified_at: Date | null;
   step_up_expires_at: Date | null;
+  organization_writes_enabled: boolean;
 }>;
 
 export type PasswordResetChallenge = Readonly<{
@@ -203,7 +204,7 @@ export async function markDemoStepUp(sessionId: string, requestId: string): Prom
 }
 
 export async function resolveStoredSession(tokenHash: string, userAgentHash: string | null): Promise<StoredPrincipal | null> {
-  const result = await queryDatabase<StoredPrincipal>("SELECT * FROM app.auth_resolve_session_v2($1, $2)", [tokenHash, userAgentHash]);
+  const result = await queryDatabase<StoredPrincipal>("SELECT * FROM app.auth_resolve_session_v3($1, $2)", [tokenHash, userAgentHash]);
   const principal = result.rows[0] ?? null;
   if (!principal || principal.session_mode !== "DEMO") return principal;
   const lease = await queryDatabase<{ valid: boolean }>(

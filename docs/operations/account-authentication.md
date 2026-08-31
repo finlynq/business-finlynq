@@ -91,3 +91,4 @@ A co-owner-approved, delayed, or factorless recovery does not merely remove MFA.
 - Verify direct runtime-role reads of auth tables fail.
 - Keep `ACCOUNT_SIGNUP_ENABLED=false` until the Resend sender, live worker, Turnstile hostname/action configuration, mounted Turnstile secret, generic duplicate-email behavior, atomic rollback test, and full password/TOTP activation flow are verified.
 - Only then set `ACCOUNT_LOGIN_ENABLED=true` and, in a separate change, `ACCOUNT_SIGNUP_ENABLED=true`; keep `BUSINESS_WRITES_ENABLED=false` until the separate accounting write gates pass.
+- Follow [Real-account activation and emergency write disable](./real-account-activation.md) for production-like restore evidence, the two-person pilot exercise, per-organization enablement, activation audit verification, and emergency disable. Account login never enables accounting writes by itself.

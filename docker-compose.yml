@@ -80,6 +80,7 @@ services:
       BUSINESS_FINLYNQ_MIGRATION_DB_NAME: business_finlynq
       BUSINESS_FINLYNQ_MIGRATION_DB_USER: business_finlynq_owner
       BUSINESS_FINLYNQ_MIGRATION_DB_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+      BUSINESS_WRITES_ENABLED: ${BUSINESS_WRITES_ENABLED:-false}
     depends_on:
       provision_auth_worker_role:
         condition: service_completed_successfully

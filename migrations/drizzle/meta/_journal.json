@@ -211,6 +211,20 @@
       "when": 1788174576947,
       "tag": "0029_restore_safe_currency_lookup",
       "breakpoints": true
+    },
+    {
+      "idx": 30,
+      "version": "7",
+      "when": 1788176621857,
+      "tag": "0030_organization_write_activation",
+      "breakpoints": true
+    },
+    {
+      "idx": 31,
+      "version": "7",
+      "when": 1788180443333,
+      "tag": "0031_audit_graph_leaf_index",
+      "breakpoints": true
     }
   ]
 }

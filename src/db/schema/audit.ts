@@ -1,4 +1,4 @@
-import { jsonb, pgTable, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
+import { index, jsonb, pgTable, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
 import { organizations } from "./identity";
 
 export const auditEvents = pgTable(
@@ -24,6 +24,10 @@ export const auditEvents = pgTable(
     occurredAt: timestamp("occurred_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [
+    index("audit_events_org_previous_hash_idx").on(
+      table.organizationId,
+      table.previousEventHash,
+    ),
     uniqueIndex("audit_events_org_request_action_entity_unique").on(
       table.organizationId,
       table.requestId,

@@ -27,6 +27,7 @@ const storedDemoPrincipal = {
   membership_id: "10000000-0000-4000-8000-000000000004",
   session_mode: "DEMO" as const,
   auth_method: "DEMO_LINK" as const,
+  organization_writes_enabled: false,
   organization_name: "Demo organization",
   role_label: "Demo owner",
   email_ciphertext: "",
@@ -62,6 +63,7 @@ describe("session user-agent binding", () => {
     await expect(resolveSession(rawToken, null)).resolves.toMatchObject({
       sessionId: storedDemoPrincipal.session_id,
       sessionMode: "demo",
+      organizationWritesEnabled: false,
     });
     await expect(resolveSession(rawToken, "A different browser agent")).resolves.toBeNull();
     expect(mocks.resolveStoredSession).toHaveBeenNthCalledWith(1, tokenHash, emptyUserAgentHash);

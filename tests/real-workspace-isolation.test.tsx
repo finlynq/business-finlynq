@@ -14,6 +14,7 @@ const mocks = vi.hoisted(() => {
     initials: "SO",
     sessionMode: "real" as const,
     authMethod: "PASSWORD" as const,
+    organizationWritesEnabled: true,
     expiresAt: new Date("2026-08-27T00:00:00Z"),
     mfaVerifiedAt: null,
     stepUpExpiresAt: null,
@@ -327,6 +328,24 @@ describe("real organization workspace isolation", () => {
     expect(mocks.loadManualJournalOptions).toHaveBeenCalledWith(mocks.principal);
     expect(mocks.currentWorkspaceEntityContext).toHaveBeenCalledWith(mocks.principal);
     expect(mocks.loadPeriodControlWorkspace).toHaveBeenCalledWith(mocks.principal);
+  });
+
+  it("preserves the real period-control read model when organization writes are disabled", async () => {
+    const previousActivation = mocks.principal.organizationWritesEnabled;
+    mocks.principal.organizationWritesEnabled = false;
+    mocks.loadPeriodControlWorkspace.mockClear();
+    try {
+      const periodControls = await PeriodClosePage();
+      const output = serialized(periodControls);
+
+      expect(output).toContain("Period controls");
+      expect(output).not.toContain("Period-close package");
+      expect(output).not.toContain("Northstar");
+      expect(mocks.loadPeriodControlWorkspace).toHaveBeenCalledOnce();
+      expect(mocks.loadPeriodControlWorkspace).toHaveBeenCalledWith(mocks.principal);
+    } finally {
+      mocks.principal.organizationWritesEnabled = previousActivation;
+    }
   });
 
   it("executes tenant-backed journal and party pages with only the second organization DTOs", async () => {

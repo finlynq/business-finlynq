@@ -144,6 +144,15 @@ runDatabaseTests("PostgreSQL accounting controls", () => {
         [ids.orgA, ids.orgB],
       );
       await admin.query(
+        "SELECT * FROM app.operator_set_organization_writes($1,true,$2,$3,$4)",
+        [
+          ids.orgA,
+          "foundation-integration-operator",
+          "Activate only Organization A for accounting-control integration tests",
+          randomUUID(),
+        ],
+      );
+      await admin.query(
         `INSERT INTO users (id, email_lookup_hash, email_ciphertext, password_hash)
          VALUES
            ($1, 'actor-email-lookup', 'encrypted-email', 'password-hash'),

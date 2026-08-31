@@ -331,6 +331,7 @@ BEGIN
     'app.auth_issue_password_user_session(uuid,uuid,uuid,text,text,text,text)',
     'app.auth_resolve_session(text,text)',
     'app.auth_resolve_session_v2(text,text)',
+    'app.auth_resolve_session_v3(text,text)',
     'app.auth_platform_administrator_authorization(uuid,uuid)',
     'app.platform_administration_overview(uuid,uuid)',
     'app.auth_revoke_session(text,text)',

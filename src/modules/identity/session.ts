@@ -19,6 +19,8 @@ export type SessionPrincipal = Readonly<{
   expiresAt: Date;
   mfaVerifiedAt: Date | null;
   stepUpExpiresAt: Date | null;
+  /** Omitted state never authorizes real writes; the database transaction rechecks it. */
+  organizationWritesEnabled?: boolean;
 }>;
 
 export function sessionCookieName(): string {
@@ -49,6 +51,7 @@ function principalFromStored(stored: StoredPrincipal): SessionPrincipal {
       authMethod: stored.auth_method, expiresAt: new Date(stored.expires_at),
       mfaVerifiedAt: stored.mfa_verified_at ? new Date(stored.mfa_verified_at) : null,
       stepUpExpiresAt: stored.step_up_expires_at ? new Date(stored.step_up_expires_at) : null,
+      organizationWritesEnabled: stored.organization_writes_enabled,
     };
   }
 
@@ -69,6 +72,7 @@ function principalFromStored(stored: StoredPrincipal): SessionPrincipal {
     authMethod: stored.auth_method, expiresAt: new Date(stored.expires_at),
     mfaVerifiedAt: stored.mfa_verified_at ? new Date(stored.mfa_verified_at) : null,
     stepUpExpiresAt: stored.step_up_expires_at ? new Date(stored.step_up_expires_at) : null,
+    organizationWritesEnabled: stored.organization_writes_enabled,
   };
 }
 

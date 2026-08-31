@@ -3,6 +3,19 @@ import type { SessionPrincipal } from "@/modules/identity/session";
 
 const mocks = vi.hoisted(() => ({
   assertEmailReady: vi.fn(async () => undefined),
+  readMembers: vi.fn(async () => []),
+  readSettings: vi.fn(async () => ({
+    organization_id: "10000000-0000-4000-8000-000000000003",
+    display_name: "Tenant",
+    settings_version: 1,
+    is_demo: false,
+    can_manage_settings: true,
+    can_read_members: true,
+    can_manage_members: true,
+    can_manage_roles: true,
+    can_manage_recovery: true,
+    assignable_roles: [],
+  })),
   inviteRecord: vi.fn(async (context, input) => ({
     invitation_id: input.invitationId,
     membership_id: input.membershipId,
@@ -19,12 +32,15 @@ vi.mock("@/modules/identity/member-access-store", () => ({
   assignOrganizationMemberRoleRecord: vi.fn(),
   cancelOrganizationInvitationRecord: vi.fn(),
   inviteOrganizationMemberRecord: mocks.inviteRecord,
-  readOrganizationMemberRecords: vi.fn(async () => []),
-  readOrganizationSettingsRecord: vi.fn(),
+  readOrganizationMemberRecords: mocks.readMembers,
+  readOrganizationSettingsRecord: mocks.readSettings,
   resendOrganizationInvitationRecord: vi.fn(),
   revokeOrganizationMemberSessionsRecord: vi.fn(),
   setOrganizationMemberActiveRecord: vi.fn(),
   updateOrganizationSettingsRecord: mocks.updateSettings,
+}));
+vi.mock("@/modules/workspace/tenant-read", () => ({
+  withWorkspaceSessionExpiryRedirect: vi.fn(async (_path: string, work: () => Promise<unknown>) => work()),
 }));
 vi.mock("@/modules/identity/session", async (original) => {
   const actual = await original<typeof import("@/modules/identity/session")>();
@@ -46,6 +62,7 @@ vi.mock("@/security/identity-secret", () => ({
 
 import {
   inviteOrganizationMember,
+  loadOrganizationAdministration,
   updateOrganizationProfile,
 } from "@/modules/identity/organization-administration";
 
@@ -60,6 +77,7 @@ const realPrincipal: SessionPrincipal = {
   initials: "OW",
   sessionMode: "real",
   authMethod: "PASSWORD",
+  organizationWritesEnabled: true,
   expiresAt: new Date("2026-09-01T00:00:00Z"),
   mfaVerifiedAt: new Date("2026-08-27T10:00:00Z"),
   stepUpExpiresAt: new Date("2026-08-27T10:10:00Z"),
@@ -101,6 +119,25 @@ describe("organization administration service", () => {
       reason: "This deployment is read-only",
     })).rejects.toMatchObject({ status: 403, code: "WRITES_DISABLED" });
     expect(mocks.updateSettings).not.toHaveBeenCalled();
+  });
+
+  it("preserves administration reads but removes mutation capabilities when the tenant is disabled", async () => {
+    const workspace = await loadOrganizationAdministration({
+      ...realPrincipal,
+      organizationWritesEnabled: false,
+      stepUpExpiresAt: null,
+    });
+
+    expect(workspace.permissions).toEqual({
+      canManageSettings: false,
+      canReadMembers: true,
+      canManageMembers: false,
+      canManageRoles: false,
+      canManageRecovery: false,
+    });
+    expect(workspace.requiresMfaStepUp).toBe(false);
+    expect(mocks.readSettings).toHaveBeenCalledOnce();
+    expect(mocks.readMembers).toHaveBeenCalledOnce();
   });
 
   it("creates real invitations with encrypted identity and queued token material", async () => {

@@ -64,7 +64,7 @@ describe("CI predecessor-upgrade and restore verification", () => {
     );
   });
 
-  it("replays exactly 0000-0024 before preserving a tenant sentinel through 0029", () => {
+  it("replays exactly 0000-0024 before preserving a tenant sentinel through 0031", () => {
     expect(migrationJournal.entries.find((entry) => entry.idx === 25)?.tag).toBe(
       "0025_tenant_rls_completion",
     );
@@ -80,6 +80,12 @@ describe("CI predecessor-upgrade and restore verification", () => {
     expect(migrationJournal.entries.find((entry) => entry.idx === 29)?.tag).toBe(
       "0029_restore_safe_currency_lookup",
     );
+    expect(migrationJournal.entries.find((entry) => entry.idx === 30)?.tag).toBe(
+      "0030_organization_write_activation",
+    );
+    expect(migrationJournal.entries.find((entry) => entry.idx === 31)?.tag).toBe(
+      "0031_audit_graph_leaf_index",
+    );
     expect(tenantPolicyMigration).toContain("ALTER TABLE public.%I ENABLE ROW LEVEL SECURITY");
     expect(tenantPolicyMigration).toContain("ALTER TABLE public.%I FORCE ROW LEVEL SECURITY");
     expect(tenantPolicyMigration).toContain("auth_sessions");
@@ -90,12 +96,23 @@ describe("CI predecessor-upgrade and restore verification", () => {
       "INSERT INTO organizations (",
     );
     expect(lifecycleScript).toContain("ci-predecessor-sentinel");
+    expect(lifecycleScript).toContain("ci.predecessor-audit-root");
+    expect(lifecycleScript).toContain("ci.predecessor-audit-leaf");
+    expect(lifecycleScript).toContain("'2040-01-01T00:00:00Z'");
+    expect(lifecycleScript).toContain("'2030-01-01T00:00:00Z'");
     expect(lifecycleScript).toContain(
       'run_migrations "$predecessor_database" "$repository_root/migrations/drizzle"',
     );
-    expect(lifecycleScript).toContain('[[ "$upgraded_count" == "30" ]]');
+    expect(lifecycleScript).toContain('[[ "$upgraded_count" == "32" ]]');
     expect(lifecycleScript).toContain(
-      "tenant sentinel was not preserved through migrations 0025 through 0029",
+      "tenant sentinel was not preserved through migrations 0025 through 0031",
+    );
+    expect(lifecycleScript).toContain("ci.predecessor-audit-after-upgrade");
+    expect(lifecycleScript).toContain(
+      "predecessor audit graph was not preserved and extended from its graph leaf",
+    );
+    expect(lifecycleScript).toContain(
+      "upgraded predecessor audit helper did not return the appended graph leaf",
     );
     expect(lifecycleScript).toContain('reconcile_roles "$predecessor_database"');
     expect(lifecycleScript).toContain(

@@ -67,7 +67,7 @@ describe("MFA session issuance", () => {
     await expect(resolveStoredSession("legacy-session-token-hash", null)).resolves.toBeNull();
 
     expect(mocks.queryDatabase).toHaveBeenCalledWith(
-      "SELECT * FROM app.auth_resolve_session_v2($1, $2)",
+      "SELECT * FROM app.auth_resolve_session_v3($1, $2)",
       ["legacy-session-token-hash", null],
     );
   });

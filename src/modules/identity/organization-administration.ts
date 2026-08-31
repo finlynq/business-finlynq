@@ -157,6 +157,7 @@ export async function loadOrganizationAdministration(
       "SETTINGS_UNAVAILABLE",
     );
   }
+  const canWrite = principalCanWrite(principal);
   const assignableRoles = roleCatalogSchema.parse(settings.assignable_roles);
   const records = settings.can_read_members
     ? await withWorkspaceSessionExpiryRedirect(
@@ -198,15 +199,15 @@ export async function loadOrganizationAdministration(
     settingsVersion: settings.settings_version,
     isDemo: settings.is_demo,
     permissions: {
-      canManageSettings: settings.can_manage_settings,
+      canManageSettings: canWrite && settings.can_manage_settings,
       canReadMembers: settings.can_read_members,
-      canManageMembers: settings.can_manage_members,
-      canManageRoles: settings.can_manage_roles,
-      canManageRecovery: settings.can_manage_recovery,
+      canManageMembers: canWrite && settings.can_manage_members,
+      canManageRoles: canWrite && settings.can_manage_roles,
+      canManageRecovery: canWrite && settings.can_manage_recovery,
     },
     assignableRoles,
     members,
-    requiresMfaStepUp: principal.sessionMode === "real" && !hasRecentStepUp(principal),
+    requiresMfaStepUp: canWrite && principal.sessionMode === "real" && !hasRecentStepUp(principal),
   };
 }
 

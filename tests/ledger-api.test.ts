@@ -20,6 +20,7 @@ const mocks = vi.hoisted(() => {
     initials: "OW",
     sessionMode: "real" as const,
     authMethod: "PASSWORD" as const,
+    organizationWritesEnabled: true,
     expiresAt: new Date("2026-08-27T00:00:00Z"),
     mfaVerifiedAt: new Date("2026-08-26T18:00:00Z"),
     stepUpExpiresAt: new Date("2026-08-26T19:00:00Z"),

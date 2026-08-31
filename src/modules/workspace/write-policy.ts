@@ -20,7 +20,7 @@ export function principalCanWrite(principal: SessionPrincipal): boolean {
   if (principal.sessionMode === "demo") {
     return demoWritesEnabled();
   }
-  return realBusinessWritesEnabled();
+  return realBusinessWritesEnabled() && principal.organizationWritesEnabled === true;
 }
 
 export function mutationContext(
@@ -69,8 +69,24 @@ export async function assertWritableOrganization(
   client: PoolClient,
   context: TenantTransactionContext,
 ): Promise<Readonly<{ isDemo: boolean }>> {
-  const result = await client.query<{ active: boolean; is_demo: boolean; organization_mode: string }>(
-    "SELECT active, is_demo, organization_mode FROM organizations WHERE id = $1",
+  // Hold the shared activation fence until this transaction commits. An
+  // operator disable takes the matching exclusive lock, so it waits for
+  // already-authorized work and every later mutation observes the disabled
+  // state. This namespace is deliberately separate from the audit hash-chain
+  // lock, which business triggers acquire exclusively.
+  await client.query(
+    `SELECT pg_advisory_xact_lock_shared(
+       hashtextextended('business-finlynq:organization-write-activation:' || $1::uuid::text, 0)
+     )`,
+    [context.organizationId],
+  );
+  const result = await client.query<{
+    active: boolean;
+    is_demo: boolean;
+    organization_mode: string;
+    writes_enabled_at: Date | null;
+  }>(
+    "SELECT active, is_demo, organization_mode, writes_enabled_at FROM organizations WHERE id = $1",
     [context.organizationId],
   );
   const organization = result.rows[0];
@@ -80,6 +96,9 @@ export async function assertWritableOrganization(
       (authorizedDemo && organization.organization_mode !== "SANDBOX") ||
       (!authorizedDemo && organization.organization_mode !== "REAL")) {
     throw new Error("The write context does not match the organization mode");
+  }
+  if (!authorizedDemo && organization.writes_enabled_at === null) {
+    throw new Error("Business writes are not enabled for this organization");
   }
   return { isDemo: organization.is_demo };
 }

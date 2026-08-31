@@ -9,6 +9,8 @@ readonly predecessor_database="business_finlynq_test_predecessor_upgrade"
 readonly restore_database="business_finlynq_test_restore_verify"
 readonly demo_organization_id="10000000-0000-4000-8000-000000000001"
 readonly predecessor_sentinel_id="00000000-0000-4000-8000-0000000000fe"
+readonly predecessor_audit_root_hash="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+readonly predecessor_audit_leaf_hash="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 
 fail() {
   printf 'CI database lifecycle verification failed: %s\n' "$*" >&2
@@ -415,28 +417,91 @@ INSERT INTO organizations (
   false,
   'REAL'
 );
+
+-- The graph is valid, but timestamp order disagrees with graph order. Migration
+-- 0030 must preserve it and derive the next predecessor from the leaf hash,
+-- never from the row with the maximum historical timestamp.
+INSERT INTO audit_events (
+  organization_id, actor_type, actor_id, auth_method, source_surface,
+  action, entity_type, entity_id, request_id, safe_metadata,
+  previous_event_hash, event_hash, occurred_at
+) VALUES (
+  '$predecessor_sentinel_id', 'SYSTEM', 'ci-predecessor', 'migration', 'WORKER',
+  'ci.predecessor-audit-root', 'organization', '$predecessor_sentinel_id',
+  '00000000-0000-4000-8000-0000000000a1', '{}', NULL,
+  '$predecessor_audit_root_hash', '2040-01-01T00:00:00Z'
+), (
+  '$predecessor_sentinel_id', 'SYSTEM', 'ci-predecessor', 'migration', 'WORKER',
+  'ci.predecessor-audit-leaf', 'organization', '$predecessor_sentinel_id',
+  '00000000-0000-4000-8000-0000000000a2', '{}',
+  '$predecessor_audit_root_hash', '$predecessor_audit_leaf_hash',
+  '2030-01-01T00:00:00Z'
+);
 SQL
 
   run_migrations "$predecessor_database" "$repository_root/migrations/drizzle"
   upgraded_count="$(psql_value "$predecessor_database" \
     "SELECT count(*) FROM drizzle.__drizzle_migrations;")"
-  [[ "$upgraded_count" == "30" ]] ||
-    fail "predecessor upgrade recorded $upgraded_count migrations instead of 30"
+  [[ "$upgraded_count" == "32" ]] ||
+    fail "predecessor upgrade recorded $upgraded_count migrations instead of 32"
   preserved_sentinel="$(psql_value "$predecessor_database" \
     "SELECT slug || '|' || display_name FROM organizations WHERE id = '$predecessor_sentinel_id';")"
   [[ "$preserved_sentinel" == "ci-predecessor-sentinel|CI predecessor tenant sentinel" ]] ||
-    fail "tenant sentinel was not preserved through migrations 0025 through 0029"
+    fail "tenant sentinel was not preserved through migrations 0025 through 0031"
+
+  PGPASSWORD="$PGPASSWORD" psql \
+    --host "$PGHOST" \
+    --port "$PGPORT" \
+    --username "$POSTGRES_USER" \
+    --dbname "$predecessor_database" \
+    --no-password \
+    --no-psqlrc \
+    --set=ON_ERROR_STOP=1 <<SQL
+BEGIN;
+SELECT set_config('app.organization_id', '$predecessor_sentinel_id', true);
+SELECT set_config('app.actor_id', 'ci-predecessor-upgrade', true);
+SELECT set_config('app.request_id', '00000000-0000-4000-8000-0000000000a3', true);
+SELECT set_config('app.auth_method', 'migration-verification', true);
+SELECT set_config('app.source_surface', 'WORKER', true);
+SELECT set_config('app.reason', 'Verify predecessor audit graph preservation', true);
+SELECT app.append_tenant_business_audit(
+  '$predecessor_sentinel_id',
+  'ci.predecessor-audit-after-upgrade',
+  'organization',
+  '$predecessor_sentinel_id',
+  '{"source":"predecessor-upgrade"}'::jsonb,
+  NULL
+);
+COMMIT;
+SQL
+
+  preserved_audit_chain="$(psql_value "$predecessor_database" \
+    "SELECT count(*)::text || '|' ||
+       max(previous_event_hash) FILTER (WHERE action='ci.predecessor-audit-after-upgrade') || '|' ||
+       max((occurred_at > '2040-01-01T00:00:00Z'::timestamptz)::text)
+         FILTER (WHERE action='ci.predecessor-audit-after-upgrade')
+     FROM audit_events WHERE organization_id='$predecessor_sentinel_id';")"
+  [[ "$preserved_audit_chain" == "3|$predecessor_audit_leaf_hash|true" ]] ||
+    fail "predecessor audit graph was not preserved and extended from its graph leaf"
+  upgraded_audit_leaf="$(psql_value "$predecessor_database" \
+    "SELECT (leaf.leaf_event_hash = event.event_hash)::text
+     FROM app.locked_audit_graph_leaf('$predecessor_sentinel_id') leaf
+     JOIN audit_events event
+       ON event.organization_id='$predecessor_sentinel_id'
+      AND event.action='ci.predecessor-audit-after-upgrade';")"
+  [[ "$upgraded_audit_leaf" == "true" ]] ||
+    fail "upgraded predecessor audit helper did not return the appended graph leaf"
 
   reconcile_roles "$predecessor_database"
   verify_fail_closed_default_privileges "$predecessor_database"
   verify_schema_and_grants "$predecessor_database"
   printf '%s\n' \
-    "Predecessor upgrade verification passed: replayed 0000-0024, preserved tenant sentinel, upgraded through 0029, and verified schema/grants/journal types."
+    "Predecessor upgrade verification passed: replayed 0000-0024, preserved tenant and audit sentinels, upgraded through 0031, and verified schema/grants/journal types."
 else
   source_migration_count="$(psql_value "$POSTGRES_DB" \
     "SELECT count(*) FROM drizzle.__drizzle_migrations;")"
-  [[ "$source_migration_count" == "30" ]] ||
-    fail "source database is not fully migrated through 0029 (found $source_migration_count records)"
+  [[ "$source_migration_count" == "32" ]] ||
+    fail "source database is not fully migrated through 0031 (found $source_migration_count records)"
   source_organization_count="$(psql_value "$POSTGRES_DB" "SELECT count(*) FROM organizations;")"
   [[ "$source_organization_count" =~ ^[1-9][0-9]*$ ]] ||
     fail "source database has no populated organization data to restore"

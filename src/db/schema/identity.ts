@@ -1,5 +1,6 @@
 import {
   boolean,
+  check,
   integer,
   pgTable,
   primaryKey,
@@ -19,11 +20,18 @@ export const organizations = pgTable(
     active: boolean("active").notNull().default(true),
     isDemo: boolean("is_demo").notNull().default(false),
     mode: text("organization_mode").notNull().default("REAL"),
+    writesEnabledAt: timestamp("writes_enabled_at", { withTimezone: true }),
     settingsVersion: integer("settings_version").notNull().default(1),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
-  (table) => [uniqueIndex("organizations_slug_unique").on(table.slug)],
+  (table) => [
+    uniqueIndex("organizations_slug_unique").on(table.slug),
+    check(
+      "organizations_real_writes_enabled_check",
+      sql`${table.writesEnabledAt} IS NULL OR (${table.active} AND NOT ${table.isDemo} AND ${table.mode} = 'REAL')`,
+    ),
+  ],
 );
 
 export const users = pgTable(

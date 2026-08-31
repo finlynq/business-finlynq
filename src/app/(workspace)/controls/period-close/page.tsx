@@ -9,7 +9,10 @@ import { DemoNotice, PageHeader, StatusPill } from "../../../_components/ui";
 
 export default async function PeriodClosePage() {
   const principal = await requireWorkspacePrincipal("/app/controls/period-close");
-  if (principalCanWrite(principal)) {
+  // A real organization always reads its own period history. Write activation
+  // controls the capabilities in the tenant DTO; it must never substitute
+  // synthetic demo records for a disabled organization's accounting history.
+  if (principal.sessionMode === "real" || principalCanWrite(principal)) {
     const workspace = await loadPeriodControlWorkspace(principal);
     return (
       <div className="page-content">

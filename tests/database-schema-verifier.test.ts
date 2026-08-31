@@ -706,7 +706,7 @@ describe("database schema verifier", () => {
       }),
       { checks: 0, foreignKeys: 0, indexes: 0, uniqueConstraints: 0 },
     );
-    expect(counts).toEqual({ checks: 173, foreignKeys: 106, indexes: 115, uniqueConstraints: 53 });
+    expect(counts).toEqual({ checks: 174, foreignKeys: 106, indexes: 116, uniqueConstraints: 53 });
     expect(migrationContract.get("bank_connections")?.checks.get("bank_connections_provider_check"))
       .toMatchObject({ expression: "provider='SIMPLEFIN'" });
     expect(migrationContract.get("bank_match_allocations")?.checks.get("bank_match_allocations_command_hash_sha256"))

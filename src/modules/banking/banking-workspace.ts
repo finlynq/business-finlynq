@@ -6,6 +6,7 @@ import { actorHasActivePermission } from "@/modules/identity/authorization";
 import { PERMISSIONS } from "@/modules/identity/permissions";
 import { transactionAuthMethod, type SessionPrincipal } from "@/modules/identity/session";
 import { withWorkspaceTenantRead } from "@/modules/workspace/tenant-read";
+import { principalCanWrite } from "@/modules/workspace/write-policy";
 import {
   decryptField,
   parseEncryptedField,
@@ -231,6 +232,7 @@ export async function loadBankingWorkspace(
       actorHasActivePermission(client, { organizationId: principal.organizationId, actorId: principal.userId, permission: PERMISSIONS.manageBankRules }),
     ]);
     if (!canRead) throw new Error("Banking read permission is required");
+    const canWrite = principalCanWrite(principal);
 
     const [connectionsResult, ruleTargetResult, accountsResult, cashResult, syncResult, observationsResult, reconciliationResult, rulesResult, proposalsResult, proposalDetailsResult] = await Promise.all([
       client.query<{
@@ -793,11 +795,11 @@ export async function loadBankingWorkspace(
         feedEnabled: process.env.BANK_FEEDS_ENABLED === "true",
         permissions: {
           read: canRead,
-          connect: canConnect && principal.sessionMode === "real",
-          sync: canSync && principal.sessionMode === "real",
-          reconcilePrepare: canPrepareReconciliation,
-          reconcileReview: canReviewReconciliation,
-          rules: canManageRules,
+          connect: canWrite && canConnect && principal.sessionMode === "real",
+          sync: canWrite && canSync && principal.sessionMode === "real",
+          reconcilePrepare: canWrite && canPrepareReconciliation,
+          reconcileReview: canWrite && canReviewReconciliation,
+          rules: canWrite && canManageRules,
         },
         connections: connectionsResult.rows.map((row) => ({
           id: row.id, provider: row.provider, displayName: row.display_name,

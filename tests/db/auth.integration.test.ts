@@ -569,8 +569,11 @@ runRuntimeRoleTests("PostgreSQL runtime authentication boundary", () => {
     await expect(runtimePool.query("SELECT * FROM app.auth_consume_password_reset_escalation_limits($1)", ["e".repeat(64)])).resolves.toBeTruthy();
     await expect(runtimePool.query("SELECT * FROM app.auth_consume_recovery_approval_limits($1,$2)", [issued.rows[0].session_id, randomUUID()])).resolves.toBeTruthy();
     await expect(runtimePool.query("SELECT * FROM app.auth_consume_mfa_enrollment_limits($1)", ["m".repeat(64)])).resolves.toBeTruthy();
-    const resolved = await runtimePool.query("SELECT * FROM app.auth_resolve_session_v2($1, $2)", [tokenHash, "a".repeat(64)]);
-    expect(resolved.rows[0]).toMatchObject({ session_mode: "DEMO" });
+    const resolved = await runtimePool.query("SELECT * FROM app.auth_resolve_session_v3($1, $2)", [tokenHash, "a".repeat(64)]);
+    expect(resolved.rows[0]).toMatchObject({
+      session_mode: "DEMO",
+      organization_writes_enabled: false,
+    });
     await runtimePool.query("SELECT app.auth_revoke_session($1, $2)", [tokenHash, randomUUID()]);
     await expect(runtimePool.query("SELECT * FROM app.auth_email_delivery_readiness(15)")).resolves.toBeTruthy();
     await expect(runtimePool.query("SELECT app.auth_email_worker_heartbeat($1)", [randomUUID()])).rejects.toThrow(/permission denied/);

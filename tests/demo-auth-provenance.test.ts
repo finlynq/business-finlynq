@@ -6,6 +6,7 @@ import {
   assertTenantWritesEnabled,
   isAuthorizedDemoWriteContext,
   mutationContext,
+  principalCanWrite,
 } from "@/modules/workspace/write-policy";
 
 const principal: SessionPrincipal = {
@@ -25,13 +26,33 @@ const principal: SessionPrincipal = {
 };
 
 const previousDemoWrites = process.env.DEMO_WRITES_ENABLED;
+const previousBusinessWrites = process.env.BUSINESS_WRITES_ENABLED;
 
 afterEach(() => {
   if (previousDemoWrites === undefined) delete process.env.DEMO_WRITES_ENABLED;
   else process.env.DEMO_WRITES_ENABLED = previousDemoWrites;
+  if (previousBusinessWrites === undefined) delete process.env.BUSINESS_WRITES_ENABLED;
+  else process.env.BUSINESS_WRITES_ENABLED = previousBusinessWrites;
 });
 
 describe("demo transaction authentication provenance", () => {
+  it("requires both deployment and organization activation for a real principal", () => {
+    const realPrincipal: SessionPrincipal = {
+      ...principal,
+      sessionMode: "real",
+      authMethod: "PASSWORD",
+      organizationWritesEnabled: true,
+    };
+
+    process.env.BUSINESS_WRITES_ENABLED = "true";
+    expect(principalCanWrite(realPrincipal)).toBe(true);
+    expect(principalCanWrite({ ...realPrincipal, organizationWritesEnabled: false })).toBe(false);
+    expect(principalCanWrite({ ...realPrincipal, organizationWritesEnabled: undefined })).toBe(false);
+
+    process.env.BUSINESS_WRITES_ENABLED = "false";
+    expect(principalCanWrite(realPrincipal)).toBe(false);
+  });
+
   it("accepts a stepped-up demo principal across context validation and write authorization", () => {
     process.env.DEMO_WRITES_ENABLED = "true";
     const context = mutationContext(principal, "demo-step-up-request", {
