@@ -248,6 +248,22 @@ if (verifierBackupMount.bind?.create_host_path === true) {
   fail("latest-backup verifier can create a missing host backup path");
 }
 const composeSource = readFileSync("docker-compose.yml", "utf8").replaceAll("\r\n", "\n");
+
+function composeServiceSource(serviceName) {
+  const sourceLines = composeSource.split("\n");
+  const serviceStart = sourceLines.findIndex((line) => line === `  ${serviceName}:`);
+  if (serviceStart < 0) fail(`${serviceName} source block is missing`);
+  const nextService = sourceLines.findIndex(
+    (line, index) => index > serviceStart && /^  [a-zA-Z0-9_]+:$/.test(line),
+  );
+  return sourceLines.slice(serviceStart + 1, nextService < 0 ? undefined : nextService).join("\n");
+}
+
+function sourceRequiresExistingWritableBackupPath(serviceName) {
+  return /- type: bind\s+source: \$\{BACKUP_LOCAL_DIR:-\.\/\.backups\}\s+target: \/backups\s+bind:\s+create_host_path: false/
+    .test(composeServiceSource(serviceName));
+}
+
 const verifierSourceStart = composeSource.indexOf("  verify_latest_backup:\n");
 const verifierSourceEnd = composeSource.indexOf("\n  restore_database:\n", verifierSourceStart);
 if (verifierSourceStart < 0 || verifierSourceEnd < 0) fail("latest-backup verifier source block is missing");
@@ -426,7 +442,8 @@ for (const serviceName of ["restore_accounting_verify", "restore_key_verify", "r
   const evidenceMount = (services[serviceName]?.volumes ?? [])
     .find((volume) => typeof volume === "object" && volume.target === "/backups");
   if (!evidenceMount || evidenceMount.type !== "bind" || evidenceMount.read_only === true
-    || evidenceMount.bind?.create_host_path !== false) {
+    || evidenceMount.bind?.create_host_path === true
+    || !sourceRequiresExistingWritableBackupPath(serviceName)) {
     fail(`${serviceName} cannot safely write explicit restore evidence`);
   }
   const evidenceEnvironmentKey = serviceName === "restore_accounting_verify"
@@ -470,7 +487,8 @@ if (restoreEvidence.user !== "70:70" || restoreEvidence.read_only !== true
 const restoreEvidenceMount = (restoreEvidence.volumes ?? [])
   .find((volume) => typeof volume === "object" && volume.target === "/backups");
 if (!restoreEvidenceMount || restoreEvidenceMount.type !== "bind"
-  || restoreEvidenceMount.read_only === true || restoreEvidenceMount.bind?.create_host_path !== false) {
+  || restoreEvidenceMount.read_only === true || restoreEvidenceMount.bind?.create_host_path === true
+  || !sourceRequiresExistingWritableBackupPath("restore_evidence")) {
   fail("restore-objective evidence cannot safely write its report");
 }
 

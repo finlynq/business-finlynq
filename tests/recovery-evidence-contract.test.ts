@@ -11,6 +11,16 @@ function compact(value: string): string {
 }
 
 describe("production recovery evidence contract", () => {
+  it("keeps restore evidence mounts fail-closed across Compose serializers", () => {
+    const verifier = source("scripts/operations/verify-compose-boundaries.mjs");
+    expect(verifier).toContain("sourceRequiresExistingWritableBackupPath(serviceName)");
+    expect(verifier).toContain('sourceRequiresExistingWritableBackupPath("restore_evidence")');
+    expect(verifier).toContain("evidenceMount.bind?.create_host_path === true");
+    expect(verifier).toContain("restoreEvidenceMount.bind?.create_host_path === true");
+    expect(verifier).not.toContain("evidenceMount.bind?.create_host_path !== false");
+    expect(verifier).not.toContain("restoreEvidenceMount.bind?.create_host_path !== false");
+  });
+
   it("allows operators to tighten but never weaken the recorded RPO or RTO", () => {
     const recorder = source("deploy/backup/record-restore-evidence.sh");
     const drill = source("deploy/backup/run-restore-drill.sh");
