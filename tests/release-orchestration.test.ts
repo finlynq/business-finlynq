@@ -453,11 +453,13 @@ esac
     const fakeBin = join(root, "bin");
     const markerDirectory = join(root, "release-locks");
     const callLog = join(root, "systemctl.log");
+    const dockerFailureMarker = join(root, "docker-fail");
     mkdirSync(fakeBin);
     mkdirSync(markerDirectory, { mode: 0o700 });
     chmodSync(markerDirectory, 0o700);
     const currentUid = process.getuid?.() ?? 1000;
     const normalizedMarkerDirectory = markerDirectory.replaceAll("\\", "/");
+    const normalizedDockerFailureMarker = dockerFailureMarker.replaceAll("\\", "/");
     const pausePath = join(root, "pause-schedulers.sh");
     writeFileSync(pausePath, source("deploy/release/pause-schedulers.sh").replace(
       'marker_directory="/home/deploy/.local/state/business-finlynq/release-locks"',
@@ -478,7 +480,7 @@ printf '%s\\n' 'no crontab for deploy' >&2
 exit 1
 `);
     writeFileSync(join(fakeBin, "docker"), `#!/usr/bin/env bash
-if [[ "\${FAKE_DOCKER_PS_ERROR:-false}" == true && "$1" == ps ]]; then
+if [[ -e "${normalizedDockerFailureMarker}" && "$1" == ps ]]; then
   exit 24
 fi
 exit 0
@@ -536,11 +538,11 @@ esac
     expect(rejected.status).toBe(1);
     expect(rejected.stderr).toContain("could not query systemd ActiveState");
 
+    writeFileSync(dockerFailureMarker, "fail\n");
     const dockerRejected = spawnSync("bash", [pausePath, "systemd", "--allow-already-paused"], {
       encoding: "utf8",
       env: {
         ...process.env,
-        FAKE_DOCKER_PS_ERROR: "true",
         FAKE_SYSTEMCTL_LOG: callLog,
         PATH: `${fakeBin}:${process.env.PATH ?? ""}`,
       },

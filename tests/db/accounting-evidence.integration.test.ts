@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { afterAll, describe, expect, it } from "vitest";
-import { Pool } from "pg";
+import { Pool, type PoolClient } from "pg";
 
 const databaseUrl = process.env.TEST_DATABASE_URL;
 const runDatabaseTests = databaseUrl ? describe : describe.skip;
@@ -18,6 +18,17 @@ type EvidenceRow = Readonly<{
   outbox_without_correct_audit_count: string;
   paired_count_mismatch_count: string;
 }>;
+
+async function queryEvidence(client: PoolClient): Promise<EvidenceRow> {
+  const rawResult: unknown = await client.query(evidenceQuery);
+  const statementResults = Array.isArray(rawResult) ? rawResult : [rawResult];
+  const finalResult = statementResults.at(-1) as { rows?: EvidenceRow[] } | undefined;
+  const row = finalResult?.rows?.[0];
+  if (!row) {
+    throw new Error("Accounting evidence query did not return its final summary row.");
+  }
+  return row;
+}
 
 runDatabaseTests("accounting evidence hash recomputation", () => {
   const pool = new Pool({ connectionString: databaseUrl });
@@ -52,9 +63,9 @@ runDatabaseTests("accounting evidence hash recomputation", () => {
       );
       expect(inserted.rows[0]?.hash_material_version).toBe("tenant-business-v1");
 
-      const clean = await client.query<EvidenceRow>(evidenceQuery);
-      expect(Number(clean.rows[0]?.invalid_hash_contract_count)).toBe(0);
-      expect(Number(clean.rows[0]?.hash_mismatch_count)).toBe(0);
+      const clean = await queryEvidence(client);
+      expect(Number(clean.invalid_hash_contract_count)).toBe(0);
+      expect(Number(clean.hash_mismatch_count)).toBe(0);
 
       await client.query("SET LOCAL session_replication_role = replica");
       await client.query(
@@ -63,9 +74,9 @@ runDatabaseTests("accounting evidence hash recomputation", () => {
       );
       await client.query("SET LOCAL session_replication_role = origin");
 
-      const changed = await client.query<EvidenceRow>(evidenceQuery);
-      expect(Number(changed.rows[0]?.invalid_hash_contract_count)).toBe(0);
-      expect(Number(changed.rows[0]?.hash_mismatch_count)).toBe(1);
+      const changed = await queryEvidence(client);
+      expect(Number(changed.invalid_hash_contract_count)).toBe(0);
+      expect(Number(changed.hash_mismatch_count)).toBe(1);
     } finally {
       await client.query("SELECT pg_advisory_unlock_all()");
       await client.query("ROLLBACK");
@@ -105,11 +116,11 @@ runDatabaseTests("accounting evidence hash recomputation", () => {
       );
       await client.query("SET LOCAL session_replication_role = origin");
 
-      const corrupted = await client.query<EvidenceRow>(evidenceQuery);
-      expect(Number(corrupted.rows[0]?.invalid_outbox_contract_count)).toBe(0);
-      expect(Number(corrupted.rows[0]?.audit_without_required_outbox_count)).toBeGreaterThan(0);
-      expect(Number(corrupted.rows[0]?.outbox_without_correct_audit_count)).toBeGreaterThan(0);
-      expect(Number(corrupted.rows[0]?.paired_count_mismatch_count)).toBeGreaterThan(0);
+      const corrupted = await queryEvidence(client);
+      expect(Number(corrupted.invalid_outbox_contract_count)).toBe(0);
+      expect(Number(corrupted.audit_without_required_outbox_count)).toBeGreaterThan(0);
+      expect(Number(corrupted.outbox_without_correct_audit_count)).toBeGreaterThan(0);
+      expect(Number(corrupted.paired_count_mismatch_count)).toBeGreaterThan(0);
     } finally {
       await client.query("SELECT pg_advisory_unlock_all()");
       await client.query("ROLLBACK");
