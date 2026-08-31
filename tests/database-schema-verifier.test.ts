@@ -647,7 +647,9 @@ describe("database schema verifier", () => {
     const diagnostics = compareSchemaContracts(expected, actual);
     expect(diagnostics).toContain("[DEFAULT_MISMATCH] public.constraint_probe.request_key: snapshot='DRAFT', database='LIVE'");
     expect(diagnostics).toContain("[FOREIGN_KEY_MISMATCH] public.constraint_probe.constraint_probe_parent_fk differs between the latest Drizzle snapshot and PostgreSQL");
-    expect(diagnostics).toContain("[CHECK_MISMATCH] public.constraint_probe.constraint_probe_request_key_length differs between the latest Drizzle snapshot and PostgreSQL");
+    expect(diagnostics).toContain(
+      '[CHECK_MISMATCH] public.constraint_probe.constraint_probe_request_key_length differs between the latest Drizzle snapshot and PostgreSQL: snapshot="length(request_key)>=1 and length(request_key)<=180", database="length(request_key) between 2 and 180"',
+    );
     expect(diagnostics).toContain("[UNIQUE_CONSTRAINT_MISMATCH] public.constraint_probe.constraint_probe_parent_request_unique differs between the latest Drizzle snapshot and PostgreSQL");
     expect(diagnostics).toContain("[INDEX_MISMATCH] public.constraint_probe.constraint_probe_request_idx differs between the latest Drizzle snapshot and PostgreSQL");
   });

@@ -1665,7 +1665,10 @@ export function compareSchemaContracts(snapshotContract, databaseContract) {
         if (namedActual) {
           matchedActual.add(name);
           if (expectedCheck.expression !== namedActual.expression) {
-            diagnostics.push(`[CHECK_MISMATCH] public.${tableName}.${name} differs between the latest Drizzle snapshot and PostgreSQL`);
+            diagnostics.push(
+              `[CHECK_MISMATCH] public.${tableName}.${name} differs between the latest Drizzle snapshot and PostgreSQL: `
+              + `snapshot=${JSON.stringify(expectedCheck.expression)}, database=${JSON.stringify(namedActual.expression)}`,
+            );
           }
           continue;
         }
