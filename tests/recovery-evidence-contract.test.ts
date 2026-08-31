@@ -200,7 +200,9 @@ describe("production recovery evidence contract", () => {
       migration.indexOf("CREATE TRIGGER outbox_events_request_correlation"),
       migration.indexOf("CREATE OR REPLACE FUNCTION app.enforce_paired_audit_outbox"),
     );
-    expect(outboxTrigger).toContain("BEFORE INSERT OR UPDATE");
+    expect(outboxTrigger).toContain(
+      "BEFORE INSERT OR UPDATE ON public.outbox_events",
+    );
     expect(outboxTrigger).not.toContain("UPDATE OF");
   });
 

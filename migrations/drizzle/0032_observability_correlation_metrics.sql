@@ -437,7 +437,7 @@ REVOKE ALL ON FUNCTION app.enforce_outbox_request_correlation() FROM PUBLIC;
 --> statement-breakpoint
 
 CREATE TRIGGER outbox_events_request_correlation
-  BEFORE INSERT OR UPDATE
+  BEFORE INSERT OR UPDATE ON public.outbox_events
   FOR EACH ROW EXECUTE FUNCTION app.enforce_outbox_request_correlation();
 --> statement-breakpoint
 
