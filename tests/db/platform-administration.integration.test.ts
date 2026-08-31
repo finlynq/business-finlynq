@@ -78,9 +78,9 @@ runDatabaseTests("PostgreSQL platform administrator assurance", () => {
     await pool.query(
       `INSERT INTO auth_sessions(
          id,token_hash,user_id,organization_id,membership_id,auth_method,
-         session_mode,idle_timeout_seconds,idle_expires_at,expires_at,
+         session_mode,user_agent_hash,idle_timeout_seconds,idle_expires_at,expires_at,
          mfa_verified_at,step_up_expires_at
-       ) VALUES($1,$2,$3,$4,$5,'PASSWORD','REAL',7200,
+       ) VALUES($1,$2,$3,$4,$5,'PASSWORD','REAL',repeat('u',64),7200,
          now()+interval '2 hours',now()+interval '24 hours',now(),now()+interval '10 minutes')`,
       [sessionId, randomUUID().replaceAll("-", "").repeat(2), userId, organizationId, membershipId],
     );

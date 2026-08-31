@@ -144,12 +144,12 @@ runDatabaseTests("organization administration concurrency", () => {
     await pool.query(
       `INSERT INTO auth_sessions(
          id, token_hash, user_id, organization_id, membership_id,
-         auth_method, session_mode, idle_timeout_seconds,
+         auth_method, session_mode, user_agent_hash, idle_timeout_seconds,
          idle_expires_at, expires_at, mfa_verified_at, step_up_expires_at
        ) VALUES
-         ($1, $3, $5, $7, $8, 'PASSWORD', 'REAL', 7200,
+         ($1, $3, $5, $7, $8, 'PASSWORD', 'REAL', repeat('u', 64), 7200,
            now() + interval '2 hours', now() + interval '1 day', now(), now() + interval '10 minutes'),
-         ($2, $4, $6, $7, $9, 'PASSWORD', 'REAL', 7200,
+         ($2, $4, $6, $7, $9, 'PASSWORD', 'REAL', repeat('u', 64), 7200,
            now() + interval '2 hours', now() + interval '1 day', now(), now() + interval '10 minutes')`,
       [
         ids.adminSessionA, ids.adminSessionB,
@@ -268,8 +268,8 @@ runDatabaseTests("organization administration concurrency", () => {
     await pool.query(
       `INSERT INTO auth_sessions(
          id,token_hash,user_id,organization_id,membership_id,
-         auth_method,session_mode,idle_timeout_seconds,idle_expires_at,expires_at
-       ) VALUES($1,$2,$3,$4,$5,'PASSWORD','REAL',7200,
+         auth_method,session_mode,user_agent_hash,idle_timeout_seconds,idle_expires_at,expires_at
+       ) VALUES($1,$2,$3,$4,$5,'PASSWORD','REAL',repeat('u',64),7200,
          now()+interval '2 hours',now()+interval '1 day')`,
       [
         targetSessionId,

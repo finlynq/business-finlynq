@@ -230,7 +230,7 @@ runDatabaseTests("PostgreSQL identity controls", () => {
       [orgId],
     );
     await pool.query(
-      "INSERT INTO auth_sessions(token_hash,user_id,organization_id,membership_id,auth_method,session_mode,idle_timeout_seconds,idle_expires_at,expires_at) VALUES ($1,$2,$3,$4,'PASSWORD','REAL',7200,now()+interval '2 hours',now()+interval '24 hours')",
+      "INSERT INTO auth_sessions(token_hash,user_id,organization_id,membership_id,auth_method,session_mode,user_agent_hash,idle_timeout_seconds,idle_expires_at,expires_at) VALUES ($1,$2,$3,$4,'PASSWORD','REAL',repeat('u',64),7200,now()+interval '2 hours',now()+interval '24 hours')",
       [sessionHash, userId, orgId, membershipId],
     );
 
@@ -439,7 +439,7 @@ runDatabaseTests("PostgreSQL identity controls", () => {
     );
     await pool.query("INSERT INTO organization_memberships(id,organization_id,user_id) VALUES($1,$2,$3)", [membershipId, orgId, userId]);
     await pool.query(
-      "INSERT INTO auth_sessions(id,token_hash,user_id,organization_id,membership_id,auth_method,session_mode,idle_timeout_seconds,idle_expires_at,expires_at) VALUES($1,$2,$3,$4,$5,'PASSWORD','REAL',7200,now()+interval '2 hours',now()+interval '24 hours')",
+      "INSERT INTO auth_sessions(id,token_hash,user_id,organization_id,membership_id,auth_method,session_mode,user_agent_hash,idle_timeout_seconds,idle_expires_at,expires_at) VALUES($1,$2,$3,$4,$5,'PASSWORD','REAL',repeat('u',64),7200,now()+interval '2 hours',now()+interval '24 hours')",
       [sessionId, randomUUID().replaceAll("-", "").repeat(2), userId, orgId, membershipId],
     );
     await pool.query(

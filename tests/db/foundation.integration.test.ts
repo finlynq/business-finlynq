@@ -164,16 +164,16 @@ runDatabaseTests("PostgreSQL accounting controls", () => {
       await admin.query(
         `INSERT INTO auth_sessions (
            id, token_hash, user_id, organization_id, membership_id,
-           auth_method, session_mode, idle_timeout_seconds,
+           auth_method, session_mode, user_agent_hash, idle_timeout_seconds,
            idle_expires_at, expires_at, mfa_verified_at, step_up_expires_at
          ) VALUES
-           ($1, 'integration-valid-session', $5, $6, $7, 'PASSWORD', 'REAL', 7200,
+           ($1, 'integration-valid-session', $5, $6, $7, 'PASSWORD', 'REAL', repeat('u', 64), 7200,
              now() + interval '2 hours', now() + interval '24 hours', now(), now() + interval '10 minutes'),
-           ($2, 'integration-stale-session', $5, $6, $7, 'PASSWORD', 'REAL', 7200,
+           ($2, 'integration-stale-session', $5, $6, $7, 'PASSWORD', 'REAL', repeat('u', 64), 7200,
              now() + interval '2 hours', now() + interval '24 hours', now() - interval '20 minutes', now() - interval '10 minutes'),
-           ($3, 'integration-wrong-actor-session', $8, $6, $9, 'PASSWORD', 'REAL', 7200,
+           ($3, 'integration-wrong-actor-session', $8, $6, $9, 'PASSWORD', 'REAL', repeat('u', 64), 7200,
              now() + interval '2 hours', now() + interval '24 hours', now(), now() + interval '10 minutes'),
-           ($4, 'integration-wrong-org-session', $12, $10, $11, 'PASSWORD', 'REAL', 7200,
+           ($4, 'integration-wrong-org-session', $12, $10, $11, 'PASSWORD', 'REAL', repeat('u', 64), 7200,
              now() + interval '2 hours', now() + interval '24 hours', now(), now() + interval '10 minutes')`,
         [
           ids.validSession,
