@@ -293,19 +293,67 @@ function removeOuterGrouping(expression) {
 
 export function normalizeSqlExpression(expression) {
   if (typeof expression !== "string" || !expression.trim()) return null;
+  const controlEscape = (character) => ({
+    "\b": "\\u0008",
+    "\f": "\\u000c",
+    "\n": "\\u000a",
+    "\r": "\\u000d",
+    "\t": "\\u0009",
+  })[character] ?? null;
+  const escapeLetter = (character) => ({
+    b: "\\u0008",
+    f: "\\u000c",
+    n: "\\u000a",
+    r: "\\u000d",
+    t: "\\u0009",
+  })[character] ?? null;
   let normalized = "";
   let inString = false;
   for (let position = 0; position < expression.length; position += 1) {
     const character = expression[position];
-    // pg_get_expr emits the already-parsed value of an escape string as a
-    // regular quoted literal. Drop the E marker so the reviewed Drizzle
-    // expression and PostgreSQL's deparsed equivalent share one spelling.
+    // pg_get_expr emits the parsed value of an escape string as a regular
+    // quoted literal. Decode the reviewed E literal while preserving literal
+    // backslashes, then encode control bytes explicitly so the two semantic
+    // values share one spelling without collapsing CR and LF together.
     if (
       !inString
       && (character === "e" || character === "E")
       && expression[position + 1] === "'"
       && (position === 0 || !/[a-z0-9_$]/i.test(expression[position - 1]))
     ) {
+      normalized += "'";
+      let closed = false;
+      for (let cursor = position + 2; cursor < expression.length; cursor += 1) {
+        const selected = expression[cursor];
+        if (selected === "'") {
+          if (expression[cursor + 1] === "'") {
+            normalized += "''";
+            cursor += 1;
+            continue;
+          }
+          normalized += "'";
+          position = cursor;
+          closed = true;
+          break;
+        }
+        if (selected === "\\" && cursor + 1 < expression.length) {
+          const escaped = expression[cursor + 1];
+          const encodedControl = escapeLetter(escaped);
+          if (encodedControl !== null) {
+            normalized += encodedControl;
+          } else if (escaped === "\\") {
+            normalized += "\\";
+          } else if (escaped === "'") {
+            normalized += "''";
+          } else {
+            normalized += `\\${escaped}`;
+          }
+          cursor += 1;
+          continue;
+        }
+        normalized += controlEscape(selected) ?? selected;
+      }
+      if (!closed) return null;
       continue;
     }
     if (character === "'") {
@@ -318,7 +366,9 @@ export function normalizeSqlExpression(expression) {
       }
       continue;
     }
-    normalized += inString ? character : character.toLowerCase();
+    normalized += inString
+      ? (controlEscape(character) ?? character)
+      : character.toLowerCase();
   }
   return removeOuterGrouping(normalized
     .replaceAll("pg_catalog.", "")

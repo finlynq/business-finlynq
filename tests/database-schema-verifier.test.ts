@@ -400,7 +400,7 @@ describe("database schema verifier", () => {
     expect(normalizeCheckExpression("status NOT IN ('DEAD', 'CANCELLED')", "constraint_probe"))
       .toBe(normalizeCheckExpression("status <> ALL (ARRAY['DEAD'::text, 'CANCELLED'::text])", "constraint_probe"));
     expect(normalizeCheckExpression("request_id !~ E'[\\r\\n]'", "outbox_events"))
-      .toBe(normalizeCheckExpression("request_id !~ '[\\r\\n]'::text", "outbox_events"));
+      .toBe(normalizeCheckExpression("request_id !~ '[\r\n]'::text", "outbox_events"));
     expect(normalizeCheckExpression("allocated_amount > 0", "bank_match_allocations"))
       .not.toBe(normalizeCheckExpression("allocated_amount >= 0", "bank_match_allocations"));
     expect(normalizeCheckExpression("match_kind IN ('EXACT', 'SUGGESTED')", "bank_match_allocations"))
@@ -408,7 +408,9 @@ describe("database schema verifier", () => {
     expect(normalizeCheckExpression("status NOT IN ('DEAD', 'CANCELLED')", "constraint_probe"))
       .not.toBe(normalizeCheckExpression("status <> ALL (ARRAY['DEAD'::text, 'ACTIVE'::text])", "constraint_probe"));
     expect(normalizeCheckExpression("request_id !~ E'[\\r\\n]'", "outbox_events"))
-      .not.toBe(normalizeCheckExpression("request_id ~ '[\\r\\n]'::text", "outbox_events"));
+      .not.toBe(normalizeCheckExpression("request_id ~ '[\r\n]'::text", "outbox_events"));
+    expect(normalizeCheckExpression("request_id !~ E'[\\r\\n]'", "outbox_events"))
+      .not.toBe(normalizeCheckExpression("request_id !~ '[\\r\\n]'::text", "outbox_events"));
     expect(normalizeCheckExpression("(kind = 'A' OR kind = 'B') AND active", "constraint_probe"))
       .not.toBe(normalizeCheckExpression("kind = 'A' OR (kind = 'B' AND active)", "constraint_probe"));
     expect(normalizeCheckExpression("(kind = 'A' OR kind = 'B') AND active", "constraint_probe"))
@@ -439,9 +441,9 @@ describe("database schema verifier", () => {
       (((length(audit_action) >= 1) AND (length(audit_action) <= 120))
       AND ((length(outbox_topic) >= 1) AND (length(outbox_topic) <= 120))
       AND ((length(aggregate_type) >= 1) AND (length(aggregate_type) <= 120))
-      AND (audit_action !~ '[\\r\\n]'::text)
-      AND (outbox_topic !~ '[\\r\\n]'::text)
-      AND (aggregate_type !~ '[\\r\\n]'::text))
+      AND (audit_action !~ '[\r\n]'::text)
+      AND (outbox_topic !~ '[\r\n]'::text)
+      AND (aggregate_type !~ '[\r\n]'::text))
     `;
 
     expect(normalizeCheckExpression(reviewedAudit, "audit_events"))
