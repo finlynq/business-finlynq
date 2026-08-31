@@ -397,14 +397,57 @@ describe("database schema verifier", () => {
       .toBe(normalizeCheckExpression("((y IS NULL) OR ((x >= 1) AND (x <= 5)))", "constraint_probe"));
     expect(normalizeCheckExpression("y IS NULL AND status IN ('A', 'B')", "constraint_probe"))
       .toBe(normalizeCheckExpression("((y IS NULL) AND (status = ANY (ARRAY['A'::text, 'B'::text])))", "constraint_probe"));
+    expect(normalizeCheckExpression("status NOT IN ('DEAD', 'CANCELLED')", "constraint_probe"))
+      .toBe(normalizeCheckExpression("status <> ALL (ARRAY['DEAD'::text, 'CANCELLED'::text])", "constraint_probe"));
+    expect(normalizeCheckExpression("request_id !~ E'[\\r\\n]'", "outbox_events"))
+      .toBe(normalizeCheckExpression("request_id !~ '[\\r\\n]'::text", "outbox_events"));
     expect(normalizeCheckExpression("allocated_amount > 0", "bank_match_allocations"))
       .not.toBe(normalizeCheckExpression("allocated_amount >= 0", "bank_match_allocations"));
     expect(normalizeCheckExpression("match_kind IN ('EXACT', 'SUGGESTED')", "bank_match_allocations"))
       .not.toBe(normalizeCheckExpression("match_kind = ANY (ARRAY['EXACT'::text, 'MANUAL'::text])", "bank_match_allocations"));
+    expect(normalizeCheckExpression("status NOT IN ('DEAD', 'CANCELLED')", "constraint_probe"))
+      .not.toBe(normalizeCheckExpression("status <> ALL (ARRAY['DEAD'::text, 'ACTIVE'::text])", "constraint_probe"));
+    expect(normalizeCheckExpression("request_id !~ E'[\\r\\n]'", "outbox_events"))
+      .not.toBe(normalizeCheckExpression("request_id ~ '[\\r\\n]'::text", "outbox_events"));
     expect(normalizeCheckExpression("(kind = 'A' OR kind = 'B') AND active", "constraint_probe"))
       .not.toBe(normalizeCheckExpression("kind = 'A' OR (kind = 'B' AND active)", "constraint_probe"));
     expect(normalizeCheckExpression("(kind = 'A' OR kind = 'B') AND active", "constraint_probe"))
       .not.toBe(normalizeCheckExpression("kind = 'A' OR kind = 'B' AND active", "constraint_probe"));
+  });
+
+  it("normalizes the G0 audit and outbox checks exactly as PostgreSQL deparses them", () => {
+    const reviewedAudit = `
+      (action = 'journal.posted' AND hash_material_version = 'journal-posted-v1')
+      OR (action = 'period.transition' AND hash_material_version = 'period-transition-v1')
+      OR (action NOT IN ('journal.posted', 'period.transition') AND hash_material_version = 'tenant-business-v1')
+    `;
+    const deparsedAudit = `
+      (((action = 'journal.posted'::text) AND (hash_material_version = 'journal-posted-v1'::text))
+      OR ((action = 'period.transition'::text) AND (hash_material_version = 'period-transition-v1'::text))
+      OR ((action <> ALL (ARRAY['journal.posted'::text, 'period.transition'::text]))
+      AND (hash_material_version = 'tenant-business-v1'::text)))
+    `;
+    const reviewedNames = `
+      length(audit_action) BETWEEN 1 AND 120
+      AND length(outbox_topic) BETWEEN 1 AND 120
+      AND length(aggregate_type) BETWEEN 1 AND 120
+      AND audit_action !~ E'[\\r\\n]'
+      AND outbox_topic !~ E'[\\r\\n]'
+      AND aggregate_type !~ E'[\\r\\n]'
+    `;
+    const deparsedNames = `
+      (((length(audit_action) >= 1) AND (length(audit_action) <= 120))
+      AND ((length(outbox_topic) >= 1) AND (length(outbox_topic) <= 120))
+      AND ((length(aggregate_type) >= 1) AND (length(aggregate_type) <= 120))
+      AND (audit_action !~ '[\\r\\n]'::text)
+      AND (outbox_topic !~ '[\\r\\n]'::text)
+      AND (aggregate_type !~ '[\\r\\n]'::text))
+    `;
+
+    expect(normalizeCheckExpression(reviewedAudit, "audit_events"))
+      .toBe(normalizeCheckExpression(deparsedAudit, "audit_events"));
+    expect(normalizeCheckExpression(reviewedNames, "audit_outbox_pair_contract"))
+      .toBe(normalizeCheckExpression(deparsedNames, "audit_outbox_pair_contract"));
   });
 
   it("normalizes reviewed PostgreSQL 16 numeric casts and arithmetic grouping only with numeric column evidence", () => {
@@ -457,6 +500,15 @@ describe("database schema verifier", () => {
         "(status = ANY (ARRAY['PENDING'::text, 'SENDING'::text]))",
         "auth_email_outbox",
       ));
+    expect(normalizeIndexPredicate("request_id LIKE 'legacy:%'", "outbox_events"))
+      .toBe(normalizeIndexPredicate("request_id ~~ 'legacy:%'::text", "outbox_events"));
+    expect(normalizeIndexPredicate(
+      "status = 'DEAD' AND upper(coalesce(last_error_code, '')) NOT IN ('CANCELLED', 'SUPERSEDED')",
+      "auth_email_outbox",
+    )).toBe(normalizeIndexPredicate(
+      "((status = 'DEAD'::text) AND (upper(COALESCE(last_error_code, ''::text)) <> ALL (ARRAY['CANCELLED'::text, 'SUPERSEDED'::text])))",
+      "auth_email_outbox",
+    ));
     expect(normalizeCheckExpression("length(btrim(granted_by)) BETWEEN 3 AND 200", "access_grants"))
       .toBe(normalizeCheckExpression(
         "((length(btrim(granted_by)) >= 3) AND (length(btrim(granted_by)) <= 200))",
@@ -483,6 +535,8 @@ describe("database schema verifier", () => {
 
     expect(normalizeIndexPredicate("status IN ('PENDING', 'SENDING')", "auth_email_outbox"))
       .not.toBe(normalizeIndexPredicate("status IN ('PENDING', 'SENT')", "auth_email_outbox"));
+    expect(normalizeIndexPredicate("request_id LIKE 'legacy:%'", "outbox_events"))
+      .not.toBe(normalizeIndexPredicate("request_id LIKE 'current:%'", "outbox_events"));
     expect(normalizeCheckExpression("length(btrim(granted_by)) BETWEEN 3 AND 200", "access_grants"))
       .not.toBe(normalizeCheckExpression("length(btrim(granted_by)) BETWEEN 4 AND 200", "access_grants"));
     expect(normalizeCheckExpression("access_grants.status = 'access_grants.status'", "access_grants"))

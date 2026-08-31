@@ -297,6 +297,17 @@ export function normalizeSqlExpression(expression) {
   let inString = false;
   for (let position = 0; position < expression.length; position += 1) {
     const character = expression[position];
+    // pg_get_expr emits the already-parsed value of an escape string as a
+    // regular quoted literal. Drop the E marker so the reviewed Drizzle
+    // expression and PostgreSQL's deparsed equivalent share one spelling.
+    if (
+      !inString
+      && (character === "e" || character === "E")
+      && expression[position + 1] === "'"
+      && (position === 0 || !/[a-z0-9_$]/i.test(expression[position - 1]))
+    ) {
+      continue;
+    }
     if (character === "'") {
       normalized += character;
       if (inString && expression[position + 1] === "'") {
@@ -374,7 +385,7 @@ function tokenizePredicate(expression) {
       tokens.push(token);
       continue;
     }
-    const token = expression.slice(position).match(/^(::|>=|<=|<>|!=|[()[\],=~<>]|[a-z_][a-z0-9_.$]*|\d+(?:\.\d+)?)/i)?.[0];
+    const token = expression.slice(position).match(/^(!~~\*?|~~\*?|!~\*?|~\*?|::|>=|<=|<>|!=|[()[\],=~<>]|[a-z_][a-z0-9_.$]*|\d+(?:\.\d+)?)/i)?.[0];
     if (!token) {
       tokens.push(character);
       position += 1;
@@ -490,14 +501,47 @@ function canonicalMembershipTokens(tokens) {
   if (inPosition >= 0) {
     const values = tokens.slice(inPosition + 1);
     if (values[0] === "(" && matchingPredicateDelimiter(values, 0, "(", ")") === values.length - 1) {
-      return [...tokens.slice(0, inPosition), "=", "any", "(", "array", "[", ...values.slice(1, -1), "]", ")"];
+      const negated = tokens[inPosition - 1] === "not";
+      const subjectEnd = negated ? inPosition - 1 : inPosition;
+      return [
+        ...tokens.slice(0, subjectEnd),
+        negated ? "<>" : "=",
+        negated ? "all" : "any",
+        "(", "array", "[", ...values.slice(1, -1), "]", ")",
+      ];
+    }
+  }
+  return tokens;
+}
+
+function canonicalPatternOperatorTokens(tokens) {
+  let parenthesisDepth = 0;
+  let bracketDepth = 0;
+  for (let position = 0; position < tokens.length; position += 1) {
+    const token = tokens[position];
+    if (token === "(") parenthesisDepth += 1;
+    else if (token === ")") parenthesisDepth -= 1;
+    else if (token === "[") bracketDepth += 1;
+    else if (token === "]") bracketDepth -= 1;
+    if (parenthesisDepth !== 0 || bracketDepth !== 0) continue;
+
+    if (token === "like" || token === "ilike") {
+      const negated = tokens[position - 1] === "not";
+      return [
+        ...tokens.slice(0, negated ? position - 1 : position),
+        `${negated ? "!" : ""}~~${token === "ilike" ? "*" : ""}`,
+        ...tokens.slice(position + 1),
+      ];
     }
   }
   return tokens;
 }
 
 function topLevelComparisonPosition(tokens) {
-  const comparisonOperators = new Set(["=", "!=", "<>", ">", ">=", "<", "<=", "~"]);
+  const comparisonOperators = new Set([
+    "=", "!=", "<>", ">", ">=", "<", "<=", "~", "~*", "!~", "!~*",
+    "~~", "~~*", "!~~", "!~~*",
+  ]);
   let parenthesisDepth = 0;
   let bracketDepth = 0;
   for (let position = 0; position < tokens.length; position += 1) {
@@ -605,12 +649,12 @@ function normalizeReviewedColumnLiteralCast(tokens, columns) {
 }
 
 function predicateLeaf(tokens, columns) {
-  const selected = canonicalMembershipTokens(stripLiteralCastTokens(
+  const selected = canonicalPatternOperatorTokens(canonicalMembershipTokens(stripLiteralCastTokens(
     normalizeReviewedColumnLiteralCast(
       normalizeReviewedNumericComparison(stripOuterPredicateGrouping(tokens), columns),
       columns,
     ),
-  ));
+  )));
   const betweenPosition = topLevelTokenPosition(selected, "between");
   if (betweenPosition >= 0) {
     const lowerAndPosition = topLevelTokenPosition(selected.slice(betweenPosition + 1), "and");
