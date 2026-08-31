@@ -1,6 +1,6 @@
 {
-  "id": "36a747d0-703c-4820-a56e-42644b9ef487",
-  "prevId": "e71b03a1-9c7a-4d5c-9d51-1bf82a987ffe",
+  "id": "73f8d40c-3fd8-4ee3-a836-59e623524b25",
+  "prevId": "114848a5-0681-4a9a-9170-48119466dddd",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -114,6 +114,27 @@
         }
       },
       "indexes": {
+        "audit_events_org_previous_hash_idx": {
+          "name": "audit_events_org_previous_hash_idx",
+          "columns": [
+            {
+              "expression": "organization_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "previous_event_hash",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
         "audit_events_org_request_action_entity_unique": {
           "name": "audit_events_org_request_action_entity_unique",
           "columns": [
@@ -5872,6 +5893,12 @@
           "notNull": true,
           "default": "'REAL'"
         },
+        "writes_enabled_at": {
+          "name": "writes_enabled_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
         "settings_version": {
           "name": "settings_version",
           "type": "integer",
@@ -5915,7 +5942,12 @@
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
       "policies": {},
-      "checkConstraints": {},
+      "checkConstraints": {
+        "organizations_real_writes_enabled_check": {
+          "name": "organizations_real_writes_enabled_check",
+          "value": "\"organizations\".\"writes_enabled_at\" IS NULL OR (\"organizations\".\"active\" AND NOT \"organizations\".\"is_demo\" AND \"organizations\".\"organization_mode\" = 'REAL')"
+        }
+      },
       "isRLSEnabled": false
     },
     "public.permissions": {

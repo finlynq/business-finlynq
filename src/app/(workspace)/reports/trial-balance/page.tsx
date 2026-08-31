@@ -21,10 +21,10 @@ function displayAmount(currency: string, amount: string): string {
 }
 
 export default async function TrialBalancePage({
-  searchParams = Promise.resolve({}),
+  searchParams,
 }: {
-  searchParams?: SearchParams;
-} = {}) {
+  searchParams: SearchParams;
+}) {
   const principal = await requireWorkspacePrincipal("/app/reports/trial-balance");
   const [dimensions, entityContext, query] = await Promise.all([
     loadReportDimensions(principal),

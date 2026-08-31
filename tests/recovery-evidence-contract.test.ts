@@ -71,6 +71,22 @@ describe("production recovery evidence contract", () => {
     expect(query).toContain("contract.event_hash IS DISTINCT FROM contract.expected_event_hash");
   });
 
+  it("locks the audit table and restores its append-only guard before hash verification", () => {
+    const migration = source("migrations/drizzle/0032_observability_correlation_metrics.sql");
+    const orderedMarkers = [
+      "LOCK TABLE public.audit_events IN SHARE ROW EXCLUSIVE MODE;",
+      "DISABLE TRIGGER audit_events_append_only;",
+      "UPDATE public.audit_events AS audit",
+      "ENABLE TRIGGER audit_events_append_only;",
+      "DO $audit_hash_material_preflight$",
+    ];
+    const positions = orderedMarkers.map((marker) => migration.indexOf(marker));
+
+    expect(positions.every((position) => position >= 0)).toBe(true);
+    expect(positions).toEqual([...positions].sort((left, right) => left - right));
+    expect(migration).not.toContain("session_replication_role");
+  });
+
   it("pins the canonical v1 digest preimages independently of topology", () => {
     const previous = "a".repeat(64);
     const organization = "11111111-1111-4111-8111-111111111111";

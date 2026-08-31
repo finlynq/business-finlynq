@@ -9,8 +9,8 @@ readonly predecessor_database="business_finlynq_test_predecessor_upgrade"
 readonly restore_database="business_finlynq_test_restore_verify"
 readonly demo_organization_id="10000000-0000-4000-8000-000000000001"
 readonly predecessor_sentinel_id="00000000-0000-4000-8000-0000000000fe"
-readonly predecessor_audit_root_hash="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-readonly predecessor_audit_leaf_hash="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+readonly predecessor_audit_root_hash="bc7860b6b606f2879bba3d3d89c3eb363cd3de4621b98298a0ecd6d4d1559bc0"
+readonly predecessor_audit_leaf_hash="a4366c38712347b450f5ccee094129dd19ac34119419fc4cdc3de61fb9f1c8b1"
 readonly restore_correlation_aggregate_id="00000000-0000-4000-8000-0000000000c0"
 readonly restore_correlation_request_a="00000000-0000-4000-8000-0000000000c1"
 readonly restore_correlation_request_b="00000000-0000-4000-8000-0000000000c2"
@@ -445,12 +445,12 @@ SQL
   run_migrations "$predecessor_database" "$repository_root/migrations/drizzle"
   upgraded_count="$(psql_value "$predecessor_database" \
     "SELECT count(*) FROM drizzle.__drizzle_migrations;")"
-  [[ "$upgraded_count" == "32" ]] ||
-    fail "predecessor upgrade recorded $upgraded_count migrations instead of 32"
+  [[ "$upgraded_count" == "33" ]] ||
+    fail "predecessor upgrade recorded $upgraded_count migrations instead of 33"
   preserved_sentinel="$(psql_value "$predecessor_database" \
     "SELECT slug || '|' || display_name FROM organizations WHERE id = '$predecessor_sentinel_id';")"
   [[ "$preserved_sentinel" == "ci-predecessor-sentinel|CI predecessor tenant sentinel" ]] ||
-    fail "tenant sentinel was not preserved through migrations 0025 through 0031"
+    fail "tenant sentinel was not preserved through migrations 0025 through 0032"
 
   PGPASSWORD="$PGPASSWORD" psql \
     --host "$PGHOST" \
@@ -499,7 +499,7 @@ SQL
   verify_fail_closed_default_privileges "$predecessor_database"
   verify_schema_and_grants "$predecessor_database"
   printf '%s\n' \
-    "Predecessor upgrade verification passed: replayed 0000-0024, preserved tenant and audit sentinels, upgraded through 0031, and verified schema/grants/journal types."
+    "Predecessor upgrade verification passed: replayed 0000-0024, preserved tenant and audit sentinels, upgraded through 0032, and verified schema/grants/journal types."
 else
   # Create two otherwise-identical business events with explicit request IDs.
   # Their exact audit/outbox correlation must survive the populated logical
@@ -558,8 +558,8 @@ SQL
 
   source_migration_count="$(psql_value "$POSTGRES_DB" \
     "SELECT count(*) FROM drizzle.__drizzle_migrations;")"
-  [[ "$source_migration_count" == "32" ]] ||
-    fail "source database is not fully migrated through 0031 (found $source_migration_count records)"
+  [[ "$source_migration_count" == "33" ]] ||
+    fail "source database is not fully migrated through 0032 (found $source_migration_count records)"
   source_organization_count="$(psql_value "$POSTGRES_DB" "SELECT count(*) FROM organizations;")"
   [[ "$source_organization_count" =~ ^[1-9][0-9]*$ ]] ||
     fail "source database has no populated organization data to restore"

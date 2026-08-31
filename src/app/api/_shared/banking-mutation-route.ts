@@ -32,7 +32,7 @@ export function createBankingMutationRoute<TBody, TResult, TParams = undefined>(
 }>) {
   return async function bankingMutationRoute(
     request: NextRequest,
-    routeContext?: { params: Promise<unknown> },
+    routeContext: { params: Promise<unknown> },
   ) {
     return observeRoute(request, "banking-mutation", async (requestId) => {
       try {
@@ -45,7 +45,7 @@ export function createBankingMutationRoute<TBody, TResult, TParams = undefined>(
       }
       let params: TParams;
       if (options.paramsSchema) {
-        const parsedParams = options.paramsSchema.safeParse(await routeContext?.params);
+        const parsedParams = options.paramsSchema.safeParse(await routeContext.params);
         if (!parsedParams.success) {
           return NextResponse.json(
             { error: options.invalidParamsMessage ?? "The banking resource identifier is invalid." },

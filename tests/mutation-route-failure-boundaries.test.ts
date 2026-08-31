@@ -131,7 +131,11 @@ describe("mutation route setup failure boundaries", () => {
       invoke: async () => ({ success: true }),
     });
 
-    await expectRedactedFailure(await route(request()), logging, 409);
+    await expectRedactedFailure(
+      await route(request(), { params: Promise.resolve({}) }),
+      logging,
+      409,
+    );
     expect(logging).toHaveBeenCalledOnce();
     logging.mockRestore();
   });

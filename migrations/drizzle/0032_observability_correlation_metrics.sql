@@ -6,12 +6,28 @@
 ALTER TABLE public.audit_events ADD COLUMN hash_material_version text;
 --> statement-breakpoint
 
+-- The retained history is append-only to application and operator code. This
+-- one migration-owned classification backfill takes an explicit table lock and
+-- disables only the existing update/delete guard for the duration of the
+-- transaction. PostgreSQL rolls both ALTER TRIGGER statements back if any
+-- classification or hash preflight below fails.
+LOCK TABLE public.audit_events IN SHARE ROW EXCLUSIVE MODE;
+--> statement-breakpoint
+
+ALTER TABLE public.audit_events
+  DISABLE TRIGGER audit_events_append_only;
+--> statement-breakpoint
+
 UPDATE public.audit_events AS audit
 SET hash_material_version = CASE audit.action
   WHEN 'journal.posted' THEN 'journal-posted-v1'
   WHEN 'period.transition' THEN 'period-transition-v1'
   ELSE 'tenant-business-v1'
 END;
+--> statement-breakpoint
+
+ALTER TABLE public.audit_events
+  ENABLE TRIGGER audit_events_append_only;
 --> statement-breakpoint
 
 DO $audit_hash_material_preflight$

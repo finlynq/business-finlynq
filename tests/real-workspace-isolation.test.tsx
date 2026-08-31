@@ -243,12 +243,12 @@ describe("real organization workspace isolation", () => {
 
   it("executes every workspace page without leaking another organization's fixtures", async () => {
     const pages = await Promise.all([
-      OverviewPage(),
+      OverviewPage({ searchParams: Promise.resolve({}) }),
       AutomationPage(),
       EntitiesPage({ searchParams: Promise.resolve({}) }),
       BillsPage({ searchParams: Promise.resolve({}) }),
       InvoicesPage({ searchParams: Promise.resolve({}) }),
-      TrialBalancePage(),
+      TrialBalancePage({ searchParams: Promise.resolve({}) }),
       TaxPage({ searchParams: Promise.resolve({}) }),
     ]);
     for (const page of pages) {
@@ -289,7 +289,7 @@ describe("real organization workspace isolation", () => {
   });
 
   it("uses the working entity by default and exposes an explicit all-entity dashboard scope", async () => {
-    const selected = await OverviewPage();
+    const selected = await OverviewPage({ searchParams: Promise.resolve({}) });
     expect(serialized(selected)).toContain("SECOND · Second Organization LLC");
     expect(mocks.loadAccountingOverview).toHaveBeenLastCalledWith(
       mocks.principal,
@@ -304,7 +304,10 @@ describe("real organization workspace isolation", () => {
   });
 
   it("renders CSV exports as native downloads outside Next App Router prefetching", async () => {
-    const pages = await Promise.all([OverviewPage(), TrialBalancePage()]);
+    const pages = await Promise.all([
+      OverviewPage({ searchParams: Promise.resolve({}) }),
+      TrialBalancePage({ searchParams: Promise.resolve({}) }),
+    ]);
     const exports = pages.flatMap((page) => findElementsByHrefPrefix(
       page,
       "/app/reports/trial-balance.csv",

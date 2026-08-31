@@ -88,7 +88,7 @@ beforeEach(() => {
 
 describe("accounting overview entity scope", () => {
   it("uses the persisted working entity by default and filters entity panels", async () => {
-    const markup = renderToStaticMarkup(await OverviewPage());
+    const markup = renderToStaticMarkup(await OverviewPage({ searchParams: Promise.resolve({}) }));
 
     expect(mocks.loadAccountingOverview).toHaveBeenCalledWith(
       mocks.principal,

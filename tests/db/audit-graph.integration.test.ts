@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { Pool, type PoolClient } from "pg";
 
@@ -122,8 +122,19 @@ runDatabaseTests("immutable audit graph leaf", () => {
   });
 
   it("uses the graph leaf even when a historical parent has the maximum timestamp", async () => {
-    const rootHash = "1".repeat(64);
-    const leafHash = "2".repeat(64);
+    const rootEntityId = randomUUID();
+    const rootRequestId = randomUUID();
+    const leafEntityId = randomUUID();
+    const leafRequestId = randomUUID();
+    const digest = (material: string) => createHash("sha256").update(material, "utf8").digest("hex");
+    const rootHash = digest(
+      historicalTimestampOrganization + rootEntityId + rootRequestId +
+      "integration.audit-root" + "{}",
+    );
+    const leafHash = digest(
+      rootHash + historicalTimestampOrganization + leafEntityId + leafRequestId +
+      "integration.audit-leaf" + "{}",
+    );
     const fixture = await ownerPool.connect();
     try {
       await fixture.query("BEGIN");
@@ -132,19 +143,21 @@ runDatabaseTests("immutable audit graph leaf", () => {
         `INSERT INTO audit_events(
            organization_id,actor_type,actor_id,auth_method,source_surface,
            action,entity_type,entity_id,request_id,safe_metadata,
-           previous_event_hash,event_hash,occurred_at
+           previous_event_hash,event_hash,hash_material_version,occurred_at
          ) VALUES
            ($1,'TEST','fixture','fixture','WORKER','integration.audit-root',
-             'integration_test',$2,$3,'{}',NULL,$4,'2040-01-01T00:00:00Z'),
+             'integration_test',$2,$3,'{}',NULL,$4,'tenant-business-v1',
+             '2040-01-01T00:00:00Z'),
            ($1,'TEST','fixture','fixture','WORKER','integration.audit-leaf',
-             'integration_test',$5,$6,'{}',$4,$7,'2030-01-01T00:00:00Z')`,
+             'integration_test',$5,$6,'{}',$4,$7,'tenant-business-v1',
+             '2030-01-01T00:00:00Z')`,
         [
           historicalTimestampOrganization,
-          randomUUID(),
-          randomUUID(),
+          rootEntityId,
+          rootRequestId,
           rootHash,
-          randomUUID(),
-          randomUUID(),
+          leafEntityId,
+          leafRequestId,
           leafHash,
         ],
       );

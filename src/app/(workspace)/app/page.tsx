@@ -13,10 +13,10 @@ function displayAmount(currency: string, amount: string): string {
 }
 
 export default async function OverviewPage({
-  searchParams = Promise.resolve({}),
+  searchParams,
 }: {
-  searchParams?: Promise<{ scope?: string | string[] }>;
-} = {}) {
+  searchParams: Promise<{ scope?: string | string[] }>;
+}) {
   const principal = await requireWorkspacePrincipal("/app");
   const [parameters, entityContext] = await Promise.all([
     searchParams,

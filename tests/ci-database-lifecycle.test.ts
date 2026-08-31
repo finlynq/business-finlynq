@@ -64,7 +64,10 @@ describe("CI predecessor-upgrade and restore verification", () => {
     );
   });
 
-  it("replays exactly 0000-0024 before preserving a tenant sentinel through 0031", () => {
+  it("replays exactly 0000-0024 before preserving a tenant sentinel through 0032", () => {
+    expect(migrationJournal.entries.map((entry) => entry.idx)).toEqual(
+      Array.from({ length: 33 }, (_, index) => index),
+    );
     expect(migrationJournal.entries.find((entry) => entry.idx === 25)?.tag).toBe(
       "0025_tenant_rls_completion",
     );
@@ -86,6 +89,9 @@ describe("CI predecessor-upgrade and restore verification", () => {
     expect(migrationJournal.entries.find((entry) => entry.idx === 31)?.tag).toBe(
       "0031_audit_graph_leaf_index",
     );
+    expect(migrationJournal.entries.find((entry) => entry.idx === 32)?.tag).toBe(
+      "0032_observability_correlation_metrics",
+    );
     expect(tenantPolicyMigration).toContain("ALTER TABLE public.%I ENABLE ROW LEVEL SECURITY");
     expect(tenantPolicyMigration).toContain("ALTER TABLE public.%I FORCE ROW LEVEL SECURITY");
     expect(tenantPolicyMigration).toContain("auth_sessions");
@@ -98,14 +104,20 @@ describe("CI predecessor-upgrade and restore verification", () => {
     expect(lifecycleScript).toContain("ci-predecessor-sentinel");
     expect(lifecycleScript).toContain("ci.predecessor-audit-root");
     expect(lifecycleScript).toContain("ci.predecessor-audit-leaf");
+    expect(lifecycleScript).toContain(
+      'predecessor_audit_root_hash="bc7860b6b606f2879bba3d3d89c3eb363cd3de4621b98298a0ecd6d4d1559bc0"',
+    );
+    expect(lifecycleScript).toContain(
+      'predecessor_audit_leaf_hash="a4366c38712347b450f5ccee094129dd19ac34119419fc4cdc3de61fb9f1c8b1"',
+    );
     expect(lifecycleScript).toContain("'2040-01-01T00:00:00Z'");
     expect(lifecycleScript).toContain("'2030-01-01T00:00:00Z'");
     expect(lifecycleScript).toContain(
       'run_migrations "$predecessor_database" "$repository_root/migrations/drizzle"',
     );
-    expect(lifecycleScript).toContain('[[ "$upgraded_count" == "32" ]]');
+    expect(lifecycleScript).toContain('[[ "$upgraded_count" == "33" ]]');
     expect(lifecycleScript).toContain(
-      "tenant sentinel was not preserved through migrations 0025 through 0031",
+      "tenant sentinel was not preserved through migrations 0025 through 0032",
     );
     expect(lifecycleScript).toContain("ci.predecessor-audit-after-upgrade");
     expect(lifecycleScript).toContain(
