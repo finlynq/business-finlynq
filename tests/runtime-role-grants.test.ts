@@ -149,8 +149,11 @@ describe("runtime role reconciliation contract", () => {
       "GRANT EXECUTE ON FUNCTION public.digest(text, text) TO business_finlynq_backup",
     );
     expect(backupRoleScript).toContain(
-      "routine.oid <> to_regprocedure('public.digest(text,text)')",
+      "WHERE to_regprocedure('public.digest(text,text)') IS NOT NULL",
     );
+    expect(backupRoleScript).toContain("routine.oid IS DISTINCT FROM audit_digest");
+    expect(backupRoleScript).toContain("to_regclass('public.audit_events') IS NOT NULL");
+    expect(backupRoleScript).toContain("audit schema exists without the required digest function");
     expect(backupRoleScript).toContain("backup role is missing the audit digest capability");
     expect(backupRoleScript).not.toMatch(/GRANT\s+EXECUTE\s+ON\s+ALL\s+(?:FUNCTIONS|ROUTINES)/i);
   });

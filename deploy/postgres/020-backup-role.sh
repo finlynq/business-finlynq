@@ -183,13 +183,20 @@ WHERE nspname IN ('public', 'drizzle')
 -- connected as this read-only role. Keep that capability narrower than the
 -- application API surface: one immutable pgcrypto digest overload, granted
 -- directly and never through PUBLIC.
-REVOKE EXECUTE ON FUNCTION public.digest(text, text) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION public.digest(text, text) TO business_finlynq_backup;
+SELECT 'REVOKE EXECUTE ON FUNCTION public.digest(text, text) FROM PUBLIC'
+WHERE to_regprocedure('public.digest(text,text)') IS NOT NULL
+\gexec
+
+SELECT 'GRANT EXECUTE ON FUNCTION public.digest(text, text) TO business_finlynq_backup'
+WHERE to_regprocedure('public.digest(text,text)') IS NOT NULL
+\gexec
 
 DO $$
 DECLARE
   selected_role oid;
+  audit_digest oid;
 BEGIN
+  SELECT to_regprocedure('public.digest(text,text)') INTO audit_digest;
   SELECT oid INTO selected_role
     FROM pg_roles
     WHERE rolname = 'business_finlynq_backup'
@@ -270,17 +277,22 @@ BEGIN
     FROM pg_proc routine
     JOIN pg_namespace schema ON schema.oid = routine.pronamespace
     WHERE schema.nspname <> 'information_schema' AND schema.nspname !~ '^pg_'
-      AND routine.oid <> to_regprocedure('public.digest(text,text)')
+      AND routine.oid IS DISTINCT FROM audit_digest
       AND has_function_privilege('business_finlynq_backup', routine.oid, 'EXECUTE')
   ) THEN
     RAISE EXCEPTION 'backup role has executable application routine privileges';
   END IF;
-  IF NOT has_function_privilege(
-    'business_finlynq_backup',
-    'public.digest(text,text)',
-    'EXECUTE'
-  ) THEN
-    RAISE EXCEPTION 'backup role is missing the audit digest capability';
+  IF to_regclass('public.audit_events') IS NOT NULL THEN
+    IF audit_digest IS NULL THEN
+      RAISE EXCEPTION 'audit schema exists without the required digest function';
+    END IF;
+    IF NOT has_function_privilege(
+      'business_finlynq_backup',
+      audit_digest,
+      'EXECUTE'
+    ) THEN
+      RAISE EXCEPTION 'backup role is missing the audit digest capability';
+    END IF;
   END IF;
 END
 $$;
