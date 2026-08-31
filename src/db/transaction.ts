@@ -130,6 +130,7 @@ export async function withTenantTransaction<T>(
 ): Promise<T> {
   const context = validateTenantTransactionContext(untrustedContext);
   const client = await getPool().connect();
+  let discardClient = false;
 
   try {
     await client.query("BEGIN");
@@ -167,10 +168,17 @@ export async function withTenantTransaction<T>(
     await client.query("COMMIT");
     return result;
   } catch (error) {
-    await client.query("ROLLBACK");
+    try {
+      await client.query("ROLLBACK");
+    } catch {
+      // Preserve the domain failure while ensuring a connection whose rollback
+      // failed cannot return to the pool with an unknown transaction state.
+      discardClient = true;
+    }
     throw error;
   } finally {
-    client.release();
+    if (discardClient) client.release(true);
+    else client.release();
   }
 }
 

@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { SessionPrincipal } from "@/modules/identity/session";
 
 const mocks = vi.hoisted(() => ({
@@ -65,9 +65,17 @@ const realPrincipal: SessionPrincipal = {
   stepUpExpiresAt: new Date("2026-08-27T10:10:00Z"),
 };
 
+const previousBusinessWrites = process.env.BUSINESS_WRITES_ENABLED;
+
 beforeEach(() => {
   vi.clearAllMocks();
   process.env.DEMO_WRITES_ENABLED = "true";
+  process.env.BUSINESS_WRITES_ENABLED = "true";
+});
+
+afterAll(() => {
+  if (previousBusinessWrites === undefined) delete process.env.BUSINESS_WRITES_ENABLED;
+  else process.env.BUSINESS_WRITES_ENABLED = previousBusinessWrites;
 });
 
 describe("organization administration service", () => {
@@ -79,6 +87,19 @@ describe("organization administration service", () => {
       expectedVersion: 1,
       reason: "Approved legal name update",
     })).rejects.toMatchObject({ status: 428, code: "MFA_STEP_UP_REQUIRED" });
+    expect(mocks.updateSettings).not.toHaveBeenCalled();
+  });
+
+  it("fails before persistence when real-business writes are disabled", async () => {
+    process.env.BUSINESS_WRITES_ENABLED = "false";
+
+    await expect(updateOrganizationProfile({
+      principal: realPrincipal,
+      requestId: "request-write-gate",
+      displayName: "Blocked update",
+      expectedVersion: 1,
+      reason: "This deployment is read-only",
+    })).rejects.toMatchObject({ status: 403, code: "WRITES_DISABLED" });
     expect(mocks.updateSettings).not.toHaveBeenCalled();
   });
 

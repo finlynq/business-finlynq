@@ -68,6 +68,7 @@ log "Checking restored application readiness"
 health_status="$(curl --silent --show-error \
   --connect-timeout 5 --max-time 15 \
   --user-agent "$user_agent" \
+  --header 'X-Business-Finlynq-Internal-Health: 1' \
   --dump-header "$headers_path" \
   --output "$body_path" \
   --write-out '%{http_code}' \

@@ -1,7 +1,5 @@
 import { randomBytes } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { PERMISSIONS } from "@/modules/identity/permissions";
-import { decideSynchronousPost } from "@/modules/ledger/auto-post-policy";
 import { authorizeMcpTool } from "@/modules/mcp/policy";
 import {
   LocalRootKeyProvider,
@@ -62,27 +60,7 @@ describe("organization encryption and recovery boundary", () => {
   });
 });
 
-describe("automation and MCP authorization", () => {
-  it("allows only an explicitly authorized deterministic source action to post", () => {
-    expect(
-      decideSynchronousPost({
-        origin: "USER",
-        journalTypeKey: "receivables.sales-invoice",
-        actorPermissions: new Set([PERMISSIONS.postJournal]),
-        sourceActionExplicitlyAuthorized: true,
-      }).allowed,
-    ).toBe(true);
-
-    expect(
-      decideSynchronousPost({
-        origin: "AI",
-        journalTypeKey: "receivables.sales-invoice",
-        actorPermissions: new Set([PERMISSIONS.postJournal]),
-        sourceActionExplicitlyAuthorized: true,
-      }).allowed,
-    ).toBe(false);
-  });
-
+describe("MCP authorization", () => {
   it("fails closed for unknown MCP tools and missing scopes", () => {
     const principal = {
       principalId: "mcp-1",

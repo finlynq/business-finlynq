@@ -86,19 +86,19 @@ export function AcceptInvitationForm() {
 
   if (complete) return <div className={styles.successStack}><div className={styles.successAlert} role="status">{completionMode === "MFA" ? "Your account and authenticator are active." : "Your password-only account is active. You can add an authenticator later from Account & security."}</div><Link className={styles.submitButton} href="/login">Continue to sign in</Link></div>;
   if (enrollment) return (
-    <form className={styles.form} onSubmit={confirm} noValidate>
+    <form className={styles.form} onSubmit={(event) => { void confirm(event); }} noValidate>
       {error && <div className={styles.alert} role="alert">{error}</div>}
       <div className={styles.successAlert} role="status">Password saved for your {enrollment.organizationName} account.</div>
       <p>For stronger security, scan the QR code and confirm the current code. You may also continue with password-only sign-in and enroll later.</p>
       <AuthenticatorEnrollmentSetup enrollment={enrollment} />
       <label><span>Authenticator code</span><input name="otp" type="text" autoComplete="one-time-code" inputMode="numeric" pattern="[0-9]{6}" minLength={6} maxLength={6} required /></label>
       <button className={styles.submitButton} type="submit" disabled={busy}>{busy ? "Verifying…" : "Verify and activate"}</button>
-      <button className={styles.demoButton} type="button" onClick={skipAuthenticator} disabled={busy}>Continue with password only</button>
+      <button className={styles.demoButton} type="button" onClick={() => { void skipAuthenticator(); }} disabled={busy}>Continue with password only</button>
       <p className={styles.securityNote}>Password-only access cannot perform operations that require a fresh MFA step-up until an authenticator is enrolled.</p>
     </form>
   );
   return (
-    <form className={styles.form} onSubmit={accept} noValidate>
+    <form className={styles.form} onSubmit={(event) => { void accept(event); }} noValidate>
       {error && <div className={styles.alert} role="alert">{error}</div>}
       <label><span>Create password</span><input name="password" type="password" autoComplete="new-password" required minLength={14} maxLength={128} /><small>Use at least 14 characters.</small></label>
       <label><span>Confirm password</span><input name="confirmation" type="password" autoComplete="new-password" required minLength={14} maxLength={128} /></label>

@@ -36,7 +36,7 @@ export function LoginForm({ next, initialMessage, accountLoginEnabled }: { next:
       {error && <div className={styles.alert} role="alert">{error}</div>}
       {accountLoginEnabled && (
         <>
-          <form className={styles.form} onSubmit={submit} noValidate>
+          <form className={styles.form} onSubmit={(event) => { void submit(event); }} noValidate>
             <label><span>Email address</span><input name="email" type="email" autoComplete="username" inputMode="email" required maxLength={254} /></label>
             <label><span>Password</span><input name="password" type="password" autoComplete="current-password" required maxLength={128} /></label>
             {mfaRequired && <label><span>Authenticator code</span><input name="otp" type="text" autoComplete="one-time-code" inputMode="numeric" pattern="[0-9]{6}" minLength={6} maxLength={6} required /><small>Enter the current six-digit code.</small></label>}

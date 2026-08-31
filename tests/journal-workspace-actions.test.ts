@@ -113,6 +113,44 @@ const mocks = vi.hoisted(() => {
     ending_balance_functional: "475.00",
     ending_side: "DEBIT" as const,
   }];
+  const manualEntityPeriodRows = [
+    {
+      entity_id: "30000000-0000-4000-8000-000000000020",
+      entity_code: "CA01",
+      ledger_id: "30000000-0000-4000-8000-000000000010",
+      functional_currency: "CAD",
+      period_id: "40000000-0000-4000-8000-000000000001",
+      period_label: "August 2026",
+      starts_on: "2026-08-01",
+      ends_on: "2026-08-31",
+      period_state: "OPEN" as const,
+    },
+    {
+      entity_id: "30000000-0000-4000-8000-000000000020",
+      entity_code: "CA01",
+      ledger_id: "30000000-0000-4000-8000-000000000010",
+      functional_currency: "CAD",
+      period_id: "40000000-0000-4000-8000-000000000002",
+      period_label: "September 2026",
+      starts_on: "2026-09-01",
+      ends_on: "2026-09-30",
+      period_state: "ADJUSTMENT_ONLY" as const,
+    },
+  ];
+  const manualAccountRows = [
+    {
+      entity_id: "30000000-0000-4000-8000-000000000020",
+      combination_id: "30000000-0000-4000-8000-000000000021",
+      account_code: "1000",
+      account_name: "Cash",
+    },
+    {
+      entity_id: "30000000-0000-4000-8000-000000000020",
+      combination_id: "30000000-0000-4000-8000-000000000022",
+      account_code: "6100",
+      account_name: "Office expense",
+    },
+  ];
   const client = {
     query: vi.fn(async (statement: string, _params?: readonly unknown[]) => {
       void _params;
@@ -121,6 +159,13 @@ const mocks = vi.hoisted(() => {
       }
       if (statement.includes("AS entity_count")) {
         return { rows: [{ entity_count: 1, ledger_count: 1, active_key_count: 1 }] };
+      }
+      if (statement.includes("SELECT entity.id AS entity_id, entity.code AS entity_code") &&
+          statement.includes("LEFT JOIN fiscal_periods period")) {
+        return { rows: manualEntityPeriodRows };
+      }
+      if (statement.includes("SELECT entity.id AS entity_id, combination.id AS combination_id")) {
+        return { rows: manualAccountRows };
       }
       if (statement.includes("WITH current_postings AS")) return { rows: accountPostingRows };
       if (statement.includes("FROM journal_entries entry")) return { rows: journalRows };
@@ -191,6 +236,48 @@ describe("tenant journal action capabilities", () => {
 
     await expect(loadManualJournalOptions(principal)).rejects.toThrow("Ledger read permission is required");
     expect(mocks.client.query).toHaveBeenCalledTimes(1);
+  });
+
+  it("loads manual-journal periods and accounts without a periods-by-accounts cartesian query", async () => {
+    const options = await loadManualJournalOptions(principal);
+
+    expect(options).toEqual({
+      readOnly: false,
+      entities: [{
+        id: "30000000-0000-4000-8000-000000000020",
+        code: "CA01",
+        ledgerId: "30000000-0000-4000-8000-000000000010",
+        currency: "CAD",
+        periods: [
+          {
+            id: "40000000-0000-4000-8000-000000000001",
+            label: "August 2026",
+            startsOn: "2026-08-01",
+            endsOn: "2026-08-31",
+            state: "OPEN",
+          },
+          {
+            id: "40000000-0000-4000-8000-000000000002",
+            label: "September 2026",
+            startsOn: "2026-09-01",
+            endsOn: "2026-09-30",
+            state: "ADJUSTMENT_ONLY",
+          },
+        ],
+        accounts: [
+          { combinationId: "30000000-0000-4000-8000-000000000021", code: "1000", displayName: "Cash" },
+          { combinationId: "30000000-0000-4000-8000-000000000022", code: "6100", displayName: "Office expense" },
+        ],
+      }],
+    });
+    const accountingQueries = mocks.client.query.mock.calls
+      .map(([statement]) => String(statement))
+      .filter((statement) => statement.includes("FROM legal_entities entity"));
+    expect(accountingQueries).toHaveLength(2);
+    expect(accountingQueries[0]).toContain("LEFT JOIN fiscal_periods period");
+    expect(accountingQueries[0]).not.toContain("account_combinations");
+    expect(accountingQueries[1]).toContain("JOIN account_combinations combination");
+    expect(accountingQueries[1]).not.toContain("fiscal_periods");
   });
 
   it("authorizes only eligible source-owned states and supplies an optimistic draft hash", async () => {

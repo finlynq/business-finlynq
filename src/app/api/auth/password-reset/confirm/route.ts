@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { readAuthMutationJson } from "@/app/api/_shared/auth-mutation-route";
+import { logRouteFailure } from "@/app/api/_shared/route-failure-log";
 import {
   authorizePasswordResetTotp,
   assertEmailDeliveryReady,
@@ -29,10 +30,10 @@ const schema = z.object({
 export async function POST(request: NextRequest) {
   const requestId = randomUUID();
   const headers = { "Cache-Control": "private, no-store", "X-Robots-Tag": "noindex" };
-  if (!validateSameOriginMutation(request)) return NextResponse.json({ error: "The request could not be verified." }, { status: 403, headers });
-  if (process.env.ACCOUNT_LOGIN_ENABLED !== "true") return NextResponse.json({ error: "Account recovery is not enabled on this preview." }, { status: 403, headers });
-
   try {
+    if (!validateSameOriginMutation(request)) return NextResponse.json({ error: "The request could not be verified." }, { status: 403, headers });
+    if (process.env.ACCOUNT_LOGIN_ENABLED !== "true") return NextResponse.json({ error: "Account recovery is not enabled on this preview." }, { status: 403, headers });
+
     assertAccountAuthenticationConfigured();
     await assertEmailDeliveryReady();
     const { ipHash } = requestFingerprints(request);
@@ -130,7 +131,7 @@ export async function POST(request: NextRequest) {
     if (!finished) return NextResponse.json({ error: "This reset link is invalid, expired, or has already been used." }, { status: 400, headers });
     return NextResponse.json({ success: true }, { headers });
   } catch (error) {
-    console.error("Business Finlynq password reset failed", { requestId, error: error instanceof Error ? error.message : "unknown reset error" });
+    logRouteFailure("password-reset-confirmation", requestId, error);
     return NextResponse.json({ error: "Password reset is temporarily unavailable." }, { status: 503, headers });
   }
 }

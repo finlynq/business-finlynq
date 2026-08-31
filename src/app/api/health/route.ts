@@ -1,16 +1,28 @@
-import { NextResponse } from "next/server";
+import { randomUUID } from "node:crypto";
+import { NextResponse, type NextRequest } from "next/server";
+import { logRouteFailure } from "@/app/api/_shared/route-failure-log";
 import { queryDatabase } from "@/db/transaction";
 import { emailDeliveryReadiness } from "@/modules/identity/auth-store";
 import { assertAccountAuthenticationConfigured } from "@/modules/identity/email-provider";
 import { assertSignupChallengeConfigured } from "@/modules/identity/signup-challenge";
+import {
+  assertJournalTypeRegistryDatabase,
+  type JournalTypeDatabaseDefinition,
+} from "@/modules/ledger/journal-type-registry-contract";
 import { loadIdentitySecret } from "@/security/identity-secret";
 import { loadOrganizationRootKek } from "@/security/root-secret";
 
 export const dynamic = "force-dynamic";
 
 const headers = { "Cache-Control": "no-store", "X-Robots-Tag": "noindex, nofollow" };
+const internalHealthHeader = "x-business-finlynq-internal-health";
 
-export async function GET() {
+// Caddy removes this non-secret marker from every public request. It is
+// accepted only on the app's loopback/private-network listener; forwarding
+// headers never participate in the decision.
+export async function GET(request: NextRequest) {
+  const requestId = randomUUID();
+  const includeDetails = request.headers.get(internalHealthHeader) === "1";
   try {
     loadIdentitySecret();
     loadOrganizationRootKek();
@@ -30,25 +42,26 @@ export async function GET() {
     if (accountSignup === "ready") assertSignupChallengeConfigured();
     const result = await queryDatabase<{ ready: number }>("SELECT 1::integer AS ready");
     if (result.rows[0]?.ready !== 1) throw new Error("Database readiness query returned an unexpected result");
-    const revision = process.env.BUSINESS_FINLYNQ_IMAGE_REVISION?.trim();
-    return NextResponse.json(
-      {
-        status: "ready",
-        checks: {
-          database: "ready",
-          organizationKey: "ready",
-          identityKey: "ready",
-          accountAuthentication,
-          accountSignup,
-          emailWorker,
-          bankFeeds,
-        },
-        revision: revision && /^[a-f0-9]{7,64}$/i.test(revision) ? revision : "unknown",
-      },
-      { headers },
+    await assertJournalTypeRegistryDatabase((text) =>
+      queryDatabase<JournalTypeDatabaseDefinition>(text),
     );
+    const revision = process.env.BUSINESS_FINLYNQ_IMAGE_REVISION?.trim();
+    if (!includeDetails) return NextResponse.json({ status: "ready" }, { headers });
+    return NextResponse.json({
+      status: "ready",
+      checks: {
+        database: "ready",
+        organizationKey: "ready",
+        identityKey: "ready",
+        accountAuthentication,
+        accountSignup,
+        emailWorker,
+        bankFeeds,
+      },
+      revision: revision && /^[a-f0-9]{7,64}$/i.test(revision) ? revision : "unknown",
+    }, { headers });
   } catch (error) {
-    console.error("Business Finlynq readiness check failed", { error });
+    logRouteFailure("health-readiness", requestId, error);
     return NextResponse.json({ status: "unavailable" }, { status: 503, headers });
   }
 }

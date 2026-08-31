@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
+import { logRouteFailure } from "@/app/api/_shared/route-failure-log";
 import { consumeRateLimit, markDemoStepUp } from "@/modules/identity/auth-store";
 import { requestFingerprints, validateSameOriginMutation } from "@/modules/identity/request-security";
 import { requestPrincipal } from "@/modules/identity/session";
@@ -8,15 +9,16 @@ import { identityLookupHash } from "@/security/identity-secret";
 const noStoreHeaders = { "Cache-Control": "private, no-store", "X-Robots-Tag": "noindex" };
 
 export async function POST(request: NextRequest) {
-  if (!validateSameOriginMutation(request)) {
-    return NextResponse.json({ error: "The sandbox confirmation could not be verified." }, { status: 403, headers: noStoreHeaders });
-  }
-  const principal = await requestPrincipal(request);
-  if (!principal || principal.sessionMode !== "demo") {
-    return NextResponse.json({ error: "Open the public demo to continue." }, { status: 401, headers: noStoreHeaders });
-  }
-
+  const requestId = randomUUID();
   try {
+    if (!validateSameOriginMutation(request)) {
+      return NextResponse.json({ error: "The sandbox confirmation could not be verified." }, { status: 403, headers: noStoreHeaders });
+    }
+    const principal = await requestPrincipal(request);
+    if (!principal || principal.sessionMode !== "demo") {
+      return NextResponse.json({ error: "Open the public demo to continue." }, { status: 401, headers: noStoreHeaders });
+    }
+
     const { ipHash } = requestFingerprints(request);
     const [sessionLimit, ipLimit] = await Promise.all([
       consumeRateLimit("demo-privileged-confirm-session", identityLookupHash(principal.sessionId), 6, 600),
@@ -31,13 +33,13 @@ export async function POST(request: NextRequest) {
         },
       );
     }
-    const marked = await markDemoStepUp(principal.sessionId, randomUUID());
+    const marked = await markDemoStepUp(principal.sessionId, requestId);
     if (!marked) {
       return NextResponse.json({ error: "The sandbox confirmation expired. Reopen the demo and try again." }, { status: 409, headers: noStoreHeaders });
     }
     return NextResponse.json({ confirmed: true, sandboxOnly: true }, { headers: noStoreHeaders });
   } catch (error) {
-    console.error("Business Finlynq demo privileged confirmation failed", { error });
+    logRouteFailure("demo-step-up", requestId, error);
     return NextResponse.json({ error: "The sandbox confirmation could not be completed." }, { status: 409, headers: noStoreHeaders });
   }
 }

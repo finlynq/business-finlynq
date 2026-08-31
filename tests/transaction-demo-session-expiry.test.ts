@@ -87,4 +87,27 @@ describe("demo tenant transaction expiry", () => {
     expect(mocks.query).toHaveBeenCalledWith("ROLLBACK");
     expect(mocks.release).toHaveBeenCalledOnce();
   });
+
+  it("preserves the domain error and discards the client when rollback fails", async () => {
+    const domainError = new Error("The accounting command is invalid");
+    const rollbackError = new Error("The database connection was lost during rollback");
+    mocks.query.mockImplementation(async (sql: string) => {
+      if (sql === "ROLLBACK") throw rollbackError;
+      return { rows: [] };
+    });
+
+    await expect(withTenantTransaction({
+      organizationId: context.organizationId,
+      actorId: context.actorId,
+      sessionMode: "real",
+      requestId: "rollback-preservation-test",
+      authMethod: "password",
+      sourceSurface: "UI",
+    }, async () => {
+      throw domainError;
+    })).rejects.toBe(domainError);
+
+    expect(mocks.query).toHaveBeenCalledWith("ROLLBACK");
+    expect(mocks.release).toHaveBeenCalledWith(true);
+  });
 });

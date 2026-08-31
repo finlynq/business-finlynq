@@ -10,7 +10,7 @@ permissions:
 jobs:
   verify:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     services:
       postgres:
         image: postgres:16
@@ -49,6 +49,7 @@ jobs:
       BACKUP_DATABASE_PASSWORD_FILE: /tmp/business-finlynq-backup-db-password
       BUSINESS_FINLYNQ_SECRET_GID: "20001"
       BUSINESS_FINLYNQ_IMAGE_REVISION: ${{ github.sha }}
+      BUSINESS_FINLYNQ_CI_DATABASE_GUARD: business-finlynq-disposable-ci-databases
       PLAYWRIGHT_BASE_URL: http://127.0.0.1:3000
 
     steps:
@@ -58,6 +59,10 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
+      - name: Verify Drizzle declaration and snapshot agreement
+        run: npm run db:check-drift
+      - name: Verify generated journal-type seed contract
+        run: npm run journal-types:check-seed
       - name: Create ephemeral CI encryption secrets
         run: node -e "const fs=require('node:fs'),c=require('node:crypto');fs.writeFileSync(process.env.ORGANIZATION_ROOT_KEK_FILE,c.randomBytes(32).toString('base64')+'\n',{mode:0o600});fs.writeFileSync(process.env.IDENTITY_SECRET_FILE,c.randomBytes(64).toString('base64')+'\n',{mode:0o600});fs.writeFileSync(process.env.APP_DATABASE_PASSWORD_FILE,'runtime-test-only-password-2026\n',{mode:0o600});fs.writeFileSync(process.env.AUTH_WORKER_DATABASE_PASSWORD_FILE,'auth-worker-test-only-2026\n',{mode:0o600});fs.writeFileSync(process.env.BACKUP_DATABASE_PASSWORD_FILE,'backup-test-only-password-2026\n',{mode:0o600})"
       - name: Validate operations shell syntax
@@ -110,8 +115,16 @@ jobs:
           PGHOST: 127.0.0.1
           PGPASSWORD: postgres
         run: sh deploy/postgres/020-backup-role.sh
+      - name: Verify supported predecessor upgrade preserves tenant data
+        env:
+          PGHOST: 127.0.0.1
+          PGPORT: "5432"
+          POSTGRES_USER: postgres
+          POSTGRES_DB: business_finlynq_test
+          PGPASSWORD: postgres
+        run: bash scripts/operations/verify-ci-database-lifecycle.sh predecessor-upgrade
       - run: npm run db:migrate
-      - name: Inject stale backup privileges for reconciliation coverage
+      - name: Inject stale runtime and backup privileges for reconciliation coverage
         env:
           PGHOST: 127.0.0.1
           PGDATABASE: business_finlynq_test
@@ -121,11 +134,86 @@ jobs:
           psql --no-password --set=ON_ERROR_STOP=1 <<'SQL'
           CREATE ROLE business_finlynq_backup_inherited_stale NOLOGIN;
           CREATE ROLE business_finlynq_backup_delegate_stale NOLOGIN;
+          CREATE ROLE business_finlynq_runtime_inherited_stale NOLOGIN;
           GRANT business_finlynq_backup_inherited_stale TO business_finlynq_backup;
           GRANT business_finlynq_backup TO business_finlynq_backup_delegate_stale;
+          GRANT business_finlynq_runtime_inherited_stale TO business_finlynq_app;
+          GRANT DELETE ON organizations TO business_finlynq_runtime_inherited_stale;
+          ALTER ROLE business_finlynq_app BYPASSRLS INHERIT CONNECTION LIMIT 99;
+          GRANT CREATE ON DATABASE business_finlynq_test TO business_finlynq_app;
+          GRANT TEMPORARY ON DATABASE business_finlynq_test TO PUBLIC;
+          GRANT CREATE ON SCHEMA public TO business_finlynq_app;
+          GRANT CREATE ON SCHEMA public TO PUBLIC;
+          GRANT SELECT ON organizations TO PUBLIC;
+          GRANT SELECT (email_ciphertext) ON users TO PUBLIC;
+          GRANT SELECT (id) ON organizations TO business_finlynq_app;
+          GRANT EXECUTE ON FUNCTION public.digest(text, text) TO PUBLIC;
+          GRANT EXECUTE ON FUNCTION app.current_organization_id() TO PUBLIC;
+          GRANT EXECUTE ON FUNCTION app.guard_posted_journal_entry() TO business_finlynq_app;
+          CREATE SEQUENCE ci_runtime_acl_sequence;
+          GRANT USAGE ON SEQUENCE ci_runtime_acl_sequence TO business_finlynq_app;
+          ALTER DEFAULT PRIVILEGES FOR ROLE postgres GRANT SELECT ON TABLES TO PUBLIC;
+          ALTER DEFAULT PRIVILEGES FOR ROLE postgres GRANT EXECUTE ON FUNCTIONS TO PUBLIC;
+          ALTER DEFAULT PRIVILEGES FOR ROLE postgres GRANT INSERT ON TABLES TO business_finlynq_app;
+          ALTER DEFAULT PRIVILEGES FOR ROLE postgres GRANT EXECUTE ON FUNCTIONS TO business_finlynq_app;
           GRANT INSERT, UPDATE ON organizations TO business_finlynq_backup;
           GRANT USAGE, UPDATE ON ALL SEQUENCES IN SCHEMA public TO business_finlynq_backup;
+          CREATE POLICY ci_schema_verifier_leak ON public.organizations
+            FOR ALL TO PUBLIC
+            USING (true)
+            WITH CHECK (true);
           SQL
+      - name: Prove a permissive tenant RLS policy fails schema verification
+        run: |
+          set +e
+          npm run db:verify-schema >"$RUNNER_TEMP/permissive-rls-policy-verifier.log" 2>&1
+          verifier_status=$?
+          set -e
+          if [ "$verifier_status" -eq 0 ]; then
+            echo "Schema verification accepted a deliberately permissive tenant RLS policy" >&2
+            exit 1
+          fi
+          grep -Fq \
+            '[RLS_POLICY_EXTRA] public.organizations has unreviewed RLS policy ci_schema_verifier_leak' \
+            "$RUNNER_TEMP/permissive-rls-policy-verifier.log"
+      - name: Prove stale default privileges fail schema verification
+        run: |
+          set +e
+          npm run db:verify-schema >"$RUNNER_TEMP/stale-default-privilege-verifier.log" 2>&1
+          verifier_status=$?
+          set -e
+          if [ "$verifier_status" -eq 0 ]; then
+            echo "Schema verification accepted deliberately stale privileges" >&2
+            exit 1
+          fi
+          grep -Fq \
+            '[UNSAFE_DEFAULT_PRIVILEGE] PUBLIC receives EXECUTE on future function objects in <global> defaults owned by postgres' \
+            "$RUNNER_TEMP/stale-default-privilege-verifier.log"
+          grep -Fq \
+            '[UNSAFE_ROLE_ATTRIBUTE] business_finlynq_app.can_bypass_rls is true; expected false' \
+            "$RUNNER_TEMP/stale-default-privilege-verifier.log"
+          grep -Fq \
+            '[UNSAFE_DATABASE_GRANT] PUBLIC has TEMPORARY on the application database' \
+            "$RUNNER_TEMP/stale-default-privilege-verifier.log"
+          grep -Fq \
+            '[UNSAFE_SCHEMA_GRANT] PUBLIC has CREATE on schema public' \
+            "$RUNNER_TEMP/stale-default-privilege-verifier.log"
+          grep -Fq \
+            '[UNSAFE_OBJECT_GRANT] business_finlynq_app has USAGE on sequence public.ci_runtime_acl_sequence' \
+            "$RUNNER_TEMP/stale-default-privilege-verifier.log"
+          grep -Fq \
+            '[EXTRA_FUNCTION_GRANT] business_finlynq_app has unreviewed direct EXECUTE on app.guard_posted_journal_entry()' \
+            "$RUNNER_TEMP/stale-default-privilege-verifier.log"
+          grep -Fq \
+            '[UNSAFE_COLUMN_GRANT] business_finlynq_app has unreviewed direct SELECT on public.organizations.id' \
+            "$RUNNER_TEMP/stale-default-privilege-verifier.log"
+      - name: Remove the deliberate permissive tenant RLS policy
+        env:
+          PGHOST: 127.0.0.1
+          PGDATABASE: business_finlynq_test
+          PGUSER: postgres
+          PGPASSWORD: postgres
+        run: psql --no-password --set=ON_ERROR_STOP=1 --command 'DROP POLICY ci_schema_verifier_leak ON public.organizations'
       - name: Reconcile reviewed runtime grants after migrations
         env:
           POSTGRES_USER: postgres
@@ -147,6 +235,10 @@ jobs:
           PGHOST: 127.0.0.1
           PGPASSWORD: postgres
         run: sh deploy/postgres/020-backup-role.sh
+      - name: Verify migrated schema, declarations, and tenant RLS
+        run: npm run db:verify-schema
+      - name: Verify database journal types match the module manifests
+        run: npm run journal-types:verify-db
       - name: Verify backup role bypasses tenant RLS but cannot mutate
         env:
           PGHOST: 127.0.0.1
@@ -161,7 +253,8 @@ jobs:
             exit 1
           fi
           pg_dump --no-password --format=custom --no-owner --no-privileges --file=/tmp/business-finlynq-backup-role-smoke.dump
-          pg_restore --list /tmp/business-finlynq-backup-role-smoke.dump | grep -q 'TABLE DATA public organizations'
+          pg_restore --list /tmp/business-finlynq-backup-role-smoke.dump > /tmp/business-finlynq-backup-role-smoke.list
+          grep -q 'TABLE DATA public organizations' /tmp/business-finlynq-backup-role-smoke.list
       - name: Remove backup reconciliation test roles
         env:
           PGHOST: 127.0.0.1
@@ -171,6 +264,9 @@ jobs:
         run: |
           psql --no-password --set=ON_ERROR_STOP=1 --command 'DROP ROLE business_finlynq_backup_inherited_stale'
           psql --no-password --set=ON_ERROR_STOP=1 --command 'DROP ROLE business_finlynq_backup_delegate_stale'
+          psql --no-password --set=ON_ERROR_STOP=1 --command 'DROP OWNED BY business_finlynq_runtime_inherited_stale'
+          psql --no-password --set=ON_ERROR_STOP=1 --command 'DROP ROLE business_finlynq_runtime_inherited_stale'
+          psql --no-password --set=ON_ERROR_STOP=1 --command 'DROP SEQUENCE ci_runtime_acl_sequence'
       # TEST_DATABASE_URL enables the PostgreSQL integration suite inside the
       # normal Vitest run. Run it once, after replaying the canonical migrations.
       - name: Bootstrap the fixed public demo and sandbox pool
@@ -178,6 +274,14 @@ jobs:
       - name: Exercise nightly demo-sandbox reconciliation
         run: DEMO_RESET_MODE=nightly npm run demo:reset
       - run: npm run test
+      - name: Dump and restore the populated database into an isolated sibling
+        env:
+          PGHOST: 127.0.0.1
+          PGPORT: "5432"
+          POSTGRES_USER: postgres
+          POSTGRES_DB: business_finlynq_test
+          PGPASSWORD: postgres
+        run: bash scripts/operations/verify-ci-database-lifecycle.sh restore
       - run: npm run build
       - name: Build hardened operations and email-worker images
         run: |

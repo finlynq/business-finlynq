@@ -37,7 +37,7 @@ export function RecoveryApprovalForm() {
   }
 
   return (
-    <form className="close-form" onSubmit={submit} noValidate>
+    <form className="close-form" onSubmit={(event) => { void submit(event); }} noValidate>
       {error && <div className="validation-message validation-error" role="alert">{error}</div>}
       {message && <div className="validation-message validation-success" role="status">{message}</div>}
       <label className="full-field"><span>Fresh authenticator code</span><input name="otp" type="text" autoComplete="one-time-code" inputMode="numeric" pattern="[0-9]{6}" minLength={6} maxLength={6} required /><small>Verify the requester through a separate channel before approving. Codes cannot be replayed.</small></label>

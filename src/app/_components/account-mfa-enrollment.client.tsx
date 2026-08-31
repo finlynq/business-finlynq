@@ -80,7 +80,7 @@ export function AccountMfaEnrollment({
 
   if (!enrollment) {
     return (
-      <form className={styles.stack} onSubmit={start}>
+      <form className={styles.stack} onSubmit={(event) => { void start(event); }}>
         {error && <div className={styles.error} role="alert">{error}</div>}
         <p className={styles.note}>{pending
           ? "A previous authenticator setup was not confirmed. Re-enter your password to replace it and restart setup; password-only access remains active in the meantime."
@@ -98,7 +98,7 @@ export function AccountMfaEnrollment({
   }
 
   return (
-    <form className={styles.stack} onSubmit={confirm}>
+    <form className={styles.stack} onSubmit={(event) => { void confirm(event); }}>
       {error && <div className={styles.error} role="alert">{error}</div>}
       <AuthenticatorEnrollmentSetup enrollment={enrollment} />
       <label className={styles.field}>

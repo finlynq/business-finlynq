@@ -49,6 +49,50 @@ runDatabaseTests("PostgreSQL identity controls", () => {
     expect(wrongDevice.rowCount).toBe(0);
     const missingDevice = await pool.query("SELECT * FROM app.auth_resolve_session_v2($1, NULL)", [tokenHash]);
     expect(missingDevice.rowCount).toBe(0);
+    await expect(pool.query(
+      "UPDATE auth_sessions SET user_agent_hash = NULL WHERE token_hash = $1",
+      [tokenHash],
+    )).rejects.toThrow(/cannot be downgraded/);
+    const nullInsertTokenHash = randomUUID().replaceAll("-", "").repeat(2);
+    await expect(pool.query(
+      `INSERT INTO auth_sessions (
+         token_hash, user_id, organization_id, membership_id, auth_method,
+         session_mode, ip_hash, user_agent_hash, idle_timeout_seconds,
+         idle_expires_at, expires_at, mfa_verified_at, step_up_expires_at,
+         demo_generation, demo_claim_id
+       )
+       SELECT $2, user_id, organization_id, membership_id, auth_method,
+              session_mode, ip_hash, NULL, idle_timeout_seconds,
+              idle_expires_at, expires_at, mfa_verified_at, step_up_expires_at,
+              demo_generation, demo_claim_id
+       FROM auth_sessions
+       WHERE token_hash = $1`,
+      [tokenHash, nullInsertTokenHash],
+    )).rejects.toThrow(/require a user-agent fingerprint/);
+
+    // Reproduce a row issued before 0027 without weakening the new-session
+    // trigger. CI's owner-only test connection may bypass user triggers for
+    // this one transaction; application/runtime roles cannot do so.
+    const legacyClient = await pool.connect();
+    try {
+      await legacyClient.query("BEGIN");
+      await legacyClient.query("SET LOCAL session_replication_role = replica");
+      await legacyClient.query(
+        "UPDATE auth_sessions SET user_agent_hash = NULL WHERE token_hash = $1",
+        [tokenHash],
+      );
+      await legacyClient.query("COMMIT");
+    } catch (error) {
+      await legacyClient.query("ROLLBACK");
+      throw error;
+    } finally {
+      legacyClient.release();
+    }
+    const legacyWildcard = await pool.query(
+      "SELECT * FROM app.auth_resolve_session_v2($1, $2)",
+      [tokenHash, "legacy-request-agent-hash"],
+    );
+    expect(legacyWildcard.rows[0]).toMatchObject({ session_mode: "DEMO", auth_method: "DEMO_LINK" });
 
     await pool.query("INSERT INTO auth_security_events(event_type, outcome, request_id) VALUES ('TEST_EVENT', 'SUCCESS', $1)", [requestId]);
     await expect(pool.query("UPDATE auth_security_events SET outcome = 'FAILURE' WHERE request_id = $1", [requestId])).rejects.toThrow(/append-only/);

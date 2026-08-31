@@ -1,5 +1,8 @@
 import { withTenantTransaction } from "@/db/transaction";
-import { assertTenantWritesEnabled } from "@/modules/workspace/write-policy";
+import {
+  assertTenantWritesEnabled,
+  assertWritableOrganization,
+} from "@/modules/workspace/write-policy";
 import {
   postJournalInTransaction,
   type PostJournalCommand,
@@ -12,6 +15,7 @@ export type { PostJournalCommand, PostJournalResult, PostingBoundary } from "./p
 export async function postJournal(command: PostJournalCommand): Promise<PostJournalResult> {
   assertTenantWritesEnabled(command.context);
   return withTenantTransaction(command.context, async (client) => {
+    await assertWritableOrganization(client, command.context);
     return postJournalInTransaction(client, {
       ...command,
       requiredOwnerModule: "ledger",

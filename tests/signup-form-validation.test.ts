@@ -9,7 +9,9 @@ const signupForm = readFileSync(
 
 describe("signup form validation", () => {
   it("keeps native browser validation enabled before requesting signup", () => {
-    expect(signupForm).toContain('<form className={styles.form} onSubmit={submit}>');
+    expect(signupForm).toContain(
+      '<form className={styles.form} onSubmit={(event) => { void submit(event); }}>',
+    );
     expect(signupForm).not.toContain("noValidate");
     expect(signupForm).toContain('name="organizationName" autoComplete="organization" required minLength={2}');
     expect(signupForm).toContain('name="termsAccepted" type="checkbox" required');

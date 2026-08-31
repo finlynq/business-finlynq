@@ -3,6 +3,11 @@ import "server-only";
 import { createHash, randomUUID } from "node:crypto";
 import { z } from "zod";
 import { withTenantTransaction, type TenantTransactionContext } from "@/db/transaction";
+import {
+  createCommandFingerprint,
+  matchesStoredCommandFingerprint,
+  type TransitionalCommandFingerprints,
+} from "@/kernel/command-fingerprint";
 import { exact, isQuantizedMoney, sumExact } from "@/kernel/money";
 import {
   actorHasActivePermission,
@@ -72,8 +77,18 @@ type JournalResultRow = Readonly<{
   journal_number: number | null;
 }>;
 
-function commandFingerprint(value: unknown): string {
+function legacyCommandFingerprint(value: unknown): string {
   return createHash("sha256").update(JSON.stringify(value), "utf8").digest("hex");
+}
+
+function journalCommandFingerprints(
+  domain: "ledger.journal.manual-create" | "ledger.journal.full-reversal",
+  value: unknown,
+): TransitionalCommandFingerprints {
+  return {
+    current: createCommandFingerprint(domain, value),
+    legacy: legacyCommandFingerprint(value),
+  };
 }
 
 function assertLineAndJournalAmounts(
@@ -210,7 +225,7 @@ export async function createManualJournal(
       throw new Error("Manual journals require active non-control accounts in the selected tenant ledger");
     }
 
-    const fingerprint = commandFingerprint(command);
+    const fingerprints = journalCommandFingerprints("ledger.journal.manual-create", command);
     const journalId = randomUUID();
     const inserted = await client.query<JournalResultRow>(
       `INSERT INTO journal_entries (
@@ -234,7 +249,7 @@ export async function createManualJournal(
         configuration.journal_type_version,
         `manual:${command.idempotencyKey}`,
         command.idempotencyKey,
-        fingerprint,
+        fingerprints.current,
         command.origin,
         command.purpose,
         command.accountingDate,
@@ -252,39 +267,50 @@ export async function createManualJournal(
         [unparsedCommand.context.organizationId, command.idempotencyKey],
       );
       const existing = replay.rows[0];
-      if (!existing || existing.command_hash !== fingerprint) {
+      if (!existing || !matchesStoredCommandFingerprint(existing.command_hash, fingerprints)) {
         throw new Error("Idempotency key is already bound to a different journal command");
       }
       return resultFromRow(existing, true, false);
     }
 
-    for (const [index, line] of command.lines.entries()) {
-      await client.query(
-        `INSERT INTO journal_lines (
-           id, organization_id, ledger_id, journal_entry_id, line_number,
-           account_combination_id, debit_functional, credit_functional,
-           transaction_currency, debit_transaction, credit_transaction,
-           fx_rate, fx_rate_source, fx_rate_effective_at, memo
-         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
-        [
-          randomUUID(),
-          unparsedCommand.context.organizationId,
-          command.ledgerId,
-          journalId,
-          index + 1,
-          line.accountCombinationId,
-          line.debitFunctional,
-          line.creditFunctional,
-          line.transactionCurrency,
-          line.debitTransaction,
-          line.creditTransaction,
-          line.fxRate,
-          line.fxRateSource,
-          line.fxRateEffectiveAt,
-          line.memo ?? null,
-        ],
-      );
-    }
+    await client.query(
+      `INSERT INTO journal_lines (
+         id, organization_id, ledger_id, journal_entry_id, line_number,
+         account_combination_id, debit_functional, credit_functional,
+         transaction_currency, debit_transaction, credit_transaction,
+         fx_rate, fx_rate_source, fx_rate_effective_at, memo
+       )
+       SELECT input.id, $1, $2, $3, input.line_number,
+         input.account_combination_id, input.debit_functional, input.credit_functional,
+         input.transaction_currency, input.debit_transaction, input.credit_transaction,
+         input.fx_rate, input.fx_rate_source, input.fx_rate_effective_at, input.memo
+       FROM unnest(
+         $4::uuid[], $5::integer[], $6::uuid[], $7::numeric[], $8::numeric[],
+         $9::text[], $10::numeric[], $11::numeric[], $12::numeric[], $13::text[],
+         $14::timestamptz[], $15::text[]
+       ) AS input(
+         id, line_number, account_combination_id, debit_functional, credit_functional,
+         transaction_currency, debit_transaction, credit_transaction, fx_rate,
+         fx_rate_source, fx_rate_effective_at, memo
+       )`,
+      [
+        unparsedCommand.context.organizationId,
+        command.ledgerId,
+        journalId,
+        command.lines.map(() => randomUUID()),
+        command.lines.map((_, index) => index + 1),
+        command.lines.map((line) => line.accountCombinationId),
+        command.lines.map((line) => line.debitFunctional),
+        command.lines.map((line) => line.creditFunctional),
+        command.lines.map((line) => line.transactionCurrency),
+        command.lines.map((line) => line.debitTransaction),
+        command.lines.map((line) => line.creditTransaction),
+        command.lines.map((line) => line.fxRate),
+        command.lines.map((line) => line.fxRateSource),
+        command.lines.map((line) => line.fxRateEffectiveAt),
+        command.lines.map((line) => line.memo ?? null),
+      ],
+    );
 
     const hasPostPermission = configuration.manual_mode === "AUTO_POST" &&
       await actorHasActivePermission(client, {
@@ -366,7 +392,7 @@ export async function reversePostedJournal(
       throw new Error("Only a posted ledger.manual journal can be reversed from the general ledger");
     }
 
-    const fingerprint = commandFingerprint(command);
+    const fingerprints = journalCommandFingerprints("ledger.journal.full-reversal", command);
     const existingReversal = await client.query<JournalResultRow>(
       `SELECT reversal.id, reversal.command_hash, reversal.status, reversal.journal_number
        FROM journal_entry_relations relation
@@ -381,7 +407,7 @@ export async function reversePostedJournal(
     );
     if (existingReversal.rows[0]) {
       const existing = existingReversal.rows[0];
-      if (existing.command_hash !== fingerprint) {
+      if (!matchesStoredCommandFingerprint(existing.command_hash, fingerprints)) {
         throw new Error("Journal already has a different full reversal");
       }
       return resultFromRow(existing, true, false);
@@ -436,7 +462,7 @@ export async function reversePostedJournal(
         configuration.journal_type_version,
         `reversal:${command.originalJournalId}`,
         command.idempotencyKey,
-        fingerprint,
+        fingerprints.current,
         command.accountingDate,
         original.functional_currency,
         command.description,
@@ -451,7 +477,7 @@ export async function reversePostedJournal(
          FOR SHARE`,
         [unparsedCommand.context.organizationId, command.idempotencyKey],
       );
-      if (!replay.rows[0] || replay.rows[0].command_hash !== fingerprint) {
+      if (!replay.rows[0] || !matchesStoredCommandFingerprint(replay.rows[0].command_hash, fingerprints)) {
         throw new Error("Idempotency key is already bound to a different journal command");
       }
       throw new Error("Reversal journal exists without its immutable reversal relation");

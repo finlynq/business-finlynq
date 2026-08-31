@@ -3,6 +3,11 @@ import "server-only";
 import { createHash, randomUUID } from "node:crypto";
 import { z } from "zod";
 import { withTenantTransaction, type TenantTransactionContext } from "@/db/transaction";
+import {
+  createCommandFingerprint,
+  matchesStoredCommandFingerprint,
+  type TransitionalCommandFingerprints,
+} from "@/kernel/command-fingerprint";
 import { assertActorHasActivePermission } from "@/modules/identity/authorization";
 import { PERMISSIONS } from "@/modules/identity/permissions";
 import {
@@ -114,6 +119,13 @@ function deterministicCommandUuid(
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }
 
+function partyCommandFingerprints(value: unknown): TransitionalCommandFingerprints {
+  return {
+    current: createCommandFingerprint("parties.party.create", value),
+    legacy: createHash("sha256").update(JSON.stringify(value), "utf8").digest("hex"),
+  };
+}
+
 function decryptPartyName(
   row: StoredParty,
   organizationId: string,
@@ -160,14 +172,15 @@ export async function createParty(
   const account = command.account ? partyAccountSchema.parse(command.account) : undefined;
   const transactionCurrency = account?.transactionCurrency ?? null;
   const address = command.address ? addressSchema.parse(command.address) : undefined;
-  const commandHash = createHash("sha256").update(JSON.stringify({
+  const fingerprintPayload = {
     partyNumber,
     displayName,
     idempotencyKey,
     internalLegalEntityId: command.internalLegalEntityId ?? null,
     account: account ? { ...account, transactionCurrency } : null,
     address: address ?? null,
-  }), "utf8").digest("hex");
+  };
+  const fingerprints = partyCommandFingerprints(fingerprintPayload);
 
   return withTenantTransaction(command.context, async (client) => {
     await assertActorHasActivePermission(client, {
@@ -216,7 +229,7 @@ export async function createParty(
           serializeEncryptedField(encryptedName),
           activeKey.keyVersion,
           searchToken,
-          commandHash,
+          fingerprints.current,
           command.internalLegalEntityId ?? null,
         ],
       );
@@ -234,7 +247,7 @@ export async function createParty(
           [command.context.organizationId, partyNumber],
         );
         stored = existing.rows[0];
-        if (!stored || stored.command_hash !== commandHash) {
+        if (!stored || !matchesStoredCommandFingerprint(stored.command_hash, fingerprints)) {
           throw new Error("Party number is already bound to different master data");
         }
         if (account) {

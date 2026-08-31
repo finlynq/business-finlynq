@@ -28,7 +28,7 @@ export function ForgotPasswordForm() {
   }
 
   return (
-    <form className={styles.form} onSubmit={submit} noValidate>
+    <form className={styles.form} onSubmit={(event) => { void submit(event); }} noValidate>
       {message && <div className={styles.successAlert} role="status">{message}</div>}
       <label><span>Email address</span><input name="email" type="email" autoComplete="email" inputMode="email" required maxLength={254} /></label>
       <button className={styles.submitButton} type="submit" disabled={busy}>{busy ? "Sending…" : "Send reset link"}</button>

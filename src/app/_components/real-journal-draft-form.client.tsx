@@ -196,7 +196,7 @@ export function RealJournalDraftForm({
   }
 
   return (
-    <form className="journal-form" onSubmit={save} noValidate>
+    <form className="journal-form" onSubmit={(event) => { void save(event); }} noValidate>
       <div className="form-grid form-grid-three">
         <label>
           <span>Legal entity</span>

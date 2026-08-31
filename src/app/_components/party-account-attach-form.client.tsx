@@ -108,7 +108,7 @@ export function PartyAccountAttachForm({
   }
 
   return (
-    <form className={styles.attachForm} onSubmit={save} noValidate>
+    <form className={styles.attachForm} onSubmit={(event) => { void save(event); }} noValidate>
       <label>
         <span>Legal entity and role</span>
         <select

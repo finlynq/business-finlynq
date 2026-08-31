@@ -1,4 +1,4 @@
-FROM node:24-alpine AS dependencies
+FROM node:24-alpine@sha256:e67514e5d0f6c46656005e1b693b2ec9d52e80b641307de684d4a015ba7a4eaf AS dependencies
 
 RUN apk add --no-cache libc6-compat
 WORKDIR /app
@@ -29,7 +29,7 @@ RUN npx --no-install esbuild src/workers/auth-email-worker.ts \
   --packages=external \
   --outfile=/worker/auth-email-worker.mjs
 
-FROM node:24-alpine AS worker-dependencies
+FROM node:24-alpine@sha256:e67514e5d0f6c46656005e1b693b2ec9d52e80b641307de684d4a015ba7a4eaf AS worker-dependencies
 
 RUN apk add --no-cache libc6-compat
 WORKDIR /app
@@ -37,7 +37,7 @@ COPY package.json package-lock.json ./
 RUN npm ci --omit=dev --ignore-scripts \
   && npm cache clean --force
 
-FROM node:24-alpine AS worker
+FROM node:24-alpine@sha256:e67514e5d0f6c46656005e1b693b2ec9d52e80b641307de684d4a015ba7a4eaf AS worker
 
 RUN apk add --no-cache libc6-compat
 WORKDIR /app
@@ -48,7 +48,7 @@ COPY --from=worker-builder --chown=node:node /worker/auth-email-worker.mjs ./aut
 USER node
 CMD ["node", "auth-email-worker.mjs"]
 
-FROM postgres:16-alpine AS operations
+FROM postgres:16-alpine@sha256:cf78e76683b9ca8c5733cbbdce6c9262b45b6767934dd0a95e671f9a0fc20685 AS operations
 
 ARG BUSINESS_FINLYNQ_IMAGE_REVISION=unknown
 LABEL org.opencontainers.image.revision=$BUSINESS_FINLYNQ_IMAGE_REVISION
@@ -65,7 +65,7 @@ COPY --chmod=0555 deploy/postgres/015-auth-worker-role.sh /usr/local/bin/busines
 COPY --chmod=0555 deploy/postgres/020-backup-role.sh /usr/local/bin/business-finlynq-provision-backup-role
 USER 70:70
 
-FROM node:24-alpine AS runner
+FROM node:24-alpine@sha256:e67514e5d0f6c46656005e1b693b2ec9d52e80b641307de684d4a015ba7a4eaf AS runner
 
 ARG BUSINESS_FINLYNQ_IMAGE_REVISION=unknown
 LABEL org.opencontainers.image.revision=$BUSINESS_FINLYNQ_IMAGE_REVISION

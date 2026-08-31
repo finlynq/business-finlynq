@@ -5,6 +5,10 @@ import Decimal from "decimal.js";
 import type { PoolClient } from "pg";
 import { z } from "zod";
 import { withTenantTransaction } from "@/db/transaction";
+import {
+  createCommandFingerprint,
+  matchesStoredCommandFingerprint,
+} from "@/kernel/command-fingerprint";
 import { actorHasActivePermission, assertActorHasActivePermission } from "@/modules/identity/authorization";
 import { PERMISSIONS, type Permission } from "@/modules/identity/permissions";
 import {
@@ -43,6 +47,9 @@ const decimalSchema = z.string().trim().regex(/^-?\d+(?:\.\d{1,9})?$/).refine((v
     return false;
   }
 });
+const idempotencyKeySchema = z.string().trim().min(1).max(180);
+const matchAllocationAmountSchema = z.string().trim().regex(/^\d+(?:\.\d{1,9})?$/);
+const bankMatchAllocationFingerprintVersion = "v2";
 
 export const bankRuleConditionSchema = z.object({
   descriptionContains: z.string().trim().min(2).max(100).optional(),
@@ -1476,8 +1483,35 @@ export async function createBankMatchAllocation(input: Readonly<{
   observationVersionId: string;
   journalLineId: string;
   allocatedAmount: string;
-}>): Promise<Readonly<{ allocationId: string }>> {
+  idempotencyKey: string;
+}>): Promise<Readonly<{ allocationId: string; idempotentReplay: boolean }>> {
   assertBankingSession(input.principal);
+  const idempotencyKey = idempotencyKeySchema.parse(input.idempotencyKey);
+  const requestedAmount = matchAllocationAmountSchema.parse(input.allocatedAmount);
+  const amount = new Decimal(requestedAmount);
+  if (!amount.isPositive() || amount.decimalPlaces() > 9 || amount.greaterThan("99999999999999999999999999999")) {
+    throw new BankingServiceError("Enter a positive exact allocation amount within the supported accounting range.", 400, "INVALID_MATCH_AMOUNT");
+  }
+  const allocatedAmount = amount.toFixed(Math.min(amount.decimalPlaces(), 9));
+  const fingerprintPayload = {
+    reconciliationId: input.reconciliationId,
+    observationVersionId: input.observationVersionId,
+    journalLineId: input.journalLineId,
+    allocatedAmount,
+  };
+  const commandFingerprints = {
+    current: createCommandFingerprint(
+      "banking.reconciliation.match.allocation",
+      fingerprintPayload,
+      bankMatchAllocationFingerprintVersion,
+    ),
+    legacy: createCommandFingerprint(
+      "banking.reconciliation.match.allocation",
+      { ...fingerprintPayload, allocatedAmount: requestedAmount },
+      "v1",
+    ),
+  };
+  const commandHash = commandFingerprints.current;
   return withAuthorizedBankingWrite({
     principal: input.principal,
     requestId: input.requestId,
@@ -1485,6 +1519,22 @@ export async function createBankMatchAllocation(input: Readonly<{
     reason: "Allocate a bank observation to a posted mapped cash journal line",
   }, async (client) => {
     const session = await lockReconciliation(client, input.principal.organizationId, input.reconciliationId);
+    const existing = await client.query<{ id: string; command_hash: string }>(
+      `SELECT id, command_hash
+       FROM bank_match_allocations
+       WHERE organization_id = $1 AND reconciliation_session_id = $2 AND idempotency_key = $3
+       FOR SHARE`,
+      [input.principal.organizationId, session.id, idempotencyKey],
+    );
+    if (existing.rows[0]) {
+      if (!matchesStoredCommandFingerprint(
+        existing.rows[0].command_hash,
+        commandFingerprints,
+      )) {
+        throw new BankingServiceError("The match idempotency key was already used for a different allocation.", 409, "IDEMPOTENCY_CONFLICT");
+      }
+      return { allocationId: existing.rows[0].id, idempotentReplay: true };
+    }
     if (session.status !== "DRAFT") throw new BankingServiceError("Matches can change only while the reconciliation is a draft.", 409, "RECONCILIATION_LOCKED");
     await lockBankEvidence(client, input.principal.organizationId, session.external_account_id);
     await lockBankMatchIdentities(client, input.observationVersionId, input.journalLineId);
@@ -1553,25 +1603,41 @@ export async function createBankMatchAllocation(input: Readonly<{
     if (observationAmount.isPositive() !== lineAmount.isPositive()) {
       throw new BankingServiceError("The bank observation and cash line must have the same inflow or outflow direction.", 400, "MATCH_DIRECTION_MISMATCH");
     }
-    const amount = new Decimal(input.allocatedAmount);
-    if (!amount.isPositive() || amount.decimalPlaces() > 9 || amount.greaterThan("99999999999999999999999999999")) {
-      throw new BankingServiceError("Enter a positive exact allocation amount within the supported accounting range.", 400, "INVALID_MATCH_AMOUNT");
-    }
     const observationRemaining = observationAmount.abs().minus(selected.observation_allocated);
     const lineRemaining = lineAmount.abs().minus(selected.line_allocated);
     if (amount.greaterThan(observationRemaining) || amount.greaterThan(lineRemaining)) {
       throw new BankingServiceError("The allocation exceeds the remaining observation or journal-line amount.", 409, "MATCH_OVERALLOCATION");
     }
     const allocationId = randomUUID();
-    await client.query(
+    const inserted = await client.query<{ id: string }>(
       `INSERT INTO bank_match_allocations(
          id, organization_id, reconciliation_session_id, observation_version_id,
-         journal_line_id, match_kind, allocated_amount, created_by
-       ) VALUES ($1,$2,$3,$4,$5,'MANUAL',$6,$7)`,
+         journal_line_id, match_kind, allocated_amount, idempotency_key, command_hash, created_by
+       ) VALUES ($1,$2,$3,$4,$5,'MANUAL',$6,$7,$8,$9)
+       ON CONFLICT (organization_id, reconciliation_session_id, idempotency_key) DO NOTHING
+       RETURNING id`,
       [allocationId, input.principal.organizationId, session.id, input.observationVersionId,
-        input.journalLineId, amount.toFixed(Math.min(amount.decimalPlaces(), 9)), input.principal.userId],
+        input.journalLineId, allocatedAmount, idempotencyKey, commandHash, input.principal.userId],
     );
-    return { allocationId };
+    if (!inserted.rows[0]) {
+      const conflict = await client.query<{ id: string; command_hash: string }>(
+        `SELECT id, command_hash FROM bank_match_allocations
+         WHERE organization_id = $1 AND reconciliation_session_id = $2 AND idempotency_key = $3
+         FOR SHARE`,
+        [input.principal.organizationId, session.id, idempotencyKey],
+      );
+      if (conflict.rows[0]) {
+        if (matchesStoredCommandFingerprint(
+          conflict.rows[0].command_hash,
+          commandFingerprints,
+        )) {
+          return { allocationId: conflict.rows[0].id, idempotentReplay: true };
+        }
+        throw new BankingServiceError("The match idempotency key was already used for a different allocation.", 409, "IDEMPOTENCY_CONFLICT");
+      }
+      throw new BankingServiceError("The match allocation conflicted with another request. Retry with the same idempotency key.", 409, "MATCH_CONFLICT");
+    }
+    return { allocationId: inserted.rows[0].id, idempotentReplay: false };
   });
 }
 

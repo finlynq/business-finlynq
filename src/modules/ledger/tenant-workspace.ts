@@ -1068,7 +1068,7 @@ export async function loadManualJournalOptions(
       actorId: principal.userId,
       permission: PERMISSIONS.draftJournal,
     });
-    const result = await client.query<{
+    const entityPeriods = await client.query<{
       entity_id: string;
       entity_code: string;
       ledger_id: string;
@@ -1078,16 +1078,11 @@ export async function loadManualJournalOptions(
       starts_on: string | null;
       ends_on: string | null;
       period_state: "OPEN" | "ADJUSTMENT_ONLY" | null;
-      combination_id: string | null;
-      account_code: string | null;
-      account_name: string | null;
     }>(
       `SELECT entity.id AS entity_id, entity.code AS entity_code,
          ledger.id AS ledger_id, ledger.functional_currency,
          period.id AS period_id, period.label AS period_label,
-         period.starts_on::text, period.ends_on::text, period.state AS period_state,
-         combination.id AS combination_id, account.code AS account_code,
-         account.display_name AS account_name
+         period.starts_on::text, period.ends_on::text, period.state AS period_state
        FROM legal_entities entity
        JOIN ledgers ledger
          ON ledger.organization_id = entity.organization_id
@@ -1097,17 +1092,34 @@ export async function loadManualJournalOptions(
          ON period.organization_id = ledger.organization_id
         AND period.ledger_id = ledger.id
         AND period.state IN ('OPEN', 'ADJUSTMENT_ONLY')
-       LEFT JOIN account_combinations combination
+       WHERE entity.organization_id = $1 AND entity.active
+       ORDER BY entity.code, period.starts_on`,
+      [principal.organizationId],
+    );
+    const accountRows = await client.query<{
+      entity_id: string;
+      combination_id: string;
+      account_code: string;
+      account_name: string;
+    }>(
+      `SELECT entity.id AS entity_id, combination.id AS combination_id,
+         account.code AS account_code, account.display_name AS account_name
+       FROM legal_entities entity
+       JOIN ledgers ledger
+         ON ledger.organization_id = entity.organization_id
+        AND ledger.legal_entity_id = entity.id
+        AND ledger.kind = 'PRIMARY' AND ledger.active
+       JOIN account_combinations combination
          ON combination.organization_id = ledger.organization_id
         AND combination.ledger_id = ledger.id
         AND combination.entity_id = entity.id AND combination.active
-       LEFT JOIN gl_accounts account
+       JOIN gl_accounts account
          ON account.organization_id = combination.organization_id
         AND account.ledger_id = combination.ledger_id
         AND account.id = combination.account_id
         AND account.active AND account.postable AND account.control_kind = 'NONE'
        WHERE entity.organization_id = $1 AND entity.active
-       ORDER BY entity.code, period.starts_on, account.code`,
+       ORDER BY entity.code, account.code, combination.id`,
       [principal.organizationId],
     );
     const entities = new Map<string, {
@@ -1118,7 +1130,7 @@ export async function loadManualJournalOptions(
       periods: Map<string, { id: string; label: string; startsOn: string; endsOn: string; state: "OPEN" | "ADJUSTMENT_ONLY" }>;
       accounts: Map<string, { combinationId: string; code: string; displayName: string }>;
     }>();
-    for (const row of result.rows) {
+    for (const row of entityPeriods.rows) {
       let entity = entities.get(row.entity_id);
       if (!entity) {
         entity = {
@@ -1140,13 +1152,15 @@ export async function loadManualJournalOptions(
           state: row.period_state,
         });
       }
-      if (row.combination_id && row.account_code && row.account_name) {
-        entity.accounts.set(row.combination_id, {
-          combinationId: row.combination_id,
-          code: row.account_code,
-          displayName: row.account_name,
-        });
-      }
+    }
+    for (const row of accountRows.rows) {
+      const entity = entities.get(row.entity_id);
+      if (!entity) continue;
+      entity.accounts.set(row.combination_id, {
+        combinationId: row.combination_id,
+        code: row.account_code,
+        displayName: row.account_name,
+      });
     }
     return {
       readOnly: !canDraft,

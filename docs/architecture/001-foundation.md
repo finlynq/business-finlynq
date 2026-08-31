@@ -79,7 +79,7 @@ Hosted MCP uses an organization-bound OAuth service principal and the same appli
 
 ## Banking boundary
 
-SimpleFIN credentials and bank descriptions use the organization envelope key. Provider transactions are immutable, versioned observations, not journals. Reconciliation matches observations to posted cash lines through append-only allocations and a guarded preparer/reviewer lifecycle. Categorization rules are versioned append-only and currently create encrypted manual-review suggestions only; they cannot create source-module drafts, approve, post, mutate source books, or delete history.
+SimpleFIN credentials and bank descriptions use the organization envelope key. Provider transactions are immutable, versioned observations, not journals. Reconciliation matches observations to posted cash lines through append-only allocations and a guarded preparer/reviewer lifecycle. Creating a manual allocation requires a bounded idempotency key; it is unique within the reconciliation and bound by a versioned canonical fingerprint to the reconciliation, observation version, journal line, and exact allocated amount. Retrying an identical request replays the original allocation; reusing the key for changed facts is rejected, while independent split allocations use distinct keys. Categorization rules are versioned append-only and currently create encrypted manual-review suggestions only; they cannot create source-module drafts, approve, post, mutate source books, or delete history.
 
 ## Deferred modules
 

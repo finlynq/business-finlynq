@@ -2,7 +2,9 @@
 
 The architecture review is accepted. Delivery is intentionally sliced so an attractive demo cannot be mistaken for a production accounting system.
 
-## Milestone 0 — hardened foundation (complete)
+The detailed release order and acceptance gates now live in the [product implementation work order](plan/product-implementation-work-order-2026-08.md). Current package state is maintained in [the delivery tracker](plan/delivery-status.md). Existing milestone labels below describe shipped baseline capability; they do not supersede an incomplete G0/R1/R2 gate.
+
+## Milestone 0 — foundation baseline implemented; G0 hardening in verification
 
 - Separate open-source repository and isolated `business.finlynq.com` deployment namespace.
 - Responsive demo dashboard.
@@ -14,7 +16,7 @@ The architecture review is accepted. Delivery is intentionally sliced so an attr
 - Ontario HST and Washington sales-tax reference packs with manual-review outcomes for unsupported facts.
 - Envelope-encryption primitives, mounted-root secret loading, CI, Docker/Compose, and VPS runbook.
 
-## P0 writable interactive demo release (complete)
+## P0 writable interactive demo baseline implemented
 
 - Each browser claims an isolated, independently encrypted synthetic sandbox instead of sharing a mutable demo tenant.
 - Manual GL, service/non-stock AR/AP, recorded settlement and allocation, transaction-tax snapshot, trial-balance/reporting, and period-control workflows persist across logout and session expiry until nightly reset.
@@ -25,7 +27,7 @@ The architecture review is accepted. Delivery is intentionally sliced so an attr
 
 P0 demonstrates durable accounting behavior inside disposable synthetic tenants; it does not satisfy or bypass any real-account milestone exit gate.
 
-## Milestone 1 — identity, recovery, and encrypted master data (hosted activation complete)
+## Milestone 1 — identity/recovery baseline hosted; per-organization activation pending
 
 - Signed session/OIDC identity resolver that produces tenant context server-side.
 - Invitations, memberships, custom roles, MFA step-up, session revocation, and security notifications.
@@ -36,7 +38,7 @@ P0 demonstrates durable accounting behavior inside disposable synthetic tenants;
 
 The hosted release runs the isolated email worker with verified delivery, self-service owner signup, password plus TOTP activation, password recovery that preserves the organization DEK, invitations, roles, and session administration. The source gates remain fail-closed for new deployments. Online organization-key rotation is deliberately unavailable until record re-encryption and blind-index rebuilding can be made atomic.
 
-## Milestone 2 — usable general ledger (core workflow complete)
+## Milestone 2 — general-ledger workflow baseline implemented
 
 - Organization/entity onboarding, ASPE or U.S. GAAP profile, functional currency, fiscal calendar, and demo chart creation.
 - Segment configuration/rendering, journal draft/submit/approve/post, reversal/replacement, recurring journals, trial balance, general ledger, and period close/reopen UI.
@@ -44,7 +46,7 @@ The hosted release runs the isolated email worker with verified delivery, self-s
 
 Tenant onboarding, multi-company configuration, enabled currencies and append-only FX rates, configurable account-segment presentation, manual journal draft/role-based auto-post, explicit posting, linked reversal, source-module ownership, period close/reopen/seal, debit/credit drilldown, trial balance, balance sheet, profit and loss, account inquiry, and CSV export are implemented. Recurring journals, bulk CSV journal import, and attachments remain later work.
 
-## Milestone 3 — receivables and payables (core demo workflow implemented)
+## Milestone 3 — receivables/payables demo workflow baseline implemented
 
 - Customer/supplier account workflows, quotes/orders where needed, invoices, bills, credit notes, payments, allocations, aging, statements, and realized FX.
 - Append-only open-item allocation/settlement events; balances are derived rather than overwritten.
@@ -52,7 +54,7 @@ Tenant onboarding, multi-company configuration, enabled currencies and append-on
 
 The current release implements an organization-wide encrypted party directory, entity-specific customer/supplier roles, scalable filtered AR/AP registers, service/non-stock invoice and bill drafts, issue/post, open items, recorded receipt/payment allocation, realized-FX posting, effective-dated FX suggestions, and void/reversal with source-owned journal lineage and transaction-tax snapshots. Quotes/orders, dedicated credit-note UX, aging statements/dunning, and external payment execution remain later work.
 
-## Milestone 4 — production tax packs
+## Milestone 4 — tax reference-pack baseline; production packs pending
 
 - Effective-dated Ontario HST and Washington location-rate ingestion with evidence, approvals, regression fixtures, tax returns, and reconciliation to the ledger.
 - Preserve recoverable and nonrecoverable tax components separately through snapshot and GL mapping.
@@ -60,7 +62,7 @@ The current release implements an organization-wide encrypted party directory, e
 
 The demo uses bundled Ontario and Washington reference packs for transaction decisions and evidence snapshots only. It does not ingest live official rates, prepare production returns, or file tax.
 
-## Milestone 5 — banking and reconciliation (initial release implemented)
+## Milestone 5 — initial banking/reconciliation baseline implemented
 
 - Encrypted bank connections, import observations, deterministic matching suggestions, bank reconciliation, transfer handling, and cash reporting.
 - Bank and AI actions remain observations/drafts; neither can post or delete history.

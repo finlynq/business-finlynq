@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { readAuthMutationJson } from "@/app/api/_shared/auth-mutation-route";
+import { logRouteFailure } from "@/app/api/_shared/route-failure-log";
 import {
   consumeMfaEnrollmentLimits,
   consumeRateLimit,
@@ -14,14 +15,15 @@ const schema = z.object({ setupToken: z.string().min(32).max(200) });
 const headers = { "Cache-Control": "private, no-store", "X-Robots-Tag": "noindex" };
 
 export async function POST(request: NextRequest) {
-  if (!validateSameOriginMutation(request)) {
-    return NextResponse.json({ error: "The request could not be verified." }, { status: 403, headers });
-  }
-  if (process.env.ACCOUNT_LOGIN_ENABLED !== "true") {
-    return NextResponse.json({ error: "Account activation is not enabled." }, { status: 403, headers });
-  }
-
+  const requestId = randomUUID();
   try {
+    if (!validateSameOriginMutation(request)) {
+      return NextResponse.json({ error: "The request could not be verified." }, { status: 403, headers });
+    }
+    if (process.env.ACCOUNT_LOGIN_ENABLED !== "true") {
+      return NextResponse.json({ error: "Account activation is not enabled." }, { status: 403, headers });
+    }
+
     const { ipHash } = requestFingerprints(request);
     const ipLimit = await consumeRateLimit("mfa-enrollment-skip-ip-hour", ipHash, 10, 3600);
     if (!ipLimit.allowed) {
@@ -44,15 +46,13 @@ export async function POST(request: NextRequest) {
         { status: 429, headers: { ...headers, "Retry-After": String(tokenLimit.retry_after_seconds) } },
       );
     }
-    const skipped = await skipMfaEnrollment(setupTokenHash, randomUUID());
+    const skipped = await skipMfaEnrollment(setupTokenHash, requestId);
     if (!skipped) {
       return NextResponse.json({ error: "This account setup is invalid, expired, or already complete." }, { status: 400, headers });
     }
     return NextResponse.json({ success: true, authentication: "PASSWORD_ONLY" }, { headers });
   } catch (error) {
-    console.error("Business Finlynq optional MFA activation failed", {
-      error: error instanceof Error ? error.message : "unknown error",
-    });
+    logRouteFailure("optional-mfa-activation", requestId, error);
     return NextResponse.json({ error: "Account activation is temporarily unavailable." }, { status: 503, headers });
   }
 }

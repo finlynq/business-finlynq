@@ -51,21 +51,6 @@ const nextConfig: NextConfig = {
     ];
   },
   async headers() {
-    const turnstileOrigin = "https://challenges.cloudflare.com";
-    const csp = [
-      "default-src 'self'",
-      `script-src 'self' 'unsafe-inline' ${turnstileOrigin}${process.env.NODE_ENV === "development" ? " 'unsafe-eval'" : ""}`,
-      "style-src 'self' 'unsafe-inline'",
-      "img-src 'self' data: blob:",
-      "font-src 'self' data:",
-      `connect-src 'self' ${turnstileOrigin}`,
-      `frame-src ${turnstileOrigin}`,
-      "object-src 'none'",
-      "base-uri 'self'",
-      "form-action 'self'",
-      "frame-ancestors 'none'",
-      ...(process.env.NODE_ENV === "production" ? ["upgrade-insecure-requests"] : []),
-    ].join("; ");
     return [
       {
         source: "/:path*",
@@ -73,7 +58,6 @@ const nextConfig: NextConfig = {
           { key: "X-Frame-Options", value: "DENY" },
           { key: "X-Content-Type-Options", value: "nosniff" },
           { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },
-          { key: "Content-Security-Policy", value: csp },
           {
             key: "Permissions-Policy",
             value: "camera=(), microphone=(), geolocation=(), payment=()",

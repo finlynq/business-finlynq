@@ -56,7 +56,7 @@ export function AuthenticatorEnrollmentSetup({
             aria-labelledby="authenticator-manual-key-label"
             aria-label={`${replacement ? "Replacement authenticator" : "Authenticator"} manual setup key`}
           />
-          <button className={styles.copyButton} type="button" onClick={copySecret}>Copy key</button>
+          <button className={styles.copyButton} type="button" onClick={() => { void copySecret(); }}>Copy key</button>
         </span>
       </div>
       <p className={styles.copyStatus} role="status" aria-live="polite">{copyStatus}</p>

@@ -1,7 +1,27 @@
+import { isIP } from "node:net";
 import type { NextRequest } from "next/server";
 import { identityLookupHash } from "@/security/identity-secret";
 
 type RequestSecurityEnvironment = Readonly<Record<string, string | undefined>>;
+
+const MAX_FORWARDED_FOR_BYTES = 1_024;
+const MAX_FORWARDED_FOR_ADDRESSES = 16;
+
+function trustedProxyHops(environment: RequestSecurityEnvironment): number | null {
+  const raw = environment.TRUSTED_PROXY_HOPS?.trim();
+  if (!raw || raw === "0") return null;
+  if (!/^[1-9]\d*$/.test(raw)) return null;
+  const hops = Number(raw);
+  return Number.isSafeInteger(hops) && hops <= MAX_FORWARDED_FOR_ADDRESSES ? hops : null;
+}
+
+function forwardedAddresses(value: string | null): string[] | null {
+  if (!value || value.length > MAX_FORWARDED_FOR_BYTES) return null;
+  const addresses = value.split(",").map((part) => part.trim());
+  if (addresses.length === 0 || addresses.length > MAX_FORWARDED_FOR_ADDRESSES) return null;
+  if (addresses.some((address) => !address || isIP(address) === 0)) return null;
+  return addresses;
+}
 
 function allowsInsecureLoopbackTestOrigin(environment: RequestSecurityEnvironment, origin: URL): boolean {
   return environment.ALLOW_INSECURE_TEST_ORIGIN === "true" &&
@@ -35,16 +55,26 @@ export function validateSameOriginMutation(request: NextRequest): boolean {
   try { return new URL(referer).origin === expected; } catch { return false; }
 }
 
-export function clientIp(request: NextRequest): string {
-  return request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ||
-    request.headers.get("x-real-ip")?.trim() || "unknown";
+export function clientIp(
+  request: NextRequest,
+  environment: RequestSecurityEnvironment = process.env,
+): string {
+  const trustedHops = trustedProxyHops(environment);
+  if (trustedHops === null) return "unknown";
+
+  const addresses = forwardedAddresses(request.headers.get("x-forwarded-for"));
+  if (!addresses || addresses.length < trustedHops) return "unknown";
+  return addresses[addresses.length - trustedHops] ?? "unknown";
 }
 
-export function requestFingerprints(request: NextRequest): { ipHash: string; userAgentHash: string | null } {
-  const userAgent = request.headers.get("user-agent")?.slice(0, 1000) ?? null;
+export function userAgentFingerprint(userAgent: string | null): string {
+  return identityLookupHash(`user-agent|${(userAgent ?? "").slice(0, 1000)}`);
+}
+
+export function requestFingerprints(request: NextRequest): { ipHash: string; userAgentHash: string } {
   return {
     ipHash: identityLookupHash(`ip|${clientIp(request)}`),
-    userAgentHash: userAgent ? identityLookupHash(`user-agent|${userAgent}`) : null,
+    userAgentHash: userAgentFingerprint(request.headers.get("user-agent")),
   };
 }
 

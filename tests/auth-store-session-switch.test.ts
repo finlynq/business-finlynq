@@ -6,7 +6,10 @@ vi.mock("@/db/transaction", () => ({ queryDatabase: mocks.queryDatabase }));
 
 import {
   finishSessionMfaEnrollment,
+  issueDemoSession,
   issueMfaUserSession,
+  issuePasswordUserSession,
+  resolveStoredSession,
 } from "@/modules/identity/auth-store";
 
 beforeEach(() => {
@@ -40,7 +43,7 @@ describe("MFA session issuance", () => {
     expect(values[9]).toBe("old-demo-token-hash");
   });
 
-  it("keeps ordinary real-account login on the same atomic issuance path without a replacement", async () => {
+  it("keeps ordinary real-account login on the same atomic issuance path with an empty-UA hash", async () => {
     await issueMfaUserSession({
       userId: "30000000-0000-4000-8000-000000000001",
       organizationId: "30000000-0000-4000-8000-000000000002",
@@ -49,12 +52,49 @@ describe("MFA session issuance", () => {
       totpCounter: 102,
       tokenHash: "new-real-token-hash",
       ipHash: "ip-hash",
-      userAgentHash: null,
+      userAgentHash: "empty-user-agent-hash",
       requestId: "request-id",
     });
 
     const [, values] = mocks.queryDatabase.mock.calls[0] as [string, unknown[]];
+    expect(values[7]).toBe("empty-user-agent-hash");
     expect(values[9]).toBeNull();
+  });
+
+  it("keeps the stored-session adapter nullable for legacy database rows", async () => {
+    mocks.queryDatabase.mockResolvedValueOnce({ rows: [] });
+
+    await expect(resolveStoredSession("legacy-session-token-hash", null)).resolves.toBeNull();
+
+    expect(mocks.queryDatabase).toHaveBeenCalledWith(
+      "SELECT * FROM app.auth_resolve_session_v2($1, $2)",
+      ["legacy-session-token-hash", null],
+    );
+  });
+
+  it("passes the bound empty-UA hash through password and demo issuance", async () => {
+    await issuePasswordUserSession({
+      userId: "30000000-0000-4000-8000-000000000001",
+      organizationId: "30000000-0000-4000-8000-000000000002",
+      membershipId: "30000000-0000-4000-8000-000000000003",
+      tokenHash: "password-session-token-hash",
+      ipHash: "ip-hash",
+      userAgentHash: "empty-user-agent-hash",
+      requestId: "password-session-request",
+    });
+    await issueDemoSession({
+      tokenHash: "demo-session-token-hash",
+      claimTokenHash: null,
+      replacementClaimTokenHash: "replacement-claim-token-hash",
+      ipHash: "ip-hash",
+      userAgentHash: "empty-user-agent-hash",
+      requestId: "demo-session-request",
+    });
+
+    const [, passwordValues] = mocks.queryDatabase.mock.calls[0] as [string, unknown[]];
+    const [, demoValues] = mocks.queryDatabase.mock.calls[1] as [string, unknown[]];
+    expect(passwordValues[5]).toBe("empty-user-agent-hash");
+    expect(demoValues[4]).toBe("empty-user-agent-hash");
   });
 
   it("passes a fresh bearer hash into atomic later-enrollment completion", async () => {

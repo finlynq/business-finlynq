@@ -2,6 +2,10 @@ import "server-only";
 
 import type { QueryResultRow } from "pg";
 import { withTenantTransaction, type TenantTransactionContext } from "@/db/transaction";
+import {
+  assertTenantWritesEnabled,
+  assertWritableOrganization,
+} from "@/modules/workspace/write-policy";
 
 export type OrganizationSettingsRecord = Readonly<{
   organization_id: string;
@@ -54,6 +58,19 @@ async function inContext<Row extends QueryResultRow>(
   });
 }
 
+async function inMutationContext<Row extends QueryResultRow>(
+  context: TenantTransactionContext,
+  sql: string,
+  values: readonly unknown[] = [],
+): Promise<readonly Row[]> {
+  assertTenantWritesEnabled(context);
+  return withTenantTransaction(context, async (client) => {
+    await assertWritableOrganization(client, context);
+    const result = await client.query<Row>(sql, [...values]);
+    return result.rows;
+  });
+}
+
 export async function readOrganizationSettingsRecord(
   context: TenantTransactionContext,
 ): Promise<OrganizationSettingsRecord | null> {
@@ -77,7 +94,7 @@ export async function updateOrganizationSettingsRecord(
   context: TenantTransactionContext,
   input: Readonly<{ displayName: string; expectedVersion: number }>,
 ): Promise<number> {
-  const rows = await inContext<VersionRecord>(
+  const rows = await inMutationContext<VersionRecord>(
     context,
     "SELECT app.organization_update_settings($1,$2) AS version",
     [input.displayName, input.expectedVersion],
@@ -104,7 +121,7 @@ export async function inviteOrganizationMemberRecord(
   context: TenantTransactionContext,
   input: InviteMemberPersistenceInput,
 ): Promise<InvitationRecord> {
-  const rows = await inContext<InvitationRecord>(
+  const rows = await inMutationContext<InvitationRecord>(
     context,
     "SELECT * FROM app.organization_invite_member($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)",
     [
@@ -138,7 +155,7 @@ export async function resendOrganizationInvitationRecord(
   context: TenantTransactionContext,
   input: ResendInvitationPersistenceInput,
 ): Promise<InvitationRecord> {
-  const rows = await inContext<InvitationRecord>(
+  const rows = await inMutationContext<InvitationRecord>(
     context,
     "SELECT * FROM app.organization_resend_invitation($1,$2,$3,$4,$5,$6)",
     [
@@ -159,7 +176,7 @@ export async function cancelOrganizationInvitationRecord(
   invitationId: string,
   expectedVersion: number,
 ): Promise<number> {
-  const rows = await inContext<VersionRecord>(
+  const rows = await inMutationContext<VersionRecord>(
     context,
     "SELECT app.organization_cancel_invitation($1,$2) AS version",
     [invitationId, expectedVersion],
@@ -172,7 +189,7 @@ export async function assignOrganizationMemberRoleRecord(
   context: TenantTransactionContext,
   input: Readonly<{ membershipId: string; roleId: string; expectedVersion: number }>,
 ): Promise<number> {
-  const rows = await inContext<VersionRecord>(
+  const rows = await inMutationContext<VersionRecord>(
     context,
     "SELECT app.organization_assign_member_role($1,$2,$3) AS version",
     [input.membershipId, input.roleId, input.expectedVersion],
@@ -185,7 +202,7 @@ export async function setOrganizationMemberActiveRecord(
   context: TenantTransactionContext,
   input: Readonly<{ membershipId: string; expectedVersion: number; active: boolean }>,
 ): Promise<number> {
-  const rows = await inContext<VersionRecord>(
+  const rows = await inMutationContext<VersionRecord>(
     context,
     "SELECT app.organization_set_member_active($1,$2,$3) AS version",
     [input.membershipId, input.expectedVersion, input.active],
@@ -198,7 +215,7 @@ export async function revokeOrganizationMemberSessionsRecord(
   context: TenantTransactionContext,
   membershipId: string,
 ): Promise<number> {
-  const rows = await inContext<{ revoked_count: string }>(
+  const rows = await inMutationContext<{ revoked_count: string }>(
     context,
     "SELECT app.organization_revoke_member_sessions($1)::text AS revoked_count",
     [membershipId],

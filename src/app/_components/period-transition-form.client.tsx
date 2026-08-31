@@ -167,7 +167,7 @@ export function PeriodTransitionForm({ workspace }: { workspace: PeriodControlWo
 
       <section className="panel form-panel" aria-labelledby="transition-title">
         <div className="panel-heading"><div><p className="eyebrow">Controlled transition</p><h2 id="transition-title">Change a period state</h2></div></div>
-        <form className="close-form" onSubmit={transition} noValidate>
+        <form className="close-form" onSubmit={(event) => { void transition(event); }} noValidate>
           <label>
             <span>Fiscal period</span>
             <select value={selectedId} onChange={(event) => selectPeriod(event.target.value)} disabled={busy}>

@@ -10,6 +10,7 @@ export default defineConfig({
   },
   test: {
     environment: "node",
+    globalSetup: ["./tests/db-integration-warning.global.ts"],
     // Integration files share one disposable PostgreSQL database in CI. Running
     // files serially prevents one suite from leasing or cleaning up another
     // suite's rows while preserving parallel work inside application code.

@@ -76,10 +76,6 @@ export class LocalRootKeyProvider implements KeyProvider {
     assertKey(rootKey, "Root wrapping key");
   }
 
-  static fromBase64(value: string): LocalRootKeyProvider {
-    return new LocalRootKeyProvider(Buffer.from(value, "base64"));
-  }
-
   wrapOrganizationKey(organizationId: string, keyVersion: number, dek: Buffer): WrappedKey {
     assertKey(dek, "Organization DEK");
     const iv = randomBytes(IV_BYTES);

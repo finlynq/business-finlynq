@@ -1,4 +1,5 @@
 import type { Metadata, Viewport } from "next";
+import { connection } from "next/server";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -47,11 +48,15 @@ export const viewport: Viewport = {
   colorScheme: "light",
 };
 
-export default function RootLayout({
+export default async function RootLayout({
   children,
 }: Readonly<{
   children: React.ReactNode;
 }>) {
+  // Next.js can apply a request nonce only while rendering dynamically. The
+  // application handles financial and identity data, so every HTML response
+  // uses the fresh nonce established by src/proxy.ts.
+  await connection();
   return (
     <html lang="en" data-scroll-behavior="smooth">
       <body>{children}</body>

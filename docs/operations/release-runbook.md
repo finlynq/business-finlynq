@@ -22,7 +22,7 @@ Use this checklist for every Business Finlynq release. Releases are commit-addre
 4. Build all required targets from the pinned SHA. Do not use an unreviewed working tree.
 5. Run the one-shot migrator as the database owner. Before bootstrap or app startup, run the mandatory post-migration runtime and authentication-worker grant reconciliations; then re-run the backup-role provisioner so new relations are covered. A migration is incomplete until all three explicit grant matrices succeed.
 6. Recreate the app. If real login is enabled, recreate the `auth-email` worker profile with the same SHA. Normal `bootstrap_demo` prepares only additive dirty slots and preserves assigned claims; do not run full reconciliation as an ordinary deploy step. Restart the root-managed timers or reinstall the deploy-owned block with `bash deploy/cron/install.sh`, matching `MONITOR_MAINTENANCE_SCHEDULER` in the operations environment. Run destructive full-pool acceptance only in an explicit maintenance window or for a fresh install.
-7. Verify container state, `/api/live`, `/api/health`, response security headers, release revision, auth worker, and external monitoring.
+7. Verify container state, public `/api/live`, minimal public `/api/health`, loopback-only detailed readiness, response security headers, release revision, auth worker, and external monitoring. Confirm public readiness contains neither `checks` nor `revision`.
 8. Run the browser acceptance path: public site, protected redirect, isolated demo-sandbox claim, workspace route, logout/session revocation, pool exhaustion behavior, recovery delivery, and mobile navigation.
 9. Re-enable writes only after tenant isolation, posting authorization, idempotency, audit insertion, and period controls pass against the deployed release.
 10. Record completion, evidence links, backup checksum, image digest, and operator approvals.
@@ -33,12 +33,10 @@ When running the release gate against production, export explicit expectations s
 PLAYWRIGHT_BASE_URL=https://business.finlynq.com
 E2E_EXPECT_ACCOUNT_LOGIN_ENABLED=true
 E2E_EXPECT_ACCOUNT_SIGNUP_ENABLED=true
-E2E_EXPECT_AUTH_EMAIL_WORKER=true
-E2E_EXPECT_BANK_FEEDS_ENABLED=false
 npm run test:e2e
 ```
 
-The browser test also reads `/api/health`, checks that enabled signup implies ready authentication and email delivery, and requires Cloudflare's widget API to render its response control on the live signup page. Managed challenges may solve without exposing a visible iframe, and Cloudflare does not guarantee that iframe as a public integration contract.
+The browser test also requires the public `/api/health` response to be the minimal ready status and requires Cloudflare's widget API to render its response control on the live signup page. The host monitor checks the detailed flag posture and email-worker readiness over loopback. Managed challenges may solve without exposing a visible iframe, and Cloudflare does not guarantee that iframe as a public integration contract.
 
 ## Rollback
 

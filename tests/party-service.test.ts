@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 import type { PoolClient } from "pg";
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -84,6 +86,17 @@ const partyAccountRow = {
   transaction_currency: null,
 };
 
+function legacyMasterOnlyPartyFingerprint(): string {
+  return createHash("sha256").update(JSON.stringify({
+    partyNumber: "CUST-1001",
+    displayName: "Maple Studio",
+    idempotencyKey: "party-service-1",
+    internalLegalEntityId: null,
+    account: null,
+    address: null,
+  }), "utf8").digest("hex");
+}
+
 beforeEach(() => {
   process.env.BUSINESS_WRITES_ENABLED = "true";
   vi.clearAllMocks();
@@ -100,9 +113,11 @@ afterAll(() => {
 
 describe("encrypted party and AR/AP account creation", () => {
   it("creates one encrypted organization party without forcing an entity accounting role", async () => {
+    let insertedCommandHash = "";
     const query = vi.fn(async (statement: string, parameters?: readonly unknown[]) => {
       if (statement.includes("INSERT INTO parties")) {
-        return { rows: [partyRow(String(parameters?.[6]))] };
+        insertedCommandHash = String(parameters?.[6]);
+        return { rows: [partyRow(insertedCommandHash)] };
       }
       throw new Error(`Unexpected master-only party SQL: ${statement}`);
     });
@@ -128,6 +143,8 @@ describe("encrypted party and AR/AP account creation", () => {
       partyAccount: null,
       idempotentReplay: false,
     });
+    expect(insertedCommandHash).toMatch(/^[a-f0-9]{64}$/);
+    expect(insertedCommandHash).not.toBe(legacyMasterOnlyPartyFingerprint());
     expect(query.mock.calls.some(([statement]) => statement.includes("INSERT INTO party_accounts"))).toBe(false);
   });
 
@@ -165,6 +182,48 @@ describe("encrypted party and AR/AP account creation", () => {
       idempotentReplay: true,
     });
     expect(query.mock.calls.some(([statement]) => statement.includes("FROM party_accounts"))).toBe(false);
+  });
+
+  it("accepts the exact legacy party fingerprint during replay transition", async () => {
+    const query = vi.fn(async (statement: string) => {
+      if (statement.includes("INSERT INTO parties")) return { rows: [] };
+      if (statement.includes("FROM parties") && statement.includes("FOR SHARE")) {
+        return { rows: [partyRow(legacyMasterOnlyPartyFingerprint())] };
+      }
+      throw new Error(`Unexpected legacy party replay SQL: ${statement}`);
+    });
+    mocks.withTenantTransaction.mockImplementation(async (
+      _context: unknown,
+      work: (client: PoolClient) => Promise<unknown>,
+    ) => work({ query } as unknown as PoolClient));
+
+    await expect(createParty({
+      context: command.context,
+      partyNumber: command.partyNumber,
+      displayName: command.displayName,
+      idempotencyKey: command.idempotencyKey,
+    })).resolves.toMatchObject({ idempotentReplay: true });
+  });
+
+  it("rejects a party idempotency replay with a conflicting fingerprint", async () => {
+    const query = vi.fn(async (statement: string) => {
+      if (statement.includes("INSERT INTO parties")) return { rows: [] };
+      if (statement.includes("FROM parties") && statement.includes("FOR SHARE")) {
+        return { rows: [partyRow("f".repeat(64))] };
+      }
+      throw new Error(`Unexpected conflicting party replay SQL: ${statement}`);
+    });
+    mocks.withTenantTransaction.mockImplementation(async (
+      _context: unknown,
+      work: (client: PoolClient) => Promise<unknown>,
+    ) => work({ query } as unknown as PoolClient));
+
+    await expect(createParty({
+      context: command.context,
+      partyNumber: command.partyNumber,
+      displayName: command.displayName,
+      idempotencyKey: command.idempotencyKey,
+    })).rejects.toThrow("Party number is already bound to different master data");
   });
 
   it("atomically creates an encrypted party with a validated customer control account", async () => {

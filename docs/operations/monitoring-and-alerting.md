@@ -3,15 +3,15 @@
 Business Finlynq exposes two deliberately different probes:
 
 - `/api/live` confirms that the Node process can answer HTTP. It does not touch secrets or PostgreSQL and is used by the container health check that gates Caddy startup.
-- `/api/health` is readiness. It returns `503` unless PostgreSQL, the organization root wrapping key, and the independent identity secret are available and valid. When real accounts are enabled it also requires valid non-secret delivery metadata and a fresh database heartbeat from the authentication email worker, with no expired lease or seriously delayed due item.
+- `/api/health` is readiness. Its public response is only `{"status":"ready"}` or `{"status":"unavailable"}`, with HTTP `200` or `503`. It returns `503` unless PostgreSQL, the organization root wrapping key, and the independent identity secret are available and valid. When real accounts are enabled it also requires valid non-secret delivery metadata and a fresh database heartbeat from the authentication email worker, with no expired lease or seriously delayed due item.
 
-Both endpoints are non-cacheable and excluded from indexing. Readiness returns only component state and the configured release revision; it does not expose credentials, host details, database timings, or exception messages.
+Both endpoints are non-cacheable and excluded from indexing. Detailed readiness component state and the configured release revision are available only on the loopback/private-network application listener when the probe supplies `X-Business-Finlynq-Internal-Health: 1`. Both reviewed Caddy configurations remove that header from every proxied request, so a public client cannot request the detailed representation by spoofing it or any forwarding header. The marker is not a secret: the security boundary is the non-public app listener plus unconditional edge removal. Never expose container port `3000` or loopback port `3100` beyond the host.
 
 ## Host monitor
 
 `deploy/monitoring/check-production.sh` is a five-minute synthetic/host check. It validates:
 
-- public HTTPS readiness and required no-store/HSTS headers;
+- public HTTPS liveness and minimal readiness, the absence of public readiness details, and required no-store/HSTS headers;
 - certificate validity beyond the configured threshold;
 - expected app, database, and edge container state;
 - exact app-container demo/account/business write gates for the reviewed release;
@@ -40,7 +40,7 @@ Configure the mandatory `/etc/business-finlynq/operations.env` with thresholds a
 
 If root-managed systemd timers are temporarily unavailable, the reviewed fallback is the `deploy` user's UTC crontab. Copy the same operations settings to `/home/deploy/.config/business-finlynq/operations.env`, set `MONITOR_MAINTENANCE_SCHEDULER=cron`, make the file owned by `deploy` with mode `0600`, then run `bash deploy/cron/install.sh` as `deploy`. The idempotent installer replaces only its marked block and preserves unrelated entries, including removing the retired five-minute reset and hourly due-check. The allowlisted schedule invokes reconciliation at 08:15 and 09:15 UTC; the wrapper verifies exact `04:15` `America/Toronto` time so one invocation resets across EST/EDT and the other exits. A success-only local-date stamp prevents duplicates. Backup remains every six hours and monitoring every five minutes. The production monitor requires the exact three-job block. Before a release, `bash deploy/cron/remove.sh` drains active wrappers under an exclusive scheduler lock and removes only the marked block; rerun the installer after acceptance. Prefer the DST-aware systemd timer once root operator access is available.
 
-Set `MONITOR_EXPECT_REVISION` to the same full reviewed Git SHA as `BUSINESS_FINLYNQ_IMAGE_REVISION` during each release. Both are mandatory, must match exactly, and are checked against the running container and readiness response.
+Set `MONITOR_EXPECT_REVISION` to the same full reviewed Git SHA as `BUSINESS_FINLYNQ_IMAGE_REVISION` during each release. Both are mandatory, must match exactly, and are checked against the running container and the loopback-only detailed readiness response.
 
 Set `MONITOR_EXPECT_AUTH_EMAIL_WORKER=true` at the same cutover that enables real account email delivery. Before that cutover it stays false so the intentionally absent profile is not reported as an outage.
 
@@ -48,7 +48,7 @@ The production writable-demo boundary requires the reviewed login/write gates an
 
 The database readiness contract intentionally reports dead-letter count separately from worker availability: one permanently failed address must not disable every account login. Configure centralized worker-log/provider telemetry to page on any transition to `DEAD`, and retain a metric for oldest pending age. The public readiness endpoint catches a stopped worker, stuck lease, or materially delayed due queue without exposing counts or recipients.
 
-Production requires an independent external uptime/alerting service that calls `https://business.finlynq.com/api/health` from outside the VPS and pages at least two operators. A local timer cannot report a total VPS, network, or provider failure. Configure alerts for:
+Production requires an independent external uptime/alerting service that calls `https://business.finlynq.com/api/health` from outside the VPS and pages at least two operators. That minimal public response retains the full readiness status without revealing component posture or revision. A local timer cannot report a total VPS, network, or provider failure. Configure alerts for:
 
 - two consecutive readiness failures;
 - TLS expiry below 21 days;

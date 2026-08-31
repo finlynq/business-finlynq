@@ -35,7 +35,10 @@ vi.mock("@/modules/identity/auth-store", () => ({
 vi.mock("@/modules/identity/request-security", () => ({
   configuredAppOrigin: () => new URL("https://business.finlynq.com"),
   isSpeculativeNavigation: () => false,
-  requestFingerprints: () => ({ ipHash: "i".repeat(64), userAgentHash: "u".repeat(64) }),
+  requestFingerprints: (request: { headers: Headers }) => ({
+    ipHash: "i".repeat(64),
+    userAgentHash: `user-agent-hash:${(request.headers.get("user-agent") ?? "").slice(0, 1000)}`,
+  }),
   validateSameOriginMutation: () => true,
 }));
 vi.mock("@/modules/identity/session", async (importOriginal) => ({
@@ -99,7 +102,10 @@ describe("daily demo claim routes", () => {
     expect(cookies).toContain("business_finlynq_demo_claim=");
     expect(cookies).toContain("HttpOnly");
     expect(cookies).toContain("Expires=Fri, 28 Aug 2026 08:15:00 GMT");
-    expect(mocks.issueDemoSession).toHaveBeenCalledWith(expect.objectContaining({ claimTokenHash: null }));
+    expect(mocks.issueDemoSession).toHaveBeenCalledWith(expect.objectContaining({
+      claimTokenHash: null,
+      userAgentHash: "user-agent-hash:",
+    }));
   });
 
   it("allows explicit sandbox-only privileged confirmation but never accepts a real session", async () => {

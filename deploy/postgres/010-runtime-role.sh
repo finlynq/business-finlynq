@@ -107,13 +107,87 @@ ALTER ROLE business_finlynq_app SET search_path = public, app;
 
 -- Remove the former blanket future-object CRUD grants. New objects fail
 -- closed until this reviewed reconciliation list is deliberately extended.
+-- PostgreSQL combines global and per-schema default ACLs. A per-schema REVOKE
+-- cannot subtract the built-in global PUBLIC EXECUTE default for functions, so
+-- clear the owner's global defaults before removing any legacy schema entries.
+ALTER DEFAULT PRIVILEGES FOR ROLE :"owner_role"
+  REVOKE ALL ON TABLES FROM PUBLIC;
+ALTER DEFAULT PRIVILEGES FOR ROLE :"owner_role"
+  REVOKE ALL ON SEQUENCES FROM PUBLIC;
+ALTER DEFAULT PRIVILEGES FOR ROLE :"owner_role"
+  REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC;
+ALTER DEFAULT PRIVILEGES FOR ROLE :"owner_role"
+  REVOKE ALL ON TABLES FROM business_finlynq_app;
+ALTER DEFAULT PRIVILEGES FOR ROLE :"owner_role"
+  REVOKE ALL ON SEQUENCES FROM business_finlynq_app;
+ALTER DEFAULT PRIVILEGES FOR ROLE :"owner_role"
+  REVOKE ALL ON FUNCTIONS FROM business_finlynq_app;
+
+ALTER DEFAULT PRIVILEGES FOR ROLE :"owner_role" IN SCHEMA public
+  REVOKE ALL ON TABLES FROM PUBLIC;
+ALTER DEFAULT PRIVILEGES FOR ROLE :"owner_role" IN SCHEMA public
+  REVOKE ALL ON SEQUENCES FROM PUBLIC;
+ALTER DEFAULT PRIVILEGES FOR ROLE :"owner_role" IN SCHEMA public
+  REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC;
 ALTER DEFAULT PRIVILEGES FOR ROLE :"owner_role" IN SCHEMA public
   REVOKE ALL ON TABLES FROM business_finlynq_app;
 ALTER DEFAULT PRIVILEGES FOR ROLE :"owner_role" IN SCHEMA public
   REVOKE ALL ON SEQUENCES FROM business_finlynq_app;
+ALTER DEFAULT PRIVILEGES FOR ROLE :"owner_role" IN SCHEMA public
+  REVOKE ALL ON FUNCTIONS FROM business_finlynq_app;
 
+REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA public FROM PUBLIC;
+REVOKE ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public FROM PUBLIC;
+REVOKE EXECUTE ON ALL FUNCTIONS IN SCHEMA public FROM PUBLIC;
 REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA public FROM business_finlynq_app;
 REVOKE ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public FROM business_finlynq_app;
+REVOKE ALL PRIVILEGES ON ALL FUNCTIONS IN SCHEMA public FROM business_finlynq_app;
+
+-- Table-level REVOKE does not remove independently granted column ACLs.
+-- Generate one valid column-privilege REVOKE for every stale PUBLIC/runtime
+-- entry before the reviewed whole-table allowlist is applied below.
+SELECT format(
+  'REVOKE %s (%I) ON TABLE %I.%I FROM PUBLIC',
+  privilege.privilege_type,
+  attribute.attname,
+  namespace.nspname,
+  relation.relname
+)
+FROM pg_attribute attribute
+JOIN pg_class relation ON relation.oid = attribute.attrelid
+JOIN pg_namespace namespace ON namespace.oid = relation.relnamespace
+CROSS JOIN LATERAL aclexplode(
+  CASE WHEN array_ndims(attribute.attacl) = 1 THEN attribute.attacl ELSE NULL::aclitem[] END
+) privilege
+WHERE namespace.nspname IN ('public', 'app')
+  AND relation.relkind IN ('r', 'p', 'v', 'm', 'f')
+  AND attribute.attnum > 0
+  AND NOT attribute.attisdropped
+  AND privilege.grantee = 0
+ORDER BY namespace.nspname, relation.relname, attribute.attnum, privilege.privilege_type
+\gexec
+
+SELECT format(
+  'REVOKE %s (%I) ON TABLE %I.%I FROM business_finlynq_app',
+  privilege.privilege_type,
+  attribute.attname,
+  namespace.nspname,
+  relation.relname
+)
+FROM pg_attribute attribute
+JOIN pg_class relation ON relation.oid = attribute.attrelid
+JOIN pg_namespace namespace ON namespace.oid = relation.relnamespace
+CROSS JOIN LATERAL aclexplode(
+  CASE WHEN array_ndims(attribute.attacl) = 1 THEN attribute.attacl ELSE NULL::aclitem[] END
+) privilege
+JOIN pg_roles selected_role ON selected_role.rolname = 'business_finlynq_app'
+WHERE namespace.nspname IN ('public', 'app')
+  AND relation.relkind IN ('r', 'p', 'v', 'm', 'f')
+  AND attribute.attnum > 0
+  AND NOT attribute.attisdropped
+  AND privilege.grantee = selected_role.oid
+ORDER BY namespace.nspname, relation.relname, attribute.attnum, privilege.privilege_type
+\gexec
 
 DO $reconcile$
 DECLARE
@@ -124,10 +198,30 @@ BEGIN
     REVOKE ALL ON SCHEMA app FROM PUBLIC;
     REVOKE ALL PRIVILEGES ON SCHEMA app FROM business_finlynq_app;
     GRANT USAGE ON SCHEMA app TO business_finlynq_app;
+    REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA app FROM PUBLIC;
+    REVOKE ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA app FROM PUBLIC;
     REVOKE EXECUTE ON ALL FUNCTIONS IN SCHEMA app FROM PUBLIC;
+    REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA app FROM business_finlynq_app;
+    REVOKE ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA app FROM business_finlynq_app;
     REVOKE ALL PRIVILEGES ON ALL FUNCTIONS IN SCHEMA app FROM business_finlynq_app;
     EXECUTE format(
+      'ALTER DEFAULT PRIVILEGES FOR ROLE %I IN SCHEMA app REVOKE ALL ON TABLES FROM PUBLIC',
+      current_user
+    );
+    EXECUTE format(
+      'ALTER DEFAULT PRIVILEGES FOR ROLE %I IN SCHEMA app REVOKE ALL ON SEQUENCES FROM PUBLIC',
+      current_user
+    );
+    EXECUTE format(
       'ALTER DEFAULT PRIVILEGES FOR ROLE %I IN SCHEMA app REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC',
+      current_user
+    );
+    EXECUTE format(
+      'ALTER DEFAULT PRIVILEGES FOR ROLE %I IN SCHEMA app REVOKE ALL ON TABLES FROM business_finlynq_app',
+      current_user
+    );
+    EXECUTE format(
+      'ALTER DEFAULT PRIVILEGES FOR ROLE %I IN SCHEMA app REVOKE ALL ON SEQUENCES FROM business_finlynq_app',
       current_user
     );
     EXECUTE format(
@@ -201,8 +295,12 @@ BEGIN
   END IF;
 
   -- Directly called and invoker-security helper APIs only. Trigger-only and
-  -- worker-only functions remain non-executable by the web application.
+  -- worker-only functions remain non-executable by the web application. The
+  -- two pgcrypto digest overloads are required by invoker-security accounting
+  -- hashes and constraint triggers; no other extension function is exposed.
   FOREACH selected_signature IN ARRAY ARRAY[
+    'public.digest(text,text)',
+    'public.digest(bytea,text)',
     'app.current_organization_id()',
     'app.current_actor_id()',
     'app.current_actor_has_permission(text)',
@@ -320,6 +418,82 @@ BEGIN
     OR has_schema_privilege('business_finlynq_app', 'app', 'CREATE')
   ) THEN
     RAISE EXCEPTION 'runtime app-schema privileges are unsafe';
+  END IF;
+  IF EXISTS (
+    SELECT 1
+    FROM pg_class relation
+    JOIN pg_namespace namespace ON namespace.oid = relation.relnamespace
+    CROSS JOIN LATERAL aclexplode(
+      CASE WHEN relation.relacl IS NULL THEN acldefault(
+        CASE WHEN relation.relkind = 'S' THEN 'S'::"char" ELSE 'r'::"char" END,
+        relation.relowner
+      ) WHEN array_ndims(relation.relacl) = 1 THEN relation.relacl
+        ELSE NULL::aclitem[] END
+    ) privilege
+    WHERE namespace.nspname IN ('public', 'app')
+      AND relation.relkind IN ('r', 'p', 'v', 'm', 'f', 'S')
+      AND privilege.grantee = 0
+  ) THEN
+    RAISE EXCEPTION 'PUBLIC relation or sequence privileges remain after runtime reconciliation';
+  END IF;
+  IF EXISTS (
+    SELECT 1
+    FROM pg_attribute attribute
+    JOIN pg_class relation ON relation.oid = attribute.attrelid
+    JOIN pg_namespace namespace ON namespace.oid = relation.relnamespace
+    CROSS JOIN LATERAL aclexplode(
+      CASE WHEN array_ndims(attribute.attacl) = 1 THEN attribute.attacl ELSE NULL::aclitem[] END
+    ) privilege
+    WHERE namespace.nspname IN ('public', 'app')
+      AND relation.relkind IN ('r', 'p', 'v', 'm', 'f')
+      AND attribute.attnum > 0
+      AND NOT attribute.attisdropped
+      AND privilege.grantee IN (0, selected_role)
+  ) THEN
+    RAISE EXCEPTION 'PUBLIC or runtime column privileges remain after runtime reconciliation';
+  END IF;
+  IF EXISTS (
+    SELECT 1
+    FROM pg_proc selected_function
+    JOIN pg_namespace namespace ON namespace.oid = selected_function.pronamespace
+    CROSS JOIN LATERAL aclexplode(
+      CASE WHEN selected_function.proacl IS NULL THEN acldefault('f'::"char", selected_function.proowner)
+        WHEN array_ndims(selected_function.proacl) = 1 THEN selected_function.proacl
+        ELSE NULL::aclitem[] END
+    ) privilege
+    WHERE namespace.nspname IN ('public', 'app')
+      AND privilege.grantee = 0
+  ) THEN
+    RAISE EXCEPTION 'PUBLIC function privileges remain after runtime reconciliation';
+  END IF;
+  IF EXISTS (
+    SELECT 1
+    FROM pg_namespace namespace
+    CROSS JOIN LATERAL aclexplode(
+      CASE WHEN namespace.nspacl IS NULL THEN acldefault('n'::"char", namespace.nspowner)
+        WHEN array_ndims(namespace.nspacl) = 1 THEN namespace.nspacl
+        ELSE NULL::aclitem[] END
+    ) privilege
+    WHERE namespace.nspname IN ('public', 'app')
+      AND privilege.grantee = 0
+  ) THEN
+    RAISE EXCEPTION 'PUBLIC schema privileges remain after runtime reconciliation';
+  END IF;
+  IF EXISTS (
+    SELECT 1
+    FROM pg_default_acl default_acl
+    LEFT JOIN pg_namespace namespace ON namespace.oid = default_acl.defaclnamespace
+    CROSS JOIN LATERAL aclexplode(
+      CASE WHEN array_ndims(default_acl.defaclacl) = 1 THEN default_acl.defaclacl ELSE NULL::aclitem[] END
+    ) privilege
+    WHERE (
+        default_acl.defaclnamespace = 0
+        OR namespace.nspname IN ('public', 'app')
+      )
+      AND default_acl.defaclobjtype IN ('r', 'S', 'f')
+      AND privilege.grantee IN (0, selected_role)
+  ) THEN
+    RAISE EXCEPTION 'PUBLIC or runtime default privileges remain after runtime reconciliation';
   END IF;
 END
 $role_contract$;

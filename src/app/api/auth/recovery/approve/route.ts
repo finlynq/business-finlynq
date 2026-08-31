@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { readAuthMutationJson } from "@/app/api/_shared/auth-mutation-route";
+import { logRouteFailure } from "@/app/api/_shared/route-failure-log";
 import { approveRecovery, consumeRateLimit, consumeRecoveryApprovalLimits, totpForSession } from "@/modules/identity/auth-store";
 import { requestFingerprints, validateSameOriginMutation } from "@/modules/identity/request-security";
 import { requestPrincipal } from "@/modules/identity/session";
@@ -12,10 +13,11 @@ const schema = z.object({ recoveryRequestId: z.uuid(), otp: z.string().regex(/^\
 const headers = { "Cache-Control": "private, no-store", "X-Robots-Tag": "noindex" };
 
 export async function POST(request: NextRequest) {
-  if (!validateSameOriginMutation(request)) return NextResponse.json({ error: "The request could not be verified." }, { status: 403, headers });
-  const principal = await requestPrincipal(request);
-  if (!principal || principal.sessionMode !== "real") return NextResponse.json({ error: "Sign in to continue." }, { status: 401, headers });
+  const requestId = randomUUID();
   try {
+    if (!validateSameOriginMutation(request)) return NextResponse.json({ error: "The request could not be verified." }, { status: 403, headers });
+    const principal = await requestPrincipal(request);
+    if (!principal || principal.sessionMode !== "real") return NextResponse.json({ error: "Sign in to continue." }, { status: 401, headers });
     const { ipHash } = requestFingerprints(request);
     const ipLimit = await consumeRateLimit("recovery-approval-ip-hour", ipHash, 10, 3600);
     if (!ipLimit.allowed) {
@@ -44,12 +46,12 @@ export async function POST(request: NextRequest) {
       actorSessionId: principal.sessionId,
       factorId: factor.factor_id,
       counter,
-      requestId: randomUUID(),
+      requestId,
     });
     if (!approved) return NextResponse.json({ error: "The request cannot be approved, or the authenticator code was already used." }, { status: 403, headers });
     return NextResponse.json({ success: true }, { headers });
   } catch (error) {
-    console.error("Business Finlynq recovery approval failed", { error: error instanceof Error ? error.message : "unknown error" });
+    logRouteFailure("recovery-approval", requestId, error);
     return NextResponse.json({ error: "Recovery approval is temporarily unavailable." }, { status: 503, headers });
   }
 }

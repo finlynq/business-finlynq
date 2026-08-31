@@ -30,14 +30,17 @@ export const demoSandboxPool = pgTable("demo_sandbox_pool", {
 
 export const demoSandboxResetTables = pgTable("demo_sandbox_reset_tables", {
   tableName: text("table_name").primaryKey(),
-  purgeOrder: integer("purge_order").notNull().unique(),
+  purgeOrder: integer("purge_order").notNull().unique("demo_sandbox_reset_tables_purge_order_key"),
 });
 
 export const demoSandboxSlots = pgTable(
   "demo_sandbox_slots",
   {
     slot: integer("slot").primaryKey(),
-    organizationId: uuid("organization_id").notNull().references(() => organizations.id, { onDelete: "restrict" }),
+    organizationId: uuid("organization_id")
+      .notNull()
+      .unique("demo_sandbox_slots_organization_id_key")
+      .references(() => organizations.id, { onDelete: "restrict" }),
     state: text("state").notNull().default("DIRTY"),
     generation: integer("generation").notNull().default(1),
     baselineVersion: integer("baseline_version").notNull().default(1),
@@ -45,7 +48,6 @@ export const demoSandboxSlots = pgTable(
     lastResetAt: timestamp("last_reset_at", { withTimezone: true }),
   },
   (table) => [
-    uniqueIndex("demo_sandbox_slots_organization_unique").on(table.organizationId),
     uniqueIndex("demo_sandbox_slots_slot_org_unique").on(table.slot, table.organizationId),
   ],
 );
@@ -54,7 +56,7 @@ export const demoDailyClaims = pgTable(
   "demo_daily_claims",
   {
     id: uuid("id").defaultRandom().primaryKey(),
-    tokenHash: text("token_hash").notNull(),
+    tokenHash: text("token_hash").notNull().unique("demo_daily_claims_token_hash_key"),
     slot: integer("slot").notNull(),
     organizationId: uuid("organization_id").notNull(),
     generation: integer("generation").notNull(),
@@ -66,7 +68,6 @@ export const demoDailyClaims = pgTable(
     invalidatedAt: timestamp("invalidated_at", { withTimezone: true }),
   },
   (table) => [
-    uniqueIndex("demo_daily_claims_token_hash_unique").on(table.tokenHash),
     uniqueIndex("demo_daily_claims_one_active_per_org_unique")
       .on(table.organizationId)
       .where(sql`${table.invalidatedAt} IS NULL`),
@@ -136,15 +137,21 @@ export const authOrganizationSignups = pgTable(
   "auth_organization_signups",
   {
     id: uuid("id").primaryKey(),
-    tokenId: uuid("token_id").notNull().unique().references(() => authOneTimeTokens.id, { onDelete: "restrict" }),
-    userId: uuid("user_id").notNull().unique().references(() => users.id, { onDelete: "restrict" }),
+    tokenId: uuid("token_id")
+      .notNull()
+      .unique("auth_organization_signups_token_id_key")
+      .references(() => authOneTimeTokens.id, { onDelete: "restrict" }),
+    userId: uuid("user_id")
+      .notNull()
+      .unique("auth_organization_signups_user_id_key")
+      .references(() => users.id, { onDelete: "restrict" }),
     identityEncryptionUserId: uuid("identity_encryption_user_id").notNull(),
     requestedEmailCiphertext: text("requested_email_ciphertext").notNull(),
     requestedDisplayNameCiphertext: text("requested_display_name_ciphertext").notNull(),
     // The deterministic tenant identifier is reserved before the tenant is
     // provisioned, so this intentionally is not an organizations foreign key.
-    organizationId: uuid("organization_id").notNull().unique(),
-    organizationSlug: text("organization_slug").notNull().unique(),
+    organizationId: uuid("organization_id").notNull().unique("auth_organization_signups_organization_id_key"),
+    organizationSlug: text("organization_slug").notNull().unique("auth_organization_signups_organization_slug_key"),
     organizationName: text("organization_name").notNull(),
     entityCode: text("entity_code").notNull(),
     entityName: text("entity_name").notNull(),
@@ -229,7 +236,10 @@ export const authRecoveryRequests = pgTable(
   "auth_recovery_requests",
   {
     id: uuid("id").defaultRandom().primaryKey(),
-    tokenId: uuid("token_id").notNull().references(() => authOneTimeTokens.id, { onDelete: "restrict" }),
+    tokenId: uuid("token_id")
+      .notNull()
+      .unique("auth_recovery_requests_token_id_key")
+      .references(() => authOneTimeTokens.id, { onDelete: "restrict" }),
     userId: uuid("user_id").notNull().references(() => users.id, { onDelete: "restrict" }),
     organizationId: uuid("organization_id").references(() => organizations.id, { onDelete: "restrict" }),
     policy: text("policy").notNull(),
@@ -240,7 +250,6 @@ export const authRecoveryRequests = pgTable(
     expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
   },
   (table) => [
-    uniqueIndex("auth_recovery_requests_token_unique").on(table.tokenId),
     index("auth_recovery_requests_org_status_idx").on(table.organizationId, table.status, table.expiresAt),
   ],
 );

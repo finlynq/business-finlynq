@@ -24,8 +24,10 @@ declare global {
 
 export function SignupForm({
   challenge,
+  nonce,
 }: Readonly<{
   challenge: { enabled: boolean; siteKey: string | null; action: string };
+  nonce?: string;
 }>) {
   const [countryChoice, setCountryChoice] = useState<"CA" | "US" | "OTHER">("CA");
   const [otherCountryCode, setOtherCountryCode] = useState("");
@@ -122,11 +124,12 @@ export function SignupForm({
         <Script
           src="https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit"
           strategy="afterInteractive"
+          nonce={nonce}
           onReady={renderChallenge}
           onError={() => setError("Signup verification could not load. Refresh the page and try again.")}
         />
       )}
-      <form className={styles.form} onSubmit={submit}>
+      <form className={styles.form} onSubmit={(event) => { void submit(event); }}>
         {error && <div className={styles.alert} role="alert">{error}</div>}
         <div className={styles.formGrid}>
           <label><span>Your name</span><input name="displayName" autoComplete="name" required minLength={2} maxLength={120} /></label>

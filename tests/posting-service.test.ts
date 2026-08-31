@@ -4,9 +4,16 @@ import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vites
 const transactionMocks = vi.hoisted(() => ({
   withTenantTransaction: vi.fn(),
 }));
+const writePolicyMocks = vi.hoisted(() => ({
+  assertWritableOrganization: vi.fn(),
+}));
 
 vi.mock("@/db/transaction", () => ({
   withTenantTransaction: transactionMocks.withTenantTransaction,
+}));
+vi.mock("@/modules/workspace/write-policy", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/modules/workspace/write-policy")>()),
+  assertWritableOrganization: writePolicyMocks.assertWritableOrganization,
 }));
 
 import { postJournal } from "@/modules/ledger/posting-service";
@@ -72,6 +79,8 @@ function fakeClient(input: Readonly<{
 beforeEach(() => {
   process.env.BUSINESS_WRITES_ENABLED = "true";
   transactionMocks.withTenantTransaction.mockReset();
+  writePolicyMocks.assertWritableOrganization.mockReset();
+  writePolicyMocks.assertWritableOrganization.mockResolvedValue({ isDemo: false });
 });
 
 afterEach(() => {
@@ -94,6 +103,23 @@ describe("posting service authorization and content integrity", () => {
       "Business writes are disabled",
     );
     expect(transactionMocks.withTenantTransaction).not.toHaveBeenCalled();
+    expect(writePolicyMocks.assertWritableOrganization).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["an inactive organization", "Accounting writes require an active organization"],
+    ["a mismatched organization mode", "The write context does not match the organization mode"],
+  ])("rejects posting for %s before entering the posting engine", async (_scenario, message) => {
+    const failure = new Error(message);
+    const { client, query } = fakeClient();
+    transactionMocks.withTenantTransaction.mockImplementation(
+      async (_context, work: (transactionClient: PoolClient) => Promise<unknown>) => work(client),
+    );
+    writePolicyMocks.assertWritableOrganization.mockRejectedValueOnce(failure);
+
+    await expect(postJournal({ context, journalId: ids.journal })).rejects.toBe(failure);
+    expect(writePolicyMocks.assertWritableOrganization).toHaveBeenCalledWith(client, context);
+    expect(query).not.toHaveBeenCalled();
   });
 
   it("resolves posting permission from active database membership", async () => {

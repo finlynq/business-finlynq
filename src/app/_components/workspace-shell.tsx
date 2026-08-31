@@ -20,7 +20,7 @@ const workspaceItems: readonly NavigationItem[] = [
   { abbreviation: "BK", label: "Banking", href: "/app/banking" },
   { abbreviation: "TX", label: "Tax", href: "/app/tax" },
   { abbreviation: "RP", label: "Reports", href: "/app/reports/trial-balance" },
-  { abbreviation: "CT", label: "Controls", href: "/app/controls/period-close", badge: "2" },
+  { abbreviation: "CT", label: "Controls", href: "/app/controls/period-close" },
   { abbreviation: "ST", label: "Settings", href: "/app/settings" },
 ];
 

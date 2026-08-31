@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { readAuthMutationJson } from "@/app/api/_shared/auth-mutation-route";
+import { logRouteFailure } from "@/app/api/_shared/route-failure-log";
 import {
   assertEmailDeliveryReady,
   consumePasswordResetEscalationLimits,
@@ -16,9 +17,10 @@ const schema = z.object({ token: z.string().min(32).max(200) });
 const headers = { "Cache-Control": "private, no-store", "X-Robots-Tag": "noindex" };
 
 export async function POST(request: NextRequest) {
-  if (!validateSameOriginMutation(request)) return NextResponse.json({ error: "The request could not be verified." }, { status: 403, headers });
-  if (process.env.ACCOUNT_LOGIN_ENABLED !== "true") return NextResponse.json({ error: "Account recovery is not enabled." }, { status: 403, headers });
+  const requestId = randomUUID();
   try {
+    if (!validateSameOriginMutation(request)) return NextResponse.json({ error: "The request could not be verified." }, { status: 403, headers });
+    if (process.env.ACCOUNT_LOGIN_ENABLED !== "true") return NextResponse.json({ error: "Account recovery is not enabled." }, { status: 403, headers });
     assertAccountAuthenticationConfigured();
     await assertEmailDeliveryReady();
     const { ipHash } = requestFingerprints(request);
@@ -41,14 +43,14 @@ export async function POST(request: NextRequest) {
         { status: 429, headers: { ...headers, "Retry-After": String(tokenLimit.retry_after_seconds) } },
       );
     }
-    const result = await escalatePasswordReset(tokenHash, randomUUID());
+    const result = await escalatePasswordReset(tokenHash, requestId);
     if (!result) return NextResponse.json({ error: "This reset link cannot be changed." }, { status: 400, headers });
     return NextResponse.json({
       recoveryPolicy: result.recovery_policy,
       availableAt: new Date(result.available_at).toISOString(),
     }, { headers });
   } catch (error) {
-    console.error("Business Finlynq password-reset escalation failed", { error: error instanceof Error ? error.message : "unknown error" });
+    logRouteFailure("password-reset-escalation", requestId, error);
     return NextResponse.json({ error: "Recovery protection is temporarily unavailable." }, { status: 503, headers });
   }
 }

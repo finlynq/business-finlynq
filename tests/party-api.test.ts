@@ -216,4 +216,31 @@ describe("tenant party mutation route", () => {
     expect(malformedAddress.status).toBe(400);
     expect(mocks.createParty).not.toHaveBeenCalled();
   });
+
+  it("logs only a bounded operation, request ID, and error type when a sensitive party command fails", async () => {
+    const sensitiveName = "Private Customer Name";
+    mocks.createParty.mockRejectedValueOnce(
+      new Error(`database rejected plaintext for ${sensitiveName}`),
+    );
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+    const response = await createParty(new NextRequest("https://business.finlynq.com/api/parties", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ...body, displayName: sensitiveName }),
+    }));
+
+    expect(response.status).toBe(409);
+    expect(consoleError).toHaveBeenCalledOnce();
+    expect(consoleError.mock.calls[0]?.[0]).toBe("Business Finlynq route failure");
+    expect(consoleError.mock.calls[0]?.[1]).toEqual({
+      operation: "subledger-mutation",
+      requestId: expect.stringMatching(/^[0-9a-f-]{36}$/),
+      errorType: "Error",
+    });
+    expect(JSON.stringify(consoleError.mock.calls)).not.toContain(sensitiveName);
+    expect(JSON.stringify(consoleError.mock.calls)).not.toContain("database rejected plaintext");
+    expect(await response.text()).not.toContain(sensitiveName);
+    consoleError.mockRestore();
+  });
 });

@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
 import type { z } from "zod";
 import { demoSessionLeaseLostResponse } from "@/app/api/_shared/demo-session-error-response";
+import { logRouteFailure } from "@/app/api/_shared/route-failure-log";
 import { BankingServiceError } from "@/modules/banking/banking-service";
 import { consumeBankingRateLimit, type BankingRateAction } from "@/modules/banking/rate-limit";
 import { SimpleFinClientError } from "@/modules/banking/simplefin-client";
@@ -14,24 +15,47 @@ const bankingHeaders = {
   "X-Robots-Tag": "noindex, nofollow",
 };
 
-export function createBankingMutationRoute<TBody, TResult>(options: Readonly<{
+export function createBankingMutationRoute<TBody, TResult, TParams = undefined>(options: Readonly<{
   schema: z.ZodType<TBody>;
+  paramsSchema?: z.ZodType<TParams>;
+  invalidParamsMessage?: string;
   operation: string;
   rateAction: BankingRateAction;
   maximumBytes?: number;
-  successStatus?: 200 | 201;
-  invoke: (body: TBody, principal: SessionPrincipal, requestId: string) => Promise<TResult>;
+  successStatus?: 200 | 201 | ((result: TResult) => 200 | 201);
+  invoke: (
+    body: TBody,
+    principal: SessionPrincipal,
+    requestId: string,
+    params: TParams,
+  ) => Promise<TResult>;
 }>) {
-  return async function bankingMutationRoute(request: NextRequest) {
+  return async function bankingMutationRoute(
+    request: NextRequest,
+    routeContext?: { params: Promise<unknown> },
+  ) {
     const requestId = randomUUID();
-    if (!validateSameOriginMutation(request)) {
-      return NextResponse.json({ error: "The banking request could not be verified." }, { status: 403, headers: bankingHeaders });
-    }
-    const principal = await requestPrincipal(request);
-    if (!principal) {
-      return NextResponse.json({ error: "Sign in to continue." }, { status: 401, headers: bankingHeaders });
-    }
     try {
+      if (!validateSameOriginMutation(request)) {
+        return NextResponse.json({ error: "The banking request could not be verified." }, { status: 403, headers: bankingHeaders });
+      }
+      const principal = await requestPrincipal(request);
+      if (!principal) {
+        return NextResponse.json({ error: "Sign in to continue." }, { status: 401, headers: bankingHeaders });
+      }
+      let params: TParams;
+      if (options.paramsSchema) {
+        const parsedParams = options.paramsSchema.safeParse(await routeContext?.params);
+        if (!parsedParams.success) {
+          return NextResponse.json(
+            { error: options.invalidParamsMessage ?? "The banking resource identifier is invalid." },
+            { status: 400, headers: bankingHeaders },
+          );
+        }
+        params = parsedParams.data;
+      } else {
+        params = undefined as TParams;
+      }
       const rateLimit = await consumeBankingRateLimit(principal, options.rateAction);
       if (!rateLimit.allowed) {
         return NextResponse.json(
@@ -52,8 +76,11 @@ export function createBankingMutationRoute<TBody, TResult>(options: Readonly<{
       if (!parsed.success) {
         return NextResponse.json({ error: "Review the banking fields and try again." }, { status: 400, headers: bankingHeaders });
       }
-      const result = await options.invoke(parsed.data, principal, requestId);
-      return NextResponse.json(result, { status: options.successStatus ?? 200, headers: bankingHeaders });
+      const result = await options.invoke(parsed.data, principal, requestId, params);
+      const successStatus = typeof options.successStatus === "function"
+        ? options.successStatus(result)
+        : options.successStatus ?? 200;
+      return NextResponse.json(result, { status: successStatus, headers: bankingHeaders });
     } catch (error) {
       const expiredSession = demoSessionLeaseLostResponse(error);
       if (expiredSession) return expiredSession;
@@ -69,11 +96,7 @@ export function createBankingMutationRoute<TBody, TResult>(options: Readonly<{
             : 502;
         return NextResponse.json({ error: error.message, code: error.code, requestId }, { status, headers: bankingHeaders });
       }
-      console.error("Business Finlynq banking mutation failed", {
-        requestId,
-        operation: options.operation,
-        errorType: error instanceof Error ? error.name : "UnknownError",
-      });
+      logRouteFailure("banking-mutation", requestId, error);
       return NextResponse.json(
         { error: "The banking operation could not be completed safely.", requestId },
         { status: 409, headers: bankingHeaders },

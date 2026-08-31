@@ -3,12 +3,31 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 const migration = readFileSync(join(process.cwd(), "migrations", "drizzle", "0021_banking_foundation.sql"), "utf8");
+const idempotencyMigration = readFileSync(join(process.cwd(), "migrations", "drizzle", "0028_bank_match_allocation_idempotency.sql"), "utf8");
 const service = readFileSync(join(process.cwd(), "src", "modules", "banking", "banking-service.ts"), "utf8");
 const seed = readFileSync(join(process.cwd(), "src", "modules", "onboarding", "demo-bootstrap.ts"), "utf8");
 const workspace = readFileSync(join(process.cwd(), "src", "app", "_components", "banking-workspace.client.tsx"), "utf8");
 const workspaceData = readFileSync(join(process.cwd(), "src", "modules", "banking", "banking-workspace.ts"), "utf8");
 
 describe("banking persistence and workflow contract", () => {
+  it("makes every manual allocation retry durable, conflict-safe, and split-capable", () => {
+    expect(idempotencyMigration).toContain("legacy-bank-match:");
+    expect(idempotencyMigration).toContain("DISABLE TRIGGER banking_permission_guard");
+    expect(idempotencyMigration).toContain("DISABLE TRIGGER bank_immutable_record");
+    expect(idempotencyMigration).toContain("ENABLE TRIGGER banking_permission_guard");
+    expect(idempotencyMigration).toContain("ENABLE TRIGGER bank_immutable_record");
+    expect(idempotencyMigration).toContain("bank_match_allocations_org_session_idempotency_unique");
+    expect(idempotencyMigration).toContain("CREATE UNIQUE INDEX bank_match_allocations_org_session_idempotency_unique");
+    expect(idempotencyMigration).toContain("command_hash");
+    expect(service).toContain("banking.reconciliation.match.allocation");
+    expect(service).toContain("ON CONFLICT (organization_id, reconciliation_session_id, idempotency_key) DO NOTHING");
+    expect(service).toContain("matchesStoredCommandFingerprint");
+    expect(service).toContain('"v1"');
+    expect(service).toContain("IDEMPOTENCY_CONFLICT");
+    expect(workspace).toContain("const [matchIdempotencyKey, setMatchIdempotencyKey]");
+    expect(workspace).toContain("idempotencyKey: requestKey");
+  });
+
   it("forces tenant RLS, denies delete, and registers every bank table for nightly reset", () => {
     for (const table of [
       "bank_connections", "bank_connection_credential_events", "bank_external_accounts", "bank_sync_runs",

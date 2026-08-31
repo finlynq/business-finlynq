@@ -19,7 +19,11 @@ import {
   hasRecentStepUp,
   type SessionPrincipal,
 } from "@/modules/identity/session";
-import { mutationContext, demoWritesEnabled } from "@/modules/workspace/write-policy";
+import {
+  demoWritesEnabled,
+  mutationContext,
+  principalCanWrite,
+} from "@/modules/workspace/write-policy";
 import { withWorkspaceSessionExpiryRedirect } from "@/modules/workspace/tenant-read";
 import {
   decryptIdentityField,
@@ -99,6 +103,13 @@ function assertMutationSession(principal: SessionPrincipal): void {
       );
     }
     return;
+  }
+  if (!principalCanWrite(principal)) {
+    throw new OrganizationAdministrationError(
+      "Business changes are disabled on this deployment.",
+      403,
+      "WRITES_DISABLED",
+    );
   }
   if (!hasRecentStepUp(principal)) {
     throw new OrganizationAdministrationError(

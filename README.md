@@ -54,7 +54,32 @@ npm run check
 npm run build
 ```
 
-Database migrations are the source of truth. Drizzle declarations provide type-safe access but do not replace migration replay in CI or production. Migrations after the last generated Drizzle snapshot are intentionally hand-authored and security-reviewed; `npm run db:generate` therefore fails closed so a stale snapshot cannot generate duplicate or destructive DDL. Add forward SQL and the matching monotonic journal entry explicitly until the project adopts and verifies a complete snapshot-regeneration procedure.
+### Database integration tests
+
+The ordinary test command includes PostgreSQL integration suites, but they
+skip—and print a prominent warning—unless all required database URLs are set.
+Use a disposable PostgreSQL 16 database only; the suites migrate, seed, lease,
+reset, and delete test records.
+
+Set `TEST_DATABASE_URL` to an owner connection, then provision the two
+least-privilege roles with the same reviewed scripts used by production:
+
+```bash
+POSTGRES_USER=postgres POSTGRES_DB=business_finlynq_test PGHOST=127.0.0.1 \
+  PGPASSWORD='<owner-password>' sh deploy/postgres/010-runtime-role.sh
+POSTGRES_USER=postgres POSTGRES_DB=business_finlynq_test PGHOST=127.0.0.1 \
+  PGPASSWORD='<owner-password>' sh deploy/postgres/015-auth-worker-role.sh
+```
+
+The scripts read the runtime and worker passwords from
+`APP_DATABASE_PASSWORD_FILE` and `AUTH_WORKER_DATABASE_PASSWORD_FILE`.
+Configure `TEST_APP_DATABASE_URL` for `business_finlynq_app` and
+`TEST_AUTH_WORKER_DATABASE_URL` for `business_finlynq_auth_worker`, replay the
+migrations with `npm run db:migrate`, then run `npm run test:db`. CI performs
+this full owner/runtime/worker setup plus RLS, grant, predecessor-upgrade, and
+restore verification on every push.
+
+Database migrations are the deployment source of truth. Drizzle declarations and the latest generated snapshot are checked against that journal in CI, and `npm run db:check-drift` fails when a declaration would generate an unreviewed migration. Use `npm run db:generate` for declaration-backed changes and `npm run db:generate:custom` for reviewed functions, policies, grants, or backfills. The complete forward-only workflow and verification requirements are in [docs/operations/migrations.md](docs/operations/migrations.md).
 
 ## Modules
 

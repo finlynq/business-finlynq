@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { readAuthMutationJson } from "@/app/api/_shared/auth-mutation-route";
+import { logRouteFailure } from "@/app/api/_shared/route-failure-log";
 import { assertEmailDeliveryReady, consumeRateLimit } from "@/modules/identity/auth-store";
 import { authenticatorQrCodeDataUrl } from "@/modules/identity/authenticator-qr";
 import { assertAccountAuthenticationConfigured } from "@/modules/identity/email-provider";
@@ -19,14 +20,14 @@ const schema = z.object({
 export async function POST(request: NextRequest) {
   const startedAt = Date.now();
   const requestId = randomUUID();
-  if (!validateSameOriginMutation(request)) {
-    return NextResponse.json({ error: "The request could not be verified." }, { status: 403, headers });
-  }
-  if (process.env.ACCOUNT_LOGIN_ENABLED !== "true") {
-    return NextResponse.json({ error: "Account activation is not enabled." }, { status: 403, headers });
-  }
-
   try {
+    if (!validateSameOriginMutation(request)) {
+      return NextResponse.json({ error: "The request could not be verified." }, { status: 403, headers });
+    }
+    if (process.env.ACCOUNT_LOGIN_ENABLED !== "true") {
+      return NextResponse.json({ error: "Account activation is not enabled." }, { status: 403, headers });
+    }
+
     assertAccountAuthenticationConfigured();
     await assertEmailDeliveryReady();
     const { ipHash } = requestFingerprints(request);
@@ -73,10 +74,7 @@ export async function POST(request: NextRequest) {
       organizationName: accepted.organizationName,
     }, { headers });
   } catch (error) {
-    console.error("Business Finlynq account signup acceptance failed", {
-      requestId,
-      error: error instanceof Error ? error.message : "unknown signup acceptance error",
-    });
+    logRouteFailure("account-signup-acceptance", requestId, error);
     await settleSensitiveResponse(startedAt, { minimumMs: 300 });
     return NextResponse.json(
       { error: "Account activation is temporarily unavailable." },

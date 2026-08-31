@@ -20,14 +20,6 @@ const expectedAccountSignup = expectedReadiness(
   "E2E_EXPECT_ACCOUNT_SIGNUP_ENABLED",
   "ACCOUNT_SIGNUP_ENABLED",
 );
-const expectedEmailWorker = expectedReadiness(
-  "E2E_EXPECT_AUTH_EMAIL_WORKER",
-  "AUTH_EMAIL_DELIVERY_ENABLED",
-);
-const expectedBankFeeds = expectedReadiness(
-  "E2E_EXPECT_BANK_FEEDS_ENABLED",
-  "BANK_FEEDS_ENABLED",
-);
 
 function collectBrowserErrors(page: Page): string[] {
   const errors: string[] = [];
@@ -114,52 +106,29 @@ test("public website, readiness, and security headers are release-ready", async 
 
   const live = await request.get("/api/live");
   expect(live.status()).toBe(200);
-  await expect(live.json()).resolves.toMatchObject({ status: "live" });
+  expect(live.headers()["cache-control"]).toContain("no-store");
+  await expect(live.json()).resolves.toEqual({ status: "live" });
 
   const ready = await request.get("/api/health");
   expect(ready.status()).toBe(200);
   expect(ready.headers()["cache-control"]).toContain("no-store");
-  const readiness = await ready.json() as {
-    status: string;
-    checks: {
-      database: string;
-      organizationKey: string;
-      identityKey: string;
-      accountAuthentication: ReadinessState;
-      accountSignup: ReadinessState;
-      emailWorker: ReadinessState;
-      bankFeeds: ReadinessState;
-    };
-  };
-  expect(readiness).toMatchObject({
-    status: "ready",
-    checks: {
-      database: "ready",
-      organizationKey: "ready",
-      identityKey: "ready",
-    },
-  });
-  expect(["ready", "disabled"]).toContain(readiness.checks.accountAuthentication);
-  expect(["ready", "disabled"]).toContain(readiness.checks.accountSignup);
-  expect(["ready", "disabled"]).toContain(readiness.checks.emailWorker);
-  expect(["ready", "disabled"]).toContain(readiness.checks.bankFeeds);
-  if (expectedAccountAuthentication) {
-    expect(readiness.checks.accountAuthentication).toBe(expectedAccountAuthentication);
-  }
-  if (expectedAccountSignup) expect(readiness.checks.accountSignup).toBe(expectedAccountSignup);
-  if (expectedEmailWorker) expect(readiness.checks.emailWorker).toBe(expectedEmailWorker);
-  if (expectedBankFeeds) expect(readiness.checks.bankFeeds).toBe(expectedBankFeeds);
-  if (readiness.checks.accountAuthentication === "ready") {
-    expect(readiness.checks.emailWorker).toBe("ready");
-  }
-  if (readiness.checks.accountSignup === "ready") {
-    expect(readiness.checks.accountAuthentication).toBe("ready");
-    expect(readiness.checks.emailWorker).toBe("ready");
-  }
+  await expect(ready.json()).resolves.toEqual({ status: "ready" });
 
   await createAccount.click();
   await expect(page).toHaveURL(/\/signup$/);
-  if (readiness.checks.accountAuthentication === "ready" && readiness.checks.accountSignup === "ready") {
+  const enabledSignup = page.getByRole("heading", { level: 1, name: "Create your workspace" });
+  const disabledSignup = page.getByRole("heading", {
+    level: 1,
+    name: "Secure account signup is being enabled",
+  });
+  await expect(enabledSignup.or(disabledSignup)).toBeVisible();
+  const signupIsEnabled = await enabledSignup.isVisible();
+  if (expectedAccountAuthentication === "disabled" || expectedAccountSignup === "disabled") {
+    expect(signupIsEnabled).toBe(false);
+  } else if (expectedAccountAuthentication === "ready" && expectedAccountSignup === "ready") {
+    expect(signupIsEnabled).toBe(true);
+  }
+  if (signupIsEnabled) {
     await expect(page.getByRole("heading", { level: 1, name: "Create your workspace" })).toBeVisible();
     await expect(page.getByRole("button", { name: "Create account" })).toBeVisible();
     const signupVerification = page.getByLabel("Signup verification");
@@ -171,7 +140,7 @@ test("public website, readiness, and security headers are release-ready", async 
       timeout: 15_000,
     });
   } else {
-    await expect(page.getByRole("heading", { level: 1, name: "Secure account signup is being enabled" })).toBeVisible();
+    await expect(disabledSignup).toBeVisible();
     await expect(page.getByRole("link", { name: /Open the live demo/ })).toBeVisible();
     await expect(page.getByRole("link", { name: "Sign in to an existing account" })).toBeVisible();
     await expect(page.locator("form")).toHaveCount(0);

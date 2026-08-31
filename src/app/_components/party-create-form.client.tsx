@@ -117,7 +117,7 @@ export function PartyCreateForm() {
   return (
     <section className="panel form-panel" aria-labelledby="new-party-title">
       <div className="panel-heading"><div><p className="eyebrow">Organization-wide encrypted master</p><h2 id="new-party-title">Create an address-book party</h2></div></div>
-      <form className="close-form" onSubmit={save} noValidate>
+      <form className="close-form" onSubmit={(event) => { void save(event); }} noValidate>
         <div className="form-grid form-grid-three">
           <label>
             <span>Party number</span>

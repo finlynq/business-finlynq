@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
+import { logRouteFailure } from "@/app/api/_shared/route-failure-log";
 import { consumeRateLimit, issueDemoSession } from "@/modules/identity/auth-store";
 import { configuredAppOrigin, isSpeculativeNavigation, requestFingerprints } from "@/modules/identity/request-security";
 import { safeAppPath } from "@/modules/identity/safe-redirect";
@@ -26,6 +27,7 @@ export async function GET(request: NextRequest) {
   if (process.env.DEMO_LOGIN_ENABLED !== "true") return loginError("disabled");
   const fetchSite = request.headers.get("sec-fetch-site");
   if (fetchSite && fetchSite !== "same-origin" && fetchSite !== "none") return loginError("unavailable");
+  const requestId = randomUUID();
 
   try {
     const existing = await requestPrincipal(request);
@@ -54,7 +56,7 @@ export async function GET(request: NextRequest) {
       replacementClaimTokenHash: replacementClaim.hash,
       ipHash,
       userAgentHash,
-      requestId: randomUUID(),
+      requestId,
     });
     if (!issued) return loginError("unavailable");
     const response = NextResponse.redirect(new URL(safeAppPath(request.nextUrl.searchParams.get("next")), configuredAppOrigin()), 303);
@@ -65,7 +67,7 @@ export async function GET(request: NextRequest) {
     }
     return response;
   } catch (error) {
-    console.error("Business Finlynq demo login failed", { error });
+    logRouteFailure("demo-login", requestId, error);
     return loginError("unavailable");
   }
 }

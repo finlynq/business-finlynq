@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { readAuthMutationJson } from "@/app/api/_shared/auth-mutation-route";
+import { logRouteFailure } from "@/app/api/_shared/route-failure-log";
 import {
   consumeMfaEnrollmentLimits,
   consumeRateLimit,
@@ -25,18 +26,19 @@ const schema = z.object({
 const headers = { "Cache-Control": "private, no-store", "X-Robots-Tag": "noindex" };
 
 export async function POST(request: NextRequest) {
-  if (!validateSameOriginMutation(request)) {
-    return NextResponse.json({ error: "The request could not be verified." }, { status: 403, headers });
-  }
-  if (process.env.ACCOUNT_LOGIN_ENABLED !== "true") {
-    return NextResponse.json({ error: "Authenticator enrollment is not enabled." }, { status: 403, headers });
-  }
-  const principal = await requestPrincipal(request);
-  if (!principal || principal.sessionMode !== "real") {
-    return NextResponse.json({ error: "Sign in to continue." }, { status: 401, headers });
-  }
-
+  const requestId = randomUUID();
   try {
+    if (!validateSameOriginMutation(request)) {
+      return NextResponse.json({ error: "The request could not be verified." }, { status: 403, headers });
+    }
+    if (process.env.ACCOUNT_LOGIN_ENABLED !== "true") {
+      return NextResponse.json({ error: "Authenticator enrollment is not enabled." }, { status: 403, headers });
+    }
+    const principal = await requestPrincipal(request);
+    if (!principal || principal.sessionMode !== "real") {
+      return NextResponse.json({ error: "Sign in to continue." }, { status: 401, headers });
+    }
+
     const { ipHash } = requestFingerprints(request);
     const ipLimit = await consumeRateLimit("mfa-session-confirm-ip-hour", ipHash, 10, 3600);
     if (!ipLimit.allowed) {
@@ -72,7 +74,7 @@ export async function POST(request: NextRequest) {
       factorId: challenge.factor_id,
       counter,
       replacementSessionTokenHash: replacementSessionToken.hash,
-      requestId: randomUUID(),
+      requestId,
     }))) {
       return NextResponse.json({ error: "The authenticator code is invalid or has already been used." }, { status: 401, headers });
     }
@@ -84,9 +86,7 @@ export async function POST(request: NextRequest) {
     setSessionCookie(response, replacementSessionToken.raw, remainingSessionSeconds);
     return response;
   } catch (error) {
-    console.error("Business Finlynq session MFA enrollment confirmation failed", {
-      error: error instanceof Error ? error.message : "unknown error",
-    });
+    logRouteFailure("session-mfa-enrollment-confirmation", requestId, error);
     return NextResponse.json({ error: "Authenticator enrollment is temporarily unavailable." }, { status: 503, headers });
   }
 }

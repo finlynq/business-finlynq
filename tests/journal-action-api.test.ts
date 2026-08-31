@@ -138,6 +138,34 @@ describe("journal register mutation APIs", () => {
     });
   });
 
+  it("returns 200 for an idempotent reversal replay without changing its command", async () => {
+    mocks.reverseJournal.mockResolvedValueOnce({
+      journalId: "30000000-0000-4000-8000-000000000002",
+      journalNumber: 52,
+      status: "POSTED" as const,
+      idempotentReplay: true,
+      autoPosted: false,
+    });
+    const body = {
+      periodId: "40000000-0000-4000-8000-000000000001",
+      accountingDate: "2026-08-27",
+      description: "Reverse duplicate accrual",
+      reason: "The accrual was entered twice.",
+      idempotencyKey: "journal-reversal-ui-1",
+    };
+
+    const response = await reverseJournal(
+      request(`/api/ledger/journals/${journalId}/reverse`, body),
+      { params: Promise.resolve({ journalId }) },
+    );
+
+    expect(response.status).toBe(200);
+    expect(mocks.reverseJournal).toHaveBeenCalledWith(expect.objectContaining({
+      originalJournalId: journalId,
+      idempotencyKey: body.idempotencyKey,
+    }));
+  });
+
   it("fails closed before rate limiting when demo writes or same-origin verification are absent", async () => {
     process.env.DEMO_WRITES_ENABLED = "false";
     const disabled = await postJournal(

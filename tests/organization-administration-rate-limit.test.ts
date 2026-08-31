@@ -1,5 +1,5 @@
 import { NextRequest } from "next/server";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { SessionPrincipal } from "@/modules/identity/session";
 
 const mocks = vi.hoisted(() => ({
@@ -49,9 +49,17 @@ const basePrincipal: SessionPrincipal = {
   stepUpExpiresAt: null,
 };
 
+const previousTrustedProxyHops = process.env.TRUSTED_PROXY_HOPS;
+
 beforeEach(() => {
   vi.clearAllMocks();
+  process.env.TRUSTED_PROXY_HOPS = "1";
   mocks.principal.mockResolvedValue(basePrincipal);
+});
+
+afterAll(() => {
+  if (previousTrustedProxyHops === undefined) delete process.env.TRUSTED_PROXY_HOPS;
+  else process.env.TRUSTED_PROXY_HOPS = previousTrustedProxyHops;
 });
 
 describe("organization administration mutation rate key", () => {

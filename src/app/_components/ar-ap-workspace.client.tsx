@@ -1052,7 +1052,7 @@ export function ArApWorkspace({
             </div>
             <button className="secondary-button compact-button" type="button" onClick={() => setComposer(null)}>Cancel</button>
           </div>
-          <form className="journal-form subledger-form" onSubmit={saveDocument}>
+          <form className="journal-form subledger-form" onSubmit={(event) => { void saveDocument(event); }}>
             <div className="form-grid form-grid-three">
               <label className="full-field">
                 <span>{businessLabel[0]?.toUpperCase()}{businessLabel.slice(1)} number</span>
@@ -1213,7 +1213,7 @@ export function ArApWorkspace({
             <div><p className="eyebrow">Cash application</p><h2 id="settlement-composer-title">Record {settlementLabel}</h2></div>
             <button className="secondary-button compact-button" type="button" onClick={() => setComposer(null)}>Cancel</button>
           </div>
-          <form className="journal-form subledger-form" onSubmit={saveSettlement}>
+          <form className="journal-form subledger-form" onSubmit={(event) => { void saveSettlement(event); }}>
             <div className="form-grid form-grid-three">
               <label className="full-field">
                 <span>{settlementLabel[0]?.toUpperCase()}{settlementLabel.slice(1)} number</span>
@@ -1314,7 +1314,7 @@ export function ArApWorkspace({
         return entity ? (
           <section className="panel form-panel void-panel" id="subledger-composer" aria-labelledby="void-title">
             <div className="panel-heading"><div><p className="eyebrow">Append-only correction</p><h2 id="void-title">Void {voidDraft.document.sourceNumber}</h2></div><StatusPill status={voidDraft.document.status} /></div>
-            <form className="journal-form" onSubmit={submitVoid}>
+            <form className="journal-form" onSubmit={(event) => { void submitVoid(event); }}>
               <p className="currency-warning"><span aria-hidden="true">!</span><span>Voiding never deletes history. The system appends a VOIDED version, a reversing journal, and exact allocation reversals where applicable.</span></p>
               <div className="form-grid form-grid-three">
                 <label className="full-field"><span>Reversal period</span><select value={voidDraft.periodId} onChange={(event) => setVoidDraft((draft) => draft ? { ...draft, periodId: event.target.value } : draft)} required>{entity.periods.map((period) => <option key={period.id} value={period.id}>{period.label}</option>)}</select></label>

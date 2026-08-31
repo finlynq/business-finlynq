@@ -1,9 +1,8 @@
-import { randomUUID } from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import {
-  organizationAdminErrorResponse,
   organizationAdminHeaders,
+  organizationAdminMutationRoute,
   prepareOrganizationAdminMutation,
   readOrganizationAdminJson,
 } from "@/app/api/_shared/organization-administration-route";
@@ -18,26 +17,24 @@ export async function POST(
   request: NextRequest,
   { params }: { params: Promise<{ invitationId: string }> },
 ) {
-  const access = await prepareOrganizationAdminMutation(request, "invite-cancel");
-  if (access.response) return access.response;
-  const body = await readOrganizationAdminJson(request, schema);
-  if (body.response) return body.response;
-  const invitationId = z.uuid().safeParse((await params).invitationId);
-  if (!invitationId.success) {
-    return NextResponse.json(
-      { error: "The invitation identifier is invalid." },
-      { status: 400, headers: organizationAdminHeaders },
-    );
-  }
-  try {
+  return organizationAdminMutationRoute(async (requestId) => {
+    const access = await prepareOrganizationAdminMutation(request, "invite-cancel");
+    if (access.response) return access.response;
+    const body = await readOrganizationAdminJson(request, schema);
+    if (body.response) return body.response;
+    const invitationId = z.uuid().safeParse((await params).invitationId);
+    if (!invitationId.success) {
+      return NextResponse.json(
+        { error: "The invitation identifier is invalid." },
+        { status: 400, headers: organizationAdminHeaders },
+      );
+    }
     const result = await cancelOrganizationInvitation({
       principal: access.principal,
-      requestId: randomUUID(),
+      requestId,
       invitationId: invitationId.data,
       ...body.data,
     });
     return NextResponse.json(result, { headers: organizationAdminHeaders });
-  } catch (error) {
-    return organizationAdminErrorResponse(error, "cancel-invitation");
-  }
+  });
 }

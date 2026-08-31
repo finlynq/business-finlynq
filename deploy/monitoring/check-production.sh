@@ -118,7 +118,25 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-http_status="$(curl \
+public_live_status="$(curl \
+  --silent \
+  --show-error \
+  --max-time 10 \
+  --dump-header "$response_headers" \
+  --output "$response_body" \
+  --write-out '%{http_code}' \
+  "$MONITOR_BASE_URL/api/live" || printf '000')"
+if [[ "$public_live_status" != "200" ]] || ! grep -Eq '"status"[[:space:]]*:[[:space:]]*"live"' "$response_body"; then
+  record_failure "public liveness endpoint failed (HTTP $public_live_status)"
+fi
+if ! grep -Eiq '^strict-transport-security:[[:space:]]*max-age=' "$response_headers"; then
+  record_failure "HTTPS response is missing HSTS"
+fi
+if ! grep -Eiq '^cache-control:.*no-store' "$response_headers"; then
+  record_failure "public liveness response is missing no-store caching"
+fi
+
+public_health_status="$(curl \
   --silent \
   --show-error \
   --max-time 10 \
@@ -126,14 +144,28 @@ http_status="$(curl \
   --output "$response_body" \
   --write-out '%{http_code}' \
   "$MONITOR_BASE_URL/api/health" || printf '000')"
-if [[ "$http_status" != "200" ]] || ! grep -Eq '"status"[[:space:]]*:[[:space:]]*"ready"' "$response_body"; then
-  record_failure "public readiness endpoint failed (HTTP $http_status)"
-fi
-if ! grep -Eiq '^strict-transport-security:[[:space:]]*max-age=' "$response_headers"; then
-  record_failure "HTTPS response is missing HSTS"
+if [[ "$public_health_status" != "200" ]] \
+  || ! jq -e 'type == "object" and keys == ["status"] and .status == "ready"' "$response_body" >/dev/null 2>&1; then
+  record_failure "public readiness endpoint failed (HTTP $public_health_status)"
 fi
 if ! grep -Eiq '^cache-control:.*no-store' "$response_headers"; then
-  record_failure "readiness response is missing no-store caching"
+  record_failure "public readiness response is missing no-store caching"
+fi
+
+internal_health_status="$(curl \
+  --silent \
+  --show-error \
+  --max-time 10 \
+  --header 'X-Business-Finlynq-Internal-Health: 1' \
+  --dump-header "$response_headers" \
+  --output "$response_body" \
+  --write-out '%{http_code}' \
+  "http://127.0.0.1:3100/api/health" || printf '000')"
+if [[ "$internal_health_status" != "200" ]] || ! grep -Eq '"status"[[:space:]]*:[[:space:]]*"ready"' "$response_body"; then
+  record_failure "internal readiness endpoint failed (HTTP $internal_health_status)"
+fi
+if ! grep -Eiq '^cache-control:.*no-store' "$response_headers"; then
+  record_failure "internal readiness response is missing no-store caching"
 fi
 response_revision="$(jq -r '.revision // empty' "$response_body" 2>/dev/null || true)"
 [[ "$response_revision" == "$MONITOR_EXPECT_REVISION" ]] || record_failure "readiness revision does not match the deployed release"

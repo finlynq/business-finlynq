@@ -78,7 +78,10 @@ vi.mock("@/modules/identity/passwords", () => ({
   verifyPassword: mocks.verifyPassword,
 }));
 vi.mock("@/modules/identity/request-security", () => ({
-  requestFingerprints: () => ({ ipHash: "i".repeat(64), userAgentHash: "u".repeat(64) }),
+  requestFingerprints: (request: { headers: Headers }) => ({
+    ipHash: "i".repeat(64),
+    userAgentHash: `user-agent-hash:${(request.headers.get("user-agent") ?? "").slice(0, 1000)}`,
+  }),
   validateSameOriginMutation: () => true,
 }));
 vi.mock("@/modules/identity/totp", () => ({ verifyTotp: () => 101 }));
@@ -148,6 +151,7 @@ describe("demo-to-real account session switching", () => {
     });
     expect(mocks.issueMfaUserSession).toHaveBeenCalledWith(expect.objectContaining({
       userId: mocks.identity.user_id,
+      userAgentHash: "user-agent-hash:",
       replacedDemoSessionTokenHash: "hashed:existing-demo-session-token",
       totpCounter: 101,
     }));
@@ -177,6 +181,7 @@ describe("demo-to-real account session switching", () => {
     });
     expect(mocks.issuePasswordUserSession).toHaveBeenCalledWith(expect.objectContaining({
       userId: mocks.identity.user_id,
+      userAgentHash: "user-agent-hash:",
       replacedDemoSessionTokenHash: "hashed:existing-demo-session-token",
     }));
     expect(mocks.issueMfaUserSession).not.toHaveBeenCalled();

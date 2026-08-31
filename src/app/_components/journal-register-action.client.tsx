@@ -151,7 +151,7 @@ export function JournalRegisterAction({
     <div className={styles.action}>
       <details className={styles.details}>
         <summary className={styles.summary}>{action.kind === "post" ? "Post draft" : "Reverse"}</summary>
-        <form className={styles.form} onSubmit={submit} noValidate>
+        <form className={styles.form} onSubmit={(event) => { void submit(event); }} noValidate>
           <p className={styles.warning}>
             {action.kind === "post"
               ? "Posting assigns a permanent journal number and freezes every line. Corrections require a linked reversal."

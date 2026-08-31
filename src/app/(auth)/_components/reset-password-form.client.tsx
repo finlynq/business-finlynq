@@ -95,7 +95,7 @@ export function ResetPasswordForm() {
   if (success) return <div className={styles.successStack}><div className={styles.successAlert} role="status">Your password was changed and all existing sessions were signed out.</div><Link className={styles.submitButton} href="/login">Continue to sign in</Link></div>;
 
   return (
-    <form className={styles.form} onSubmit={submit} noValidate>
+    <form className={styles.form} onSubmit={(event) => { void submit(event); }} noValidate>
       {error && <div className={styles.alert} role="alert">{error}</div>}
       {availableAt && <div className={styles.alert} role="status">This protected recovery becomes available {new Date(availableAt).toLocaleString()}.</div>}
       {replacementEnrollment && <div className={styles.successAlert} role="status">Protected recovery is approved. Add a replacement authenticator for your {replacementEnrollment.organizationName} account before changing the password.</div>}
@@ -103,7 +103,7 @@ export function ResetPasswordForm() {
       <label><span>Confirm new password</span><input name="confirmation" type="password" autoComplete="new-password" required minLength={14} maxLength={128} /></label>
       {replacementEnrollment && <AuthenticatorEnrollmentSetup enrollment={replacementEnrollment} replacement />}
       {(mfaRequired || replacementEnrollment) && <label><span>{replacementEnrollment ? "Replacement authenticator code" : "Authenticator code"}</span><input name="otp" type="text" autoComplete="one-time-code" inputMode="numeric" pattern="[0-9]{6}" minLength={6} maxLength={6} required /></label>}
-      {mfaRequired && <button className={styles.afterFormLink} type="button" onClick={escalate} disabled={busy || escalating}>{escalating ? "Requesting protected recovery…" : "I can’t use my authenticator"}</button>}
+      {mfaRequired && <button className={styles.afterFormLink} type="button" onClick={() => { void escalate(); }} disabled={busy || escalating}>{escalating ? "Requesting protected recovery…" : "I can’t use my authenticator"}</button>}
       <button className={styles.submitButton} type="submit" disabled={busy || !token}>{busy ? "Updating…" : "Update password"}</button>
     </form>
   );

@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { readAuthMutationJson } from "@/app/api/_shared/auth-mutation-route";
+import { logRouteFailure } from "@/app/api/_shared/route-failure-log";
 import { assertEmailDeliveryReady, consumeRateLimit, queuePasswordReset } from "@/modules/identity/auth-store";
 import { assertAccountAuthenticationConfigured } from "@/modules/identity/email-provider";
 import { requestFingerprints, validateSameOriginMutation } from "@/modules/identity/request-security";
@@ -16,10 +17,10 @@ export async function POST(request: NextRequest) {
   const startedAt = Date.now();
   const requestId = randomUUID();
   const headers = { "Cache-Control": "private, no-store", "X-Robots-Tag": "noindex" };
-  if (!validateSameOriginMutation(request)) return NextResponse.json({ error: "The request could not be verified." }, { status: 403, headers });
-  if (process.env.ACCOUNT_LOGIN_ENABLED !== "true") return NextResponse.json({ message: genericMessage }, { headers });
-
   try {
+    if (!validateSameOriginMutation(request)) return NextResponse.json({ error: "The request could not be verified." }, { status: 403, headers });
+    if (process.env.ACCOUNT_LOGIN_ENABLED !== "true") return NextResponse.json({ message: genericMessage }, { headers });
+
     const { ipHash } = requestFingerprints(request);
     const ipLimit = await consumeRateLimit("password-reset-ip-hour", ipHash, 8, 3600);
     if (!ipLimit.allowed) {
@@ -58,10 +59,7 @@ export async function POST(request: NextRequest) {
     await settleSensitiveResponse(startedAt);
     return NextResponse.json({ message: genericMessage }, { headers });
   } catch (error) {
-    console.error("Business Finlynq password-reset request failed", {
-      requestId,
-      error: error instanceof Error ? error.message : "unknown recovery error",
-    });
+    logRouteFailure("password-reset-request", requestId, error);
     await settleSensitiveResponse(startedAt);
     return NextResponse.json({ message: genericMessage }, { headers });
   }

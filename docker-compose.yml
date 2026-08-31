@@ -2,7 +2,7 @@ name: business-finlynq
 
 services:
   database:
-    image: postgres:16-alpine
+    image: postgres:16-alpine@sha256:cf78e76683b9ca8c5733cbbdce6c9262b45b6767934dd0a95e671f9a0fc20685
     environment:
       POSTGRES_DB: business_finlynq
       POSTGRES_USER: business_finlynq_owner
@@ -295,6 +295,7 @@ services:
       BUSINESS_FINLYNQ_DB_USER: business_finlynq_app
       BUSINESS_FINLYNQ_DB_PASSWORD_FILE: /run/secrets/business_finlynq_app_db_password
       APP_ORIGIN: https://${BUSINESS_FINLYNQ_HOSTNAME:-business.finlynq.com}
+      TRUSTED_PROXY_HOPS: ${TRUSTED_PROXY_HOPS:-0}
       SESSION_COOKIE_NAME: __Host-business_finlynq_session
       DEMO_CLAIM_COOKIE_NAME: __Host-business_finlynq_demo_claim
       DEMO_LOGIN_ENABLED: ${DEMO_LOGIN_ENABLED:-false}
@@ -473,7 +474,7 @@ services:
         max-file: "3"
 
   edge:
-    image: caddy:2.10.2-alpine
+    image: caddy:2.10.2-alpine@sha256:4c6e91c6ed0e2fa03efd5b44747b625fec79bc9cd06ac5235a779726618e530d
     profiles: [edge]
     environment:
       BUSINESS_FINLYNQ_HOSTNAME: ${BUSINESS_FINLYNQ_HOSTNAME:-business.finlynq.com}
@@ -644,7 +645,7 @@ services:
         max-file: "3"
 
   restore_database:
-    image: postgres:16-alpine
+    image: postgres:16-alpine@sha256:cf78e76683b9ca8c5733cbbdce6c9262b45b6767934dd0a95e671f9a0fc20685
     profiles: [restore-drill]
     environment:
       POSTGRES_DB: business_finlynq_restore_drill

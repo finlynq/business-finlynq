@@ -297,7 +297,7 @@ describe("accounting reporting hierarchies", () => {
     expect(demoSeed).toContain("defaultFinancialStatementGroups");
     expect(settings).toContain("Reporting hierarchies");
     expect(settings).toContain("PRIMARY_REPORTING");
-    expect(journal.entries.at(-1)).toEqual(expect.objectContaining({
+    expect(journal.entries).toContainEqual(expect.objectContaining({
       idx: 24,
       tag: "0024_accounting_hierarchies",
     }));

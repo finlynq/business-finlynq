@@ -1,7 +1,11 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { renderToStaticMarkup } from "react-dom/server";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+
+vi.mock("next/headers", () => ({
+  headers: vi.fn(async () => new Headers({ "x-nonce": "test-request-nonce" })),
+}));
 import { LoginForm } from "@/app/(auth)/_components/login-form.client";
 import SignupPage from "@/app/(auth)/signup/page";
 import { MarketingFooter } from "@/app/(marketing)/_components/marketing-footer";
@@ -72,11 +76,11 @@ describe("public account entry points", () => {
     expect(overviewSource).toContain("Create a permanent business account");
   });
 
-  it("renders a transparent fail-closed signup page without an account form", () => {
+  it("renders a transparent fail-closed signup page without an account form", async () => {
     process.env.ACCOUNT_LOGIN_ENABLED = "false";
     process.env.ACCOUNT_SIGNUP_ENABLED = "false";
 
-    const markup = renderToStaticMarkup(<SignupPage />);
+    const markup = renderToStaticMarkup(await SignupPage());
 
     expect(markup).toContain("Secure account signup is being enabled");
     expect(markup).toContain("This page will not create or retain an account request yet.");

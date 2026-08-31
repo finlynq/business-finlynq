@@ -8,6 +8,7 @@ Target hostname: `business.finlynq.com`.
 - Application directory on the current target: `/home/deploy/business-finlynq`; deploy only a reviewed commit and keep the checkout non-writable to service processes.
 - Data directory: `/var/lib/business-finlynq`; uploads are never served directly.
 - Loopback listener: `127.0.0.1:3100`; Caddy/Nginx terminates TLS for the exact host.
+- Trusted request-IP boundary: set `TRUSTED_PROXY_HOPS=1` for either reviewed Caddy arrangement. Leave it unset or `0` when Next.js is reached directly.
 - PostgreSQL database: `business_finlynq` with a database owner used only by bootstrap/migrations, a non-owner/non-`BYPASSRLS` app role, a separate function-only/non-`BYPASSRLS` authentication-email worker role, and a separately provisioned read-only `BYPASSRLS` backup role. `BYPASSRLS` is limited to the backup role because a complete cross-tenant logical dump cannot be produced through tenant RLS.
 - Host-only secure cookie named `__Host-business_finlynq_session`; do not use a `.finlynq.com` domain cookie.
 - Root wrapping key mounted as a read-only Docker secret file; it is never placed in the application environment.
@@ -19,7 +20,7 @@ Target hostname: `business.finlynq.com`.
 3. Run the encrypted backup workflow and confirm its remote checksum/off-site marker plus separate recovery-key availability. Follow [the backup and recovery runbook](../operations/backups-and-recovery.md).
 4. Run migrations in the one-shot `migrate` container using the database owner, then require the post-migration app, authentication-worker, and backup-role reconciliation services to succeed before bootstrap or application startup. Never grant migration privileges to a runtime role.
 5. Install the immutable release directory and restart only this service.
-6. Verify `/api/health`, exact origin/security headers, tenant RLS, audit insertion, and a read-only smoke query. Readiness fails closed if PostgreSQL or either mounted encryption secret is unavailable.
+6. Verify public `/api/live`, the minimal public `/api/health`, detailed loopback readiness, exact origin/security headers, tenant RLS, audit insertion, and a read-only smoke query. Readiness fails closed if PostgreSQL or either mounted encryption secret is unavailable.
 7. Roll back the application artifact if needed; database rollback uses an explicit forward repair migration.
 
 ## Writable demo deployment and rollback
@@ -43,7 +44,9 @@ docker compose -p business-finlynq build
 docker compose -p business-finlynq up --detach --wait app
 ```
 
-Install [deploy/Caddyfile.example](../../deploy/Caddyfile.example) into the host proxy, validate it, and reload only that proxy. The example forwards to `127.0.0.1:3100`.
+Install [deploy/Caddyfile.example](../../deploy/Caddyfile.example) into the host proxy, validate it, and reload only that proxy. The example forwards to `127.0.0.1:3100` and unconditionally removes the internal-health detail marker from public requests.
+
+Set `TRUSTED_PROXY_HOPS=1` in the application deployment environment. The host Caddy is the only trusted hop and its default `reverse_proxy` handling replaces untrusted client-supplied forwarding values before sending `X-Forwarded-For` upstream. Do not expose `127.0.0.1:3100` beyond the local host.
 
 ### Dedicated server with containerized Caddy
 
@@ -57,9 +60,15 @@ docker compose -p business-finlynq --profile edge ps
 
 The `edge` service uses [deploy/Caddyfile.container](../../deploy/Caddyfile.container), reaches the application only over `business_finlynq_edge`, and obtains and renews TLS certificates automatically. It publishes TCP `80`/`443` and UDP `443`; make sure the host firewall allows those ports and no host service or other container is already listening on them. Set `BUSINESS_FINLYNQ_HOSTNAME=business.finlynq.com`, and point the hostname's DNS records to the server before starting the profile. Do not install the host-proxy example in this arrangement.
 
+This arrangement also has exactly one trusted hop. Set `TRUSTED_PROXY_HOPS=1`; the application container must remain reachable only from the Compose edge network and the loopback diagnostic mapping. The containerized Caddy also removes the internal-health detail marker from every proxied request.
+
+Public `/api/health` performs the complete readiness check but returns only status. Operators retrieve checks and revision directly from `http://127.0.0.1:3100/api/health` with `X-Business-Finlynq-Internal-Health: 1`; never send that marker through the public hostname and never authorize health details from `X-Forwarded-For` or `X-Real-IP`. Caddy's active `/api/health` upstream probe needs no marker because it consumes only the HTTP status.
+
+`TRUSTED_PROXY_HOPS` is a fail-closed trust contract, not a general header toggle. When it is unset, blank, `0`, invalid, or larger than the received chain, the application ignores `X-Forwarded-For` and uses the shared `unknown` rate-limit bucket. With a positive value, it validates the entire bounded IP chain and selects that many positions from the right: `1` selects the address written by the immediate trusted proxy, while `2` is appropriate only when two controlled proxies append in a fixed path. Malformed, empty, or overlong chains also resolve to `unknown`; `X-Real-IP` is never a fallback. If a CDN or load balancer is later added, first prevent direct access around every trusted hop, review how each hop sanitizes/appends the header, then change the count to match the proven topology.
+
 Before the first run:
 
-1. Create a root-controlled Compose environment file containing the owner `POSTGRES_PASSWORD` and paths to independent, one-line app, authentication-worker, and backup database password files through `APP_DATABASE_PASSWORD_FILE`, `AUTH_WORKER_DATABASE_PASSWORD_FILE`, and `BACKUP_DATABASE_PASSWORD_FILE`. The files must be 24–1024 characters, root-owned, and readable only by the deployment secret group. Set `BUSINESS_FINLYNQ_HOSTNAME=business.finlynq.com`, `SESSION_COOKIE_NAME=__Host-business_finlynq_session`, `DEMO_LOGIN_ENABLED=true`, and `DEMO_WRITES_ENABLED=true`. Keep `ACCOUNT_LOGIN_ENABLED=false`, `ACCOUNT_SIGNUP_ENABLED=false`, `BUSINESS_WRITES_ENABLED=false`, and `BANK_FEEDS_ENABLED=false` until their separate launch gates pass. Do not put encryption keys or runtime database passwords inline in this file.
+1. Create a root-controlled Compose environment file containing the owner `POSTGRES_PASSWORD` and paths to independent, one-line app, authentication-worker, and backup database password files through `APP_DATABASE_PASSWORD_FILE`, `AUTH_WORKER_DATABASE_PASSWORD_FILE`, and `BACKUP_DATABASE_PASSWORD_FILE`. The files must be 24–1024 characters, root-owned, and readable only by the deployment secret group. Set `BUSINESS_FINLYNQ_HOSTNAME=business.finlynq.com`, `TRUSTED_PROXY_HOPS=1`, `SESSION_COOKIE_NAME=__Host-business_finlynq_session`, `DEMO_LOGIN_ENABLED=true`, and `DEMO_WRITES_ENABLED=true`. Keep `ACCOUNT_LOGIN_ENABLED=false`, `ACCOUNT_SIGNUP_ENABLED=false`, `BUSINESS_WRITES_ENABLED=false`, and `BANK_FEEDS_ENABLED=false` until their separate launch gates pass. Do not put encryption keys or runtime database passwords inline in this file.
 2. Create `/etc/business-finlynq/secrets/organization-root-kek` containing exactly one base64-encoded 32-byte key and `/etc/business-finlynq/secrets/identity-secret` containing one base64-encoded 64-byte secret. The first wraps organization DEKs. The second is independently split for identity-field encryption and blind indexes.
 3. Make both files root-owned, mode `0440`, with a dedicated numeric group recorded as `BUSINESS_FINLYNQ_SECRET_GID`. Set `ORGANIZATION_ROOT_KEK_FILE` and `IDENTITY_SECRET_FILE` to those host paths. The app receives them as read-only Compose secrets.
 4. Mount a one-line Resend key through `AUTH_RESEND_API_KEY_FILE` into the `auth_email_worker` service only, configure the non-secret email provider/sender settings for app and worker, enable the `auth-email` profile, and exercise a one-use reset link before onboarding real users. The public app and invitation service must not mount or read the provider key. Never place the provider key inline in the production environment. Reset tokens are carried in URL fragments and posted to the server so Caddy request logs never receive them. Before enabling self-service signup, also mount a root-controlled Turnstile secret through `TURNSTILE_SECRET_KEY_FILE`, configure `SIGNUP_TURNSTILE_SITE_KEY` for a widget restricted to `business.finlynq.com`, and set `SIGNUP_TURNSTILE_ENABLED=true`.

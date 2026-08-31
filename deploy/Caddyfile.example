@@ -10,6 +10,9 @@ business.finlynq.com {
   }
 
   reverse_proxy 127.0.0.1:3100 {
+    # Only direct loopback probes may request the detailed readiness payload.
+    # Remove any client attempt before proxying.
+    header_up -X-Business-Finlynq-Internal-Health
     health_uri /api/health
     health_interval 30s
     health_timeout 5s

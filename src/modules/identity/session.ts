@@ -1,8 +1,9 @@
 import { createHash, randomBytes } from "node:crypto";
 import { cookies, headers } from "next/headers";
 import type { NextRequest, NextResponse } from "next/server";
-import { decryptIdentityField, identityLookupHash } from "@/security/identity-secret";
+import { decryptIdentityField } from "@/security/identity-secret";
 import { resolveStoredSession, type StoredPrincipal } from "./auth-store";
+import { userAgentFingerprint } from "./request-security";
 
 export type SessionPrincipal = Readonly<{
   sessionId: string;
@@ -87,7 +88,7 @@ export function transactionAuthMethod(principal: SessionPrincipal, now = Date.no
 
 export async function resolveSession(rawToken: string | undefined, userAgent: string | null): Promise<SessionPrincipal | null> {
   if (!rawToken || rawToken.length < 32 || rawToken.length > 200) return null;
-  const userAgentHash = userAgent ? identityLookupHash(`user-agent|${userAgent.slice(0, 1000)}`) : null;
+  const userAgentHash = userAgentFingerprint(userAgent);
   const stored = await resolveStoredSession(hashOpaqueToken(rawToken), userAgentHash);
   if (stored?.session_mode === "REAL" && process.env.ACCOUNT_LOGIN_ENABLED !== "true") return null;
   return stored ? principalFromStored(stored) : null;

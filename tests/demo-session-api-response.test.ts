@@ -40,23 +40,32 @@ describe("demo session API error response", () => {
     expect(demoSessionLeaseLostResponse({ code: "28000", message: "Demo session claim is not live" })).toBeNull();
   });
 
-  it("maps the typed error before every tenant mutation boundary logs or returns a conflict", () => {
-    const boundaryFiles = [
+  it("maps the typed error in each shared mutation boundary before logging or returning a conflict", () => {
+    const sharedBoundaryFiles = [
       "src/app/api/_shared/subledger-mutation-route.ts",
       "src/app/api/_shared/organization-administration-route.ts",
+    ];
+    const factoryRouteFiles = [
       "src/app/api/ledger/journals/route.ts",
       "src/app/api/ledger/journals/[journalId]/post/route.ts",
       "src/app/api/ledger/journals/[journalId]/reverse/route.ts",
       "src/app/api/ledger/periods/[periodId]/transition/route.ts",
       "src/app/api/parties/route.ts",
+      "src/app/api/parties/[partyId]/accounts/route.ts",
     ];
 
-    for (const file of boundaryFiles) {
+    for (const file of sharedBoundaryFiles) {
       const source = readFileSync(resolve(process.cwd(), file), "utf8");
       const mapping = source.indexOf("demoSessionLeaseLostResponse(error)");
-      const logging = source.indexOf("console.error", mapping);
+      const logging = source.indexOf("logRouteFailure", mapping);
       expect(mapping, file).toBeGreaterThan(-1);
       expect(logging, file).toBeGreaterThan(mapping);
+    }
+
+    for (const file of factoryRouteFiles) {
+      const source = readFileSync(resolve(process.cwd(), file), "utf8");
+      expect(source, file).toContain("createMutationRoute");
+      expect(source, file).not.toContain("console.error");
     }
   });
 });

@@ -1,6 +1,7 @@
 import {
   boolean,
   date,
+  foreignKey,
   integer,
   numeric,
   pgEnum,
@@ -10,8 +11,9 @@ import {
   uniqueIndex,
   uuid,
 } from "drizzle-orm/pg-core";
-import { organizations } from "./identity";
-import { glAccounts, legalEntities, ledgers } from "./ledger";
+import { organizations, users } from "./identity";
+import { sourceDocuments } from "./journals";
+import { currencyDefinitions, glAccounts, legalEntities, ledgers } from "./ledger";
 
 export const partyRoleKind = pgEnum("party_role_kind", ["CUSTOMER", "SUPPLIER"]);
 export const openItemStatus = pgEnum("open_item_status", ["OPEN", "PARTIALLY_SETTLED", "SETTLED", "REVERSED"]);
@@ -154,13 +156,17 @@ export const documentSettlementAllocations = pgTable(
     ledgerId: uuid("ledger_id")
       .notNull()
       .references(() => ledgers.id, { onDelete: "restrict" }),
-    paymentSourceDocumentId: uuid("payment_source_document_id").notNull(),
+    paymentSourceDocumentId: uuid("payment_source_document_id")
+      .notNull()
+      .references(() => sourceDocuments.id, { onDelete: "restrict" }),
     openItemId: uuid("open_item_id")
       .notNull()
       .references(() => openItems.id, { onDelete: "restrict" }),
     allocationType: text("allocation_type").notNull(),
     reversesAllocationId: uuid("reverses_allocation_id"),
-    transactionCurrency: text("transaction_currency").notNull(),
+    transactionCurrency: text("transaction_currency")
+      .notNull()
+      .references(() => currencyDefinitions.code, { onDelete: "restrict" }),
     transactionAmount: numeric("transaction_amount", { precision: 38, scale: 9 }).notNull(),
     carryingFunctionalAmount: numeric("carrying_functional_amount", { precision: 38, scale: 9 }).notNull(),
     settlementFunctionalAmount: numeric("settlement_functional_amount", { precision: 38, scale: 9 }).notNull(),
@@ -180,6 +186,26 @@ export const documentSettlementAllocations = pgTable(
       table.idempotencyKey,
     ),
     uniqueIndex("document_settlement_allocations_reversal_unique").on(table.reversesAllocationId),
+    foreignKey({
+      columns: [table.organizationId, table.ledgerId],
+      foreignColumns: [ledgers.organizationId, ledgers.id],
+      name: "document_settlement_allocations_tenant_ledger_fk",
+    }),
+    foreignKey({
+      columns: [table.organizationId, table.paymentSourceDocumentId],
+      foreignColumns: [sourceDocuments.organizationId, sourceDocuments.id],
+      name: "document_settlement_allocations_tenant_payment_fk",
+    }),
+    foreignKey({
+      columns: [table.organizationId, table.openItemId],
+      foreignColumns: [openItems.organizationId, openItems.id],
+      name: "document_settlement_allocations_tenant_open_item_fk",
+    }),
+    foreignKey({
+      columns: [table.organizationId, table.reversesAllocationId],
+      foreignColumns: [table.organizationId, table.id],
+      name: "document_settlement_allocations_tenant_reversal_fk",
+    }),
   ],
 );
 
@@ -193,14 +219,12 @@ export const openItemVoidEvents = pgTable(
     ledgerId: uuid("ledger_id")
       .notNull()
       .references(() => ledgers.id, { onDelete: "restrict" }),
-    openItemId: uuid("open_item_id")
-      .notNull()
-      .references(() => openItems.id, { onDelete: "restrict" }),
+    openItemId: uuid("open_item_id").notNull(),
     voidSourceDocumentId: uuid("void_source_document_id").notNull(),
     reason: text("reason").notNull(),
     idempotencyKey: text("idempotency_key").notNull(),
     commandHash: text("command_hash").notNull(),
-    createdBy: uuid("created_by").notNull(),
+    createdBy: uuid("created_by").notNull().references(() => users.id, { onDelete: "restrict" }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [
@@ -210,5 +234,20 @@ export const openItemVoidEvents = pgTable(
       table.organizationId,
       table.idempotencyKey,
     ),
+    foreignKey({
+      columns: [table.organizationId, table.ledgerId],
+      foreignColumns: [ledgers.organizationId, ledgers.id],
+      name: "open_item_void_events_tenant_ledger_fk",
+    }).onDelete("restrict"),
+    foreignKey({
+      columns: [table.organizationId, table.openItemId],
+      foreignColumns: [openItems.organizationId, openItems.id],
+      name: "open_item_void_events_tenant_item_fk",
+    }).onDelete("restrict"),
+    foreignKey({
+      columns: [table.organizationId, table.voidSourceDocumentId],
+      foreignColumns: [sourceDocuments.organizationId, sourceDocuments.id],
+      name: "open_item_void_events_tenant_source_fk",
+    }).onDelete("restrict"),
   ],
 );

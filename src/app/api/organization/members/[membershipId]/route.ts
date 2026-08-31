@@ -1,9 +1,8 @@
-import { randomUUID } from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import {
-  organizationAdminErrorResponse,
   organizationAdminHeaders,
+  organizationAdminMutationRoute,
   prepareOrganizationAdminMutation,
   readOrganizationAdminJson,
 } from "@/app/api/_shared/organization-administration-route";
@@ -33,24 +32,24 @@ export async function PATCH(
   request: NextRequest,
   { params }: { params: Promise<{ membershipId: string }> },
 ) {
-  const access = await prepareOrganizationAdminMutation(request, "member");
-  if (access.response) return access.response;
-  const body = await readOrganizationAdminJson(request, schema);
-  if (body.response) return body.response;
-  const membershipId = z.uuid().safeParse((await params).membershipId);
-  if (!membershipId.success) {
-    return NextResponse.json(
-      { error: "The member identifier is invalid." },
-      { status: 400, headers: organizationAdminHeaders },
-    );
-  }
-  const common = {
-    principal: access.principal,
-    requestId: randomUUID(),
-    membershipId: membershipId.data,
-    reason: body.data.reason,
-  };
-  try {
+  return organizationAdminMutationRoute(async (requestId) => {
+    const access = await prepareOrganizationAdminMutation(request, "member");
+    if (access.response) return access.response;
+    const body = await readOrganizationAdminJson(request, schema);
+    if (body.response) return body.response;
+    const membershipId = z.uuid().safeParse((await params).membershipId);
+    if (!membershipId.success) {
+      return NextResponse.json(
+        { error: "The member identifier is invalid." },
+        { status: 400, headers: organizationAdminHeaders },
+      );
+    }
+    const common = {
+      principal: access.principal,
+      requestId,
+      membershipId: membershipId.data,
+      reason: body.data.reason,
+    };
     if (body.data.action === "ASSIGN_ROLE") {
       return NextResponse.json(await assignOrganizationMemberRole({
         ...common,
@@ -69,7 +68,5 @@ export async function PATCH(
       expectedVersion: body.data.expectedVersion,
       active: body.data.action === "REACTIVATE",
     }), { headers: organizationAdminHeaders });
-  } catch (error) {
-    return organizationAdminErrorResponse(error, "update-member-access");
-  }
+  });
 }

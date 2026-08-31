@@ -1,6 +1,8 @@
+import { randomUUID } from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
 import type { ZodType } from "zod";
 import { demoSessionLeaseLostResponse } from "@/app/api/_shared/demo-session-error-response";
+import { logRouteFailure } from "@/app/api/_shared/route-failure-log";
 import { consumeRateLimit } from "@/modules/identity/auth-store";
 import { organizationAdministrationFailure } from "@/modules/identity/organization-administration";
 import {
@@ -103,16 +105,31 @@ export async function readOrganizationAdminJson<Output>(
   }
 }
 
-export function organizationAdminErrorResponse(error: unknown, operation: string): NextResponse {
+export function organizationAdminErrorResponse(error: unknown, requestId: string): NextResponse {
   const expiredSession = demoSessionLeaseLostResponse(error);
   if (expiredSession) return expiredSession;
   const failure = organizationAdministrationFailure(error);
-  console.error("Business Finlynq organization administration failed", {
-    operation,
-    code: failure.code,
-  });
+  logRouteFailure("organization-administration", requestId, error);
   return NextResponse.json(
     { error: failure.message, code: failure.code },
     { status: failure.status, headers: organizationAdminHeaders },
   );
+}
+
+/**
+ * Keep the complete organization-administration request lifecycle behind one
+ * failure boundary. This includes origin/session resolution, request
+ * fingerprinting, rate-limit setup, parameter/body parsing, and the command
+ * itself so infrastructure failures can never escape through Next's raw error
+ * response.
+ */
+export async function organizationAdminMutationRoute(
+  invoke: (requestId: string) => Promise<NextResponse>,
+): Promise<NextResponse> {
+  const requestId = randomUUID();
+  try {
+    return await invoke(requestId);
+  } catch (error) {
+    return organizationAdminErrorResponse(error, requestId);
+  }
 }

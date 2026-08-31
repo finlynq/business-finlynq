@@ -123,7 +123,7 @@ export async function lookupLogin(emailHash: string): Promise<LoginIdentity[]> {
 
 export async function issueMfaUserSession(input: {
   userId: string; organizationId: string; membershipId: string; factorId: string; totpCounter: number;
-  tokenHash: string; ipHash: string; userAgentHash: string | null; requestId: string;
+  tokenHash: string; ipHash: string; userAgentHash: string; requestId: string;
   replacedDemoSessionTokenHash?: string | null;
 }): Promise<string | null> {
   // The login route supplies a replacement token only after resolving it as a
@@ -150,7 +150,7 @@ export async function issueMfaUserSession(input: {
 
 export async function issuePasswordUserSession(input: {
   userId: string; organizationId: string; membershipId: string;
-  tokenHash: string; ipHash: string; userAgentHash: string | null; requestId: string;
+  tokenHash: string; ipHash: string; userAgentHash: string; requestId: string;
   replacedDemoSessionTokenHash?: string | null;
 }): Promise<string | null> {
   const result = await queryDatabase<{ session_id: string | null }>(
@@ -177,7 +177,7 @@ export async function issueDemoSession(input: {
   claimTokenHash: string | null;
   replacementClaimTokenHash: string;
   ipHash: string;
-  userAgentHash: string | null;
+  userAgentHash: string;
   requestId: string;
 }) {
   const result = await queryDatabase<{
