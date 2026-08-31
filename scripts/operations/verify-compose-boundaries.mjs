@@ -12,6 +12,7 @@ const rendered = execFileSync(
     "--profile", "auth-email",
     "--profile", "account-operations",
     "--profile", "operations",
+    "--profile", "acceptance",
     "--profile", "demo-maintenance",
     "--profile", "restore-drill",
     "config",
@@ -85,6 +86,7 @@ if (!app) fail("app service is missing");
 const expectedReleaseImages = {
   app: `business-finlynq-app:${process.env.BUSINESS_FINLYNQ_IMAGE_REVISION}`,
   auth_email_worker: `business-finlynq-auth-worker:${process.env.BUSINESS_FINLYNQ_IMAGE_REVISION}`,
+  release_acceptance: `business-finlynq-acceptance:${process.env.BUSINESS_FINLYNQ_IMAGE_REVISION}`,
   backup: `business-finlynq-operations:${process.env.BUSINESS_FINLYNQ_IMAGE_REVISION}`,
   bootstrap_demo: `business-finlynq-migrator:${process.env.BUSINESS_FINLYNQ_IMAGE_REVISION}`,
   migrate: `business-finlynq-migrator:${process.env.BUSINESS_FINLYNQ_IMAGE_REVISION}`,
@@ -108,6 +110,41 @@ if (app.build?.args?.BUSINESS_FINLYNQ_IMAGE_REVISION !== process.env.BUSINESS_FI
   fail("app image build does not embed the configured release revision");
 }
 if (app.environment?.BUSINESS_FINLYNQ_DB_PASSWORD) fail("app exposes its database password inline");
+
+const releaseAcceptance = services.release_acceptance;
+if (!releaseAcceptance) fail("release browser-acceptance service is missing");
+if (releaseAcceptance.build?.target !== "acceptance") {
+  fail("release browser acceptance does not use the dedicated acceptance image target");
+}
+if ((releaseAcceptance.command ?? []).join(" ") !== "./node_modules/.bin/playwright test") {
+  fail("release browser acceptance does not run the installed Playwright binary directly");
+}
+if (releaseAcceptance.user !== "pwuser" || releaseAcceptance.read_only !== true
+  || releaseAcceptance.restart !== "no" || releaseAcceptance.stdin_open === true
+  || releaseAcceptance.tty === true || !(releaseAcceptance.cap_drop ?? []).includes("ALL")
+  || !(releaseAcceptance.security_opt ?? []).includes("no-new-privileges:true")) {
+  fail("release browser acceptance is not a hardened noninteractive one-shot");
+}
+if (releaseAcceptance.network_mode !== "host" || Object.keys(releaseAcceptance.networks ?? {}).length > 0
+  || (releaseAcceptance.ports ?? []).length > 0) {
+  fail("release browser acceptance does not use the host network without published ports");
+}
+if ((releaseAcceptance.secrets ?? []).length > 0 || (releaseAcceptance.volumes ?? []).length > 0) {
+  fail("release browser acceptance receives a host mount or deployment secret");
+}
+if (releaseAcceptance.environment?.PLAYWRIGHT_BASE_URL
+    !== (process.env.BUSINESS_FINLYNQ_APP_ORIGIN ?? `https://${process.env.BUSINESS_FINLYNQ_HOSTNAME ?? "business.finlynq.com"}`)
+  || releaseAcceptance.environment?.E2E_EXPECT_ACCOUNT_LOGIN_ENABLED
+    !== (process.env.ACCOUNT_LOGIN_ENABLED ?? "false")
+  || releaseAcceptance.environment?.E2E_EXPECT_ACCOUNT_SIGNUP_ENABLED
+    !== (process.env.ACCOUNT_SIGNUP_ENABLED ?? "false")) {
+  fail("release browser acceptance does not inherit the reviewed origin and account gates");
+}
+for (const requiredTmpfs of ["/tmp", "/app/test-results", "/app/playwright-report"]) {
+  if (!(releaseAcceptance.tmpfs ?? []).some((entry) => entry.startsWith(`${requiredTmpfs}:`))) {
+    fail(`release browser acceptance lacks bounded tmpfs storage at ${requiredTmpfs}`);
+  }
+}
 if (app.environment?.BUSINESS_FINLYNQ_DB_PASSWORD_FILE !== "/run/secrets/business_finlynq_app_db_password") {
   fail("app does not use its dedicated database-password file");
 }

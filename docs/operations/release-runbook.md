@@ -16,7 +16,7 @@ Use this checklist for every Business Finlynq release. Releases are commit-addre
 
 ## Scripted release contract
 
-`deploy/release/run-release.sh` is the authoritative application-update path. It refuses a dirty checkout, an abbreviated or non-HEAD revision, a reused evidence run ID, a permissive environment file, a revision mismatch, a mutable/non-addressed release image, or an unsafe rehearsal resource. It materializes the exact candidate Git object tree into a private directory, retains its Git-tree and file-hash manifests, snapshots both reviewed environment files as mode `0600`, and uses only those staged assets and snapshots for Compose, helper, test, and systemd-install operations. It builds four commit-tagged images (`app`, `migrator`, `auth-worker`, and `operations`), verifies each immutable Docker image ID and OCI revision label, then pins every release-run service to the captured `sha256:` image ID with pulling and building disabled before any production database operation.
+`deploy/release/run-release.sh` is the authoritative application-update path. It refuses a dirty checkout, an abbreviated or non-HEAD revision, a reused evidence run ID, a permissive environment file, a revision mismatch, a mutable/non-addressed release image, or an unsafe rehearsal resource. It materializes the exact candidate Git object tree into a private directory, retains its Git-tree and file-hash manifests, snapshots both reviewed environment files as mode `0600`, and uses only those staged assets and snapshots for Compose, helper, test, and systemd-install operations. It builds five commit-tagged images (`app`, `migrator`, `auth-worker`, `operations`, and browser `acceptance`), verifies each immutable Docker image ID and OCI revision label, then pins every release-run service to the captured `sha256:` image ID with pulling and building disabled before any production database operation. The acceptance image is based on the exact Playwright version and immutable official-image digest committed in the Dockerfile; it contains its own Node runtime, npm-installed lockfile dependencies, Chromium, and browser libraries, so the production host needs Docker but does not need host Node, npm, `node_modules`, Playwright browsers, or browser system packages.
 
 The production mode is deliberately for updating an existing release: it requires the running app so its exact prior image ID and OCI revision can be retained. Use rehearsal mode to prove clean installation. The script performs, in order:
 
@@ -24,7 +24,7 @@ The production mode is deliberately for updating an existing release: it require
 2. build and record the candidate image IDs before changing runtime state;
 3. retain the previous app image ID, durably pause and drain the selected scheduler, prove the alternate scheduler inactive, contain and report any orphaned scheduled one-shot container, stop the app and auth worker, and record that every write surface is quiesced;
 4. while writes remain unavailable, create and verify the encrypted pre-migration backup (with bounded timeout and orphan cleanup), then run migration, runtime-role reconciliation, auth-worker reconciliation, backup-role reconciliation, the exact schema/RLS/grant and journal-type verifiers, and the full audit-graph/request-outbox integrity verifier before any app traffic is restored;
-5. run additive bootstrap, persist and verify the post-bootstrap accounting-evidence result, prove candidate readiness with every gate disabled, then run browser acceptance with real-business writes and live bank feeds still disabled;
+5. run additive bootstrap, persist and verify the post-bootstrap accounting-evidence result, prove candidate readiness with every gate disabled, then run the immutable, secretless browser-acceptance container with real-business writes and live bank feeds still disabled;
 6. only after browser acceptance, recreate the app from the same immutable image ID with the reviewed final gate posture, verify the exact app/worker image IDs and OCI labels plus detailed and public readiness, install and byte-verify all eight systemd service/timer files when applicable, resume schedulers, and run the installed production monitor; and
 7. retain checksummed JSON/log evidence plus the prior immutable app image record. Database rollback remains forward-repair-only.
 
@@ -115,7 +115,7 @@ The pair verifier checks the complete runner artifact format, internal identitie
 
 The sequence below explains the controls enforced by the scripted path. Do not substitute an ad hoc copy/paste deployment for `run-release.sh`.
 
-1. Materialize and hash the exact Git tree, snapshot the reviewed environments, build all four targets from that tree, capture their image IDs/OCI labels, and retain the current application image ID and revision. Do not use an unreviewed working tree or a live mutable Compose file.
+1. Materialize and hash the exact Git tree, snapshot the reviewed environments, build all five targets from that tree, capture their image IDs/OCI labels, and retain the current application image ID and revision. Do not use an unreviewed working tree or a live mutable Compose file.
 2. Activate the durable maintenance marker; disable and drain every installed Business Finlynq timer/service or remove the exact deployed cron block; prove the alternate scheduler and labeled scheduled one-shot containers inactive. Then stop both app and authentication worker and prove they are stopped.
 3. With all write surfaces still stopped, run the bounded encrypted backup and exact backup verifier, including its off-site marker. Keep the app and worker stopped through migration and every pre-traffic verifier.
 4. Run the immutable-ID-pinned migrator as database owner. Before bootstrap or app startup, run the mandatory post-migration runtime, authentication-worker, and backup-role reconcilers plus schema/RLS/grant, journal-type, and accounting-evidence verifiers.
@@ -125,14 +125,7 @@ The sequence below explains the controls enforced by the scripted path. Do not s
 8. Re-enable writes only after tenant isolation, posting authorization, idempotency, audit insertion, period controls, and browser acceptance pass against the deployed release.
 9. Record completion, checksummed evidence links, backup checksum, immutable image IDs, and operator approvals.
 
-When running the release gate against production, export explicit expectations so an accidentally disabled launch gate cannot pass merely because the Playwright runner does not share the server environment:
-
-```text
-PLAYWRIGHT_BASE_URL=https://business.finlynq.com
-E2E_EXPECT_ACCOUNT_LOGIN_ENABLED=true
-E2E_EXPECT_ACCOUNT_SIGNUP_ENABLED=true
-npm run test:e2e
-```
+The release runner supplies `PLAYWRIGHT_BASE_URL`, `E2E_EXPECT_ACCOUNT_LOGIN_ENABLED`, and `E2E_EXPECT_ACCOUNT_SIGNUP_ENABLED` to the acceptance container from the snapshotted, reviewed Compose environment. It starts the container only by its captured immutable image ID, gives it no deployment secret or host bind mount, bounds it to 30 minutes, retains its timestamped output in `70-browser-acceptance.log`, and stops/removes it on success, failure, signal, or timeout. Do not replace that gate with a host `npm run test:e2e`; doing so would lose the attested image and containment boundary.
 
 The browser test also requires the public `/api/health` response to be the minimal ready status and requires Cloudflare's widget API to render its response control on the live signup page. The host monitor checks the detailed flag posture and email-worker readiness over loopback. Managed challenges may solve without exposing a visible iframe, and Cloudflare does not guarantee that iframe as a public integration contract.
 

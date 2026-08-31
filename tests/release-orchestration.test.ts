@@ -17,6 +17,7 @@ function writeAcceptedRehearsal(directory: string, revision: string, runId: stri
   const migratorImageId = `sha256:${"b".repeat(64)}`;
   const authWorkerImageId = `sha256:${"c".repeat(64)}`;
   const operationsImageId = `sha256:${"d".repeat(64)}`;
+  const acceptanceImageId = `sha256:${"5".repeat(64)}`;
   const startedAt = "2026-08-31T12:00:00Z";
   const completedAt = "2026-08-31T12:15:00Z";
   const gitTreeManifest = `100644 blob ${"1".repeat(40)}\tdocker-compose.yml\n`;
@@ -60,6 +61,7 @@ function writeAcceptedRehearsal(directory: string, revision: string, runId: stri
       { name: "migrator", reference: `business-finlynq-migrator:${revision}`, imageId: migratorImageId, ociRevision: revision },
       { name: "authWorker", reference: `business-finlynq-auth-worker:${revision}`, imageId: authWorkerImageId, ociRevision: revision },
       { name: "operations", reference: `business-finlynq-operations:${revision}`, imageId: operationsImageId, ociRevision: revision },
+      { name: "acceptance", reference: `business-finlynq-acceptance:${revision}`, imageId: acceptanceImageId, ociRevision: revision },
     ],
   });
   writeJson("12-rollback-artifact.json", {
@@ -162,7 +164,7 @@ describe("commit-addressed release orchestration", () => {
     expect(compose).toMatch(/verify_database_contract:[\s\S]*?depends_on:[\s\S]*?reconcile_backup_grants:[\s\S]*?condition: service_completed_successfully/);
     expect(compose).toMatch(/bootstrap_demo:[\s\S]*?depends_on:[\s\S]*?verify_database_contract:[\s\S]*?condition: service_completed_successfully/);
 
-    for (const image of ["app", "migrator", "auth-worker", "operations"]) {
+    for (const image of ["app", "migrator", "auth-worker", "operations", "acceptance"]) {
       expect(compose).toContain(`business-finlynq-${image}:\${BUSINESS_FINLYNQ_IMAGE_REVISION:?set BUSINESS_FINLYNQ_IMAGE_REVISION}`);
     }
     expect(compose).toContain('"127.0.0.1:${BUSINESS_FINLYNQ_APP_PORT:-3100}:3000"');
@@ -179,16 +181,43 @@ describe("commit-addressed release orchestration", () => {
       "provision_auth_worker_role", "reconcile_runtime_grants", "reconcile_auth_worker_grants",
       "provision_backup", "reconcile_backup_grants", "backup", "verify_latest_backup",
       "verify_accounting_evidence",
+      "release_acceptance",
     ]) {
       expect(pinned).toMatch(new RegExp(`^  ${service}:$`, "m"));
     }
-    expect(pinned.match(/build: !reset null/g)).toHaveLength(13);
-    expect(pinned.match(/pull_policy: never/g)).toHaveLength(13);
+    expect(pinned.match(/build: !reset null/g)).toHaveLength(14);
+    expect(pinned.match(/pull_policy: never/g)).toHaveLength(14);
+  });
+
+  it("runs release browser acceptance in a secretless hardened container", () => {
+    const compose = source("docker-compose.yml");
+    const start = compose.indexOf("  release_acceptance:\n");
+    const end = compose.indexOf("\n  invite_account:\n", start);
+    expect(start).toBeGreaterThanOrEqual(0);
+    expect(end).toBeGreaterThan(start);
+    const service = compose.slice(start, end);
+
+    expect(service).toContain("profiles: [acceptance]");
+    expect(service).toContain("target: acceptance");
+    expect(service).toContain('command: ["./node_modules/.bin/playwright", "test"]');
+    expect(service).toContain("user: pwuser");
+    expect(service).toContain("network_mode: host");
+    expect(service).toContain("read_only: true");
+    expect(service).toContain("no-new-privileges:true");
+    expect(service).toContain("cap_drop: [ALL]");
+    expect(service).toContain("shm_size: 512m");
+    expect(service).not.toMatch(/^\s+secrets:/m);
+    expect(service).not.toMatch(/^\s+volumes:/m);
+    expect(service).not.toMatch(/^\s+ports:/m);
   });
 
   it("embeds the full revision in every release-owned image and retains both backup revision meanings", () => {
     const dockerfile = source("Dockerfile");
-    expect(dockerfile.match(/LABEL org\.opencontainers\.image\.revision=\$BUSINESS_FINLYNQ_IMAGE_REVISION/g)).toHaveLength(4);
+    expect(dockerfile.match(/LABEL org\.opencontainers\.image\.revision=\$BUSINESS_FINLYNQ_IMAGE_REVISION/g)).toHaveLength(5);
+    expect(dockerfile).toContain(
+      "FROM mcr.microsoft.com/playwright:v1.62.1-noble@sha256:dcc5531e97840b9b5e794f2814476b21571c5124a3fca2267d73041f56e7580e AS acceptance",
+    );
+    expect(dockerfile).toContain('CMD ["./node_modules/.bin/playwright", "test"]');
 
     const backup = source("deploy/backup/run-backup.sh");
     expect(backup).toContain('BACKUP_TOOL_REVISION="$BUSINESS_FINLYNQ_IMAGE_REVISION"');
@@ -281,6 +310,13 @@ describe("commit-addressed release orchestration", () => {
     expect(release).toContain('candidateTreeId: $candidateTreeId');
     expect(release).toContain('BUSINESS_FINLYNQ_RELEASE_OPERATIONS_IMAGE=${image_ids[operations]}');
     expect(release).toContain('BUSINESS_FINLYNQ_RELEASE_MIGRATOR_IMAGE=${image_ids[migrator]}');
+    expect(release).toContain('BUSINESS_FINLYNQ_RELEASE_ACCEPTANCE_IMAGE=${image_ids[acceptance]}');
+    expect(release).toContain('"acceptance=business-finlynq-acceptance:$revision"');
+    expect(release).toContain('compose_timed 30m --profile acceptance wait release_acceptance');
+    expect(release).toContain('browser acceptance did not use the immutable reviewed image');
+    expect(release).toContain('compose --profile acceptance rm --force --stop release_acceptance');
+    expect(release).not.toContain('$repository_root/node_modules');
+    expect(release).not.toMatch(/\bnpm run test:e2e\b/);
     expect(release).toContain("verify_scheduler_boundary_bootstrap");
     expect(release).toContain("the first scheduler-boundary rollout requires the protected pre-checkout bootstrap receipt");
     expect(release).toContain('[[ "$scheduler_boundary_bootstrap_source_revision" == "$previous_app_revision" ]]');

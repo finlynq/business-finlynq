@@ -467,6 +467,45 @@ services:
         max-size: "10m"
         max-file: "5"
 
+  release_acceptance:
+    profiles: [acceptance]
+    image: business-finlynq-acceptance:${BUSINESS_FINLYNQ_IMAGE_REVISION:?set BUSINESS_FINLYNQ_IMAGE_REVISION}
+    pull_policy: never
+    build:
+      context: .
+      target: acceptance
+      args:
+        BUSINESS_FINLYNQ_IMAGE_REVISION: ${BUSINESS_FINLYNQ_IMAGE_REVISION:?set BUSINESS_FINLYNQ_IMAGE_REVISION}
+    environment:
+      PLAYWRIGHT_BASE_URL: ${BUSINESS_FINLYNQ_APP_ORIGIN:-https://${BUSINESS_FINLYNQ_HOSTNAME:-business.finlynq.com}}
+      E2E_EXPECT_ACCOUNT_LOGIN_ENABLED: ${ACCOUNT_LOGIN_ENABLED:-false}
+      E2E_EXPECT_ACCOUNT_SIGNUP_ENABLED: ${ACCOUNT_SIGNUP_ENABLED:-false}
+      HOME: /tmp/playwright-home
+      npm_config_cache: /tmp/npm-cache
+    command: ["./node_modules/.bin/playwright", "test"]
+    user: pwuser
+    network_mode: host
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp:size=256m,mode=1777
+      - /app/test-results:size=256m,mode=1777
+      - /app/playwright-report:size=64m,mode=1777
+    shm_size: 512m
+    security_opt:
+      - no-new-privileges:true
+    cap_drop: [ALL]
+    restart: "no"
+    stdin_open: false
+    tty: false
+    cpus: "1.00"
+    mem_limit: 1536m
+    pids_limit: 256
+    logging:
+      options:
+        max-size: "10m"
+        max-file: "3"
+
   invite_account:
     profiles: [account-operations]
     image: business-finlynq-migrator:${BUSINESS_FINLYNQ_IMAGE_REVISION:?set BUSINESS_FINLYNQ_IMAGE_REVISION}

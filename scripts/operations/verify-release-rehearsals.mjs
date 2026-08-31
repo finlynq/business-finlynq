@@ -145,6 +145,7 @@ async function verifyDirectory(directory) {
     ["migrator", `business-finlynq-migrator:${plan.revision}`],
     ["authWorker", `business-finlynq-auth-worker:${plan.revision}`],
     ["operations", `business-finlynq-operations:${plan.revision}`],
+    ["acceptance", `business-finlynq-acceptance:${plan.revision}`],
   ]);
   if (imageRecord.schemaVersion !== 1 || !/^[a-f0-9]{64}$/.test(imageRecord.pinnedComposeConfigurationSha256)
     || !Array.isArray(imageRecord.images)

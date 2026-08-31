@@ -9,6 +9,11 @@ services:
     pull_policy: never
     build: !reset null
 
+  release_acceptance:
+    image: ${BUSINESS_FINLYNQ_RELEASE_ACCEPTANCE_IMAGE:?set BUSINESS_FINLYNQ_RELEASE_ACCEPTANCE_IMAGE to the verified immutable image ID}
+    pull_policy: never
+    build: !reset null
+
   migrate:
     image: ${BUSINESS_FINLYNQ_RELEASE_MIGRATOR_IMAGE:?set BUSINESS_FINLYNQ_RELEASE_MIGRATOR_IMAGE to the verified immutable image ID}
     pull_policy: never

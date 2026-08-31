@@ -74,6 +74,23 @@ COPY --chmod=0555 deploy/postgres/015-auth-worker-role.sh /usr/local/bin/busines
 COPY --chmod=0555 deploy/postgres/020-backup-role.sh /usr/local/bin/business-finlynq-provision-backup-role
 USER 70:70
 
+FROM mcr.microsoft.com/playwright:v1.62.1-noble@sha256:dcc5531e97840b9b5e794f2814476b21571c5124a3fca2267d73041f56e7580e AS acceptance
+
+ARG BUSINESS_FINLYNQ_IMAGE_REVISION=unknown
+LABEL org.opencontainers.image.revision=$BUSINESS_FINLYNQ_IMAGE_REVISION
+
+WORKDIR /app
+COPY package.json package-lock.json ./
+RUN npm ci --ignore-scripts \
+  && npm cache clean --force
+COPY --chown=pwuser:pwuser playwright.config.ts tsconfig.json ./
+COPY --chown=pwuser:pwuser e2e ./e2e
+
+ENV HOME=/tmp/playwright-home
+ENV npm_config_cache=/tmp/npm-cache
+USER pwuser
+CMD ["./node_modules/.bin/playwright", "test"]
+
 FROM node:24-alpine@sha256:e67514e5d0f6c46656005e1b693b2ec9d52e80b641307de684d4a015ba7a4eaf AS runner
 
 ARG BUSINESS_FINLYNQ_IMAGE_REVISION=unknown

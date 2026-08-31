@@ -118,7 +118,7 @@ else
     || fail "rehearsal mode does not operate production schedulers or an operations environment"
 fi
 
-for command_name in awk bash chmod chown curl date docker env find flock git grep id install jq ln mkdir mktemp npm readlink rm sha256sum sleep sort stat tar tee timeout touch xargs; do
+for command_name in awk bash chmod chown curl date docker env find flock git grep id install jq mkdir mktemp readlink rm sha256sum sleep sort stat tar tee timeout touch xargs; do
   command -v "$command_name" >/dev/null 2>&1 || fail "required command is unavailable: $command_name"
 done
 docker compose version >/dev/null 2>&1 || fail "Docker Compose v2 is unavailable"
@@ -345,6 +345,7 @@ run_compose() {
     controlled_environment+=(
       "BUSINESS_FINLYNQ_RELEASE_APP_IMAGE=${image_ids[app]}"
       "BUSINESS_FINLYNQ_RELEASE_AUTH_WORKER_IMAGE=${image_ids[authWorker]}"
+      "BUSINESS_FINLYNQ_RELEASE_ACCEPTANCE_IMAGE=${image_ids[acceptance]}"
       "BUSINESS_FINLYNQ_RELEASE_MIGRATOR_IMAGE=${image_ids[migrator]}"
       "BUSINESS_FINLYNQ_RELEASE_OPERATIONS_IMAGE=${image_ids[operations]}"
     )
@@ -463,7 +464,7 @@ run_logged() {
 
 rehearsal_cleanup() {
   [[ "$mode" == "rehearsal" && "$rehearsal_cleaned" != "true" ]] || return 0
-  compose --profile operations --profile auth-email down --volumes --remove-orphans --timeout 30 >/dev/null 2>&1 || true
+  compose --profile operations --profile auth-email --profile acceptance down --volumes --remove-orphans --timeout 30 >/dev/null 2>&1 || true
   rehearsal_cleaned="true"
 }
 
@@ -570,13 +571,14 @@ fi
 cd -- "$candidate_source_root"
 
 stage="compose-contract"
-rendered_compose="$(compose --profile operations --profile auth-email config --format json)"
+rendered_compose="$(compose --profile operations --profile auth-email --profile acceptance config --format json)"
 rendered_revision="$(jq -r '.services.app.environment.BUSINESS_FINLYNQ_IMAGE_REVISION // empty' <<<"$rendered_compose")"
 [[ "$rendered_revision" == "$revision" ]] || fail "Compose image revision does not match the requested release"
 for image_contract in \
   "app:business-finlynq-app:$revision" \
   "migrate:business-finlynq-migrator:$revision" \
   "auth_email_worker:business-finlynq-auth-worker:$revision" \
+  "release_acceptance:business-finlynq-acceptance:$revision" \
   "backup:business-finlynq-operations:$revision" \
   "verify_database_contract:business-finlynq-migrator:$revision"; do
   service_name="${image_contract%%:*}"
@@ -735,7 +737,7 @@ chmod 0600 -- "$evidence_directory/00-release-plan.json"
 
 if [[ "$mode" == "rehearsal" ]]; then
   stage="clean-rehearsal-environment"
-  run_logged 01-clean-environment.log compose --profile operations --profile auth-email down --volumes --remove-orphans --timeout 30
+  run_logged 01-clean-environment.log compose --profile operations --profile auth-email --profile acceptance down --volumes --remove-orphans --timeout 30
   read_docker_output "rehearsal containers after cleanup" ps -aq \
     --filter "label=com.docker.compose.project=$compose_project"
   remaining_containers="$docker_query_output"
@@ -750,7 +752,8 @@ fi
 stage="candidate-image-build"
 assert_clean_checkout "$repository_root" \
   "the checkout changed after release evidence initialization and before image build"
-run_logged 10-image-build.log compose --profile operations --profile auth-email build app migrate auth_email_worker backup
+run_logged 10-image-build.log compose --profile operations --profile auth-email --profile acceptance build \
+  app migrate auth_email_worker backup release_acceptance
 assert_clean_checkout "$repository_root" \
   "the checkout changed while commit-addressed images were being built"
 read_git_output "$repository_root" "post-build HEAD" rev-parse HEAD
@@ -766,6 +769,7 @@ for image_name in \
   "app=business-finlynq-app:$revision" \
   "migrator=business-finlynq-migrator:$revision" \
   "authWorker=business-finlynq-auth-worker:$revision" \
+  "acceptance=business-finlynq-acceptance:$revision" \
   "operations=business-finlynq-operations:$revision"; do
   logical_name="${image_name%%=*}"
   image_reference="${image_name#*=}"
@@ -779,16 +783,19 @@ for image_name in \
     '. + [{name: $name, reference: $reference, imageId: $id, ociRevision: $revision}]' <<<"$image_evidence")"
 done
 
-# From this point onward app/worker creation resolves the immutable IDs just
-# inspected, not mutable commit-shaped tags. This closes the browser-acceptance
-# to final-start retag window.
+# From this point onward every release-run service, including browser
+# acceptance, resolves the immutable IDs just inspected rather than mutable
+# commit-shaped tags.
 release_images_pinned="true"
-pinned_compose="$(compose --profile operations --profile auth-email config --format json)"
+pinned_compose="$(compose --profile operations --profile auth-email --profile acceptance config --format json)"
 [[ "$(jq -r '.services.app.image // empty' <<<"$pinned_compose")" == "${image_ids[app]}" ]] \
   || fail "pinned Compose configuration does not bind the immutable app image"
 [[ "$(jq -r '.services.auth_email_worker.image // empty' <<<"$pinned_compose")" == "${image_ids[authWorker]}" ]] \
   || fail "pinned Compose configuration does not bind the immutable authentication-worker image"
+[[ "$(jq -r '.services.release_acceptance.image // empty' <<<"$pinned_compose")" == "${image_ids[acceptance]}" ]] \
+  || fail "pinned Compose configuration does not bind the immutable browser-acceptance image"
 for pinned_service_contract in \
+  "release_acceptance:acceptance" \
   "migrate:migrator" \
   "verify_database_contract:migrator" \
   "bootstrap_demo:migrator" \
@@ -1290,17 +1297,56 @@ jq -e \
   "$evidence_directory/64-internal-readiness.json" >/dev/null || fail "detailed readiness does not match the reviewed release gates"
 
 stage="browser-acceptance"
-run_browser_acceptance() {
-  [[ -d "$repository_root/node_modules" && ! -L "$candidate_source_root/node_modules" \
-    && ! -e "$candidate_source_root/node_modules" ]] \
-    || fail "the attested dependency tree is unavailable for staged browser acceptance"
-  ln -s -- "$repository_root/node_modules" "$candidate_source_root/node_modules"
-  timeout 30m env -i "PATH=$PATH" "HOME=${HOME:-/root}" \
-    PLAYWRIGHT_BASE_URL="$public_base_url" \
-    E2E_EXPECT_ACCOUNT_LOGIN_ENABLED="$release_ACCOUNT_LOGIN_ENABLED" \
-    E2E_EXPECT_ACCOUNT_SIGNUP_ENABLED="$release_ACCOUNT_SIGNUP_ENABLED" \
-    npm run test:e2e
-}
+run_browser_acceptance() (
+  local browser_candidate="" browser_container="" browser_exit_code="" browser_image_id="" wait_status=0
+  local -a browser_containers=()
+
+  cleanup_browser_acceptance() {
+    local cleanup_status=$?
+    trap - EXIT INT TERM
+    if ! compose --profile acceptance rm --force --stop release_acceptance >/dev/null 2>&1; then
+      printf '%s\n' "URGENT: browser-acceptance container could not be removed" >&2
+      cleanup_status=1
+    fi
+    exit "$cleanup_status"
+  }
+  trap cleanup_browser_acceptance EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+
+  compose --profile acceptance rm --force --stop release_acceptance
+  compose --profile acceptance up --detach --no-deps --no-build --force-recreate release_acceptance
+  read_compose_output "browser-acceptance container" \
+    --profile acceptance ps --all --quiet release_acceptance
+  while IFS= read -r browser_candidate; do
+    [[ -n "$browser_candidate" ]] && browser_containers+=("$browser_candidate")
+  done <<<"$compose_query_output"
+  [[ "${#browser_containers[@]}" == "1" \
+    && "${browser_containers[0]}" =~ ^[a-f0-9]{12,64}$ ]] \
+    || fail "exactly one browser-acceptance container must exist"
+  browser_container="${browser_containers[0]}"
+  read_docker_output "browser-acceptance image" inspect --format '{{.Image}}' "$browser_container"
+  browser_image_id="$docker_query_output"
+  [[ "$browser_image_id" == "${image_ids[acceptance]}" ]] \
+    || fail "browser acceptance did not use the immutable reviewed image"
+
+  if compose_timed 30m --profile acceptance wait release_acceptance; then
+    wait_status=0
+  else
+    wait_status=$?
+  fi
+  compose --profile acceptance logs --no-color --timestamps release_acceptance
+  read_docker_output "browser-acceptance exit code" inspect --format '{{.State.ExitCode}}' "$browser_container"
+  browser_exit_code="$docker_query_output"
+  [[ "$browser_exit_code" =~ ^[0-9]+$ ]] \
+    || fail "browser acceptance returned an invalid exit code"
+  (( wait_status == 0 && browser_exit_code == 0 )) \
+    || fail "browser acceptance failed or exceeded its 30-minute bound"
+
+  compose --profile acceptance rm --force --stop release_acceptance
+  browser_container=""
+  trap - EXIT INT TERM
+)
 run_logged 70-browser-acceptance.log run_browser_acceptance
 write_checkpoint 71-browser-acceptance.json browser-acceptance-passed
 
@@ -1363,7 +1409,7 @@ if [[ "$mode" == "release" ]]; then
   record_scheduler_boundary_version
 else
   stage="clean-rehearsal-project"
-  run_logged 80-clean-rehearsal.log compose --profile operations --profile auth-email down --volumes --remove-orphans --timeout 30
+  run_logged 80-clean-rehearsal.log compose --profile operations --profile auth-email --profile acceptance down --volumes --remove-orphans --timeout 30
   rehearsal_cleaned="true"
   read_docker_output "rehearsal containers after final cleanup" ps -aq \
     --filter "label=com.docker.compose.project=$compose_project"
