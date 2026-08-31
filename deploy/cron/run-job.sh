@@ -128,7 +128,7 @@ run_with_clean_environment() {
     USER="deploy" \
     LOGNAME="deploy" \
     SHELL="/bin/bash" \
-    PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
+    PATH="/home/deploy/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
     /bin/bash -Eeuo pipefail -c '
       readonly clean_operations_env="$1"
       readonly clean_maintenance_lock="$2"

@@ -388,6 +388,9 @@ describe("commit-addressed release orchestration", () => {
     expect(source("deploy/cron/run-job.sh")).toContain(
       "scheduled jobs must run as the exact deploy account",
     );
+    expect(source("deploy/cron/run-job.sh")).toContain(
+      'PATH="/home/deploy/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"',
+    );
     expect(source("deploy/cron/run-job.sh")).toContain("Cron checkout status could not be inspected");
 
     const schedulerBootstrap = source("deploy/release/bootstrap-scheduler-boundary.sh");
