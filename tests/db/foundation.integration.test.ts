@@ -112,6 +112,10 @@ runDatabaseTests("PostgreSQL accounting controls", () => {
       await admin.query("GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO business_finlynq_test_runtime");
       await admin.query("GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA app TO business_finlynq_test_runtime");
       await admin.query(
+        `GRANT EXECUTE ON FUNCTION public.digest(text,text), public.digest(bytea,text)
+         TO business_finlynq_test_runtime`,
+      );
+      await admin.query(
         `REVOKE INSERT, UPDATE, DELETE ON audit_events, outbox_events, period_events,
            organization_key_versions FROM business_finlynq_test_runtime`,
       );
