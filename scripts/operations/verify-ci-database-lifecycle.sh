@@ -11,6 +11,9 @@ readonly demo_organization_id="10000000-0000-4000-8000-000000000001"
 readonly predecessor_sentinel_id="00000000-0000-4000-8000-0000000000fe"
 readonly predecessor_audit_root_hash="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 readonly predecessor_audit_leaf_hash="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+readonly restore_correlation_aggregate_id="00000000-0000-4000-8000-0000000000c0"
+readonly restore_correlation_request_a="00000000-0000-4000-8000-0000000000c1"
+readonly restore_correlation_request_b="00000000-0000-4000-8000-0000000000c2"
 
 fail() {
   printf 'CI database lifecycle verification failed: %s\n' "$*" >&2
@@ -498,6 +501,61 @@ SQL
   printf '%s\n' \
     "Predecessor upgrade verification passed: replayed 0000-0024, preserved tenant and audit sentinels, upgraded through 0031, and verified schema/grants/journal types."
 else
+  # Create two otherwise-identical business events with explicit request IDs.
+  # Their exact audit/outbox correlation must survive the populated logical
+  # backup rather than being reconstructed from aggregate identity.
+  PGPASSWORD="$PGPASSWORD" psql \
+    --host "$PGHOST" \
+    --port "$PGPORT" \
+    --username "$POSTGRES_USER" \
+    --dbname "$POSTGRES_DB" \
+    --no-password \
+    --no-psqlrc \
+    --set=ON_ERROR_STOP=1 <<SQL
+BEGIN;
+SELECT set_config('app.organization_id', '$demo_organization_id', true);
+SELECT set_config('app.actor_id', 'ci-populated-restore', true);
+SELECT set_config('app.auth_method', 'migration-verification', true);
+SELECT set_config('app.source_surface', 'WORKER', true);
+SELECT set_config('app.reason', 'Verify exact request correlation through logical restore', true);
+SELECT set_config('app.request_id', '$restore_correlation_request_a', true);
+SELECT app.append_tenant_business_audit(
+  '$demo_organization_id',
+  'organization.member-sessions-revoked',
+  'organization_membership',
+  '$restore_correlation_aggregate_id',
+  '{"source":"populated-restore","sequence":1}'::jsonb,
+  'organization.member-sessions-revoked'
+);
+SELECT set_config('app.request_id', '$restore_correlation_request_b', true);
+SELECT app.append_tenant_business_audit(
+  '$demo_organization_id',
+  'organization.member-sessions-revoked',
+  'organization_membership',
+  '$restore_correlation_aggregate_id',
+  '{"source":"populated-restore","sequence":2}'::jsonb,
+  'organization.member-sessions-revoked'
+);
+COMMIT;
+SQL
+
+  source_request_correlation="$(psql_value "$POSTGRES_DB" \
+    "SELECT string_agg(audit.request_id || ':' || outbox.request_id, ',' ORDER BY audit.request_id)
+     FROM audit_events audit
+     JOIN outbox_events outbox
+       ON outbox.organization_id=audit.organization_id
+      AND outbox.aggregate_type=audit.entity_type
+      AND outbox.aggregate_id=audit.entity_id
+      AND outbox.request_id=audit.request_id
+     WHERE audit.organization_id='$demo_organization_id'
+       AND audit.action='organization.member-sessions-revoked'
+       AND audit.entity_id='$restore_correlation_aggregate_id'
+       AND audit.request_id IN ('$restore_correlation_request_a','$restore_correlation_request_b');")"
+  readonly source_request_correlation
+  readonly expected_request_correlation="$restore_correlation_request_a:$restore_correlation_request_a,$restore_correlation_request_b:$restore_correlation_request_b"
+  [[ "$source_request_correlation" == "$expected_request_correlation" ]] ||
+    fail "source audit/outbox request correlation fixture is incomplete"
+
   source_migration_count="$(psql_value "$POSTGRES_DB" \
     "SELECT count(*) FROM drizzle.__drizzle_migrations;")"
   [[ "$source_migration_count" == "32" ]] ||
@@ -558,7 +616,21 @@ else
     "SELECT slug || '|' || display_name FROM organizations WHERE id = '$demo_organization_id';")"
   [[ "$restored_demo_sentinel" == "$source_demo_sentinel" ]] ||
     fail "restored demo organization sentinel differs from the populated source"
+  restored_request_correlation="$(psql_value "$restore_database" \
+    "SELECT string_agg(audit.request_id || ':' || outbox.request_id, ',' ORDER BY audit.request_id)
+     FROM audit_events audit
+     JOIN outbox_events outbox
+       ON outbox.organization_id=audit.organization_id
+      AND outbox.aggregate_type=audit.entity_type
+      AND outbox.aggregate_id=audit.entity_id
+      AND outbox.request_id=audit.request_id
+     WHERE audit.organization_id='$demo_organization_id'
+       AND audit.action='organization.member-sessions-revoked'
+       AND audit.entity_id='$restore_correlation_aggregate_id'
+       AND audit.request_id IN ('$restore_correlation_request_a','$restore_correlation_request_b');")"
+  [[ "$restored_request_correlation" == "$source_request_correlation" ]] ||
+    fail "restored audit/outbox request IDs differ from the populated source"
 
   printf '%s\n' \
-    "Logical restore verification passed: dumped populated data, restored it, reran migrations and all role reconcilers, and verified schema/grants/journal types."
+    "Logical restore verification passed: dumped populated data, preserved explicit audit/outbox request IDs, restored it, reran migrations and all role reconcilers, and verified schema/grants/journal types."
 fi

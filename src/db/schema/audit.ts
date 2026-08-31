@@ -1,4 +1,5 @@
-import { index, jsonb, pgTable, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
+import { check, index, jsonb, pgTable, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
 import { organizations } from "./identity";
 
 export const auditEvents = pgTable(
@@ -48,9 +49,16 @@ export const outboxEvents = pgTable(
     topic: text("topic").notNull(),
     aggregateType: text("aggregate_type").notNull(),
     aggregateId: text("aggregate_id").notNull(),
+    requestId: text("request_id"),
     payload: jsonb("payload").notNull(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     publishedAt: timestamp("published_at", { withTimezone: true }),
   },
-  (table) => [uniqueIndex("outbox_events_org_id_unique").on(table.organizationId, table.id)],
+  (table) => [
+    uniqueIndex("outbox_events_org_id_unique").on(table.organizationId, table.id),
+    check(
+      "outbox_events_request_id_check",
+      sql`length(${table.requestId}) BETWEEN 1 AND 200 AND ${table.requestId} !~ E'[\\r\\n]'`,
+    ),
+  ],
 );

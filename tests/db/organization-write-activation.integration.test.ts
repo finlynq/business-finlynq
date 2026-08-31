@@ -93,6 +93,7 @@ runDatabaseTests("organization write activation", () => {
   }
 
   it("defaults every real organization to disabled and activates only the named organization", async () => {
+    const activationRequestId = randomUUID();
     const unactivatedSession = await appPool.query<{ organization_writes_enabled: boolean }>(
       "SELECT organization_writes_enabled FROM app.auth_resolve_session_v3($1,$2)",
       [sessionTokenHash, sessionUserAgentHash],
@@ -109,7 +110,7 @@ runDatabaseTests("organization write activation", () => {
     expect(initial.rows).toHaveLength(2);
     expect(initial.rows.every((row) => row.writes_enabled_at === null)).toBe(true);
 
-    const enabled = await transition(organizationA, true);
+    const enabled = await transition(organizationA, true, activationRequestId);
     expect(enabled).toMatchObject({
       organization_id: organizationA,
       active: true,
@@ -140,15 +141,28 @@ runDatabaseTests("organization write activation", () => {
     });
     expect(replay.writes_enabled_at?.toISOString()).toBe(enabled.writes_enabled_at?.toISOString());
 
-    const evidence = await ownerPool.query<{ audits: number; outbox: number }>(
+    const evidence = await ownerPool.query<{
+      audit_request_id: string;
+      outbox_request_id: string;
+    }>(
       `SELECT
-         (SELECT count(*)::int FROM audit_events
-           WHERE organization_id=$1 AND action='organization.writes-enabled') AS audits,
-         (SELECT count(*)::int FROM outbox_events
-           WHERE organization_id=$1 AND topic='organization.writes-enabled') AS outbox`,
+         audit.request_id AS audit_request_id,
+         outbox.request_id AS outbox_request_id
+       FROM audit_events audit
+       JOIN outbox_events outbox
+         ON outbox.organization_id=audit.organization_id
+        AND outbox.aggregate_type=audit.entity_type
+        AND outbox.aggregate_id=audit.entity_id
+        AND outbox.request_id=audit.request_id
+       WHERE audit.organization_id=$1
+         AND audit.action='organization.writes-enabled'
+         AND outbox.topic='organization.writes-enabled'`,
       [organizationA],
     );
-    expect(evidence.rows[0]).toEqual({ audits: 1, outbox: 1 });
+    expect(evidence.rows).toEqual([{
+      audit_request_id: activationRequestId,
+      outbox_request_id: activationRequestId,
+    }]);
   });
 
   it("rejects demo and inactive activation and keeps the operator function outside the app ACL", async () => {
@@ -191,12 +205,15 @@ runDatabaseTests("organization write activation", () => {
 
   it("keeps the audit chain linear when an earlier transaction appends after a later one", async () => {
     const earlyOperator = await ownerPool.connect();
+    const firstRequestId = randomUUID();
+    const secondRequestId = randomUUID();
+    const thirdRequestId = randomUUID();
     try {
       await earlyOperator.query("BEGIN");
       await earlyOperator.query("SELECT now()");
       await ownerPool.query("SELECT pg_sleep(0.02)");
 
-      const first = await transition(organizationB, true);
+      const first = await transition(organizationB, true, firstRequestId);
       expect(first.changed).toBe(true);
 
       const second = await earlyOperator.query<ActivationRow>(
@@ -205,13 +222,13 @@ runDatabaseTests("organization write activation", () => {
           organizationB,
           "integration-release-operator",
           "Disable after a later transaction committed its activation",
-          randomUUID(),
+          secondRequestId,
         ],
       );
       expect(second.rows[0]?.changed).toBe(true);
       await earlyOperator.query("COMMIT");
 
-      const third = await transition(organizationB, true);
+      const third = await transition(organizationB, true, thirdRequestId);
       expect(third.changed).toBe(true);
 
       const chain = await ownerPool.query<{
@@ -240,6 +257,43 @@ runDatabaseTests("organization write activation", () => {
       expect(chain.rows[2]!.occurred_at.getTime()).toBeGreaterThanOrEqual(
         chain.rows[1]!.occurred_at.getTime(),
       );
+
+      const pairedRequests = await ownerPool.query<{
+        action: string;
+        audit_request_id: string;
+        outbox_request_id: string;
+      }>(
+        `SELECT audit.action,
+                audit.request_id AS audit_request_id,
+                outbox.request_id AS outbox_request_id
+         FROM audit_events audit
+         JOIN outbox_events outbox
+           ON outbox.organization_id=audit.organization_id
+          AND outbox.aggregate_type=audit.entity_type
+          AND outbox.aggregate_id=audit.entity_id
+          AND outbox.request_id=audit.request_id
+         WHERE audit.organization_id=$1
+           AND audit.request_id=ANY($2::text[])
+         ORDER BY audit.occurred_at,audit.id`,
+        [organizationB, [firstRequestId, secondRequestId, thirdRequestId]],
+      );
+      expect(pairedRequests.rows).toEqual([
+        {
+          action: "organization.writes-enabled",
+          audit_request_id: firstRequestId,
+          outbox_request_id: firstRequestId,
+        },
+        {
+          action: "organization.writes-disabled",
+          audit_request_id: secondRequestId,
+          outbox_request_id: secondRequestId,
+        },
+        {
+          action: "organization.writes-enabled",
+          audit_request_id: thirdRequestId,
+          outbox_request_id: thirdRequestId,
+        },
+      ]);
     } finally {
       try { await earlyOperator.query("ROLLBACK"); } catch { /* transaction already closed */ }
       earlyOperator.release();

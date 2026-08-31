@@ -11,6 +11,19 @@ ALTER TABLE "organizations" ADD CONSTRAINT "organizations_real_writes_enabled_ch
   );
 --> statement-breakpoint
 
+-- Establish the nullable request-correlation bridge before changing audit
+-- timestamps to clock time. Every active paired writer below persists the
+-- exact audit-selected request key; G0-05 can therefore backfill only older
+-- NULL history without relying on transaction internals.
+ALTER TABLE public.outbox_events ADD COLUMN request_id text;
+--> statement-breakpoint
+ALTER TABLE public.outbox_events
+  ADD CONSTRAINT outbox_events_request_id_check CHECK (
+    length(request_id) BETWEEN 1 AND 200
+    AND request_id !~ E'[\\r\\n]'
+  );
+--> statement-breakpoint
+
 -- Freeze inserts from old artifacts for the complete validation-and-cutover
 -- sequence. Drizzle applies this migration transactionally, so this lock is
 -- retained until the graph validator, helper, trigger, and all active writers
@@ -269,16 +282,56 @@ BEGIN
 
   IF selected_topic IS NOT NULL THEN
     INSERT INTO public.outbox_events (
-      organization_id, topic, aggregate_type, aggregate_id, payload
+      organization_id, topic, aggregate_type, aggregate_id, request_id, payload
     ) VALUES (
       selected_organization_id, selected_topic, selected_entity_type, selected_entity_id,
-      selected_metadata
+      request_key, selected_metadata
     );
   END IF;
 END
 $$;
 REVOKE ALL ON FUNCTION app.append_tenant_business_audit(uuid, text, text, text, jsonb, text)
   FROM PUBLIC;
+--> statement-breakpoint
+
+-- Period audit and outbox triggers are separate, so both read the same
+-- transaction-local request key. Trigger name ordering creates the audit row
+-- before this outbox row; G0-05 later enforces that linkage directly.
+CREATE OR REPLACE FUNCTION app.emit_period_transition_outbox()
+RETURNS trigger
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, public, pg_temp
+AS $$
+DECLARE
+  request_key text;
+BEGIN
+  IF NEW.state = OLD.state THEN RETURN NEW; END IF;
+  request_key := nullif(pg_catalog.current_setting('app.request_id', true), '');
+  IF request_key IS NULL OR length(request_key) NOT BETWEEN 1 AND 200
+    OR request_key ~ E'[\\r\\n]'
+  THEN
+    RAISE EXCEPTION 'Period transition outbox requires a bounded request context'
+      USING ERRCODE = '22023';
+  END IF;
+
+  INSERT INTO public.outbox_events (
+    organization_id, topic, aggregate_type, aggregate_id, request_id, payload
+  ) VALUES (
+    NEW.organization_id, 'ledger.period-transitioned', 'fiscal_period', NEW.id::text,
+    request_key,
+    pg_catalog.jsonb_build_object(
+      'periodId', NEW.id,
+      'ledgerId', NEW.ledger_id,
+      'fromState', OLD.state,
+      'toState', NEW.state,
+      'version', NEW.version
+    )
+  );
+  RETURN NEW;
+END
+$$;
+REVOKE ALL ON FUNCTION app.emit_period_transition_outbox() FROM PUBLIC;
 --> statement-breakpoint
 
 CREATE OR REPLACE FUNCTION app.audit_successful_posting()
@@ -330,9 +383,9 @@ BEGIN
   );
 
   INSERT INTO public.outbox_events (
-    organization_id, topic, aggregate_type, aggregate_id, payload
+    organization_id, topic, aggregate_type, aggregate_id, request_id, payload
   ) VALUES (
-    NEW.organization_id, 'ledger.journal-posted', 'journal_entry', NEW.id::text,
+    NEW.organization_id, 'ledger.journal-posted', 'journal_entry', NEW.id::text, request_key,
     jsonb_build_object(
       'journalId', NEW.id,
       'journalNumber', NEW.journal_number,
@@ -645,6 +698,7 @@ BEGIN
     REVOKE ALL ON FUNCTION app.locked_audit_graph_leaf(uuid),
       app.enforce_audit_event_chain_tip(),
       app.append_tenant_business_audit(uuid, text, text, text, jsonb, text),
+      app.emit_period_transition_outbox(),
       app.audit_successful_posting(),
       app.audit_period_transition()
       FROM business_finlynq_app;
@@ -657,6 +711,7 @@ BEGIN
     REVOKE ALL ON FUNCTION app.locked_audit_graph_leaf(uuid),
       app.enforce_audit_event_chain_tip(),
       app.append_tenant_business_audit(uuid, text, text, text, jsonb, text),
+      app.emit_period_transition_outbox(),
       app.audit_successful_posting(),
       app.audit_period_transition(),
       app.auth_resolve_session_v3(text, text),
@@ -667,6 +722,7 @@ BEGIN
     REVOKE ALL ON FUNCTION app.locked_audit_graph_leaf(uuid),
       app.enforce_audit_event_chain_tip(),
       app.append_tenant_business_audit(uuid, text, text, text, jsonb, text),
+      app.emit_period_transition_outbox(),
       app.audit_successful_posting(),
       app.audit_period_transition(),
       app.auth_resolve_session_v3(text, text),

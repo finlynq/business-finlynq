@@ -77,6 +77,24 @@ describe("immutable audit graph migration", () => {
     }
   });
 
+  it("introduces a bounded request bridge and writes the same request through every paired outbox path", () => {
+    expect(activationMigration).toContain(
+      "ALTER TABLE public.outbox_events ADD COLUMN request_id text",
+    );
+    expect(activationMigration).toContain(
+      "CONSTRAINT outbox_events_request_id_check",
+    );
+    expect(activationMigration).toContain(
+      "length(request_id) BETWEEN 1 AND 200",
+    );
+    expect(activationMigration).toContain(
+      "CREATE OR REPLACE FUNCTION app.emit_period_transition_outbox()",
+    );
+    expect(activationMigration.match(/aggregate_id, request_id, payload/g)).toHaveLength(3);
+    expect(activationMigration.match(/request_key, selected_metadata/g)).toHaveLength(1);
+    expect(activationMigration.match(/request_key,/g)?.length).toBeGreaterThanOrEqual(3);
+  });
+
   it("adds the graph-leaf lookup index through the generated declaration chain", () => {
     expect(graphIndexMigration).toContain(
       'CREATE INDEX "audit_events_org_previous_hash_idx"',

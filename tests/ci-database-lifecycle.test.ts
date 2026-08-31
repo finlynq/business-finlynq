@@ -173,6 +173,21 @@ describe("CI predecessor-upgrade and restore verification", () => {
     expect(lifecycleScript).toContain(
       "restored demo organization sentinel differs from the populated source",
     );
+    expect(lifecycleScript).toContain(
+      'restore_correlation_request_a="00000000-0000-4000-8000-0000000000c1"',
+    );
+    expect(lifecycleScript).toContain(
+      'restore_correlation_request_b="00000000-0000-4000-8000-0000000000c2"',
+    );
+    expect(lifecycleScript).toContain(
+      "organization.member-sessions-revoked",
+    );
+    expect(lifecycleScript).toContain(
+      "source audit/outbox request correlation fixture is incomplete",
+    );
+    expect(lifecycleScript).toContain(
+      "restored audit/outbox request IDs differ from the populated source",
+    );
   });
 
   it("runs the upgrade check before clean replay and restore check only after test data is populated", () => {
