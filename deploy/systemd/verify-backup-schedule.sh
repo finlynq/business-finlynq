@@ -8,6 +8,34 @@ fail() {
   exit 1
 }
 
+verify_monitor_monotonic_records() {
+  local timers_monotonic="$1" record
+  local boot_record_count=0 unit_active_record_count=0
+  local -a monotonic_records=()
+
+  mapfile -t monotonic_records <<<"$timers_monotonic"
+  [[ "${#monotonic_records[@]}" == 2 ]] || return 1
+  for record in "${monotonic_records[@]}"; do
+    if [[ "$record" =~ ^\{\ OnBootUSec=2min\ \;\ next_elapse=[^}]+\ \}$ ]]; then
+      boot_record_count=$((boot_record_count + 1))
+    elif [[ "$record" =~ ^\{\ OnUnitActiveUSec=5min\ \;\ next_elapse=[^}]+\ \}$ ]]; then
+      unit_active_record_count=$((unit_active_record_count + 1))
+    else
+      return 1
+    fi
+  done
+  [[ "$boot_record_count" == 1 && "$unit_active_record_count" == 1 ]]
+}
+
+if [[ "${1:-}" == "--verify-monitor-monotonic-records" ]]; then
+  (( $# == 1 )) || fail "monitor monotonic-record verification accepts no other arguments"
+  monitor_monotonic_fixture="$(cat)"
+  verify_monitor_monotonic_records "$monitor_monotonic_fixture" \
+    || fail "monitor monotonic timer records differ from the required cadence"
+  exit 0
+fi
+(( $# == 0 )) || fail "unexpected argument"
+
 script_directory="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 repository_root="$(cd -- "$script_directory/../.." && pwd -P)"
 systemd_unit_directory="${BUSINESS_FINLYNQ_SYSTEMD_UNIT_DIRECTORY:-/etc/systemd/system}"
@@ -141,8 +169,7 @@ for schedule_name in "${schedule_names[@]}"; do
         || fail "loaded monitor timer cadence differs from the candidate"
     else
       timers_monotonic="$(systemctl show --property=TimersMonotonic --value "$timer_name")"
-      [[ "$(grep -Ec '^\{ OnBootUSec=2min ; next_elapse=[^[:space:]}]+ \}$' <<<"$timers_monotonic")" == 1 \
-        && "$(grep -Ec '^\{ OnUnitActiveUSec=5min ; next_elapse=[^[:space:]}]+ \}$' <<<"$timers_monotonic")" == 1 ]] \
+      verify_monitor_monotonic_records "$timers_monotonic" \
         || fail "loaded monitor timer cadence differs from the candidate"
     fi
   fi

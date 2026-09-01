@@ -1,4 +1,5 @@
 import { existsSync, readFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 
 const targetRoot = "/home/deploy/business-finlynq";
 
@@ -282,14 +283,49 @@ for (const expected of [
   "RandomizedDelayUSec",
   "TimersCalendar",
   "TimersMonotonic",
-  "grep -Ec '^\\{ OnBootUSec=2min ; next_elapse=[^[:space:]}]+ \\}$'",
-  "grep -Ec '^\\{ OnUnitActiveUSec=5min ; next_elapse=[^[:space:]}]+ \\}$'",
+  "verify_monitor_monotonic_records",
+  "monotonic_records[@]}",
   "EnvironmentFiles",
   "TimeoutStartUSec",
 ]) requireText(backupScheduleVerifier, expected, "installed backup schedule verifier");
 if (backupScheduleVerifier.includes('== *"OnBootUSec=2min"*')
   || backupScheduleVerifier.includes('== *"OnUnitActiveUSec=5min"*')) {
   throw new Error("installed backup schedule verifier accepts non-exact monotonic timer durations");
+}
+
+const scheduleVerifierPath = "deploy/systemd/verify-backup-schedule.sh";
+const fixtureShell = process.env.BUSINESS_FINLYNQ_TEST_BASH ?? "bash";
+function runMonitorCadenceFixture(fixture) {
+  const result = spawnSync(
+    fixtureShell,
+    [scheduleVerifierPath, "--verify-monitor-monotonic-records"],
+    { cwd: process.cwd(), encoding: "utf8", input: fixture },
+  );
+  if (result.error) {
+    throw new Error(`could not execute monitor cadence fixture: ${result.error.message}`);
+  }
+  return result;
+}
+
+const activeMonitorCadence = [
+  "{ OnUnitActiveUSec=5min ; next_elapse=1d 3h 14min 15.123456s }",
+  "{ OnBootUSec=2min ; next_elapse=2min }",
+].join("\n");
+const acceptedMonitorCadence = runMonitorCadenceFixture(activeMonitorCadence);
+if (acceptedMonitorCadence.status !== 0) {
+  throw new Error(
+    `installed backup schedule verifier rejects an active multi-word monotonic timestamp: ${acceptedMonitorCadence.stderr}`,
+  );
+}
+
+const extraMonitorTrigger = `${activeMonitorCadence}\n{ OnActiveUSec=30s ; next_elapse=1d 3h 9min }`;
+if (runMonitorCadenceFixture(extraMonitorTrigger).status === 0) {
+  throw new Error("installed backup schedule verifier accepts an unexpected extra monotonic trigger");
+}
+
+const extendedBootDelay = activeMonitorCadence.replace("OnBootUSec=2min ;", "OnBootUSec=2min 30s ;");
+if (runMonitorCadenceFixture(extendedBootDelay).status === 0) {
+  throw new Error("installed backup schedule verifier accepts a non-exact boot delay");
 }
 const backupImplementation = read("deploy/backup/run-backup.sh");
 requireText(backupImplementation, "BUSINESS_FINLYNQ_IMAGE_REVISION is required", "backup implementation");
