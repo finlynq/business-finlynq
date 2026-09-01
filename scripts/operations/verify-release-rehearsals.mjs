@@ -42,10 +42,13 @@ const requiredRehearsalFiles = [
   "25-stop-write-surfaces.log",
   "26-write-surfaces-stopped.json",
   "29-rehearsal-database-start.log",
+  "29-rehearsal-database-image.json",
   "30-provision-backup-role.log",
   "31-encrypted-backup.log",
   "32-backup-verification.log",
   "33-backup-evidence.json",
+  "34-database-start.log",
+  "35-database-image.json",
   "49-pretraffic-reset.log",
   "50-pretraffic-up.log",
   "51-pretraffic-wait.log",
@@ -141,6 +144,7 @@ async function verifyDirectory(directory) {
 
   const imageRecord = expectObject(await readJson(resolve(directory, "11-images.json")), `${basename(directory)} image record`);
   const expectedImages = new Map([
+    ["database", `business-finlynq-database:${plan.revision}`],
     ["app", `business-finlynq-app:${plan.revision}`],
     ["migrator", `business-finlynq-migrator:${plan.revision}`],
     ["authWorker", `business-finlynq-auth-worker:${plan.revision}`],
@@ -159,6 +163,20 @@ async function verifyDirectory(directory) {
     imageIds.set(selected.name, selected.imageId);
   }
   if (complete.candidateAppImageId !== imageIds.get("app")) fail(`${basename(directory)} candidate image identity disagrees`);
+  for (const evidenceName of ["29-rehearsal-database-image.json", "35-database-image.json"]) {
+    const databaseUse = expectObject(
+      await readJson(resolve(directory, evidenceName)),
+      `${basename(directory)} ${evidenceName}`,
+    );
+    if (Object.keys(databaseUse).sort().join(",") !== "imageId,product,revision,schemaVersion,service,verifiedAt"
+      || databaseUse.schemaVersion !== 1 || databaseUse.product !== "business-finlynq"
+      || databaseUse.service !== "database" || databaseUse.revision !== plan.revision
+      || databaseUse.imageId !== imageIds.get("database")
+      || typeof databaseUse.verifiedAt !== "string"
+      || !/^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$/.test(databaseUse.verifiedAt)) {
+      fail(`${basename(directory)} ${evidenceName} does not prove use of the reviewed database image`);
+    }
+  }
 
   const rollback = expectObject(await readJson(resolve(directory, "12-rollback-artifact.json")), `${basename(directory)} rollback record`);
   if (rollback.schemaVersion !== 1 || rollback.previous !== null

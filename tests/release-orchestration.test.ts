@@ -40,9 +40,21 @@ function renderAppEnvironment(
   return appEnvironment;
 }
 
+function writeChecksums(directory: string): void {
+  const checksums = readdirSync(directory)
+    .filter((name) => name !== "SHA256SUMS")
+    .sort()
+    .map((name) => {
+      const digest = createHash("sha256").update(readFileSync(join(directory, name))).digest("hex");
+      return `${digest}  ./${name}`;
+    });
+  writeFileSync(join(directory, "SHA256SUMS"), `${checksums.join("\n")}\n`);
+}
+
 function writeAcceptedRehearsal(directory: string, revision: string, runId: string): void {
   const writeJson = (name: string, value: unknown) => writeFileSync(join(directory, name), `${JSON.stringify(value)}\n`);
   const appImageId = `sha256:${"a".repeat(64)}`;
+  const databaseImageId = `sha256:${"6".repeat(64)}`;
   const migratorImageId = `sha256:${"b".repeat(64)}`;
   const authWorkerImageId = `sha256:${"c".repeat(64)}`;
   const operationsImageId = `sha256:${"d".repeat(64)}`;
@@ -86,6 +98,7 @@ function writeAcceptedRehearsal(directory: string, revision: string, runId: stri
     schemaVersion: 1,
     pinnedComposeConfigurationSha256: "4".repeat(64),
     images: [
+      { name: "database", reference: `business-finlynq-database:${revision}`, imageId: databaseImageId, ociRevision: revision },
       { name: "app", reference: `business-finlynq-app:${revision}`, imageId: appImageId, ociRevision: revision },
       { name: "migrator", reference: `business-finlynq-migrator:${revision}`, imageId: migratorImageId, ociRevision: revision },
       { name: "authWorker", reference: `business-finlynq-auth-worker:${revision}`, imageId: authWorkerImageId, ociRevision: revision },
@@ -93,6 +106,16 @@ function writeAcceptedRehearsal(directory: string, revision: string, runId: stri
       { name: "acceptance", reference: `business-finlynq-acceptance:${revision}`, imageId: acceptanceImageId, ociRevision: revision },
     ],
   });
+  const databaseUse = {
+    schemaVersion: 1,
+    product: "business-finlynq",
+    service: "database",
+    verifiedAt: completedAt,
+    revision,
+    imageId: databaseImageId,
+  };
+  writeJson("29-rehearsal-database-image.json", databaseUse);
+  writeJson("35-database-image.json", databaseUse);
   writeJson("12-rollback-artifact.json", {
     schemaVersion: 1,
     previous: null,
@@ -151,7 +174,7 @@ function writeAcceptedRehearsal(directory: string, revision: string, runId: stri
   writeJson("73-final-readiness.json", { status: "ready", revision, checks: disabledChecks });
   for (const name of [
     "01-clean-environment.log", "10-image-build.log", "25-stop-write-surfaces.log",
-    "29-rehearsal-database-start.log",
+    "29-rehearsal-database-start.log", "34-database-start.log",
     "30-provision-backup-role.log", "31-encrypted-backup.log", "32-backup-verification.log",
     "49-pretraffic-reset.log", "50-pretraffic-up.log", "51-pretraffic-wait.log",
     "52-pretraffic-services.log", "54-bootstrap-reset.log", "55-bootstrap-up.log",
@@ -177,11 +200,7 @@ function writeAcceptedRehearsal(directory: string, revision: string, runId: stri
     runId,
     status: "accepted",
   });
-  const checksums = readdirSync(directory).sort().map((name) => {
-    const digest = createHash("sha256").update(readFileSync(join(directory, name))).digest("hex");
-    return `${digest}  ./${name}`;
-  });
-  writeFileSync(join(directory, "SHA256SUMS"), `${checksums.join("\n")}\n`);
+  writeChecksums(directory);
 }
 
 describe("commit-addressed release orchestration", () => {
@@ -193,7 +212,7 @@ describe("commit-addressed release orchestration", () => {
     expect(compose).toMatch(/verify_database_contract:[\s\S]*?depends_on:[\s\S]*?reconcile_backup_grants:[\s\S]*?condition: service_completed_successfully/);
     expect(compose).toMatch(/bootstrap_demo:[\s\S]*?depends_on:[\s\S]*?verify_database_contract:[\s\S]*?condition: service_completed_successfully/);
 
-    for (const image of ["app", "migrator", "auth-worker", "operations", "acceptance"]) {
+    for (const image of ["database", "app", "migrator", "auth-worker", "operations", "acceptance"]) {
       expect(compose).toContain(`business-finlynq-${image}:\${BUSINESS_FINLYNQ_IMAGE_REVISION:?set BUSINESS_FINLYNQ_IMAGE_REVISION}`);
     }
     expect(compose).toContain('"127.0.0.1:${BUSINESS_FINLYNQ_APP_PORT:-3100}:3000"');
@@ -206,7 +225,7 @@ describe("commit-addressed release orchestration", () => {
 
     const pinned = source("deploy/release/docker-compose.candidate-images.yml");
     for (const service of [
-      "app", "auth_email_worker", "migrate", "verify_database_contract", "bootstrap_demo",
+      "database", "app", "auth_email_worker", "migrate", "verify_database_contract", "bootstrap_demo",
       "provision_auth_worker_role", "reconcile_runtime_grants", "reconcile_auth_worker_grants",
       "provision_backup", "reconcile_backup_grants", "backup", "verify_latest_backup",
       "verify_accounting_evidence",
@@ -214,8 +233,8 @@ describe("commit-addressed release orchestration", () => {
     ]) {
       expect(pinned).toMatch(new RegExp(`^  ${service}:$`, "m"));
     }
-    expect(pinned.match(/build: !reset null/g)).toHaveLength(14);
-    expect(pinned.match(/pull_policy: never/g)).toHaveLength(14);
+    expect(pinned.match(/build: !reset null/g)).toHaveLength(15);
+    expect(pinned.match(/pull_policy: never/g)).toHaveLength(15);
   });
 
   it("runs release browser acceptance in a secretless hardened container", () => {
@@ -263,7 +282,7 @@ describe("commit-addressed release orchestration", () => {
 
   it("embeds the full revision in every release-owned image and retains both backup revision meanings", () => {
     const dockerfile = source("Dockerfile");
-    expect(dockerfile.match(/LABEL org\.opencontainers\.image\.revision=\$BUSINESS_FINLYNQ_IMAGE_REVISION/g)).toHaveLength(5);
+    expect(dockerfile.match(/LABEL org\.opencontainers\.image\.revision=\$BUSINESS_FINLYNQ_IMAGE_REVISION/g)).toHaveLength(6);
     expect(dockerfile).toContain(
       "FROM mcr.microsoft.com/playwright:v1.62.1-noble@sha256:dcc5531e97840b9b5e794f2814476b21571c5124a3fca2267d73041f56e7580e AS acceptance",
     );
@@ -297,6 +316,19 @@ describe("commit-addressed release orchestration", () => {
     expect(finalWrites).toBeLessThan(resume);
     expect(browser).toBeLessThan(resume);
     expect(release).toContain("They remain paused; do not re-enable writes");
+    expect(release).toContain('compose_timed 20s logs --no-color --timestamps --tail 200 database');
+    expect(release).toContain('98-rehearsal-database.log');
+    expect(release).toContain('[REDACTED]');
+    const failureCapture = release.indexOf("    capture_rehearsal_database_failure");
+    const failureCleanup = release.indexOf("    rehearsal_cleanup", failureCapture);
+    expect(failureCapture).toBeGreaterThanOrEqual(0);
+    expect(failureCleanup).toBeGreaterThan(failureCapture);
+    expect(release).toContain("    capture_rehearsal_database_failure || true");
+    const databaseActivation = release.indexOf('stage="activate-reviewed-database-image"');
+    expect(databaseActivation).toBeGreaterThan(release.indexOf('run_logged 32-backup-verification.log'));
+    expect(databaseActivation).toBeLessThan(release.indexOf('stage="pre-traffic-migration-and-contract-verification"'));
+    expect(release).toContain('record_running_database_image "$evidence_directory/29-rehearsal-database-image.json"');
+    expect(release).toContain('record_running_database_image "$evidence_directory/35-database-image.json"');
     expect(release).toContain("12-rollback-artifact.json");
     expect(release).toContain("SHA256SUMS");
     expect(release).toContain('compose --profile operations rm --force --stop "${pretraffic_services[@]}"');
@@ -963,6 +995,17 @@ cp "$1" "$FAKE_CRONTAB_SPOOL"
     const verifier = resolve(repositoryRoot, "scripts/operations/verify-release-rehearsals.mjs");
     expect(execFileSync(process.execPath, [verifier, first, second], { encoding: "utf8" }))
       .toContain(`Two independent clean release rehearsals accepted for ${revision}`);
+
+    const databaseEvidencePath = join(second, "35-database-image.json");
+    const databaseEvidence = JSON.parse(readFileSync(databaseEvidencePath, "utf8")) as Record<string, unknown>;
+    databaseEvidence.imageId = `sha256:${"7".repeat(64)}`;
+    writeFileSync(databaseEvidencePath, `${JSON.stringify(databaseEvidence)}\n`);
+    writeChecksums(second);
+    const databaseRejected = spawnSync(process.execPath, [verifier, first, second], { encoding: "utf8" });
+    expect(databaseRejected.status).not.toBe(0);
+    expect(databaseRejected.stderr).toContain("does not prove use of the reviewed database image");
+
+    writeAcceptedRehearsal(second, revision, "rehearsal-second");
 
     writeFileSync(join(second, "90-release-complete.json"), "{}\n");
     const rejected = spawnSync(process.execPath, [verifier, first, second], { encoding: "utf8" });

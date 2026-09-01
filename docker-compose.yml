@@ -2,7 +2,13 @@ name: business-finlynq
 
 services:
   database:
-    image: postgres:16-alpine@sha256:cf78e76683b9ca8c5733cbbdce6c9262b45b6767934dd0a95e671f9a0fc20685
+    image: business-finlynq-database:${BUSINESS_FINLYNQ_IMAGE_REVISION:?set BUSINESS_FINLYNQ_IMAGE_REVISION}
+    pull_policy: never
+    build:
+      context: .
+      target: database
+      args:
+        BUSINESS_FINLYNQ_IMAGE_REVISION: ${BUSINESS_FINLYNQ_IMAGE_REVISION:?set BUSINESS_FINLYNQ_IMAGE_REVISION}
     environment:
       POSTGRES_DB: business_finlynq
       POSTGRES_USER: business_finlynq_owner
@@ -10,11 +16,10 @@ services:
       APP_DATABASE_PASSWORD_FILE: /run/secrets/business_finlynq_app_db_password
     secrets:
       - business_finlynq_app_db_password
-    group_add:
-      - ${BUSINESS_FINLYNQ_SECRET_GID:?set BUSINESS_FINLYNQ_SECRET_GID}
     volumes:
       - business_finlynq_pgdata:/var/lib/postgresql/data
-      - ./deploy/postgres/010-runtime-role.sh:/docker-entrypoint-initdb.d/010-runtime-role.sh:ro
+    tmpfs:
+      - /run/business-finlynq-init:size=64k,mode=0700,uid=70,gid=70,noexec,nosuid,nodev
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U business_finlynq_owner -d business_finlynq"]
       interval: 10s

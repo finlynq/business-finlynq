@@ -343,6 +343,7 @@ run_compose() {
   fi
   if [[ "$release_images_pinned" == "true" ]]; then
     controlled_environment+=(
+      "BUSINESS_FINLYNQ_RELEASE_DATABASE_IMAGE=${image_ids[database]}"
       "BUSINESS_FINLYNQ_RELEASE_APP_IMAGE=${image_ids[app]}"
       "BUSINESS_FINLYNQ_RELEASE_AUTH_WORKER_IMAGE=${image_ids[authWorker]}"
       "BUSINESS_FINLYNQ_RELEASE_ACCEPTANCE_IMAGE=${image_ids[acceptance]}"
@@ -468,6 +469,17 @@ rehearsal_cleanup() {
   rehearsal_cleaned="true"
 }
 
+capture_rehearsal_database_failure() {
+  [[ "$mode" == "rehearsal" && -n "$evidence_directory" && -d "$evidence_directory" ]] || return 0
+  {
+    compose_timed 20s logs --no-color --timestamps --tail 200 database 2>&1 || true
+  } | sed -E \
+    -e "s/([Pp][Aa][Ss][Ss][Ww][Oo][Rr][Dd][[:space:]]+)'[^']*'/\\1 '[REDACTED]'/g" \
+    -e 's/(POSTGRES_PASSWORD|DATABASE_PASSWORD|app_password|worker_password|backup_password)([=:][^[:space:]]+)/\1=[REDACTED]/g' \
+    >"$evidence_directory/98-rehearsal-database.log"
+  chmod 0600 -- "$evidence_directory/98-rehearsal-database.log" 2>/dev/null || true
+}
+
 on_exit() {
   local status=$?
   trap - EXIT ERR INT TERM
@@ -495,6 +507,7 @@ on_exit() {
       '{schemaVersion: 1, product: "business-finlynq", status: "failed", failedAt: $at, mode: $mode, revision: $revision, runId: $runId, stage: $stage, exitCode: $exitCode, schedulersRemainPaused: ($schedulersPaused == "true")}' \
       >"$evidence_directory/99-failure.json" 2>/dev/null || true
     chmod 0600 -- "$evidence_directory/99-failure.json" 2>/dev/null || true
+    capture_rehearsal_database_failure || true
     rehearsal_cleanup
     refresh_checksums || true
     if [[ "$mode" == "release" && "$schedulers_paused" == "true" ]]; then
@@ -575,6 +588,7 @@ rendered_compose="$(compose --profile operations --profile auth-email --profile 
 rendered_revision="$(jq -r '.services.app.environment.BUSINESS_FINLYNQ_IMAGE_REVISION // empty' <<<"$rendered_compose")"
 [[ "$rendered_revision" == "$revision" ]] || fail "Compose image revision does not match the requested release"
 for image_contract in \
+  "database:business-finlynq-database:$revision" \
   "app:business-finlynq-app:$revision" \
   "migrate:business-finlynq-migrator:$revision" \
   "auth_email_worker:business-finlynq-auth-worker:$revision" \
@@ -753,7 +767,7 @@ stage="candidate-image-build"
 assert_clean_checkout "$repository_root" \
   "the checkout changed after release evidence initialization and before image build"
 run_logged 10-image-build.log compose --profile operations --profile auth-email --profile acceptance build \
-  app migrate auth_email_worker backup release_acceptance
+  database app migrate auth_email_worker backup release_acceptance
 assert_clean_checkout "$repository_root" \
   "the checkout changed while commit-addressed images were being built"
 read_git_output "$repository_root" "post-build HEAD" rev-parse HEAD
@@ -766,6 +780,7 @@ read_git_output "$repository_root" "post-build Git tree" rev-parse "HEAD^{tree}"
 image_evidence='[]'
 declare -A image_ids=()
 for image_name in \
+  "database=business-finlynq-database:$revision" \
   "app=business-finlynq-app:$revision" \
   "migrator=business-finlynq-migrator:$revision" \
   "authWorker=business-finlynq-auth-worker:$revision" \
@@ -795,6 +810,7 @@ pinned_compose="$(compose --profile operations --profile auth-email --profile ac
 [[ "$(jq -r '.services.release_acceptance.image // empty' <<<"$pinned_compose")" == "${image_ids[acceptance]}" ]] \
   || fail "pinned Compose configuration does not bind the immutable browser-acceptance image"
 for pinned_service_contract in \
+  "database:database" \
   "release_acceptance:acceptance" \
   "migrate:migrator" \
   "verify_database_contract:migrator" \
@@ -820,6 +836,26 @@ jq -n --argjson images "$image_evidence" --arg pinnedComposeSha256 "$pinned_comp
   '{schemaVersion: 1, pinnedComposeConfigurationSha256: $pinnedComposeSha256, images: $images}' \
   >"$evidence_directory/11-images.json"
 chmod 0600 -- "$evidence_directory/11-images.json"
+
+record_running_database_image() {
+  local output_file="$1"
+  local database_container actual_image_id
+  [[ "$output_file" == "$evidence_directory"/* && ! -e "$output_file" && ! -L "$output_file" ]] \
+    || fail "database image evidence target is unsafe or already exists"
+  database_container="$(compose ps --quiet database)"
+  [[ "$database_container" =~ ^[a-f0-9]{12,64}$ ]] \
+    || fail "running database container identity is missing or invalid"
+  actual_image_id="$(docker inspect --format '{{.Image}}' "$database_container")"
+  [[ "$actual_image_id" == "${image_ids[database]}" ]] \
+    || fail "running database does not use the immutable reviewed database image"
+  jq -n \
+    --arg verifiedAt "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    --arg revision "$revision" \
+    --arg imageId "$actual_image_id" \
+    '{schemaVersion: 1, product: "business-finlynq", service: "database", verifiedAt: $verifiedAt, revision: $revision, imageId: $imageId}' \
+    >"$output_file"
+  chmod 0600 -- "$output_file"
+}
 
 previous_app_id=""
 previous_app_revision=""
@@ -1352,6 +1388,7 @@ write_checkpoint 26-write-surfaces-stopped.json write-surfaces-stopped-before-ba
 stage="pre-migration-backup"
 if [[ "$mode" == "rehearsal" ]]; then
   run_logged 29-rehearsal-database-start.log compose_timed 10m up --detach --wait --no-build database
+  record_running_database_image "$evidence_directory/29-rehearsal-database-image.json"
   backup_source_revision="$revision"
 else
   backup_source_revision="$previous_app_revision"
@@ -1431,6 +1468,10 @@ verify_backup_and_record_evidence() {
   chmod 0600 -- "$evidence_directory/33-backup-evidence.json"
 }
 run_logged 32-backup-verification.log verify_backup_and_record_evidence
+
+stage="activate-reviewed-database-image"
+run_logged 34-database-start.log compose_timed 10m up --detach --wait --no-build database
+record_running_database_image "$evidence_directory/35-database-image.json"
 
 stage="pre-traffic-migration-and-contract-verification"
 pretraffic_services=(

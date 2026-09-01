@@ -84,6 +84,7 @@ if ((worker.networks ?? {}).business_finlynq_edge) fail("auth_email_worker is at
 const app = services.app;
 if (!app) fail("app service is missing");
 const expectedReleaseImages = {
+  database: `business-finlynq-database:${process.env.BUSINESS_FINLYNQ_IMAGE_REVISION}`,
   app: `business-finlynq-app:${process.env.BUSINESS_FINLYNQ_IMAGE_REVISION}`,
   auth_email_worker: `business-finlynq-auth-worker:${process.env.BUSINESS_FINLYNQ_IMAGE_REVISION}`,
   release_acceptance: `business-finlynq-acceptance:${process.env.BUSINESS_FINLYNQ_IMAGE_REVISION}`,

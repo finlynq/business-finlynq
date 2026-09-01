@@ -54,6 +54,19 @@ COPY --from=worker-builder --chown=node:node /worker/auth-email-worker.mjs ./aut
 USER node
 CMD ["node", "auth-email-worker.mjs"]
 
+FROM postgres:16-alpine@sha256:cf78e76683b9ca8c5733cbbdce6c9262b45b6767934dd0a95e671f9a0fc20685 AS database
+
+ARG BUSINESS_FINLYNQ_IMAGE_REVISION=unknown
+LABEL org.opencontainers.image.revision=$BUSINESS_FINLYNQ_IMAGE_REVISION
+
+# Keep first-cluster initialization inside the immutable image. Release
+# snapshots may live on a noexec filesystem and are deleted after acceptance,
+# so a host bind here would be both fragile and non-restartable.
+COPY --chmod=0555 deploy/postgres/010-runtime-role.sh /docker-entrypoint-initdb.d/010-runtime-role.sh
+COPY --chmod=0555 deploy/postgres/database-entrypoint.sh /usr/local/bin/business-finlynq-database-entrypoint
+ENTRYPOINT ["business-finlynq-database-entrypoint"]
+CMD ["postgres"]
+
 FROM postgres:16-alpine@sha256:cf78e76683b9ca8c5733cbbdce6c9262b45b6767934dd0a95e671f9a0fc20685 AS operations
 
 ARG BUSINESS_FINLYNQ_IMAGE_REVISION=unknown

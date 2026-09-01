@@ -16,6 +16,11 @@ if [ -n "${APP_DATABASE_PASSWORD_FILE:-}" ]; then
   fi
   APP_DATABASE_PASSWORD=""
   IFS= read -r APP_DATABASE_PASSWORD < "$APP_DATABASE_PASSWORD_FILE" || [ -n "$APP_DATABASE_PASSWORD" ]
+  if [ "$APP_DATABASE_PASSWORD_FILE" = /run/business-finlynq-init/app-db-password ]; then
+    rm -f -- "$APP_DATABASE_PASSWORD_FILE"
+    [ ! -e "$APP_DATABASE_PASSWORD_FILE" ] \
+      || { echo "The temporary application database password could not be removed" >&2; exit 1; }
+  fi
 else
   : "${APP_DATABASE_PASSWORD:?APP_DATABASE_PASSWORD or APP_DATABASE_PASSWORD_FILE is required}"
 fi

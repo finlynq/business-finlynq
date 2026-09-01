@@ -1,4 +1,9 @@
 services:
+  database:
+    image: ${BUSINESS_FINLYNQ_RELEASE_DATABASE_IMAGE:?set BUSINESS_FINLYNQ_RELEASE_DATABASE_IMAGE to the verified immutable image ID}
+    pull_policy: never
+    build: !reset null
+
   app:
     image: ${BUSINESS_FINLYNQ_RELEASE_APP_IMAGE:?set BUSINESS_FINLYNQ_RELEASE_APP_IMAGE to the verified immutable image ID}
     pull_policy: never
