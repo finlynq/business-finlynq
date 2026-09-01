@@ -131,9 +131,20 @@ for schedule_name in "${schedule_names[@]}"; do
     [[ "$systemd_calendar" == *"${expected_calendar[$schedule_name]}"* ]] \
       || fail "loaded $schedule_name timer calendar differs from the candidate"
   else
-    [[ "$(systemctl show --property=OnBootUSec --value "$timer_name")" == "2min" \
-      && "$(systemctl show --property=OnUnitActiveUSec --value "$timer_name")" == "5min" ]] \
-      || fail "loaded monitor timer cadence differs from the candidate"
+    # Some systemd releases expose monotonic timer triggers only through the
+    # aggregate TimersMonotonic property. Accept either representation while
+    # requiring both exact trigger records.
+    timer_on_boot="$(systemctl show --property=OnBootUSec --value "$timer_name")"
+    timer_on_unit_active="$(systemctl show --property=OnUnitActiveUSec --value "$timer_name")"
+    if [[ -n "$timer_on_boot" || -n "$timer_on_unit_active" ]]; then
+      [[ "$timer_on_boot" == "2min" && "$timer_on_unit_active" == "5min" ]] \
+        || fail "loaded monitor timer cadence differs from the candidate"
+    else
+      timers_monotonic="$(systemctl show --property=TimersMonotonic --value "$timer_name")"
+      [[ "$(grep -Ec '^\{ OnBootUSec=2min ; next_elapse=[^[:space:]}]+ \}$' <<<"$timers_monotonic")" == 1 \
+        && "$(grep -Ec '^\{ OnUnitActiveUSec=5min ; next_elapse=[^[:space:]}]+ \}$' <<<"$timers_monotonic")" == 1 ]] \
+        || fail "loaded monitor timer cadence differs from the candidate"
+    fi
   fi
   systemd_exec_start="$(systemctl show --property=ExecStart --value "$service_name")"
   expected_exec_binary="${expected_exec_start[$schedule_name]%% *}"

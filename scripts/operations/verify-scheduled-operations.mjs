@@ -281,9 +281,16 @@ for (const expected of [
   "TimeoutStartSec=${expected_timeout_unit[$schedule_name]}",
   "RandomizedDelayUSec",
   "TimersCalendar",
+  "TimersMonotonic",
+  "grep -Ec '^\\{ OnBootUSec=2min ; next_elapse=[^[:space:]}]+ \\}$'",
+  "grep -Ec '^\\{ OnUnitActiveUSec=5min ; next_elapse=[^[:space:]}]+ \\}$'",
   "EnvironmentFiles",
   "TimeoutStartUSec",
 ]) requireText(backupScheduleVerifier, expected, "installed backup schedule verifier");
+if (backupScheduleVerifier.includes('== *"OnBootUSec=2min"*')
+  || backupScheduleVerifier.includes('== *"OnUnitActiveUSec=5min"*')) {
+  throw new Error("installed backup schedule verifier accepts non-exact monotonic timer durations");
+}
 const backupImplementation = read("deploy/backup/run-backup.sh");
 requireText(backupImplementation, "BUSINESS_FINLYNQ_IMAGE_REVISION is required", "backup implementation");
 requireText(backupImplementation, 'exec 9<>"$backup_lock_file"', "backup implementation");
