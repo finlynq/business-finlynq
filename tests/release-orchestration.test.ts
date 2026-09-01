@@ -578,6 +578,12 @@ describe("commit-addressed release orchestration", () => {
     expect(pauseSchedulers).toContain("scheduled service did not reach an explicit terminal state");
     expect(pauseSchedulers).toContain("systemctl disable --now");
     expect(pauseSchedulers).toContain("activate_maintenance_marker");
+    expect(pauseSchedulers).toContain('deploy_gid="$(id -g deploy 2>/dev/null)"');
+    expect(pauseSchedulers).toContain(
+      '"$(stat -c \'%u:%g:%a\' -- "$marker_file")" == "$deploy_uid:$deploy_gid:600"',
+    );
+    expect(pauseSchedulers).toContain('chown -- "$deploy_uid:$deploy_gid" "$marker_temporary"');
+    expect(pauseSchedulers).not.toContain('chown -- "$deploy_uid" "$marker_temporary"');
     expect(pauseSchedulers).toContain("contain_orphaned_scheduled_containers");
     expect(pauseSchedulers).toContain("remove_exact_deploy_cron_if_present");
     expect(pauseSchedulers).toContain("/tmp/business-finlynq-cron-pause.XXXXXX");
@@ -1132,17 +1138,21 @@ esac
     expect(result.stderr).toContain("canonical checkout status could not be inspected");
   });
 
-  it.skipIf(process.platform === "win32")("accepts only explicit not-found candidate units during the first systemd upgrade", () => {
+  it.skipIf(process.platform === "win32")("creates a deploy-grouped root containment marker", () => {
     const root = mkdtempSync(join(tmpdir(), "business-finlynq-scheduler-upgrade-"));
     const fakeBin = join(root, "bin");
     const markerDirectory = join(root, "release-locks");
+    const markerFile = join(markerDirectory, "scheduler-maintenance");
     const callLog = join(root, "systemctl.log");
+    const chownLog = join(root, "chown.log");
     const dockerFailureMarker = join(root, "docker-fail");
     mkdirSync(fakeBin);
     mkdirSync(markerDirectory, { mode: 0o700 });
     chmodSync(markerDirectory, 0o700);
     const currentUid = process.getuid?.() ?? 1000;
+    const currentGid = process.getgid?.() ?? 1000;
     const normalizedMarkerDirectory = markerDirectory.replaceAll("\\", "/");
+    const normalizedMarkerFile = markerFile.replaceAll("\\", "/");
     const normalizedDockerFailureMarker = dockerFailureMarker.replaceAll("\\", "/");
     const pausePath = join(root, "pause-schedulers.sh");
     writeFileSync(pausePath, source("deploy/release/pause-schedulers.sh").replace(
@@ -1153,11 +1163,23 @@ esac
     writeFileSync(join(fakeBin, "id"), `#!/usr/bin/env bash
 case "$*" in
   "-u deploy") printf '%s\\n' '${currentUid}' ;;
+  "-g deploy") printf '%s\\n' '${currentGid}' ;;
   "-u") printf '%s\\n' 0 ;;
   *) /usr/bin/id "$@" ;;
 esac
 `);
-    writeFileSync(join(fakeBin, "chown"), "#!/usr/bin/env bash\nexit 0\n");
+    writeFileSync(join(fakeBin, "chown"), `#!/usr/bin/env bash
+printf '%s\\n' "$*" >>"$FAKE_CHOWN_LOG"
+exit 0
+`);
+    writeFileSync(join(fakeBin, "stat"), `#!/usr/bin/env bash
+if [[ "\${FAKE_MARKER_WRONG_GROUP:-false}" == true \
+  && "$*" == "-c %u:%g:%a -- ${normalizedMarkerFile}" ]]; then
+  printf '%s\\n' '${currentUid}:99999:600'
+  exit 0
+fi
+exec /usr/bin/stat "$@"
+`);
     writeFileSync(join(fakeBin, "sleep"), "#!/usr/bin/env bash\nexit 0\n");
     writeFileSync(join(fakeBin, "runuser"), `#!/usr/bin/env bash
 printf '%s\\n' 'no crontab for deploy' >&2
@@ -1196,24 +1218,46 @@ case "$1" in
   *) exit 0 ;;
 esac
 `);
-    for (const command of ["id", "chown", "sleep", "runuser", "docker", "systemctl"]) {
+    for (const command of ["id", "chown", "stat", "sleep", "runuser", "docker", "systemctl"]) {
       chmodSync(join(fakeBin, command), 0o755);
     }
 
     const accepted = spawnSync("bash", [pausePath, "systemd", "--allow-already-paused"], {
       encoding: "utf8",
-      env: { ...process.env, FAKE_SYSTEMCTL_LOG: callLog, PATH: `${fakeBin}:${process.env.PATH ?? ""}` },
+      env: {
+        ...process.env,
+        FAKE_CHOWN_LOG: chownLog,
+        FAKE_SYSTEMCTL_LOG: callLog,
+        PATH: `${fakeBin}:${process.env.PATH ?? ""}`,
+      },
     });
     expect(accepted.status, accepted.stderr).toBe(0);
     expect(accepted.stdout).toContain("schedulers are paused and drained");
     const calls = readFileSync(callLog, "utf8");
+    expect(readFileSync(chownLog, "utf8")).toContain(
+      `-- ${currentUid}:${currentGid} ${normalizedMarkerDirectory}/.scheduler-maintenance.`,
+    );
     expect(calls).not.toContain("disable --now business-finlynq-accounting-evidence.timer");
     expect(calls).toContain("show --property=LoadState --value business-finlynq-accounting-evidence.timer");
+
+    const wrongGroupRejected = spawnSync("bash", [pausePath, "systemd", "--allow-already-paused"], {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        FAKE_CHOWN_LOG: chownLog,
+        FAKE_MARKER_WRONG_GROUP: "true",
+        FAKE_SYSTEMCTL_LOG: callLog,
+        PATH: `${fakeBin}:${process.env.PATH ?? ""}`,
+      },
+    });
+    expect(wrongGroupRejected.status).toBe(1);
+    expect(wrongGroupRejected.stderr).toContain("existing scheduler maintenance marker is unsafe");
 
     const rejected = spawnSync("bash", [pausePath, "systemd", "--allow-already-paused"], {
       encoding: "utf8",
       env: {
         ...process.env,
+        FAKE_CHOWN_LOG: chownLog,
         FAKE_SYSTEMCTL_LOG: callLog,
         FAKE_SYSTEMD_READ_ERROR: "true",
         PATH: `${fakeBin}:${process.env.PATH ?? ""}`,
@@ -1227,6 +1271,7 @@ esac
       encoding: "utf8",
       env: {
         ...process.env,
+        FAKE_CHOWN_LOG: chownLog,
         FAKE_SYSTEMCTL_LOG: callLog,
         PATH: `${fakeBin}:${process.env.PATH ?? ""}`,
       },

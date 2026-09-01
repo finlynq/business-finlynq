@@ -166,6 +166,18 @@ if (cronRemover.includes("crontab -r")) {
   throw new Error("deploy-owned cron remover may not remove the user's complete crontab");
 }
 
+const schedulerPause = read("deploy/release/pause-schedulers.sh");
+for (const expected of [
+  'deploy_gid="$(id -g deploy 2>/dev/null)"',
+  'stat -c \'%u:%g:%a\' -- "$marker_directory"',
+  'stat -c \'%u:%g:%a\' -- "$marker_file"',
+  'chown -- "$deploy_uid:$deploy_gid" "$marker_temporary"',
+  'stat -c \'%u:%g:%a\' -- "$marker_temporary"',
+]) requireText(schedulerPause, expected, "scheduler maintenance containment");
+if (schedulerPause.includes('chown -- "$deploy_uid" "$marker_temporary"')) {
+  throw new Error("root scheduler containment can leave the maintenance marker in root's group");
+}
+
 const resetImplementation = read("src/modules/onboarding/demo-bootstrap.ts");
 requireText(resetImplementation, "resetDemoSandboxes", "demo-sandbox reset implementation");
 requireText(resetImplementation, "registeredDemoSandboxResetTables", "demo-sandbox reset registration hook");

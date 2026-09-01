@@ -75,17 +75,18 @@ systemd_load_state() {
 }
 
 activate_maintenance_marker() {
-  local deploy_uid marker_directory marker_file marker_temporary
+  local deploy_uid deploy_gid marker_directory marker_file marker_temporary
   deploy_uid="$(id -u deploy 2>/dev/null)" || fail "maintenance marker requires the deploy account"
+  deploy_gid="$(id -g deploy 2>/dev/null)" || fail "maintenance marker requires the deploy group"
   marker_directory="/home/deploy/.local/state/business-finlynq/release-locks"
   marker_file="$marker_directory/scheduler-maintenance"
   [[ -d "$marker_directory" && ! -L "$marker_directory" \
     && "$(readlink -f -- "$marker_directory")" == "$marker_directory" \
-    && "$(stat -c '%u:%a' -- "$marker_directory")" == "$deploy_uid:700" ]] \
-    || fail "maintenance marker directory must be deploy-owned mode 0700"
+    && "$(stat -c '%u:%g:%a' -- "$marker_directory")" == "$deploy_uid:$deploy_gid:700" ]] \
+    || fail "maintenance marker directory must be deploy-owned, deploy-grouped, and mode 0700"
   if [[ -e "$marker_file" || -L "$marker_file" ]]; then
     [[ -f "$marker_file" && ! -L "$marker_file" \
-      && "$(stat -c '%u:%a' -- "$marker_file")" == "$deploy_uid:600" ]] \
+      && "$(stat -c '%u:%g:%a' -- "$marker_file")" == "$deploy_uid:$deploy_gid:600" ]] \
       || fail "existing scheduler maintenance marker is unsafe"
     sync -f -- "$marker_file"
     sync -f -- "$marker_directory"
@@ -96,9 +97,9 @@ activate_maintenance_marker() {
     >"$marker_temporary"
   chmod 0600 -- "$marker_temporary"
   if [[ "$(id -u)" == "0" ]]; then
-    chown -- "$deploy_uid" "$marker_temporary"
+    chown -- "$deploy_uid:$deploy_gid" "$marker_temporary"
   fi
-  [[ "$(stat -c '%u:%a' -- "$marker_temporary")" == "$deploy_uid:600" ]] \
+  [[ "$(stat -c '%u:%g:%a' -- "$marker_temporary")" == "$deploy_uid:$deploy_gid:600" ]] \
     || fail "scheduler maintenance marker temporary file has unsafe ownership or mode"
   sync -f -- "$marker_temporary"
   mv -- "$marker_temporary" "$marker_file"
