@@ -389,7 +389,7 @@ run_compose() {
     "${compose_files[@]}"
   )
   if [[ -n "$duration" ]]; then
-    timeout "$duration" "${command[@]}" "$@"
+    timeout --signal=TERM --kill-after=10s "$duration" "${command[@]}" "$@"
   else
     "${command[@]}" "$@"
   fi
@@ -463,6 +463,271 @@ run_logged() {
   return "$status"
 }
 
+captured_compose_container_id=""
+capture_compose_container_id() {
+  local description="$1" candidate
+  shift
+  local -a candidates=()
+  read_compose_output "$description" "$@"
+  while IFS= read -r candidate; do
+    [[ -n "$candidate" ]] && candidates+=("$candidate")
+  done <<<"$compose_query_output"
+  [[ "${#candidates[@]}" == "1" && "${candidates[0]}" =~ ^[a-f0-9]{64}$ ]] \
+    || fail "exactly one $description must exist"
+  captured_compose_container_id="${candidates[0]}"
+}
+
+captured_container_wait_duration="30m"
+captured_container_kill_after="10s"
+captured_container_log_duration="20s"
+captured_container_inspect_duration="10s"
+wait_for_captured_containers() {
+  local description="$1" service_log_filename="$2" state_evidence_filename="$3"
+  local separator_seen="false"
+  shift 3
+  local contract_label container_id expected_image result index observed_json wait_value
+  local wait_output="" wait_status=0 wait_result_status=0 logs_status=0
+  local inspect_output="" inspect_status=0 inspection_status=0 state_status=0 image_status=0
+  local running_output="" running_status=0 final_running_output="" final_running_status=0
+  local validation_status=0 cleanup_status=0 cleanup_attempted="false" final_quiescent
+  local container_evidence='[]'
+  local inspect_format
+  local -a contract_labels=() container_ids=() expected_images=() compose_log_args=()
+  local -a wait_results=() inspect_results=() remaining_ids=()
+  local -a inspection_succeeded=() actual_images=() observed_statuses=()
+  local -a observed_running=() observed_exit_codes=() observed_oom=() observed_error_present=()
+
+  while (( $# > 0 )); do
+    if [[ "$1" == "--" ]]; then
+      separator_seen="true"
+      shift
+      break
+    fi
+    (( $# >= 3 )) || fail "$description wait invocation has an incomplete container contract"
+    contract_labels+=("$1")
+    container_ids+=("$2")
+    expected_images+=("$3")
+    shift 3
+  done
+  compose_log_args=("$@")
+  [[ "$separator_seen" == "true" && "${#container_ids[@]}" -gt 0 \
+    && "${#compose_log_args[@]}" -gt 0 ]] \
+    || fail "$description wait invocation is incomplete"
+  [[ "$state_evidence_filename" =~ ^[0-9]{2}-[a-z0-9._-]+\.json$ ]] \
+    || fail "$description state evidence filename is unsafe"
+  for (( index=0; index<${#container_ids[@]}; index++ )); do
+    contract_label="${contract_labels[$index]}"
+    container_id="${container_ids[$index]}"
+    expected_image="${expected_images[$index]}"
+    [[ "$contract_label" =~ ^[a-z][a-z0-9_]{2,63}$ ]] \
+      || fail "$description has an invalid container contract label"
+    [[ "$container_id" =~ ^[a-f0-9]{64}$ ]] \
+      || fail "$description has an invalid captured container ID"
+    [[ "$expected_image" =~ ^sha256:[a-f0-9]{64}$ ]] \
+      || fail "$description has an invalid expected image ID"
+    inspection_succeeded+=("false")
+    actual_images+=("")
+    observed_statuses+=("")
+    observed_running+=("")
+    observed_exit_codes+=("")
+    observed_oom+=("")
+    observed_error_present+=("")
+  done
+
+  if wait_output="$(timeout --signal=TERM --kill-after="$captured_container_kill_after" \
+    "$captured_container_wait_duration" \
+    env -i "PATH=$PATH" docker wait "${container_ids[@]}" 2>&1)"; then
+    wait_status=0
+  else
+    wait_status=$?
+  fi
+  printf '%s\n' "$wait_output"
+  while IFS= read -r result; do
+    wait_results+=("$result")
+  done <<<"$wait_output"
+  if [[ "${#wait_results[@]}" != "${#container_ids[@]}" ]]; then
+    wait_result_status=1
+  else
+    for result in "${wait_results[@]}"; do
+      [[ "$result" =~ ^[0-9]+$ && "$result" == "0" ]] || wait_result_status=1
+    done
+  fi
+
+  # Compose log collection is itself TERM/KILL bounded by compose_timed. Logs
+  # are retained before a wait or state failure can trigger containment.
+  if [[ "$service_log_filename" == "-" ]]; then
+    if compose_timed "$captured_container_log_duration" "${compose_log_args[@]}"; then
+      logs_status=0
+    else
+      logs_status=$?
+    fi
+  elif run_logged "$service_log_filename" compose_timed \
+    "$captured_container_log_duration" "${compose_log_args[@]}" >/dev/null; then
+    logs_status=0
+  else
+    logs_status=$?
+  fi
+
+  # One bounded Docker call captures only the fields allowed into retained
+  # evidence. In particular, State.Error is reduced to a boolean.
+  inspect_format='{"image":{{json .Image}},"status":{{json .State.Status}},"running":{{json .State.Running}},"exitCode":{{json .State.ExitCode}},"oomKilled":{{json .State.OOMKilled}},"errorPresent":{{if .State.Error}}true{{else}}false{{end}}}'
+  if inspect_output="$(timeout --signal=TERM --kill-after=5s \
+    "$captured_container_inspect_duration" env -i "PATH=$PATH" docker inspect \
+    --format "$inspect_format" "${container_ids[@]}" 2>&1)"; then
+    inspect_status=0
+  else
+    inspect_status=$?
+    inspection_status=1
+  fi
+  if [[ "$inspect_status" == "0" ]]; then
+    while IFS= read -r observed_json; do
+      inspect_results+=("$observed_json")
+    done <<<"$inspect_output"
+    [[ "${#inspect_results[@]}" == "${#container_ids[@]}" ]] || inspection_status=1
+  fi
+  if [[ "$inspection_status" == "0" ]]; then
+    for (( index=0; index<${#container_ids[@]}; index++ )); do
+      observed_json="${inspect_results[$index]}"
+      if jq -e '
+        type == "object" and
+        keys == ["errorPresent", "exitCode", "image", "oomKilled", "running", "status"] and
+        (.image | type) == "string" and (.status | type) == "string" and
+        (.running | type) == "boolean" and (.exitCode | type) == "number" and
+        (.oomKilled | type) == "boolean" and (.errorPresent | type) == "boolean"
+      ' <<<"$observed_json" >/dev/null; then
+        inspection_succeeded[$index]="true"
+        actual_images[$index]="$(jq -r '.image' <<<"$observed_json")"
+        observed_statuses[$index]="$(jq -r '.status' <<<"$observed_json")"
+        observed_running[$index]="$(jq -r '.running' <<<"$observed_json")"
+        observed_exit_codes[$index]="$(jq -r '.exitCode' <<<"$observed_json")"
+        observed_oom[$index]="$(jq -r '.oomKilled' <<<"$observed_json")"
+        observed_error_present[$index]="$(jq -r '.errorPresent' <<<"$observed_json")"
+        [[ "${actual_images[$index]}" =~ ^sha256:[a-f0-9]{64}$ \
+          && "${actual_images[$index]}" == "${expected_images[$index]}" ]] \
+          || image_status=1
+        [[ "${observed_statuses[$index]}" == "exited" \
+          && "${observed_running[$index]}" == "false" \
+          && "${observed_exit_codes[$index]}" == "0" \
+          && "${observed_oom[$index]}" == "false" \
+          && "${observed_error_present[$index]}" == "false" ]] \
+          || state_status=1
+      else
+        inspection_status=1
+      fi
+    done
+  fi
+
+  [[ "$wait_status" == "0" ]] || validation_status=1
+  [[ "$wait_result_status" == "0" ]] || validation_status=1
+  [[ "$logs_status" == "0" ]] || validation_status=1
+  [[ "$inspection_status" == "0" ]] || validation_status=1
+  [[ "$state_status" == "0" ]] || validation_status=1
+  [[ "$image_status" == "0" ]] || validation_status=1
+
+  # A wait/API/log/state failure may otherwise leave a one-shot database
+  # mutator running. Stop every exact captured ID, then query and force-kill
+  # anything still running even when docker stop itself returned success.
+  if [[ "$validation_status" != "0" ]]; then
+    cleanup_attempted="true"
+    timeout --signal=TERM --kill-after=5s 45s \
+      env -i "PATH=$PATH" docker stop --time 10 "${container_ids[@]}" >/dev/null 2>&1 \
+      || true
+    if running_output="$(timeout --signal=TERM --kill-after=5s 10s \
+      env -i "PATH=$PATH" docker ps --quiet --no-trunc 2>&1)"; then
+      running_status=0
+      for container_id in "${container_ids[@]}"; do
+        grep -Fxq "$container_id" <<<"$running_output" && remaining_ids+=("$container_id")
+      done
+    else
+      running_status=$?
+      remaining_ids=("${container_ids[@]}")
+    fi
+    if (( ${#remaining_ids[@]} > 0 )); then
+      timeout --signal=TERM --kill-after=5s 15s \
+        env -i "PATH=$PATH" docker kill "${remaining_ids[@]}" >/dev/null 2>&1 \
+        || true
+    fi
+  fi
+
+  if final_running_output="$(timeout --signal=TERM --kill-after=5s 10s \
+    env -i "PATH=$PATH" docker ps --quiet --no-trunc 2>&1)"; then
+    final_running_status=0
+  else
+    final_running_status=$?
+    cleanup_status=1
+  fi
+  for (( index=0; index<${#container_ids[@]}; index++ )); do
+    container_id="${container_ids[$index]}"
+    wait_value="${wait_results[$index]:-}"
+    final_quiescent="false"
+    if [[ "$final_running_status" == "0" ]] \
+      && ! grep -Fxq "$container_id" <<<"$final_running_output"; then
+      final_quiescent="true"
+    else
+      cleanup_status=1
+    fi
+    container_evidence="$(jq -c \
+      --arg service "${contract_labels[$index]}" \
+      --arg containerId "$container_id" \
+      --arg expectedImageId "${expected_images[$index]}" \
+      --arg actualImageId "${actual_images[$index]}" \
+      --arg waitResult "$wait_value" \
+      --arg inspectionSucceeded "${inspection_succeeded[$index]}" \
+      --arg status "${observed_statuses[$index]}" \
+      --arg running "${observed_running[$index]}" \
+      --arg exitCode "${observed_exit_codes[$index]}" \
+      --arg oomKilled "${observed_oom[$index]}" \
+      --arg errorPresent "${observed_error_present[$index]}" \
+      --arg finalQuiescent "$final_quiescent" '
+        . + [{
+          service: $service,
+          containerId: $containerId,
+          expectedImageId: $expectedImageId,
+          actualImageId: (if $inspectionSucceeded == "true" then $actualImageId else null end),
+          waitResult: (if ($waitResult | test("^[0-9]+$")) then ($waitResult | tonumber) else null end),
+          inspectionSucceeded: ($inspectionSucceeded == "true"),
+          status: (if $inspectionSucceeded == "true" then $status else null end),
+          running: (if $inspectionSucceeded == "true" then ($running == "true") else null end),
+          exitCode: (if $inspectionSucceeded == "true" then ($exitCode | tonumber) else null end),
+          oomKilled: (if $inspectionSucceeded == "true" then ($oomKilled == "true") else null end),
+          errorPresent: (if $inspectionSucceeded == "true" then ($errorPresent == "true") else null end),
+          finalQuiescent: ($finalQuiescent == "true")
+        }]
+      ' <<<"$container_evidence")"
+  done
+  jq -n \
+    --arg description "$description" \
+    --arg waitStatus "$wait_status" \
+    --arg logsCaptured "$([[ "$logs_status" == "0" ]] && printf true || printf false)" \
+    --arg cleanupAttempted "$cleanup_attempted" \
+    --argjson containers "$container_evidence" '
+      {
+        schemaVersion: 1,
+        product: "business-finlynq",
+        description: $description,
+        waitTransportStatus: ($waitStatus | tonumber),
+        logsCaptured: ($logsCaptured == "true"),
+        cleanupAttempted: ($cleanupAttempted == "true"),
+        containers: $containers
+      }
+    ' >"$evidence_directory/$state_evidence_filename"
+  chmod 0600 -- "$evidence_directory/$state_evidence_filename"
+
+  [[ "$cleanup_status" == "0" ]] \
+    || fail "$description containers could not be proven quiescent after failure"
+  [[ "$logs_status" == "0" ]] || fail "$description logs could not be captured"
+  if [[ "$wait_status" == "124" ]]; then
+    fail "$description wait exceeded its 30-minute bound"
+  fi
+  [[ "$wait_status" == "0" ]] || fail "$description Docker wait failed"
+  [[ "${#wait_results[@]}" == "${#container_ids[@]}" ]] \
+    || fail "$description wait returned an unexpected number of results"
+  [[ "$wait_result_status" == "0" ]] \
+    || fail "$description wait returned an invalid or unsuccessful result"
+  [[ "$inspection_status" == "0" ]] || fail "$description container inspection failed"
+  [[ "$state_status" == "0" ]] || fail "$description container did not exit cleanly"
+  [[ "$image_status" == "0" ]] || fail "$description container used an unexpected image"
+}
 rehearsal_cleanup() {
   [[ "$mode" == "rehearsal" && "$rehearsal_cleaned" != "true" ]] || return 0
   compose --profile operations --profile auth-email --profile acceptance down --volumes --remove-orphans --timeout 30 >/dev/null 2>&1 || true
@@ -1492,11 +1757,24 @@ pretraffic_services=(
 run_logged 49-pretraffic-reset.log compose --profile operations rm --force --stop "${pretraffic_services[@]}"
 run_logged 50-pretraffic-up.log compose_timed 30m --profile operations up --detach --no-build \
   verify_database_contract verify_accounting_evidence
-run_logged 51-pretraffic-wait.log compose_timed 30m --profile operations wait \
-  verify_database_contract verify_accounting_evidence
-run_logged 52-pretraffic-services.log compose --profile operations logs --no-color --timestamps \
-  provision_auth_worker_role migrate reconcile_runtime_grants reconcile_auth_worker_grants \
-  reconcile_backup_grants verify_database_contract verify_accounting_evidence
+declare -A pretraffic_container_ids=()
+for service_name in "${pretraffic_services[@]}"; do
+  capture_compose_container_id "pre-traffic $service_name container" \
+    --profile operations ps --all --quiet "$service_name"
+  pretraffic_container_ids["$service_name"]="$captured_compose_container_id"
+done
+run_logged 51-pretraffic-wait.log wait_for_captured_containers \
+  "pre-traffic verification" 52-pretraffic-services.log 51-pretraffic-containers.json \
+  provision_auth_worker_role "${pretraffic_container_ids[provision_auth_worker_role]}" "${image_ids[operations]}" \
+  migrate "${pretraffic_container_ids[migrate]}" "${image_ids[migrator]}" \
+  reconcile_runtime_grants "${pretraffic_container_ids[reconcile_runtime_grants]}" "${image_ids[operations]}" \
+  reconcile_auth_worker_grants "${pretraffic_container_ids[reconcile_auth_worker_grants]}" "${image_ids[operations]}" \
+  reconcile_backup_grants "${pretraffic_container_ids[reconcile_backup_grants]}" "${image_ids[operations]}" \
+  verify_database_contract "${pretraffic_container_ids[verify_database_contract]}" "${image_ids[migrator]}" \
+  verify_accounting_evidence "${pretraffic_container_ids[verify_accounting_evidence]}" "${image_ids[operations]}" -- \
+  --profile operations logs --no-color --timestamps \
+    provision_auth_worker_role migrate reconcile_runtime_grants reconcile_auth_worker_grants \
+    reconcile_backup_grants verify_database_contract verify_accounting_evidence
 
 pretraffic_evidence='[]'
 for service_contract in \
@@ -1509,8 +1787,7 @@ for service_contract in \
   "verify_accounting_evidence:operations"; do
   service_name="${service_contract%%:*}"
   logical_image="${service_contract#*:}"
-  container_id="$(compose --profile operations ps --all --quiet "$service_name")"
-  [[ -n "$container_id" ]] || fail "pre-traffic service has no container: $service_name"
+  container_id="${pretraffic_container_ids[$service_name]}"
   exit_code="$(docker inspect --format '{{.State.ExitCode}}' "$container_id")"
   actual_image_id="$(docker inspect --format '{{.Image}}' "$container_id")"
   [[ "$exit_code" == "0" ]] || fail "pre-traffic service failed: $service_name"
@@ -1522,8 +1799,12 @@ done
 stage="demo-bootstrap"
 run_logged 54-bootstrap-reset.log compose rm --force --stop bootstrap_demo
 run_logged 55-bootstrap-up.log compose_timed 30m up --detach --no-build bootstrap_demo
-run_logged 56-bootstrap-wait.log compose_timed 30m wait bootstrap_demo
-bootstrap_container="$(compose ps --all --quiet bootstrap_demo)"
+capture_compose_container_id "demo bootstrap container" ps --all --quiet bootstrap_demo
+bootstrap_container="$captured_compose_container_id"
+run_logged 56-bootstrap-wait.log wait_for_captured_containers \
+  "demo bootstrap" 56-bootstrap-services.log 56-bootstrap-container.json \
+  bootstrap_demo "$bootstrap_container" "${image_ids[migrator]}" -- \
+  logs --no-color --timestamps bootstrap_demo
 [[ -n "$bootstrap_container" && "$(docker inspect --format '{{.State.ExitCode}}' "$bootstrap_container")" == "0" ]] \
   || fail "additive demo bootstrap failed"
 [[ "$(docker inspect --format '{{.Image}}' "$bootstrap_container")" == "${image_ids[migrator]}" ]] \
@@ -1535,11 +1816,14 @@ stage="post-bootstrap-accounting-verification"
 run_logged 57-post-bootstrap-accounting-reset.log compose --profile operations rm --force --stop verify_accounting_evidence
 run_logged 58-post-bootstrap-accounting-up.log compose_timed 30m --profile operations up \
   --detach --no-build --no-deps verify_accounting_evidence
-run_logged 59-post-bootstrap-accounting-wait.log compose_timed 30m --profile operations wait \
-  verify_accounting_evidence
-run_logged 59-post-bootstrap-accounting-services.log compose --profile operations logs \
-  --no-color --timestamps verify_accounting_evidence
-post_bootstrap_verifier="$(compose --profile operations ps --all --quiet verify_accounting_evidence)"
+capture_compose_container_id "post-bootstrap accounting verifier container" \
+  --profile operations ps --all --quiet verify_accounting_evidence
+post_bootstrap_verifier="$captured_compose_container_id"
+run_logged 59-post-bootstrap-accounting-wait.log wait_for_captured_containers \
+  "post-bootstrap accounting verifier" 59-post-bootstrap-accounting-services.log \
+  59-post-bootstrap-accounting-container.json \
+  verify_accounting_evidence_post_bootstrap "$post_bootstrap_verifier" "${image_ids[operations]}" -- \
+  --profile operations logs --no-color --timestamps verify_accounting_evidence
 [[ -n "$post_bootstrap_verifier" \
   && "$(docker inspect --format '{{.State.ExitCode}}' "$post_bootstrap_verifier")" == "0" ]] \
   || fail "post-bootstrap accounting evidence verification failed"
@@ -1643,8 +1927,7 @@ jq -e \
 
 stage="browser-acceptance"
 run_browser_acceptance() (
-  local browser_candidate="" browser_container="" browser_exit_code="" browser_image_id="" wait_status=0
-  local -a browser_containers=()
+  local browser_container="" browser_exit_code="" browser_image_id=""
 
   cleanup_browser_acceptance() {
     local cleanup_status=$?
@@ -1661,32 +1944,22 @@ run_browser_acceptance() (
 
   compose --profile acceptance rm --force --stop release_acceptance
   compose --profile acceptance up --detach --no-deps --no-build --force-recreate release_acceptance
-  read_compose_output "browser-acceptance container" \
+  capture_compose_container_id "browser-acceptance container" \
     --profile acceptance ps --all --quiet release_acceptance
-  while IFS= read -r browser_candidate; do
-    [[ -n "$browser_candidate" ]] && browser_containers+=("$browser_candidate")
-  done <<<"$compose_query_output"
-  [[ "${#browser_containers[@]}" == "1" \
-    && "${browser_containers[0]}" =~ ^[a-f0-9]{12,64}$ ]] \
-    || fail "exactly one browser-acceptance container must exist"
-  browser_container="${browser_containers[0]}"
+  browser_container="$captured_compose_container_id"
   read_docker_output "browser-acceptance image" inspect --format '{{.Image}}' "$browser_container"
   browser_image_id="$docker_query_output"
   [[ "$browser_image_id" == "${image_ids[acceptance]}" ]] \
     || fail "browser acceptance did not use the immutable reviewed image"
 
-  if compose_timed 30m --profile acceptance wait release_acceptance; then
-    wait_status=0
-  else
-    wait_status=$?
-  fi
-  compose --profile acceptance logs --no-color --timestamps release_acceptance
+  wait_for_captured_containers "browser acceptance" - 70-browser-acceptance-container.json \
+    release_acceptance "$browser_container" "${image_ids[acceptance]}" -- \
+    --profile acceptance logs --no-color --timestamps release_acceptance
   read_docker_output "browser-acceptance exit code" inspect --format '{{.State.ExitCode}}' "$browser_container"
   browser_exit_code="$docker_query_output"
   [[ "$browser_exit_code" =~ ^[0-9]+$ ]] \
     || fail "browser acceptance returned an invalid exit code"
-  (( wait_status == 0 && browser_exit_code == 0 )) \
-    || fail "browser acceptance failed or exceeded its 30-minute bound"
+  (( browser_exit_code == 0 )) || fail "browser acceptance failed"
 
   compose --profile acceptance rm --force --stop release_acceptance
   browser_container=""

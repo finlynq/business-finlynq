@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { execFileSync, spawnSync } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -106,6 +106,52 @@ function writeAcceptedRehearsal(directory: string, revision: string, runId: stri
       { name: "acceptance", reference: `business-finlynq-acceptance:${revision}`, imageId: acceptanceImageId, ociRevision: revision },
     ],
   });
+  const writeContainerWaitEvidence = (
+    name: string,
+    description: string,
+    services: ReadonlyArray<readonly [string, string]>,
+  ) => writeJson(name, {
+    schemaVersion: 1,
+    product: "business-finlynq",
+    description,
+    waitTransportStatus: 0,
+    logsCaptured: true,
+    cleanupAttempted: false,
+    containers: services.map(([service, imageId], index) => ({
+      service,
+      containerId: (index + 1).toString(16).repeat(64),
+      expectedImageId: imageId,
+      actualImageId: imageId,
+      waitResult: 0,
+      inspectionSucceeded: true,
+      status: "exited",
+      running: false,
+      exitCode: 0,
+      oomKilled: false,
+      errorPresent: false,
+      finalQuiescent: true,
+    })),
+  });
+  writeContainerWaitEvidence("51-pretraffic-containers.json", "pre-traffic verification", [
+    ["provision_auth_worker_role", operationsImageId],
+    ["migrate", migratorImageId],
+    ["reconcile_runtime_grants", operationsImageId],
+    ["reconcile_auth_worker_grants", operationsImageId],
+    ["reconcile_backup_grants", operationsImageId],
+    ["verify_database_contract", migratorImageId],
+    ["verify_accounting_evidence", operationsImageId],
+  ]);
+  writeContainerWaitEvidence("56-bootstrap-container.json", "demo bootstrap", [
+    ["bootstrap_demo", migratorImageId],
+  ]);
+  writeContainerWaitEvidence(
+    "59-post-bootstrap-accounting-container.json",
+    "post-bootstrap accounting verifier",
+    [["verify_accounting_evidence_post_bootstrap", operationsImageId]],
+  );
+  writeContainerWaitEvidence("70-browser-acceptance-container.json", "browser acceptance", [
+    ["release_acceptance", acceptanceImageId],
+  ]);
   const databaseUse = {
     schemaVersion: 1,
     product: "business-finlynq",
@@ -179,7 +225,8 @@ function writeAcceptedRehearsal(directory: string, revision: string, runId: stri
     "30-provision-backup-role.log", "31-encrypted-backup.log", "32-backup-verification.log",
     "49-pretraffic-reset.log", "50-pretraffic-up.log", "51-pretraffic-wait.log",
     "52-pretraffic-services.log", "54-bootstrap-reset.log", "55-bootstrap-up.log",
-    "56-bootstrap-wait.log", "57-post-bootstrap-accounting-reset.log",
+    "56-bootstrap-wait.log", "56-bootstrap-services.log",
+    "57-post-bootstrap-accounting-reset.log",
     "58-post-bootstrap-accounting-up.log", "59-post-bootstrap-accounting-wait.log",
     "59-post-bootstrap-accounting-services.log",
     "60-quiesced-app-start.log", "63-app-start.log",
@@ -363,6 +410,31 @@ describe("commit-addressed release orchestration", () => {
     expect(release).toContain('compose --profile operations rm --force --stop "${pretraffic_services[@]}"');
     expect(release).toContain("verify_database_contract verify_accounting_evidence");
     expect(release).toContain('stage="post-bootstrap-accounting-verification"');
+    expect(release).toContain("capture_compose_container_id() {");
+    expect(release).toContain("wait_for_captured_containers() {");
+    expect(release).toContain('timeout --signal=TERM --kill-after="$captured_container_kill_after"');
+    expect(release).toContain('"$captured_container_wait_duration"');
+    expect(release).toContain('env -i "PATH=$PATH" docker wait "${container_ids[@]}"');
+    expect(release).toContain('env -i "PATH=$PATH" docker stop --time 10 "${container_ids[@]}"');
+    expect(release).toContain('env -i "PATH=$PATH" docker kill "${remaining_ids[@]}"');
+    expect(release).toContain("containers could not be proven quiescent after failure");
+    expect(release).toContain('compose_timed "$captured_container_log_duration"');
+    expect(release).toContain("51-pretraffic-containers.json");
+    expect(release).toContain("56-bootstrap-container.json");
+    expect(release).toContain("59-post-bootstrap-accounting-container.json");
+    expect(release).toContain("70-browser-acceptance-container.json");
+    expect(release).toContain("wait returned an unexpected number of results");
+    expect(release).toContain('"errorPresent":{{if .State.Error}}true{{else}}false{{end}}');
+    expect(release).toContain('"${observed_statuses[$index]}" == "exited"');
+    expect(release).toContain('"${observed_error_present[$index]}" == "false"');
+    expect(release).toContain("are retained before a wait or state failure can trigger containment.");
+    expect(release.match(/wait_for_captured_containers/g)).toHaveLength(5);
+    expect(release).toContain("51-pretraffic-wait.log wait_for_captured_containers");
+    expect(release).toContain("56-bootstrap-wait.log wait_for_captured_containers");
+    expect(release).toContain("59-post-bootstrap-accounting-wait.log wait_for_captured_containers");
+    expect(release).toContain('wait_for_captured_containers "browser acceptance" - 70-browser-acceptance-container.json');
+    expect(release).toContain('release_acceptance "$browser_container" "${image_ids[acceptance]}" --');
+    expect(release).not.toMatch(/compose_timed 30m(?: --profile [a-z-]+)? wait/);
     expect(release).toContain('service: "verify_accounting_evidence_post_bootstrap"');
     expect(release).toContain("postBootstrapAccountingEvidenceVerified: true");
     expect(release).toContain("compose rm --force --stop bootstrap_demo");
@@ -486,7 +558,7 @@ describe("commit-addressed release orchestration", () => {
     expect(release).toContain('BUSINESS_FINLYNQ_RELEASE_MIGRATOR_IMAGE=${image_ids[migrator]}');
     expect(release).toContain('BUSINESS_FINLYNQ_RELEASE_ACCEPTANCE_IMAGE=${image_ids[acceptance]}');
     expect(release).toContain('"acceptance=business-finlynq-acceptance:$revision"');
-    expect(release).toContain('compose_timed 30m --profile acceptance wait release_acceptance');
+    expect(release).toContain('capture_compose_container_id "browser-acceptance container"');
     expect(release).toContain('browser acceptance did not use the immutable reviewed image');
     expect(release).toContain('compose --profile acceptance rm --force --stop release_acceptance');
     expect(release).not.toContain('$repository_root/node_modules');
@@ -575,6 +647,208 @@ describe("commit-addressed release orchestration", () => {
     expect(schedulerBootstrap).toContain('scheduler-boundary-bootstrap.json');
   });
 
+  it.skipIf(process.platform === "win32")(
+    "waits on captured IDs, retains state evidence, and force-quiesces adversarial outcomes",
+    () => {
+      const release = source("deploy/release/run-release.sh");
+      const helperStart = release.indexOf('captured_container_wait_duration="30m"');
+      const helperEnd = release.indexOf("\nrehearsal_cleanup() {", helperStart);
+      expect(helperStart).toBeGreaterThanOrEqual(0);
+      expect(helperEnd).toBeGreaterThan(helperStart);
+      const helper = release.slice(helperStart, helperEnd);
+      const root = mkdtempSync(join(tmpdir(), "business-finlynq-captured-wait-"));
+      const firstContainerId = "1".repeat(64);
+      const secondContainerId = "2".repeat(64);
+      const expectedImage = `sha256:${"a".repeat(64)}`;
+
+      const runCase = (mode: string, multiple = false) => {
+        const caseRoot = join(root, `${mode}-${multiple ? "multi" : "single"}`);
+        const fakeBin = join(caseRoot, "bin");
+        const evidenceDirectory = join(caseRoot, "evidence");
+        const stopped = join(caseRoot, "stopped").replaceAll("\\", "/");
+        const killed = join(caseRoot, "killed").replaceAll("\\", "/");
+        const dockerLog = join(caseRoot, "docker.log").replaceAll("\\", "/");
+        const serviceMarker = join(caseRoot, "service-logs-retained").replaceAll("\\", "/");
+        const stateEvidence = join(evidenceDirectory, "51-state.json");
+        const expectedIds = multiple
+          ? `${firstContainerId} ${secondContainerId}`
+          : firstContainerId;
+        mkdirSync(fakeBin, { recursive: true });
+        mkdirSync(evidenceDirectory, { recursive: true });
+        const actualImage = mode === "wrong-image" ? `sha256:${"b".repeat(64)}` : expectedImage;
+        const exitCode = mode === "fast-nonzero" ? 7 : 0;
+        const running = mode === "timeout" || mode === "stop-still-running";
+        const state = JSON.stringify({
+          image: actualImage,
+          status: running ? "running" : "exited",
+          running,
+          exitCode,
+          oomKilled: mode === "state-reject",
+          errorPresent: false,
+        });
+        writeFileSync(join(fakeBin, "docker"), `#!/usr/bin/env bash
+set -u
+printf '%s\\n' "$*" >>'${dockerLog}'
+command_name="\${1:-}"
+shift || true
+case "$command_name" in
+  wait)
+    [[ -z "\${DOCKER_HOST+x}" ]] || exit 91
+    [[ "$*" == '${expectedIds}' ]] || exit 92
+    case '${mode}' in
+      fast-nonzero|stop-failure) printf '%s\\n' 7 ;;
+      malformed) printf '%s\\n' not-an-exit-code ;;
+      timeout) sleep 2 ;;
+      *)
+        printf '%s\\n' 0
+        ${multiple ? "printf '%s\\\\n' 0" : ":"}
+        ;;
+    esac
+    ;;
+  inspect)
+    [[ '${mode}' != removed ]] || exit 1
+    if [[ '${mode}' == inspect-timeout ]]; then sleep 2; fi
+    printf '%s\\n' '${state}'
+    ${multiple ? `printf '%s\\n' '${state}'` : ":"}
+    ;;
+  stop)
+    [[ "$*" == '--time 10 ${expectedIds}' ]] || exit 94
+    if [[ '${mode}' == stop-failure ]]; then exit 42; fi
+    : >'${stopped}'
+    ;;
+  kill)
+    : >'${killed}'
+    : >'${stopped}'
+    ;;
+  ps)
+    case '${mode}' in
+      timeout)
+        [[ -e '${stopped}' ]] || printf '%s\\n' '${firstContainerId}'
+        ;;
+      stop-failure)
+        [[ -e '${killed}' ]] || printf '%s\\n' '${firstContainerId}'
+        ;;
+      stop-still-running)
+        [[ -e '${killed}' ]] || printf '%s\\n' '${firstContainerId}'
+        ;;
+    esac
+    ;;
+  *) exit 95 ;;
+esac
+`);
+        chmodSync(join(fakeBin, "docker"), 0o755);
+        const normalizedEvidence = evidenceDirectory.replaceAll("\\", "/");
+        const secondContract = multiple
+          ? `second_service '${secondContainerId}' '${expectedImage}'`
+          : "";
+        const harness = `
+set -Eeuo pipefail
+PATH='${fakeBin.replaceAll("\\", "/")}:/usr/bin:/bin'
+evidence_directory='${normalizedEvidence}'
+fail() { printf '%s\\n' "$1" >&2; exit 1; }
+run_logged() {
+  local filename="$1"; shift
+  local status=0
+  if "$@" >"$evidence_directory/$filename" 2>&1; then status=0; else status=$?; fi
+  return "$status"
+}
+fake_service_logs() { printf '%s\\n' retained; : >'${serviceMarker}'; }
+compose_timed() {
+  local duration="$1"; shift
+  if [[ '${mode}' == logs-timeout ]]; then
+    : >'${serviceMarker}'
+    return 124
+  fi
+  "$@"
+}
+${helper}
+captured_container_wait_duration=0.2s
+captured_container_kill_after=0.1s
+captured_container_log_duration=0.2s
+captured_container_inspect_duration=0.2s
+wait_for_captured_containers 'test operation' service.log 51-state.json \
+  first_service '${firstContainerId}' '${expectedImage}' \
+  ${secondContract} -- fake_service_logs
+`;
+        return {
+          dockerLog,
+          serviceMarker,
+          stopped,
+          killed,
+          stateEvidence,
+          result: spawnSync("bash", ["-c", harness], {
+            encoding: "utf8",
+            env: { ...process.env, DOCKER_HOST: "tcp://poison.invalid:2375" },
+          }),
+        };
+      };
+
+      try {
+        for (const mode of ["success", "poisoned-environment"] as const) {
+          const execution = runCase(mode);
+          expect(execution.result.status, execution.result.stderr).toBe(0);
+          expect(readFileSync(execution.dockerLog, "utf8")).toContain(`wait ${firstContainerId}`);
+          expect(existsSync(execution.serviceMarker)).toBe(true);
+          const evidence = JSON.parse(readFileSync(execution.stateEvidence, "utf8")) as {
+            cleanupAttempted: boolean;
+            containers: Array<{ finalQuiescent: boolean; actualImageId: string }>;
+          };
+          expect(evidence.cleanupAttempted).toBe(false);
+          expect(evidence.containers).toEqual([
+            expect.objectContaining({ finalQuiescent: true, actualImageId: expectedImage }),
+          ]);
+        }
+
+        const multiple = runCase("success", true);
+        expect(multiple.result.status, multiple.result.stderr).toBe(0);
+        const multipleEvidence = JSON.parse(readFileSync(multiple.stateEvidence, "utf8")) as {
+          containers: Array<{ containerId: string }>;
+        };
+        expect(multipleEvidence.containers.map(({ containerId }) => containerId))
+          .toEqual([firstContainerId, secondContainerId]);
+        expect(readFileSync(multiple.dockerLog, "utf8"))
+          .toContain(`wait ${firstContainerId} ${secondContainerId}`);
+
+        for (const mode of [
+          "fast-nonzero",
+          "malformed",
+          "wrong-image",
+          "removed",
+          "state-reject",
+          "logs-timeout",
+          "inspect-timeout",
+        ] as const) {
+          const execution = runCase(mode);
+          expect(execution.result.status).not.toBe(0);
+          expect(existsSync(execution.serviceMarker)).toBe(true);
+          expect(existsSync(execution.stateEvidence)).toBe(true);
+        }
+
+        const timedOut = runCase("timeout");
+        expect(timedOut.result.status).not.toBe(0);
+        expect(timedOut.result.stderr).toContain("wait exceeded its 30-minute bound");
+        expect(existsSync(timedOut.serviceMarker)).toBe(true);
+        expect(existsSync(timedOut.stopped)).toBe(true);
+        expect(readFileSync(timedOut.dockerLog, "utf8"))
+          .toContain(`stop --time 10 ${firstContainerId}`);
+
+        for (const mode of ["stop-failure", "stop-still-running"] as const) {
+          const execution = runCase(mode);
+          expect(execution.result.status).not.toBe(0);
+          expect(existsSync(execution.killed)).toBe(true);
+          expect(readFileSync(execution.dockerLog, "utf8")).toContain(`kill ${firstContainerId}`);
+          const evidence = JSON.parse(readFileSync(execution.stateEvidence, "utf8")) as {
+            cleanupAttempted: boolean;
+            containers: Array<{ finalQuiescent: boolean }>;
+          };
+          expect(evidence.cleanupAttempted).toBe(true);
+          expect(evidence.containers[0]?.finalQuiescent).toBe(true);
+        }
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+  );
   it("arms a complete re-pause before attempting a guarded scheduler resume", () => {
     const resume = source("deploy/release/resume-schedulers.sh");
     expect(resume).toContain("trap contain_partial_resume EXIT");
@@ -1035,7 +1309,18 @@ cp "$1" "$FAKE_CRONTAB_SPOOL"
     expect(databaseRejected.stderr).toContain("does not prove use of the reviewed database image");
 
     writeAcceptedRehearsal(second, revision, "rehearsal-second");
+    const waitEvidencePath = join(second, "51-pretraffic-containers.json");
+    const waitEvidence = JSON.parse(readFileSync(waitEvidencePath, "utf8")) as {
+      containers: Array<{ finalQuiescent: boolean }>;
+    };
+    waitEvidence.containers[0]!.finalQuiescent = false;
+    writeFileSync(waitEvidencePath, `${JSON.stringify(waitEvidence)}\n`);
+    writeChecksums(second);
+    const waitRejected = spawnSync(process.execPath, [verifier, first, second], { encoding: "utf8" });
+    expect(waitRejected.status).not.toBe(0);
+    expect(waitRejected.stderr).toContain("51-pretraffic-containers.json has invalid container evidence");
 
+    writeAcceptedRehearsal(second, revision, "rehearsal-second");
     writeFileSync(join(second, "90-release-complete.json"), "{}\n");
     const rejected = spawnSync(process.execPath, [verifier, first, second], { encoding: "utf8" });
     expect(rejected.status).not.toBe(0);

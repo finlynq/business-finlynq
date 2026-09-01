@@ -53,15 +53,19 @@ const requiredRehearsalFiles = [
   "49-pretraffic-reset.log",
   "50-pretraffic-up.log",
   "51-pretraffic-wait.log",
+  "51-pretraffic-containers.json",
   "52-pretraffic-services.log",
   "53-pretraffic-verification.json",
   "54-bootstrap-reset.log",
   "55-bootstrap-up.log",
   "56-bootstrap-wait.log",
+  "56-bootstrap-services.log",
+  "56-bootstrap-container.json",
   "57-post-bootstrap-accounting-reset.log",
   "58-post-bootstrap-accounting-up.log",
   "59-post-bootstrap-accounting-wait.log",
   "59-post-bootstrap-accounting-services.log",
+  "59-post-bootstrap-accounting-container.json",
   "60-quiesced-app-start.log",
   "61-quiesced-readiness.json",
   "63-app-start.log",
@@ -69,6 +73,7 @@ const requiredRehearsalFiles = [
   "65-public-readiness.headers",
   "65-public-readiness.json",
   "70-browser-acceptance.log",
+  "70-browser-acceptance-container.json",
   "71-browser-acceptance.json",
   "72-final-app-start.log",
   "73-final-readiness.json",
@@ -88,6 +93,36 @@ function expectCheckpoint(value, identity, stage, description) {
     || selected.runId !== identity.runId || selected.stage !== stage
     || typeof selected.completedAt !== "string") {
     fail(`${description} has invalid identity or stage fields`);
+  }
+}
+
+function expectContainerWaitEvidence(value, expectedDescription, expectedServices, description) {
+  const selected = expectObject(value, description);
+  if (Object.keys(selected).sort().join(",")
+      !== "cleanupAttempted,containers,description,logsCaptured,product,schemaVersion,waitTransportStatus"
+    || selected.schemaVersion !== 1 || selected.product !== "business-finlynq"
+    || selected.description !== expectedDescription || selected.waitTransportStatus !== 0
+    || selected.logsCaptured !== true || selected.cleanupAttempted !== false
+    || !Array.isArray(selected.containers)
+    || selected.containers.length !== expectedServices.size) {
+    fail(`${description} has an invalid wait boundary`);
+  }
+  const seen = new Set();
+  for (const container of selected.containers) {
+    if (!container || typeof container !== "object" || Array.isArray(container)
+      || Object.keys(container).sort().join(",")
+        !== "actualImageId,containerId,errorPresent,exitCode,expectedImageId,finalQuiescent,inspectionSucceeded,oomKilled,running,service,status,waitResult"
+      || !expectedServices.has(container.service) || seen.has(container.service)
+      || !/^[a-f0-9]{64}$/.test(container.containerId)
+      || container.expectedImageId !== expectedServices.get(container.service)
+      || container.actualImageId !== container.expectedImageId
+      || container.waitResult !== 0 || container.inspectionSucceeded !== true
+      || container.status !== "exited" || container.running !== false
+      || container.exitCode !== 0 || container.oomKilled !== false
+      || container.errorPresent !== false || container.finalQuiescent !== true) {
+      fail(`${description} has invalid container evidence`);
+    }
+    seen.add(container.service);
   }
 }
 
@@ -164,6 +199,38 @@ async function verifyDirectory(directory) {
     imageIds.set(selected.name, selected.imageId);
   }
   if (complete.candidateAppImageId !== imageIds.get("app")) fail(`${basename(directory)} candidate image identity disagrees`);
+
+  await Promise.all([
+    [
+      "51-pretraffic-containers.json",
+      "pre-traffic verification",
+      new Map([
+        ["provision_auth_worker_role", imageIds.get("operations")],
+        ["migrate", imageIds.get("migrator")],
+        ["reconcile_runtime_grants", imageIds.get("operations")],
+        ["reconcile_auth_worker_grants", imageIds.get("operations")],
+        ["reconcile_backup_grants", imageIds.get("operations")],
+        ["verify_database_contract", imageIds.get("migrator")],
+        ["verify_accounting_evidence", imageIds.get("operations")],
+      ]),
+    ],
+    ["56-bootstrap-container.json", "demo bootstrap", new Map([
+      ["bootstrap_demo", imageIds.get("migrator")],
+    ])],
+    ["59-post-bootstrap-accounting-container.json", "post-bootstrap accounting verifier", new Map([
+      ["verify_accounting_evidence_post_bootstrap", imageIds.get("operations")],
+    ])],
+    ["70-browser-acceptance-container.json", "browser acceptance", new Map([
+      ["release_acceptance", imageIds.get("acceptance")],
+    ])],
+  ].map(async ([evidenceName, expectedDescription, expectedServices]) => {
+    expectContainerWaitEvidence(
+      await readJson(resolve(directory, evidenceName)),
+      expectedDescription,
+      expectedServices,
+      `${basename(directory)} ${evidenceName}`,
+    );
+  }));
   for (const evidenceName of ["29-rehearsal-database-image.json", "35-database-image.json"]) {
     const databaseUse = expectObject(
       await readJson(resolve(directory, evidenceName)),
