@@ -701,7 +701,7 @@ case "$command_name" in
       timeout) sleep 2 ;;
       *)
         printf '%s\\n' 0
-        ${multiple ? "printf '%s\\\\n' 0" : ":"}
+        ${multiple ? "printf '%s\\n' 0" : ":"}
         ;;
     esac
     ;;
