@@ -258,7 +258,7 @@ describe("banking persistence and workflow contract", () => {
     expect(seed).toContain("bank_connections: \"1\"");
     expect(seed).toContain("bank_accounts: \"2\"");
     expect(seed).toContain("bank_observations: \"3\"");
-    expect(seed).toContain("const DEMO_BASELINE_VERSION = 5");
+    expect(seed).toContain("const DEMO_BASELINE_VERSION = 6");
     expect(seed).toContain("slot.baseline_version < $2");
     expect(seed).toContain('slot?.state === "READY" && slot.baseline_version < DEMO_BASELINE_VERSION');
   });

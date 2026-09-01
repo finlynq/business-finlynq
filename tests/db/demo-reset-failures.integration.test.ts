@@ -80,7 +80,7 @@ runDatabaseTests("demo sandbox reset failure containment", () => {
        WHERE slot = $1 AND organization_id = $2`,
       [target.slot, target.organization_id],
     );
-    expect(restored.rows[0]).toEqual({ state: "READY", baseline_version: 5 });
+    expect(restored.rows[0]).toEqual({ state: "READY", baseline_version: 6 });
     target = null;
   }
 

@@ -60,15 +60,15 @@ runDatabaseTests("rich nightly demo baseline", () => {
               AND claim.invalidated_at IS NULL) AS active_claims
        FROM demo_sandbox_slots sandbox
        JOIN organizations organization ON organization.id = sandbox.organization_id
-       WHERE sandbox.state = 'READY' AND sandbox.baseline_version = 5
+       WHERE sandbox.state = 'READY' AND sandbox.baseline_version = 6
        ORDER BY sandbox.slot
        LIMIT 1`,
     );
     const selected = ready.rows[0];
-    if (!selected) throw new Error("No baseline-v5 READY demo sandbox is available");
+    if (!selected) throw new Error("No baseline-v6 READY demo sandbox is available");
     expect(selected).toMatchObject({
       state: "READY",
-      baseline_version: 5,
+      baseline_version: 6,
       active: true,
       is_demo: true,
       organization_mode: "SANDBOX",
@@ -348,6 +348,23 @@ runDatabaseTests("rich nightly demo baseline", () => {
         timestamp_mismatches: 0,
       },
     ]);
+
+    const journalPeriodIntegrity = await pool.query<{ invalid_journals: number }>(
+      `SELECT count(*)::int AS invalid_journals
+       FROM journal_entries journal
+       JOIN fiscal_periods period
+         ON period.organization_id = journal.organization_id
+        AND period.ledger_id = journal.ledger_id
+        AND period.id = journal.period_id
+       WHERE journal.organization_id = $1
+         AND (
+           journal.accounting_date < period.starts_on
+           OR journal.accounting_date > period.ends_on
+           OR (journal.status = 'POSTED' AND period.state <> 'OPEN')
+         )`,
+      [organizationId],
+    );
+    expect(journalPeriodIntegrity.rows[0]).toEqual({ invalid_journals: 0 });
   });
 
   it("contains five posted journals, including four source-owned documents, with exact balances", async () => {

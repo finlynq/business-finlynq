@@ -39,7 +39,7 @@ export { DEMO_ORGANIZATION_ID } from "@/modules/demo/constants";
 // Increment whenever the exact reconstructed sandbox fixture changes. Bootstrap
 // may refresh only unclaimed READY slots on an older version; assigned visitor
 // workspaces remain untouched until the ordinary nightly reset.
-const DEMO_BASELINE_VERSION = 5;
+const DEMO_BASELINE_VERSION = 6;
 const DEMO_CALENDAR = demoAccountingCalendar();
 const DEMO_FISCAL_YEAR = DEMO_CALENDAR.fiscalYear;
 const DEMO_CURRENT_PERIOD = DEMO_CALENDAR.periodNumber;

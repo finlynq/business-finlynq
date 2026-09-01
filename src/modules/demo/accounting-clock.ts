@@ -5,6 +5,7 @@ import {
 } from "@/modules/tax/packs/washington";
 
 const DEMO_TIME_ZONE = "America/Toronto";
+const DEMO_ROLLING_FIXTURE_LOOKBACK_DAYS = 16;
 
 export type DemoAccountingCalendar = Readonly<{
   accountingDate: string;
@@ -38,6 +39,15 @@ function clampDate(value: string, minimum: string, maximum: string): string {
   return value;
 }
 
+function keepFixtureWindowInsideOnePeriod(value: string): string {
+  const dayOfMonth = Number(value.slice(8, 10));
+  if (dayOfMonth > DEMO_ROLLING_FIXTURE_LOOKBACK_DAYS) return value;
+
+  const previousMonthEnd = new Date(`${value.slice(0, 7)}-01T12:00:00.000Z`);
+  previousMonthEnd.setUTCDate(0);
+  return previousMonthEnd.toISOString().slice(0, 10);
+}
+
 /**
  * The writable demo follows Toronto's calendar only while every bundled tax
  * fact remains approved. At the tax-content boundary it pins instead of
@@ -48,8 +58,18 @@ export function demoAccountingCalendar(now = new Date()): DemoAccountingCalendar
   const minimum = DEMO_BASELINE_DATE > WASHINGTON_SALES_USE_EFFECTIVE_FROM
     ? DEMO_BASELINE_DATE
     : WASHINGTON_SALES_USE_EFFECTIVE_FROM;
-  const accountingDate = clampDate(
+  const boundedDate = clampDate(
     dateInTimeZone(now, DEMO_TIME_ZONE),
+    minimum,
+    WASHINGTON_SALES_USE_EFFECTIVE_TO,
+  );
+  // Seeded postings look back as far as sixteen days. During the first
+  // sixteen days of a month, keep the synthetic accounting clock at the prior
+  // month end so the entire fixture set remains in one open fiscal period.
+  // This preserves the ordinary posting and close controls during bootstrap
+  // and nightly reset instead of special-casing maintenance writes.
+  const accountingDate = clampDate(
+    keepFixtureWindowInsideOnePeriod(boundedDate),
     minimum,
     WASHINGTON_SALES_USE_EFFECTIVE_TO,
   );
