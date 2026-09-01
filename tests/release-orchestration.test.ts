@@ -240,6 +240,7 @@ describe("commit-addressed release orchestration", () => {
 
   it("runs release browser acceptance in a secretless hardened container", () => {
     const compose = source("docker-compose.yml");
+    const boundaryVerifier = source("scripts/operations/verify-compose-boundaries.mjs");
     const start = compose.indexOf("  release_acceptance:\n");
     const end = compose.indexOf("\n  invite_account:\n", start);
     expect(start).toBeGreaterThanOrEqual(0);
@@ -248,7 +249,13 @@ describe("commit-addressed release orchestration", () => {
 
     expect(service).toContain("profiles: [acceptance]");
     expect(service).toContain("target: acceptance");
-    expect(service).toContain('command: ["./node_modules/.bin/playwright", "test"]');
+    expect(service).toContain(
+      'command: ["./node_modules/.bin/playwright", "test", "--output", "/app/test-results/release"]',
+    );
+    expect(service).toContain("PLAYWRIGHT_HTML_OUTPUT_DIR: /app/playwright-report/release");
+    expect(service).toContain("- /app/test-results:size=256m,mode=1777");
+    expect(service).toContain("- /app/playwright-report:size=64m,mode=1777");
+    expect(service).not.toContain('command: ["./node_modules/.bin/playwright", "test"]');
     expect(service).toContain("user: pwuser");
     expect(service).toContain("network_mode: host");
     expect(service).toContain("read_only: true");
@@ -258,6 +265,17 @@ describe("commit-addressed release orchestration", () => {
     expect(service).not.toMatch(/^\s+secrets:/m);
     expect(service).not.toMatch(/^\s+volumes:/m);
     expect(service).not.toMatch(/^\s+ports:/m);
+    expect(boundaryVerifier).toContain("isStrictNormalizedChild");
+    expect(boundaryVerifier).toContain(
+      'isStrictNormalizedChild("/app/test-results", acceptanceResultsDirectory)',
+    );
+    expect(boundaryVerifier).toContain(
+      'isStrictNormalizedChild("/app/playwright-report", acceptanceHtmlDirectory)',
+    );
+    expect(boundaryVerifier).toContain("acceptanceTmpfsTargets.includes(outputDirectory)");
+    expect(boundaryVerifier).toContain(
+      "release browser acceptance output directory may not be a tmpfs mountpoint",
+    );
   });
 
   it("adds the insecure-loopback marker pair only to the rehearsal Compose render", () => {

@@ -485,9 +485,12 @@ services:
       PLAYWRIGHT_BASE_URL: ${BUSINESS_FINLYNQ_APP_ORIGIN:-https://${BUSINESS_FINLYNQ_HOSTNAME:-business.finlynq.com}}
       E2E_EXPECT_ACCOUNT_LOGIN_ENABLED: ${ACCOUNT_LOGIN_ENABLED:-false}
       E2E_EXPECT_ACCOUNT_SIGNUP_ENABLED: ${ACCOUNT_SIGNUP_ENABLED:-false}
+      # Playwright removes its output directories before every run. Keep the
+      # removable directories below, rather than at, the tmpfs mountpoints.
+      PLAYWRIGHT_HTML_OUTPUT_DIR: /app/playwright-report/release
       HOME: /tmp/playwright-home
       npm_config_cache: /tmp/npm-cache
-    command: ["./node_modules/.bin/playwright", "test"]
+    command: ["./node_modules/.bin/playwright", "test", "--output", "/app/test-results/release"]
     user: pwuser
     network_mode: host
     init: true

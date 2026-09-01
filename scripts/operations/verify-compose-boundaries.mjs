@@ -1,5 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
+import { posix } from "node:path";
 
 function fail(message) {
   throw new Error(`Compose security-boundary check failed: ${message}`);
@@ -39,6 +40,16 @@ function secretSources(service) {
 function dependencyCondition(service, dependency) {
   const selected = service?.depends_on?.[dependency];
   return typeof selected === "string" ? selected : selected?.condition;
+}
+
+function isStrictNormalizedChild(parent, candidate) {
+  if (typeof candidate !== "string" || !posix.isAbsolute(candidate)
+    || posix.normalize(candidate) !== candidate) {
+    return false;
+  }
+  const relative = posix.relative(parent, candidate);
+  return relative !== "" && relative !== ".." && !relative.startsWith("../")
+    && !posix.isAbsolute(relative);
 }
 
 const providerSecretConsumers = Object.entries(services)
@@ -117,8 +128,32 @@ if (!releaseAcceptance) fail("release browser-acceptance service is missing");
 if (releaseAcceptance.build?.target !== "acceptance") {
   fail("release browser acceptance does not use the dedicated acceptance image target");
 }
-if ((releaseAcceptance.command ?? []).join(" ") !== "./node_modules/.bin/playwright test") {
-  fail("release browser acceptance does not run the installed Playwright binary directly");
+const expectedAcceptanceCommand = [
+  "./node_modules/.bin/playwright",
+  "test",
+  "--output",
+  "/app/test-results/release",
+];
+const acceptanceCommand = releaseAcceptance.command ?? [];
+if (acceptanceCommand.length !== expectedAcceptanceCommand.length
+  || acceptanceCommand.some((argument, index) => argument !== expectedAcceptanceCommand[index])) {
+  fail("release browser acceptance does not run the exact reviewed Playwright command");
+}
+const acceptanceResultsDirectory = acceptanceCommand[3];
+const acceptanceHtmlDirectory = releaseAcceptance.environment?.PLAYWRIGHT_HTML_OUTPUT_DIR;
+const acceptanceTmpfsTargets = (releaseAcceptance.tmpfs ?? [])
+  .map((entry) => entry.split(":", 1)[0]);
+if (!isStrictNormalizedChild("/app/test-results", acceptanceResultsDirectory)) {
+  fail("release browser acceptance results are not written below the result tmpfs mountpoint");
+}
+if (acceptanceHtmlDirectory !== "/app/playwright-report/release"
+  || !isStrictNormalizedChild("/app/playwright-report", acceptanceHtmlDirectory)) {
+  fail("release browser acceptance HTML report is not written below the report tmpfs mountpoint");
+}
+for (const outputDirectory of [acceptanceResultsDirectory, acceptanceHtmlDirectory]) {
+  if (acceptanceTmpfsTargets.includes(outputDirectory)) {
+    fail(`release browser acceptance output directory may not be a tmpfs mountpoint: ${outputDirectory}`);
+  }
 }
 if (releaseAcceptance.user !== "pwuser" || releaseAcceptance.read_only !== true
   || releaseAcceptance.restart !== "no" || releaseAcceptance.stdin_open === true
@@ -142,7 +177,7 @@ if (releaseAcceptance.environment?.PLAYWRIGHT_BASE_URL
   fail("release browser acceptance does not inherit the reviewed origin and account gates");
 }
 for (const requiredTmpfs of ["/tmp", "/app/test-results", "/app/playwright-report"]) {
-  if (!(releaseAcceptance.tmpfs ?? []).some((entry) => entry.startsWith(`${requiredTmpfs}:`))) {
+  if (!acceptanceTmpfsTargets.includes(requiredTmpfs)) {
     fail(`release browser acceptance lacks bounded tmpfs storage at ${requiredTmpfs}`);
   }
 }

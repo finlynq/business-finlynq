@@ -292,7 +292,7 @@ jobs:
           PGPASSWORD: postgres
         run: bash scripts/operations/verify-ci-database-lifecycle.sh restore
       - run: npm run build
-      - name: Build hardened operations and email-worker images
+      - name: Build hardened operations, email-worker, and acceptance images
         run: |
           docker build --target operations --build-arg BUSINESS_FINLYNQ_IMAGE_REVISION="$BUSINESS_FINLYNQ_IMAGE_REVISION" --tag business-finlynq-operations-ci .
           test "$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' business-finlynq-operations-ci)" = "$BUSINESS_FINLYNQ_IMAGE_REVISION"
@@ -301,6 +301,8 @@ jobs:
           docker run --rm --network none --read-only --tmpfs /tmp:rw,noexec,nosuid,nodev,size=16m --cap-drop ALL --security-opt no-new-privileges --pids-limit 32 --memory 128m --cpus 0.25 --mount "type=bind,source=$PWD/deploy/backup,target=/tests,readonly" --entrypoint /bin/bash business-finlynq-operations-ci /tests/test-restore-evidence-recorder.sh
           docker build --target worker --tag business-finlynq-auth-worker-ci .
           docker run --rm --entrypoint sh business-finlynq-auth-worker-ci -c 'test -f /app/auth-email-worker.mjs && test ! -e /app/src && test ! -e /app/tests && ! node -e "require.resolve(\"tsx\")"'
+          docker build --target acceptance --build-arg BUSINESS_FINLYNQ_IMAGE_REVISION="$BUSINESS_FINLYNQ_IMAGE_REVISION" --tag business-finlynq-acceptance-ci .
+          docker run --rm --network none --read-only --user pwuser --cap-drop ALL --security-opt no-new-privileges --pids-limit 32 --memory 128m --cpus 0.25 --tmpfs /app/test-results:rw,noexec,nosuid,nodev,size=16m,mode=1777 --tmpfs /app/playwright-report:rw,noexec,nosuid,nodev,size=16m,mode=1777 --entrypoint /bin/sh business-finlynq-acceptance-ci -ec 'rm -rf /app/test-results/release /app/playwright-report/release; mkdir -p /app/test-results/release /app/playwright-report/release; touch /app/test-results/release/result /app/playwright-report/release/report; rm -rf /app/test-results/release /app/playwright-report/release; test ! -e /app/test-results/release; test ! -e /app/playwright-report/release; if touch /app/read-only-root-check; then exit 1; fi'
       - name: Install release-gate browser
         run: npx playwright install --with-deps chromium
       - name: Run browser release gate
