@@ -72,7 +72,8 @@ FROM postgres:16-alpine@sha256:cf78e76683b9ca8c5733cbbdce6c9262b45b6767934dd0a95
 ARG BUSINESS_FINLYNQ_IMAGE_REVISION=unknown
 LABEL org.opencontainers.image.revision=$BUSINESS_FINLYNQ_IMAGE_REVISION
 
-RUN apk add --no-cache age bash coreutils curl jq openssl rclone util-linux
+RUN apk add --no-cache age bash coreutils curl jq openssl rclone util-linux \
+  && install -d -m 0555 /usr/local/share/business-finlynq
 COPY --chmod=0555 deploy/backup/run-backup.sh /usr/local/bin/business-finlynq-backup
 COPY --chmod=0555 deploy/backup/check-latest-backup.sh /usr/local/bin/business-finlynq-check-latest-backup
 COPY --chmod=0555 deploy/backup/verify-restore.sh /usr/local/bin/business-finlynq-verify-restore

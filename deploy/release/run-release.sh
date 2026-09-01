@@ -798,6 +798,12 @@ for image_name in \
     '. + [{name: $name, reference: $reference, imageId: $id, ociRevision: $revision}]' <<<"$image_evidence")"
 done
 
+stage="candidate-image-content-verification"
+run_logged 10-operations-image-content.log docker run --rm --network none --read-only \
+  --user 70:70 --cap-drop ALL --security-opt no-new-privileges --pids-limit 32 --memory 128m --cpus 0.25 \
+  --entrypoint /bin/sh "${image_ids[operations]}" -ec \
+  'test "$(stat -c "%u:%g:%a:%F" /usr/local/share/business-finlynq)" = "0:0:555:directory" && test "$(stat -c "%u:%g:%a:%F" /usr/local/share/business-finlynq/accounting-evidence-query.sql)" = "0:0:444:regular file" && test -f /usr/local/share/business-finlynq/accounting-evidence-query.sql && test -r /usr/local/share/business-finlynq/accounting-evidence-query.sql && test ! -L /usr/local/share/business-finlynq/accounting-evidence-query.sql'
+
 # From this point onward every release-run service, including browser
 # acceptance, resolves the immutable IDs just inspected rather than mutable
 # commit-shaped tags.

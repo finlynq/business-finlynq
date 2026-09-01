@@ -173,7 +173,8 @@ function writeAcceptedRehearsal(directory: string, revision: string, runId: stri
   writeJson("71-browser-acceptance.json", checkpoint("browser-acceptance-passed"));
   writeJson("73-final-readiness.json", { status: "ready", revision, checks: disabledChecks });
   for (const name of [
-    "01-clean-environment.log", "10-image-build.log", "25-stop-write-surfaces.log",
+    "01-clean-environment.log", "10-image-build.log", "10-operations-image-content.log",
+    "25-stop-write-surfaces.log",
     "29-rehearsal-database-start.log", "34-database-start.log",
     "30-provision-backup-role.log", "31-encrypted-backup.log", "32-backup-verification.log",
     "49-pretraffic-reset.log", "50-pretraffic-up.log", "51-pretraffic-wait.log",
@@ -287,6 +288,12 @@ describe("commit-addressed release orchestration", () => {
       "FROM mcr.microsoft.com/playwright:v1.62.1-noble@sha256:dcc5531e97840b9b5e794f2814476b21571c5124a3fca2267d73041f56e7580e AS acceptance",
     );
     expect(dockerfile).toContain('CMD ["./node_modules/.bin/playwright", "test"]');
+    expect(dockerfile).toContain("install -d -m 0555 /usr/local/share/business-finlynq");
+
+    const continuousIntegration = source(".github/workflows/ci.yml");
+    expect(continuousIntegration).toContain(
+      "test -r /usr/local/share/business-finlynq/accounting-evidence-query.sql",
+    );
 
     const backup = source("deploy/backup/run-backup.sh");
     expect(backup).toContain('BACKUP_TOOL_REVISION="$BUSINESS_FINLYNQ_IMAGE_REVISION"');
@@ -331,6 +338,10 @@ describe("commit-addressed release orchestration", () => {
     expect(release).toContain('record_running_database_image "$evidence_directory/35-database-image.json"');
     expect(release).toContain("12-rollback-artifact.json");
     expect(release).toContain("SHA256SUMS");
+    expect(release).toContain("10-operations-image-content.log");
+    expect(release).toContain(
+      "test -r /usr/local/share/business-finlynq/accounting-evidence-query.sql",
+    );
     expect(release).toContain('compose --profile operations rm --force --stop "${pretraffic_services[@]}"');
     expect(release).toContain("verify_database_contract verify_accounting_evidence");
     expect(release).toContain('stage="post-bootstrap-accounting-verification"');

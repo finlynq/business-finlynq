@@ -37,6 +37,7 @@ const requiredRehearsalFiles = [
   "03-candidate-git-tree.txt",
   "04-staged-tree-sha256.txt",
   "10-image-build.log",
+  "10-operations-image-content.log",
   "11-images.json",
   "12-rollback-artifact.json",
   "25-stop-write-surfaces.log",
