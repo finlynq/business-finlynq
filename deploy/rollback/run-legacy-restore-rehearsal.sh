@@ -70,7 +70,7 @@ flock --exclusive --wait "$RESTORE_DRILL_LOCK_WAIT_SECONDS" 8 || {
 # sources. A clean/live checkout check prevents an operator from certifying a
 # revision different from HEAD, while git archive makes a later retag,
 # checkout, or file edit irrelevant for the lifetime of this rehearsal.
-repository_head="$(git -c safe.directory="$repository_root" -C "$repository_root" rev-parse --verify HEAD)" || {
+repository_head="$(git --no-optional-locks -c safe.directory="$repository_root" -C "$repository_root" rev-parse --verify HEAD)" || {
   printf '%s\n' "Cannot resolve the legacy rehearsal checkout HEAD" >&2
   exit 2
 }
@@ -78,7 +78,7 @@ repository_head="$(git -c safe.directory="$repository_root" -C "$repository_root
   printf '%s\n' "Legacy rehearsal checkout HEAD does not match BUSINESS_FINLYNQ_IMAGE_REVISION" >&2
   exit 2
 }
-repository_status="$(git -c safe.directory="$repository_root" -C "$repository_root" \
+repository_status="$(git --no-optional-locks -c safe.directory="$repository_root" -C "$repository_root" \
   status --porcelain=v1 --untracked-files=all)" || {
   printf '%s\n' "Cannot verify the legacy rehearsal checkout state" >&2
   exit 2
@@ -107,7 +107,7 @@ cleanup_rehearsal_workspace_only() {
   esac
 }
 trap cleanup_rehearsal_workspace_only EXIT INT TERM
-git -c safe.directory="$repository_root" -C "$repository_root" \
+git --no-optional-locks -c safe.directory="$repository_root" -C "$repository_root" \
   archive --format=tar "$BUSINESS_FINLYNQ_IMAGE_REVISION" \
   | tar --extract --file=- --directory "$restore_source_snapshot" \
       --no-same-owner --same-permissions || {

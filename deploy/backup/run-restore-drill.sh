@@ -135,7 +135,7 @@ flock --exclusive --wait "$RESTORE_DRILL_LOCK_WAIT_SECONDS" 8 || {
 # reviewed revision has been selected. The live checkout is only a source of
 # Git objects: every Compose file and relative bind source used below comes
 # from this private archive of the exact reviewed commit.
-repository_head="$(git -c safe.directory="$repository_root" -C "$repository_root" rev-parse --verify HEAD)" || {
+repository_head="$(git --no-optional-locks -c safe.directory="$repository_root" -C "$repository_root" rev-parse --verify HEAD)" || {
   printf '%s\n' "Cannot resolve the recovery checkout HEAD" >&2
   exit 2
 }
@@ -143,7 +143,7 @@ repository_head="$(git -c safe.directory="$repository_root" -C "$repository_root
   printf '%s\n' "Recovery checkout HEAD does not match BUSINESS_FINLYNQ_IMAGE_REVISION" >&2
   exit 2
 }
-repository_status="$(git -c safe.directory="$repository_root" -C "$repository_root" \
+repository_status="$(git --no-optional-locks -c safe.directory="$repository_root" -C "$repository_root" \
   status --porcelain=v1 --untracked-files=all)" || {
   printf '%s\n' "Cannot verify the recovery checkout state" >&2
   exit 2
@@ -172,7 +172,7 @@ cleanup_restore_workspace_only() {
   esac
 }
 trap cleanup_restore_workspace_only EXIT INT TERM
-git -c safe.directory="$repository_root" -C "$repository_root" \
+git --no-optional-locks -c safe.directory="$repository_root" -C "$repository_root" \
   archive --format=tar "$BUSINESS_FINLYNQ_IMAGE_REVISION" \
   | tar --extract --file=- --directory "$RESTORE_SOURCE_SNAPSHOT" \
       --no-same-owner --same-permissions || {

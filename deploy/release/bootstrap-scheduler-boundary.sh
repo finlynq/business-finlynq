@@ -54,7 +54,7 @@ esac
 [[ -d "$repository_root/.git" && ! -L "$repository_root" ]] \
   || fail "the canonical deployed checkout is missing or symbolic"
 
-if ! source_revision="$(git -c safe.directory="$repository_root" -C "$repository_root" \
+if ! source_revision="$(git --no-optional-locks -c safe.directory="$repository_root" -C "$repository_root" \
   rev-parse HEAD 2>/dev/null)"; then
   fail "the deployed source revision could not be inspected"
 fi
@@ -62,12 +62,12 @@ fi
   || fail "the deployed source revision is invalid"
 [[ "$source_revision" != "$candidate_revision" ]] \
   || fail "the one-time bootstrap must run before the candidate is checked out"
-if ! checkout_status="$(git -c safe.directory="$repository_root" -C "$repository_root" \
+if ! checkout_status="$(git --no-optional-locks -c safe.directory="$repository_root" -C "$repository_root" \
   status --porcelain=v1 --untracked-files=all 2>/dev/null)"; then
   fail "the deployed source checkout status could not be inspected"
 fi
 [[ -z "$checkout_status" ]] || fail "the deployed source checkout is not clean"
-git -c safe.directory="$repository_root" -C "$repository_root" \
+git --no-optional-locks -c safe.directory="$repository_root" -C "$repository_root" \
   cat-file -e "$candidate_revision^{commit}" 2>/dev/null \
   || fail "the candidate revision is not a local Git commit"
 
@@ -80,7 +80,7 @@ for relative_path in \
   deploy/cron/remove.sh; do
   [[ -f "$candidate_source_root/$relative_path" && ! -L "$candidate_source_root/$relative_path" ]] \
     || fail "candidate bootstrap asset is missing or symbolic: $relative_path"
-  git -c safe.directory="$repository_root" -C "$repository_root" \
+  git --no-optional-locks -c safe.directory="$repository_root" -C "$repository_root" \
     show "$candidate_revision:$relative_path" \
     | cmp -s -- - "$candidate_source_root/$relative_path" \
     || fail "candidate bootstrap asset differs from the reviewed Git object: $relative_path"
@@ -183,10 +183,10 @@ if [[ "$existing_receipt_present" == "true" \
     || fail "existing bootstrap receipt is invalid for a safe candidate retarget"
   [[ "$existing_candidate_revision" =~ ^[a-f0-9]{40}$ ]] \
     || fail "existing bootstrap receipt is invalid for a safe candidate retarget"
-  git -c safe.directory="$repository_root" -C "$repository_root" \
+  git --no-optional-locks -c safe.directory="$repository_root" -C "$repository_root" \
     cat-file -e "$existing_candidate_revision^{commit}" 2>/dev/null \
     || fail "the superseded bootstrap candidate is not a local Git commit"
-  git -c safe.directory="$repository_root" -C "$repository_root" \
+  git --no-optional-locks -c safe.directory="$repository_root" -C "$repository_root" \
     merge-base --is-ancestor "$existing_candidate_revision" "$candidate_revision" \
     || fail "the requested candidate does not descend from the superseded bootstrap candidate"
 
@@ -205,7 +205,7 @@ if [[ "$retarget_existing_receipt" == "true" ]]; then
 fi
 bash "$candidate_source_root/deploy/release/pause-schedulers.sh" "${pause_arguments[@]}"
 
-[[ "$(git -c safe.directory="$repository_root" -C "$repository_root" rev-parse HEAD)" \
+[[ "$(git --no-optional-locks -c safe.directory="$repository_root" -C "$repository_root" rev-parse HEAD)" \
   == "$source_revision" ]] \
   || fail "the deployed source checkout changed while establishing the scheduler boundary"
 

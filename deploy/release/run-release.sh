@@ -63,7 +63,7 @@ git_command_output=""
 read_git_output() {
   local selected_repository="$1" description="$2"
   shift 2
-  if ! git_command_output="$(git -c safe.directory="$selected_repository" \
+  if ! git_command_output="$(git --no-optional-locks -c safe.directory="$selected_repository" \
     -C "$selected_repository" "$@" 2>/dev/null)"; then
     fail "could not inspect $description in the canonical Git checkout"
   fi
@@ -71,7 +71,7 @@ read_git_output() {
 
 assert_clean_checkout() {
   local selected_repository="$1" dirty_message="$2" checkout_status
-  if ! checkout_status="$(git -c safe.directory="$selected_repository" \
+  if ! checkout_status="$(git --no-optional-locks -c safe.directory="$selected_repository" \
     -C "$selected_repository" status --porcelain=v1 --untracked-files=all 2>/dev/null)"; then
     fail "$dirty_message because Git status could not be inspected"
   fi
@@ -315,7 +315,9 @@ read_git_output "$repository_root" "repository root" rev-parse --show-toplevel
 [[ "$git_command_output" == "$repository_root" ]] || fail "script is not running from the reviewed repository root"
 read_git_output "$repository_root" "checked-out HEAD" rev-parse HEAD
 [[ "$git_command_output" == "$revision" ]] || fail "the requested revision is not the checked-out HEAD"
-git cat-file -e "$revision^{commit}" 2>/dev/null || fail "the requested revision is not a local Git commit"
+git --no-optional-locks -c safe.directory="$repository_root" -C "$repository_root" \
+  cat-file -e "$revision^{commit}" 2>/dev/null \
+  || fail "the requested revision is not a local Git commit"
 assert_clean_checkout "$repository_root" "the checkout is not clean"
 
 [[ "$evidence_root" == /* ]] || fail "--evidence-root must be an absolute path"
@@ -811,14 +813,15 @@ chmod 0700 -- "$candidate_staging_root"
 candidate_source_root="$candidate_staging_root/repository"
 mkdir -m 0700 -- "$candidate_source_root"
 candidate_git_tree_file="$candidate_staging_root/candidate-git-tree.txt"
-if ! git -c safe.directory="$repository_root" -C "$repository_root" \
+if ! git --no-optional-locks -c safe.directory="$repository_root" -C "$repository_root" \
   ls-tree -r --full-tree "$revision" >"$candidate_git_tree_file"; then
   fail "candidate Git tree could not be inspected before materialization"
 fi
 if awk '$1 == "160000" { found = 1 } END { exit found ? 0 : 1 }' "$candidate_git_tree_file"; then
   fail "candidate contains a Git submodule that cannot be materialized by the release archive"
 fi
-git -C "$repository_root" archive --format=tar "$revision" \
+git --no-optional-locks -c safe.directory="$repository_root" -C "$repository_root" \
+  archive --format=tar "$revision" \
   | tar --extract --file=- --directory="$candidate_source_root" --no-same-owner --same-permissions
 read_git_output "$repository_root" "candidate Git tree" rev-parse "$revision^{tree}"
 candidate_tree_id="$git_command_output"
@@ -1139,7 +1142,8 @@ if [[ "$mode" == "release" ]]; then
   [[ "$previous_app_id" =~ ^sha256:[a-f0-9]{64}$ ]] || fail "the previous app has no immutable image ID"
   [[ "$previous_app_revision" =~ ^[a-f0-9]{40}$ && ! "$previous_app_revision" =~ ^0+$ ]] || fail "the previous app has no full OCI revision"
   [[ "$(docker image inspect --format '{{.Id}}' "$previous_app_id")" == "$previous_app_id" ]] || fail "the previous application image is not retained locally"
-  git -C "$repository_root" cat-file -e "$previous_app_revision^{commit}" 2>/dev/null \
+  git --no-optional-locks -c safe.directory="$repository_root" -C "$repository_root" \
+    cat-file -e "$previous_app_revision^{commit}" 2>/dev/null \
     || fail "the previous deployed revision is not a local Git commit"
   if [[ "$scheduler_boundary_bootstrap_required" == "true" ]]; then
     [[ "$scheduler_boundary_bootstrap_source_revision" == "$previous_app_revision" ]] \
@@ -1149,7 +1153,8 @@ if [[ "$mode" == "release" ]]; then
       || fail "the protected scheduler-boundary bootstrap receipt changed during release"
   fi
   previous_cron_schedule_file="$(mktemp)"
-  git -C "$repository_root" show "$previous_app_revision:deploy/cron/managed-crontab" \
+  git --no-optional-locks -c safe.directory="$repository_root" -C "$repository_root" \
+    show "$previous_app_revision:deploy/cron/managed-crontab" \
     >"$previous_cron_schedule_file" \
     || fail "the previous deployed revision has no reviewable managed cron schedule"
   chmod 0600 -- "$previous_cron_schedule_file"

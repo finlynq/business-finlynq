@@ -153,7 +153,7 @@ run_with_clean_environment() {
         printf "Cron child requires a full reviewed BUSINESS_FINLYNQ_IMAGE_REVISION\n" >&2
         exit 2
       }
-      if ! clean_checkout_head="$(git -c safe.directory="$clean_repository_root" \
+      if ! clean_checkout_head="$(git --no-optional-locks -c safe.directory="$clean_repository_root" \
         -C "$clean_repository_root" rev-parse HEAD 2>/dev/null)"; then
         printf "Cron checkout HEAD could not be inspected\n" >&2
         exit 2
@@ -162,7 +162,7 @@ run_with_clean_environment() {
         printf "Cron checkout HEAD differs from the reviewed image revision\n" >&2
         exit 2
       }
-      if ! clean_checkout_status="$(git -c safe.directory="$clean_repository_root" \
+      if ! clean_checkout_status="$(git --no-optional-locks -c safe.directory="$clean_repository_root" \
         -C "$clean_repository_root" status --porcelain=v1 --untracked-files=all 2>/dev/null)"; then
         printf "Cron checkout status could not be inspected\n" >&2
         exit 2

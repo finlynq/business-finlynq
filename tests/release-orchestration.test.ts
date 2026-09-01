@@ -546,7 +546,9 @@ describe("commit-addressed release orchestration", () => {
     expect(monitorAcceptance).toBeLessThan(boundaryRecord);
     expect(release).not.toContain("run_logged 82-production-monitor.log bash deploy/monitoring/check-production.sh");
     expect(release).not.toMatch(/docker compose[^\n]*pull/);
-    expect(release).toContain('git -C "$repository_root" archive --format=tar "$revision"');
+    expect(release).toContain('git --no-optional-locks -c safe.directory="$repository_root" -C "$repository_root"');
+    expect(release).toContain('archive --format=tar "$revision"');
+    expect(release.match(/git --no-optional-locks/g)).toHaveLength(7);
     expect(release).toContain('--project-directory "$candidate_source_root"');
     expect(release).toContain('env -i "${controlled_environment[@]}" docker compose');
     expect(release).toContain('env -i "PATH=$PATH" bash --noprofile --norc -c');
@@ -615,7 +617,9 @@ describe("commit-addressed release orchestration", () => {
     expect(rollback).toContain('allLoginDeliveryWriteAndFeedGatesDisabled: true');
     expect(rollback).toContain('schedulersPaused: true');
     expect(rollback).toContain('trap contain_failed_rollback EXIT');
-    expect(rollback).toContain('git -C "$repository_root" archive --format=tar "$candidate_revision"');
+    expect(rollback).toContain('git --no-optional-locks -c safe.directory="$repository_root" -C "$repository_root"');
+    expect(rollback).toContain('archive --format=tar "$candidate_revision"');
+    expect(rollback.match(/git --no-optional-locks/g)).toHaveLength(5);
     expect(rollback).toContain('canonical Compose environment changed during rollback acceptance');
     expect(rollback).not.toMatch(/db:migrate|down migration|docker compose down/);
 

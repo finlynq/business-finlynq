@@ -17,7 +17,7 @@ readonly repository_root="/home/deploy/business-finlynq"
   printf '%s\n' "Business Finlynq systemd job skipped: canonical release revision is invalid" >&2
   exit 1
 }
-if ! checkout_head="$(git -c safe.directory="$repository_root" -C "$repository_root" \
+if ! checkout_head="$(git --no-optional-locks -c safe.directory="$repository_root" -C "$repository_root" \
   rev-parse HEAD 2>/dev/null)"; then
   printf '%s\n' "Business Finlynq systemd job skipped: canonical checkout revision could not be inspected" >&2
   exit 1
@@ -26,7 +26,7 @@ fi
   printf '%s\n' "Business Finlynq systemd job skipped: canonical checkout revision drifted" >&2
   exit 1
 }
-if ! checkout_status="$(git -c safe.directory="$repository_root" -C "$repository_root" \
+if ! checkout_status="$(git --no-optional-locks -c safe.directory="$repository_root" -C "$repository_root" \
   status --porcelain=v1 --untracked-files=all 2>/dev/null)"; then
   printf '%s\n' "Business Finlynq systemd job skipped: canonical checkout status could not be inspected" >&2
   exit 1

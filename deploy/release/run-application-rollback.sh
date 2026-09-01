@@ -28,7 +28,7 @@ git_command_output=""
 read_git_output() {
   local description="$1"
   shift
-  if ! git_command_output="$(git -c safe.directory="$repository_root" \
+  if ! git_command_output="$(git --no-optional-locks -c safe.directory="$repository_root" \
     -C "$repository_root" "$@" 2>/dev/null)"; then
     fail "could not inspect $description in the canonical Git checkout"
   fi
@@ -36,7 +36,7 @@ read_git_output() {
 
 assert_clean_checkout() {
   local dirty_message="$1" checkout_status
-  if ! checkout_status="$(git -c safe.directory="$repository_root" -C "$repository_root" \
+  if ! checkout_status="$(git --no-optional-locks -c safe.directory="$repository_root" -C "$repository_root" \
     status --porcelain=v1 --untracked-files=all 2>/dev/null)"; then
     fail "$dirty_message because Git status could not be inspected"
   fi
@@ -217,7 +217,8 @@ candidate_revision="$(jq -r '.candidate.revision // empty' "$rollback_record")"
 read_git_output "candidate HEAD" rev-parse HEAD
 [[ "$git_command_output" == "$candidate_revision" ]] \
   || fail "rollback checkout does not match the deployed candidate revision"
-git cat-file -e "$candidate_revision^{commit}" 2>/dev/null \
+git --no-optional-locks -c safe.directory="$repository_root" -C "$repository_root" \
+  cat-file -e "$candidate_revision^{commit}" 2>/dev/null \
   || fail "candidate revision is not a local Git commit"
 if [[ -f "$completion_record" ]]; then
   [[ "$(jq -r '.previousAppImageId // empty' "$completion_record")" == "$previous_image_id" ]] \
@@ -238,14 +239,15 @@ chmod 0700 -- "$candidate_staging_root"
 candidate_source_root="$candidate_staging_root/repository"
 mkdir -m 0700 -- "$candidate_source_root"
 candidate_git_tree_file="$candidate_staging_root/candidate-git-tree.txt"
-if ! git -c safe.directory="$repository_root" -C "$repository_root" \
+if ! git --no-optional-locks -c safe.directory="$repository_root" -C "$repository_root" \
   ls-tree -r --full-tree "$candidate_revision" >"$candidate_git_tree_file"; then
   fail "candidate Git tree could not be inspected before rollback materialization"
 fi
 if awk '$1 == "160000" { found = 1 } END { exit found ? 0 : 1 }' "$candidate_git_tree_file"; then
   fail "candidate Git tree contains a submodule and cannot be materialized as an exact archive"
 fi
-git -C "$repository_root" archive --format=tar "$candidate_revision" \
+git --no-optional-locks -c safe.directory="$repository_root" -C "$repository_root" \
+  archive --format=tar "$candidate_revision" \
   | tar --extract --file=- --directory="$candidate_source_root" --no-same-owner --same-permissions
 read_git_output "candidate Git tree" rev-parse "$candidate_revision^{tree}"
 candidate_tree_id="$git_command_output"
