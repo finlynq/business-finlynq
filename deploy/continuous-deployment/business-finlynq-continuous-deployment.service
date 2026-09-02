@@ -1,0 +1,17 @@
+[Unit]
+Description=Deploy the CI-approved Business Finlynq main revision
+Documentation=https://github.com/finlynq/business-finlynq/blob/main/docs/operations/continuous-deployment.md
+Wants=network-online.target docker.service
+After=network-online.target docker.service
+ConditionPathExists=/etc/business-finlynq/continuous-deployment.env
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+UMask=0077
+EnvironmentFile=/etc/business-finlynq/continuous-deployment.env
+ExecStart=/usr/local/sbin/business-finlynq-deploy-main
+TimeoutStartSec=4h
+StandardOutput=journal
+StandardError=journal

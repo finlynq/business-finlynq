@@ -119,6 +119,8 @@ The pair verifier checks the complete runner artifact format, internal identitie
 
 The sequence below explains the controls enforced by the scripted path. Do not substitute an ad hoc copy/paste deployment for `run-release.sh`.
 
+Normal `main` releases may be triggered by the root-managed, immutable-tag CI/CD path documented in [Continuous deployment from main](./continuous-deployment.md). That trigger does not replace this runner or any of the controls below; it validates the exact fast-forward `origin/main` revision, prepares the off-server receiver allowlist, and then invokes this same systemd release command. A post-mutation failure is latched for explicit operator review rather than retried automatically.
+
 1. Materialize and hash the exact Git tree, snapshot the reviewed environments, build all six targets from that tree, capture their image IDs/OCI labels, and retain the current application image ID and revision. Do not use an unreviewed working tree or a live mutable Compose file.
 2. Activate the durable maintenance marker; disable and drain every installed Business Finlynq timer/service or remove the exact deployed cron block; prove the alternate scheduler and labeled scheduled one-shot containers inactive. Then stop both app and authentication worker and prove they are stopped.
 3. With all write surfaces still stopped, run the bounded encrypted backup and exact backup verifier, including its off-site marker. Keep the app and worker stopped through migration and every pre-traffic verifier.
@@ -202,4 +204,4 @@ Never pass a provider key inline in the production environment. The worker fails
 
 ## Organization write activation
 
-`ACCOUNT_LOGIN_ENABLED` and `BUSINESS_WRITES_ENABLED` do not activate a tenant by themselves. Real writes require the global gate and the exact active `REAL` organization UUID to be enabled through the audited owner-only operator command. Follow [Real-account activation and emergency write disable](./real-account-activation.md) for staging, two-person pilot acceptance, control-organization proof, audit evidence, support triage, and emergency disable. Never update `organizations.writes_enabled_at` directly.
+`ACCOUNT_LOGIN_ENABLED` and `BUSINESS_WRITES_ENABLED` do not activate a tenant by themselves. Real writes require the global gate plus the exact active `REAL` organization layer. Completed self-service owner signup enables that organization layer atomically and audibly; operator-managed tenants and any re-enablement after an explicit disable use the owner-only operator command. Follow [Real-account activation and emergency write disable](./real-account-activation.md) for the automatic-signup boundary, staged pilots, control-organization proof, audit evidence, support triage, and emergency disable. Never update `organizations.writes_enabled_at` directly.

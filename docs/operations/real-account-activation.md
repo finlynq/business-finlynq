@@ -1,11 +1,15 @@
 # Real-account activation and emergency write disable
 
-Real accounting writes require two independent approvals:
+Real accounting writes require two independent controls:
 
 1. the deployment-wide `BUSINESS_WRITES_ENABLED=true` gate; and
 2. a non-null `organizations.writes_enabled_at` value for the exact active `REAL` organization UUID.
 
 Neither layer substitutes for the other. An organization may be staged while the global gate is false, but its writes are not effective. Enabling one organization does not enable another. Demo write policy is separate and this procedure must never be used for a sandbox or public-demo organization.
+
+A successfully completed self-service owner signup automatically sets its own organization layer through migration `0033`. The transition uses the same organization activation fence and emits the paired `organization.writes-enabled` audit/outbox records with the `SELF_SERVICE_SIGNUP` policy marker. It does not bypass the deployment-wide gate, tenant RLS, owner membership, role permissions, MFA step-up, posting policy, or accounting controls. An audited operator disable remains durable and is never reversed by the automatic policy or its forward reconciliation.
+
+Use the operator command below for organizations that did not originate from completed self-service signup, for support inspection, and for reviewed re-enablement after an explicit disable. Do not use it as a routine signup-completion step.
 
 The `org:writes` command connects with the migration-owner configuration and calls the audited, owner-only `app.operator_set_organization_writes` function. The application and authentication-worker roles must not receive execute permission on that function or direct update permission on organization activation state. Never use an ad hoc `UPDATE organizations` statement.
 
@@ -38,7 +42,7 @@ docker compose run --rm --no-deps migrate npm run --silent org:writes -- status 
 
 The database must already be healthy when `--no-deps` is used. Do not place an owner password, operator identity, or reason in a committed environment file.
 
-## Pilot activation procedure
+## Operator-managed pilot activation procedure
 
 Two authorized people perform and record the procedure. One operates; the other independently checks the organization UUID, release, evidence, and result.
 
@@ -94,4 +98,4 @@ Repository tests cannot provide these external acceptance artifacts:
 - a backup/restore exercise using the production-like identity secret and organization root KEK, including explicit DEK preservation evidence; and
 - independent sign-off by at least two authorized people on the pilot runbook.
 
-Keep `ACCOUNT_LOGIN_ENABLED`, `ACCOUNT_SIGNUP_ENABLED`, the global write gate, and each organization activation independently disabled until their corresponding evidence is complete.
+Keep `ACCOUNT_LOGIN_ENABLED`, `ACCOUNT_SIGNUP_ENABLED`, and the global write gate independently disabled until their corresponding evidence is complete. Keep operator-managed organizations disabled until their activation evidence is complete; completed self-service signups receive their organization layer automatically only after the global signup decision has been made.

@@ -232,6 +232,13 @@
       "when": 1788184493320,
       "tag": "0032_observability_correlation_metrics",
       "breakpoints": true
+    },
+    {
+      "idx": 33,
+      "version": "7",
+      "when": 1788311035538,
+      "tag": "0033_self_service_signup_write_activation",
+      "breakpoints": true
     }
   ]
 }

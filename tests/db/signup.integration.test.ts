@@ -149,6 +149,7 @@ runDatabaseTests("PostgreSQL self-service owner signup", () => {
     const foundation = await pool.query(
       `SELECT
         (SELECT organization_mode FROM organizations WHERE id=$1) AS mode,
+        (SELECT writes_enabled_at IS NOT NULL FROM organizations WHERE id=$1) AS writes_enabled,
         (SELECT count(*)::int FROM organization_key_versions WHERE organization_id=$1 AND active) AS keys,
         (SELECT count(*)::int FROM roles WHERE organization_id=$1) AS roles,
         (SELECT count(*)::int FROM legal_entities WHERE organization_id=$1) AS entities,
@@ -164,6 +165,7 @@ runDatabaseTests("PostgreSQL self-service owner signup", () => {
     );
     expect(foundation.rows[0]).toEqual({
       mode: "REAL",
+      writes_enabled: false,
       keys: 1,
       roles: 6,
       entities: 1,
@@ -192,10 +194,20 @@ runDatabaseTests("PostgreSQL self-service owner signup", () => {
     )).rows[0]?.finished).toBe(true);
     expect((await pool.query(
       `SELECT selected_user.active AS user_active, membership.active AS membership_active,
-        signup.status AS signup_status, signup.completed_at IS NOT NULL AS completed
+        signup.status AS signup_status, signup.completed_at IS NOT NULL AS completed,
+        organization.writes_enabled_at IS NOT NULL AS writes_enabled,
+        (SELECT count(*)::int FROM audit_events audit
+         WHERE audit.organization_id=organization.id
+           AND audit.action='organization.writes-enabled'
+           AND audit.request_id=signup.id::text) AS activation_audits,
+        (SELECT count(*)::int FROM outbox_events outbox
+         WHERE outbox.organization_id=organization.id
+           AND outbox.topic='organization.writes-enabled'
+           AND outbox.request_id=signup.id::text) AS activation_outbox
        FROM users selected_user
        JOIN organization_memberships membership ON membership.user_id=selected_user.id
        JOIN auth_organization_signups signup ON signup.user_id=selected_user.id
+       JOIN organizations organization ON organization.id=signup.organization_id
        WHERE selected_user.id=$1`,
       [fixture.userId],
     )).rows[0]).toEqual({
@@ -203,6 +215,9 @@ runDatabaseTests("PostgreSQL self-service owner signup", () => {
       membership_active: true,
       signup_status: "ACTIVE",
       completed: true,
+      writes_enabled: true,
+      activation_audits: 1,
+      activation_outbox: 1,
     });
 
     const repeated = signupFixture();
@@ -233,10 +248,12 @@ runDatabaseTests("PostgreSQL self-service owner signup", () => {
     const activated = (await pool.query(
       `SELECT selected_user.active, selected_user.mfa_required,
         membership.id AS membership_id, membership.active AS membership_active,
-        signup.status AS signup_status, factor.status AS factor_status
+        signup.status AS signup_status, factor.status AS factor_status,
+        organization.writes_enabled_at IS NOT NULL AS writes_enabled
        FROM users selected_user
        JOIN organization_memberships membership ON membership.user_id=selected_user.id
        JOIN auth_organization_signups signup ON signup.user_id=selected_user.id
+       JOIN organizations organization ON organization.id=signup.organization_id
        JOIN auth_mfa_factors factor ON factor.id=$2
        WHERE selected_user.id=$1`,
       [fixture.userId, factorId],
@@ -247,6 +264,7 @@ runDatabaseTests("PostgreSQL self-service owner signup", () => {
       membership_active: true,
       signup_status: "ACTIVE",
       factor_status: "REVOKED",
+      writes_enabled: true,
     });
 
     const passwordSessionHash = randomUUID().replaceAll("-", "").repeat(2);

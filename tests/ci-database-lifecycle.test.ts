@@ -64,9 +64,9 @@ describe("CI predecessor-upgrade and restore verification", () => {
     );
   });
 
-  it("replays exactly 0000-0024 before preserving a tenant sentinel through 0032", () => {
+  it("replays exactly 0000-0024 before preserving a tenant sentinel through 0033", () => {
     expect(migrationJournal.entries.map((entry) => entry.idx)).toEqual(
-      Array.from({ length: 33 }, (_, index) => index),
+      Array.from({ length: 34 }, (_, index) => index),
     );
     expect(migrationJournal.entries.find((entry) => entry.idx === 25)?.tag).toBe(
       "0025_tenant_rls_completion",
@@ -91,6 +91,9 @@ describe("CI predecessor-upgrade and restore verification", () => {
     );
     expect(migrationJournal.entries.find((entry) => entry.idx === 32)?.tag).toBe(
       "0032_observability_correlation_metrics",
+    );
+    expect(migrationJournal.entries.find((entry) => entry.idx === 33)?.tag).toBe(
+      "0033_self_service_signup_write_activation",
     );
     expect(tenantPolicyMigration).toContain("ALTER TABLE public.%I ENABLE ROW LEVEL SECURITY");
     expect(tenantPolicyMigration).toContain("ALTER TABLE public.%I FORCE ROW LEVEL SECURITY");
