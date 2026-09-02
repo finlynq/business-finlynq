@@ -85,7 +85,9 @@ fi
 chown root:root "$receiver_key" "$receiver_key.pub"
 chmod 0400 "$receiver_key"
 chmod 0444 "$receiver_key.pub"
-ssh-keygen -y -f "$receiver_key" | cmp -s -- - <(awk '{print $1, $2}' "$receiver_key.pub") \
+private_key_fingerprint="$(ssh-keygen -lf "$receiver_key" | awk 'NR == 1 { print $2 }')"
+public_key_fingerprint="$(ssh-keygen -lf "$receiver_key.pub" | awk 'NR == 1 { print $2 }')"
+[[ -n "$private_key_fingerprint" && "$private_key_fingerprint" == "$public_key_fingerprint" ]] \
   || fail "the receiver deployment keypair does not match"
 
 install -o root -g root -m 0400 -- "$known_hosts_input" "$receiver_known_hosts"
