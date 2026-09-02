@@ -151,7 +151,8 @@ verify_compose_boundary() {
 }
 
 release_is_accepted() {
-  local app_container detailed_health public_health hostname require_public
+  local app_container app_environment actual expected detailed_health public_health rendered \
+    hostname require_public setting
   local -a app_containers
   mapfile -t app_containers < <(docker ps --no-trunc --quiet \
     --filter label=com.docker.compose.project="$project" \
@@ -160,6 +161,19 @@ release_is_accepted() {
   app_container="${app_containers[0]}"
   [[ "$(docker inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' \
     "$app_container")" == "$candidate_revision" ]] || return 1
+  rendered="$(compose config --format json)" || return 1
+  app_environment="$(docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' \
+    "$app_container")" || return 1
+  for setting in DEMO_LOGIN_ENABLED DEMO_WRITES_ENABLED ACCOUNT_LOGIN_ENABLED \
+    ACCOUNT_SIGNUP_ENABLED AUTH_EMAIL_DELIVERY_ENABLED AUTH_EMAIL_PROVIDER AUTH_EMAIL_FROM \
+    AUTH_EMAIL_REPLY_TO SIGNUP_TURNSTILE_ENABLED SIGNUP_TURNSTILE_SITE_KEY \
+    BUSINESS_WRITES_ENABLED BANK_FEEDS_ENABLED; do
+    expected="$(jq -r --arg setting "$setting" \
+      '.services.app.environment[$setting] // ""' <<<"$rendered")"
+    actual="$(awk -F= -v setting="$setting" \
+      '$1 == setting { sub(/^[^=]*=/, ""); print; exit }' <<<"$app_environment")"
+    [[ "$actual" == "$expected" ]] || return 1
+  done
   detailed_health="$(curl --noproxy '*' --fail --silent --show-error --max-time 20 \
     --header 'X-Business-Finlynq-Internal-Health: 1' http://127.0.0.1:3200/api/health)" \
     || return 1

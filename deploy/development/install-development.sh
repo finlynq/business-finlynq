@@ -22,19 +22,47 @@ fail() {
 }
 
 enable_timer=false
+enable_all_features=false
+auth_email_from=""
+auth_email_reply_to=""
+turnstile_site_key=""
 while (( $# > 0 )); do
   case "$1" in
     --enable)
       enable_timer=true
       shift
       ;;
+    --enable-all-features)
+      enable_all_features=true
+      shift
+      ;;
+    --auth-email-from)
+      [[ "$#" -ge 2 ]] || fail "--auth-email-from requires a mailbox"
+      auth_email_from="$2"
+      shift 2
+      ;;
+    --auth-email-reply-to)
+      [[ "$#" -ge 2 ]] || fail "--auth-email-reply-to requires a mailbox"
+      auth_email_reply_to="$2"
+      shift 2
+      ;;
+    --turnstile-site-key)
+      [[ "$#" -ge 2 ]] || fail "--turnstile-site-key requires a public site key"
+      turnstile_site_key="$2"
+      shift 2
+      ;;
     *) fail "unknown option: $1" ;;
   esac
 done
 
+if [[ "$enable_all_features" != true ]] \
+  && [[ -n "$auth_email_from" || -n "$auth_email_reply_to" || -n "$turnstile_site_key" ]]; then
+  fail "provider metadata requires --enable-all-features"
+fi
+
 [[ "$(id -u)" == 0 ]] || fail "run this installer as root"
-for command_name in awk chmod chown docker getent git id install mktemp openssl rm runuser \
-  stat systemctl visudo; do
+for command_name in awk chmod chown docker getent git id install mktemp mv openssl rm runuser \
+  stat sync systemctl visudo; do
   command -v "$command_name" >/dev/null 2>&1 \
     || fail "required command is unavailable: $command_name"
 done
@@ -143,6 +171,90 @@ for secret_file in organization-root-kek identity-secret app-db-password \
       == root:business-finlynq-secrets:440 ]] \
     || fail "a development secret is unavailable or unsafe: $secret_file"
 done
+
+if [[ "$enable_all_features" == true ]]; then
+  [[ -n "$auth_email_from" && "${#auth_email_from}" -le 320 \
+    && "$auth_email_from" == *@* && "$auth_email_from" != *"="* \
+    && "$auth_email_from" != *$'\n'* && "$auth_email_from" != *$'\r'* ]] \
+    || fail "--auth-email-from must be a valid single-line mailbox"
+  if [[ -n "$auth_email_reply_to" ]]; then
+    [[ "${#auth_email_reply_to}" -le 320 && "$auth_email_reply_to" == *@* \
+      && "$auth_email_reply_to" != *"="* && "$auth_email_reply_to" != *$'\n'* \
+      && "$auth_email_reply_to" != *$'\r'* ]] \
+      || fail "--auth-email-reply-to must be a valid single-line mailbox"
+  fi
+  [[ "$turnstile_site_key" =~ ^[A-Za-z0-9_-]{10,200}$ ]] \
+    || fail "--turnstile-site-key is invalid"
+
+  for provider_secret in resend-api-key turnstile-secret-key; do
+    [[ -f "$secret_directory/$provider_secret" \
+      && -s "$secret_directory/$provider_secret" \
+      && ! -L "$secret_directory/$provider_secret" \
+      && "$(stat -c '%U:%G:%a' -- "$secret_directory/$provider_secret")" \
+        == root:business-finlynq-secrets:440 ]] \
+      || fail "a development provider secret is unavailable or unsafe: $provider_secret"
+    awk 'NR != 1 || length($0) < 10 || length($0) > 4096 || index($0, "\r") { exit 1 }' \
+      "$secret_directory/$provider_secret" \
+      || fail "a development provider secret must contain exactly one value: $provider_secret"
+  done
+
+  feature_environment_temporary="$(mktemp "$configuration_directory/.compose.env.features.XXXXXX")"
+  awk -F= \
+    -v auth_email_from="$auth_email_from" \
+    -v auth_email_reply_to="$auth_email_reply_to" \
+    -v resend_key_file="$secret_directory/resend-api-key" \
+    -v turnstile_site_key="$turnstile_site_key" \
+    -v turnstile_key_file="$secret_directory/turnstile-secret-key" '
+    BEGIN {
+      keys[1] = "DEMO_LOGIN_ENABLED"
+      keys[2] = "DEMO_WRITES_ENABLED"
+      keys[3] = "ACCOUNT_LOGIN_ENABLED"
+      keys[4] = "ACCOUNT_SIGNUP_ENABLED"
+      keys[5] = "AUTH_EMAIL_DELIVERY_ENABLED"
+      keys[6] = "AUTH_EMAIL_PROVIDER"
+      keys[7] = "AUTH_EMAIL_FROM"
+      keys[8] = "AUTH_EMAIL_REPLY_TO"
+      keys[9] = "AUTH_RESEND_API_KEY_FILE"
+      keys[10] = "SIGNUP_TURNSTILE_ENABLED"
+      keys[11] = "SIGNUP_TURNSTILE_SITE_KEY"
+      keys[12] = "TURNSTILE_SECRET_KEY_FILE"
+      keys[13] = "BUSINESS_WRITES_ENABLED"
+      keys[14] = "BANK_FEEDS_ENABLED"
+      keys[15] = "DEVELOPMENT_REQUIRE_PUBLIC_ACCEPTANCE"
+      for (index = 1; index <= 15; index++) values[keys[index]] = "true"
+      values["AUTH_EMAIL_PROVIDER"] = "resend"
+      values["AUTH_EMAIL_FROM"] = auth_email_from
+      values["AUTH_EMAIL_REPLY_TO"] = auth_email_reply_to
+      values["AUTH_RESEND_API_KEY_FILE"] = resend_key_file
+      values["SIGNUP_TURNSTILE_SITE_KEY"] = turnstile_site_key
+      values["TURNSTILE_SECRET_KEY_FILE"] = turnstile_key_file
+    }
+    {
+      key = $1
+      if (key in values) {
+        if (seen[key]++) exit 42
+        print key "=" values[key]
+        next
+      }
+      print
+    }
+    END {
+      for (index = 1; index <= 15; index++) {
+        key = keys[index]
+        if (!seen[key]) print key "=" values[key]
+      }
+    }
+  ' "$compose_environment" >"$feature_environment_temporary" \
+    || {
+      rm -f -- "$feature_environment_temporary"
+      fail "could not enable the development feature gates"
+    }
+  chown root:deploy "$feature_environment_temporary"
+  chmod 0600 "$feature_environment_temporary"
+  mv -f -- "$feature_environment_temporary" "$compose_environment"
+  sync -f -- "$compose_environment"
+  printf 'Development account, write, bot-protection, and bank-feed gates enabled.\n'
+fi
 
 if ! docker network inspect "$development_edge_network" >/dev/null 2>&1; then
   docker network create --driver bridge --label com.business-finlynq.environment=development \

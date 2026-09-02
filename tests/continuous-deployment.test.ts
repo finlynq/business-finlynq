@@ -106,6 +106,23 @@ describe("continuous deployment safety boundary", () => {
     expect(installDevelopment).toContain("BANK_FEEDS_ENABLED=false");
   });
 
+  it("enables every development feature only with isolated provider secrets", () => {
+    expect(installDevelopment).toContain("--enable-all-features");
+    expect(installDevelopment).toContain("resend-api-key turnstile-secret-key");
+    expect(installDevelopment).toContain("root:business-finlynq-secrets:440");
+    for (const gate of [
+      "ACCOUNT_LOGIN_ENABLED",
+      "ACCOUNT_SIGNUP_ENABLED",
+      "BUSINESS_WRITES_ENABLED",
+      "BANK_FEEDS_ENABLED",
+    ]) {
+      expect(installDevelopment).toContain(`= "${gate}"`);
+    }
+    expect(installDevelopment).toContain('values[keys[index]] = "true"');
+    expect(deployDevelopment).toContain("SIGNUP_TURNSTILE_SITE_KEY");
+    expect(deployDevelopment).toContain('[[ "$actual" == "$expected" ]] || return 1');
+  });
+
   it("updates recovery trust before mutation and latches any failed release", () => {
     const receiverIndex = deployMain.indexOf('"allow $backup_source_revision $candidate_revision"');
     const mutationIndex = deployMain.indexOf('mutated="true"');
