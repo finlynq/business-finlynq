@@ -45,10 +45,14 @@ describe("continuous deployment safety boundary", () => {
   });
 
   it("updates recovery trust before mutation and latches any failed release", () => {
-    const receiverIndex = deployMain.indexOf('"allow $source_revision $candidate_revision"');
+    const receiverIndex = deployMain.indexOf('"allow $backup_source_revision $candidate_revision"');
     const mutationIndex = deployMain.indexOf('mutated="true"');
     expect(receiverIndex).toBeGreaterThan(0);
     expect(mutationIndex).toBeGreaterThan(receiverIndex);
+    expect(deployMain).toContain("docker ps --all --no-trunc --quiet");
+    expect(deployMain).toContain(
+      'git_as_deploy merge-base --is-ancestor "$backup_source_revision" "$candidate_revision"',
+    );
     expect(deployMain).toContain(
       'readonly failure_latch="/var/lib/business-finlynq/continuous-deployment-failed"',
     );

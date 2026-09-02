@@ -1135,8 +1135,9 @@ previous_app_id=""
 previous_app_revision=""
 if [[ "$mode" == "release" ]]; then
   stage="capture-rollback-artifact"
-  previous_container="$(compose ps --quiet app)"
-  [[ -n "$previous_container" ]] || fail "the existing app container is missing; use a reviewed initial-install procedure"
+  previous_container="$(compose ps --all --quiet app)"
+  [[ "$previous_container" =~ ^[a-f0-9]{12,64}$ ]] \
+    || fail "exactly one existing app container is required; use a reviewed initial-install procedure"
   previous_app_id="$(docker inspect --format '{{.Image}}' "$previous_container")"
   previous_app_revision="$(docker inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$previous_container")"
   [[ "$previous_app_id" =~ ^sha256:[a-f0-9]{64}$ ]] || fail "the previous app has no immutable image ID"

@@ -124,6 +124,20 @@ signal_revision="$(git_as_deploy rev-parse "refs/tags/$signal_tag^{commit}" 2>/d
 [[ "$signal_revision" == "$candidate_revision" ]] \
   || fail "the successful quality gate has not published the immutable deployment signal"
 
+mapfile -t retained_app_containers < <(docker ps --all --no-trunc --quiet \
+  --filter label=com.docker.compose.project=business-finlynq \
+  --filter label=com.docker.compose.service=app)
+[[ "${#retained_app_containers[@]}" == 1 ]] \
+  || fail "exactly one retained application container is required for backup trust"
+retained_app_container="${retained_app_containers[0]}"
+backup_source_revision="$(docker inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' \
+  "$retained_app_container")"
+validate_revision "$backup_source_revision"
+git_as_deploy cat-file -e "$backup_source_revision^{commit}" \
+  || fail "the retained application revision is not a local Git commit"
+git_as_deploy merge-base --is-ancestor "$backup_source_revision" "$candidate_revision" \
+  || fail "the retained application revision is not an ancestor of the candidate"
+
 [[ "${BACKUP_RECEIVER_HOST:-}" =~ ^[A-Za-z0-9.-]+$ ]] \
   || fail "BACKUP_RECEIVER_HOST is missing or invalid"
 [[ "${BACKUP_RECEIVER_USER:-}" =~ ^[a-z_][a-z0-9_-]*$ ]] \
@@ -142,9 +156,9 @@ ssh_output="$(ssh -F /dev/null -T \
   -o "UserKnownHostsFile=$BACKUP_RECEIVER_KNOWN_HOSTS_FILE" \
   -i "$BACKUP_RECEIVER_KEY_FILE" \
   "$BACKUP_RECEIVER_USER@$BACKUP_RECEIVER_HOST" \
-  "allow $source_revision $candidate_revision")" \
+  "allow $backup_source_revision $candidate_revision")" \
   || fail "the off-server backup receiver refused the source/candidate allowlist"
-[[ "$ssh_output" == "Allowed backup revisions $source_revision and $candidate_revision." ]] \
+[[ "$ssh_output" == "Allowed backup revisions $backup_source_revision and $candidate_revision." ]] \
   || fail "the off-server backup receiver returned an unexpected acknowledgement"
 
 temporary_files=()
