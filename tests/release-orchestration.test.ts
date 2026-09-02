@@ -299,6 +299,7 @@ describe("commit-addressed release orchestration", () => {
     expect(service).toContain(
       'command: ["./node_modules/.bin/playwright", "test", "--output", "/app/test-results/release"]',
     );
+    expect(service).toContain('PLAYWRIGHT_MANAGED_SERVER: "true"');
     expect(service).toContain("PLAYWRIGHT_HTML_OUTPUT_DIR: /app/playwright-report/release");
     expect(service).toContain("- /app/test-results:size=256m,mode=1777");
     expect(service).toContain("- /app/playwright-report:size=64m,mode=1777");

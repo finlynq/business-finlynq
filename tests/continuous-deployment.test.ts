@@ -135,9 +135,10 @@ describe("continuous deployment safety boundary", () => {
     expect(readiness).toBeGreaterThan(0);
     expect(acceptance).toBeGreaterThan(readiness);
     expect(playwrightConfig).toContain(
-      "const externalBaseURL = process.env.PLAYWRIGHT_BASE_URL?.trim() || undefined;",
+      'const managedServer = process.env.PLAYWRIGHT_MANAGED_SERVER === "true";',
     );
-    expect(playwrightConfig).toContain("webServer: externalBaseURL ? undefined : {");
+    expect(playwrightConfig).toContain("webServer: managedServer ? undefined : {");
+    expect(compose).toContain('PLAYWRIGHT_MANAGED_SERVER: "true"');
   });
 
   it("updates recovery trust before mutation and latches any failed release", () => {
