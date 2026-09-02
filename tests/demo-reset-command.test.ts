@@ -50,4 +50,20 @@ describe("demo reset operator contract", () => {
       "next_demo_reset_after(greatest(now(), reset_after))",
     );
   });
+
+  it("promotes an overdue deploy bootstrap to a complete nightly reconciliation", () => {
+    expect(resetImplementation).toContain(
+      "reset_after <= statement_timestamp() AS overdue",
+    );
+    expect(resetImplementation).toContain(
+      "const effectiveMode = await resolveDemoSandboxResetMode(client, options.mode)",
+    );
+    expect(resetImplementation).toContain(
+      "listSandboxCandidates(client, effectiveMode)",
+    );
+    expect(resetImplementation).toContain(
+      "claimSandboxForReset(client, candidate, effectiveMode)",
+    );
+    expect(resetImplementation).toContain('if (effectiveMode === "nightly")');
+  });
 });

@@ -1682,6 +1682,22 @@ async function listSandboxCandidates(
   return result.rows;
 }
 
+async function resolveDemoSandboxResetMode(
+  client: PoolClient,
+  requestedMode: DemoSandboxResetMode,
+): Promise<DemoSandboxResetMode> {
+  if (requestedMode === "nightly") return requestedMode;
+
+  const schedule = await client.query<{ overdue: boolean }>(
+    `SELECT reset_after <= statement_timestamp() AS overdue
+     FROM demo_sandbox_pool
+     WHERE singleton
+     FOR SHARE`,
+  );
+  if (!schedule.rows[0]) throw new Error("Demo sandbox pool state is missing");
+  return schedule.rows[0].overdue ? "nightly" : requestedMode;
+}
+
 async function claimSandboxForReset(
   client: PoolClient,
   candidate: SandboxCandidate,
@@ -2292,10 +2308,15 @@ export async function resetDemoSandboxes(
     await assertOperatorDatabaseOwner(client);
     await client.query("SELECT pg_advisory_lock(hashtextextended($1, 0))", [RESET_ADVISORY_LOCK_KEY]);
     lockHeld = true;
-    const candidates = await listSandboxCandidates(client, options.mode);
+    // A deploy can legitimately span the Toronto reset boundary while the
+    // scheduler is paused. Promote that overdue bootstrap to the same complete
+    // reconciliation used by the nightly job so browser acceptance never sees
+    // healthy slots behind an expired pool cycle.
+    const effectiveMode = await resolveDemoSandboxResetMode(client, options.mode);
+    const candidates = await listSandboxCandidates(client, effectiveMode);
     const failures: string[] = [];
     for (const candidate of candidates) {
-      const claimed = await claimSandboxForReset(client, candidate, options.mode);
+      const claimed = await claimSandboxForReset(client, candidate, effectiveMode);
       if (!claimed) continue;
       try {
         await resetClaimedSandbox(client, claimed);
@@ -2314,7 +2335,7 @@ export async function resetDemoSandboxes(
     if (failures.length > 0) {
       throw new Error(`Demo sandbox reset quarantined ${failures.length} slot(s): ${failures.join("; ")}`);
     }
-    if (options.mode === "nightly") {
+    if (effectiveMode === "nightly") {
       await client.query("BEGIN");
       try {
         await client.query("SET LOCAL lock_timeout = '45s'");
@@ -2409,6 +2430,8 @@ export async function bootstrapDemoOrganization(pool: Pool): Promise<void> {
 
   // Ordinary deploys prepare additive DIRTY slots and unclaimed READY slots
   // whose baseline is obsolete. Assigned browser claims and their data survive
-  // bootstrap, logout, and session expiry until the nightly boundary.
+  // bootstrap, logout, and session expiry until the nightly boundary. If that
+  // boundary passed while deployment schedulers were paused, bootstrap safely
+  // completes the overdue nightly cycle before release acceptance.
   await resetDemoSandboxes(pool, { mode: "bootstrap" });
 }
