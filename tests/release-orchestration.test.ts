@@ -443,6 +443,8 @@ describe("commit-addressed release orchestration", () => {
     expect(release).toContain('run_acceptance_app() (');
     expect(release).toContain('compose_with_overrides BUSINESS_WRITES_ENABLED=false BANK_FEEDS_ENABLED=false --');
     expect(release).toContain('AUTH_EMAIL_DELIVERY_ENABLED=false SIGNUP_TURNSTILE_ENABLED=false');
+    expect(release).toContain('for _ in {1..30}; do');
+    expect(release).toContain('public readiness did not become ready (last HTTP ${public_status:-unavailable})');
     expect(release).toContain('quiesced candidate gate is not disabled: $disabled_gate');
     expect(release.indexOf('rehearsal resource can escape its isolated project')).toBeLessThan(release.indexOf('stage="clean-rehearsal-environment"'));
     expect(release).toContain('if [[ "$mode" == "release" && "$schedulers_resumed" == "true" ]]');

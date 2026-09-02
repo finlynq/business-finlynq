@@ -1914,8 +1914,16 @@ candidate_environment="$(docker inspect --format '{{range .Config.Env}}{{println
 stage="public-readiness"
 public_headers="$evidence_directory/65-public-readiness.headers"
 public_body="$evidence_directory/65-public-readiness.json"
-public_status="$(curl --silent --show-error --max-time 15 --dump-header "$public_headers" --output "$public_body" --write-out '%{http_code}' "$public_base_url/api/health")"
-[[ "$public_status" == "200" ]] || fail "public readiness returned HTTP $public_status"
+public_status=""
+for _ in {1..30}; do
+  if public_status="$(curl --silent --show-error --max-time 15 --dump-header "$public_headers" --output "$public_body" --write-out '%{http_code}' "$public_base_url/api/health")" \
+    && [[ "$public_status" == "200" ]]; then
+    break
+  fi
+  sleep 2
+done
+[[ "$public_status" == "200" ]] \
+  || fail "public readiness did not become ready (last HTTP ${public_status:-unavailable})"
 jq -e 'type == "object" and keys == ["status"] and .status == "ready"' "$public_body" >/dev/null \
   || fail "public readiness exposed details or was unavailable"
 grep -Eiq '^cache-control:.*no-store' "$public_headers" || fail "public readiness is missing no-store"
