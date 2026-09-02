@@ -980,7 +980,7 @@ else
     [[ "$resource_name" == "$compose_project"-* ]] \
       || fail "rehearsal resource can escape its isolated project: $resource_name"
     case "$resource_name" in
-      business_finlynq_pgdata|business_finlynq_caddy_data|business_finlynq_caddy_config|business_finlynq_private|business_finlynq_egress|business_finlynq_edge|business_finlynq_restore_drill)
+      business_finlynq_pgdata|business_finlynq_caddy_data|business_finlynq_caddy_config|business_finlynq_private|business_finlynq_egress|business_finlynq_edge|business_finlynq_development_edge|business_finlynq_restore_drill)
         fail "rehearsal resolved a production resource name"
         ;;
     esac

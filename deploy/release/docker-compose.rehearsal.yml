@@ -27,6 +27,9 @@ networks:
     name: ${RELEASE_REHEARSAL_PROJECT:?set RELEASE_REHEARSAL_PROJECT}-egress
   business_finlynq_edge:
     name: ${RELEASE_REHEARSAL_PROJECT:?set RELEASE_REHEARSAL_PROJECT}-edge
+  business_finlynq_development_edge:
+    name: ${RELEASE_REHEARSAL_PROJECT:?set RELEASE_REHEARSAL_PROJECT}-development-edge
+    external: false
   business_finlynq_restore_drill:
     name: ${RELEASE_REHEARSAL_PROJECT:?set RELEASE_REHEARSAL_PROJECT}-restore-drill
     internal: true

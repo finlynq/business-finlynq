@@ -308,3 +308,39 @@ jobs:
       - name: Run browser release gate
         run: npm run test:e2e
       - run: npm audit --omit=dev --audit-level=high
+
+  signal-development:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/dev'
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    concurrency:
+      group: development-deployment-signal
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          ref: ${{ github.sha }}
+      - name: Publish immutable development deployment signal
+        env:
+          CANDIDATE_REVISION: ${{ github.sha }}
+        run: |
+          set -Eeuo pipefail
+          [[ "$CANDIDATE_REVISION" =~ ^[a-f0-9]{40}$ && ! "$CANDIDATE_REVISION" =~ ^0+$ ]]
+          test "$(git rev-parse HEAD)" = "$CANDIDATE_REVISION"
+          git fetch --no-tags origin \
+            '+refs/heads/dev:refs/remotes/origin/dev'
+          test "$(git rev-parse refs/remotes/origin/dev)" = "$CANDIDATE_REVISION"
+
+          tag="deploy-development-$CANDIDATE_REVISION"
+          existing="$(git ls-remote --tags origin "refs/tags/$tag" | awk 'NR == 1 {print $1}')"
+          if [[ -n "$existing" ]]; then
+            test "$existing" = "$CANDIDATE_REVISION"
+            exit 0
+          fi
+
+          git tag "$tag" "$CANDIDATE_REVISION"
+          git push origin "refs/tags/$tag:refs/tags/$tag"

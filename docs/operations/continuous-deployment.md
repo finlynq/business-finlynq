@@ -1,12 +1,14 @@
 # Continuous deployment from main
 
-Business Finlynq has one deployable branch: `main`. A successful `quality-gate` run for a same-repository push to `main` publishes an immutable tag named `deploy-production-<full-sha>`. The tag is a deployment signal, not another development branch. A root-managed production timer checks every five minutes and deploys only when all of these statements remain true:
+Business Finlynq production has one deployable branch: `main`. The separate `dev` branch and development stack are documented in [Development deployment from dev](./development-deployment.md); they have no production deployment path. A successful `quality-gate` run for a same-repository push to `main` publishes an immutable tag named `deploy-production-<full-sha>`. The tag is a deployment signal, not another development branch. A root-managed production timer checks every five minutes and deploys only when all of these statements remain true:
 
 - the canonical checkout is clean and on `main` with the reviewed GitHub origin;
 - `origin/main` is a fast-forward descendant of the running revision;
 - the exact `deploy-production-<full-sha>` tag points to that `origin/main` commit;
 - the off-server backup receiver atomically accepts the running and candidate revisions; and
 - the existing production release runner accepts backup, migration, RLS/grant, readiness, browser, scheduler, and evidence checks.
+
+Production and development acquire the same host deployment lock, preventing their builds and migrations from running concurrently on the shared server.
 
 No GitHub credential or general remote shell is stored on the production host. The production host uses a dedicated outbound Ed25519 key whose receiver-side forced command can only replace the backup receiver's revision allowlist with an already-trusted source plus one candidate. The production timer has no path for deploying a feature branch, an untagged commit, a force-pushed history, or an unreviewed environment change.
 

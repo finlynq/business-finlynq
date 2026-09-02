@@ -6,7 +6,12 @@ const root = process.cwd();
 const read = (...parts: string[]) => readFileSync(join(root, ...parts), "utf8");
 
 const workflow = read(".github", "workflows", "signal-production-deployment.yml");
+const qualityGateWorkflow = read(".github", "workflows", "ci.yml");
 const deployMain = read("deploy", "continuous-deployment", "deploy-main.sh");
+const deployDevelopment = read("deploy", "development", "deploy-development.sh");
+const installDevelopment = read("deploy", "development", "install-development.sh");
+const compose = read("docker-compose.yml");
+const caddy = read("deploy", "Caddyfile.container");
 const allowRevisions = read(
   "deploy",
   "continuous-deployment",
@@ -42,6 +47,63 @@ describe("continuous deployment safety boundary", () => {
     expect(deployMain).toContain('git_as_deploy merge --ff-only "$candidate_revision"');
     expect(deployMain).toContain('bash "$repository/deploy/release/run-release.sh"');
     expect(deployMain).toContain("--scheduler systemd");
+  });
+
+  it("signals dev only after its complete quality gate succeeds", () => {
+    expect(qualityGateWorkflow).toContain("signal-development:");
+    expect(qualityGateWorkflow).toContain("github.ref == 'refs/heads/dev'");
+    expect(qualityGateWorkflow).toContain("needs: verify");
+    expect(qualityGateWorkflow).toContain('tag="deploy-development-$CANDIDATE_REVISION"');
+    expect(qualityGateWorkflow).toContain("'+refs/heads/dev:refs/remotes/origin/dev'");
+  });
+
+  it("deploys dev through a disjoint checkout, state tree, port, and resource namespace", () => {
+    expect(deployDevelopment).toContain(
+      'readonly repository="/home/deploy/business-finlynq-development"',
+    );
+    expect(deployDevelopment).toContain(
+      'readonly compose_environment="/etc/business-finlynq-development/compose.env"',
+    );
+    expect(deployDevelopment).toContain(
+      'readonly state_directory="/var/lib/business-finlynq-development"',
+    );
+    expect(deployDevelopment).toContain(
+      'candidate_revision="$(git_as_deploy rev-parse refs/remotes/origin/dev)"',
+    );
+    expect(deployDevelopment).toContain('signal_tag="deploy-development-$candidate_revision"');
+    expect(deployDevelopment).toContain("http://127.0.0.1:3200/api/health");
+    expect(deployDevelopment).not.toContain("/etc/business-finlynq/compose.env");
+    expect(deployDevelopment).not.toContain("refs/remotes/origin/main");
+    for (const resource of [
+      "pgdata",
+      "caddy_data",
+      "caddy_config",
+      "private",
+      "egress",
+      "edge",
+      "restore_drill",
+    ]) {
+      expect(installDevelopment).toContain(`business_finlynq_development_${resource}`);
+    }
+  });
+
+  it("serializes production and development deployments and keeps the public routes separate", () => {
+    const sharedLock = 'readonly host_deployment_lock="/var/lib/business-finlynq/deployment-host.lock"';
+    expect(deployMain).toContain(sharedLock);
+    expect(deployDevelopment).toContain(sharedLock);
+    expect(compose).toContain("BUSINESS_FINLYNQ_APP_NETWORK_ALIAS:-production-app");
+    expect(compose).toContain("business_finlynq_development_edge:");
+    expect(caddy).toContain("BUSINESS_FINLYNQ_DEVELOPMENT_HOSTNAME:dev.business.finlynq.com");
+    expect(caddy).toContain("reverse_proxy development-app:3000");
+  });
+
+  it("starts development with external identity integrations disabled", () => {
+    expect(installDevelopment).toContain("ACCOUNT_LOGIN_ENABLED=false");
+    expect(installDevelopment).toContain("ACCOUNT_SIGNUP_ENABLED=false");
+    expect(installDevelopment).toContain("AUTH_EMAIL_DELIVERY_ENABLED=false");
+    expect(installDevelopment).toContain("SIGNUP_TURNSTILE_ENABLED=false");
+    expect(installDevelopment).toContain("BUSINESS_WRITES_ENABLED=true");
+    expect(installDevelopment).toContain("BANK_FEEDS_ENABLED=false");
   });
 
   it("updates recovery trust before mutation and latches any failed release", () => {

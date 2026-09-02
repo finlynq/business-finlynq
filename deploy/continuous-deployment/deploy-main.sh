@@ -11,6 +11,7 @@ readonly repository_environment="$repository/.env"
 readonly evidence_root="/var/lib/business-finlynq/release-evidence"
 readonly boundary_file="/home/deploy/.local/state/business-finlynq/release-locks/scheduler-boundary.json"
 readonly automation_lock="/var/lib/business-finlynq/continuous-deployment.lock"
+readonly host_deployment_lock="/var/lib/business-finlynq/deployment-host.lock"
 readonly failure_latch="/var/lib/business-finlynq/continuous-deployment-failed"
 readonly clean_path="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
@@ -56,6 +57,10 @@ fi
 exec 9>"$automation_lock"
 chmod 0600 "$automation_lock"
 flock --exclusive --nonblock 9 || fail "another continuous-deployment check is active"
+[[ ! -L "$host_deployment_lock" ]] || fail "the host deployment lock is symbolic"
+exec 8>"$host_deployment_lock"
+chmod 0600 "$host_deployment_lock"
+flock --exclusive --nonblock 8 || fail "another production or development deployment is active"
 
 [[ ! -e "$failure_latch" && ! -L "$failure_latch" ]] \
   || fail "a previous automatic release failed; inspect its evidence and clear the protected latch explicitly"

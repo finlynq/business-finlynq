@@ -1,0 +1,14 @@
+[Unit]
+Description=Check for a CI-approved Business Finlynq dev revision
+Documentation=https://github.com/finlynq/business-finlynq/blob/main/docs/operations/development-deployment.md
+
+[Timer]
+OnBootSec=3m
+OnUnitInactiveSec=3m
+RandomizedDelaySec=20s
+Persistent=true
+Unit=business-finlynq-development-deployment.service
+
+[Install]
+WantedBy=timers.target
+

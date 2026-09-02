@@ -409,9 +409,11 @@ services:
     cap_drop: [ALL]
     restart: unless-stopped
     networks:
-      - business_finlynq_private
-      - business_finlynq_egress
-      - business_finlynq_edge
+      business_finlynq_private:
+      business_finlynq_egress:
+      business_finlynq_edge:
+        aliases:
+          - ${BUSINESS_FINLYNQ_APP_NETWORK_ALIAS:-production-app}
     cpus: "1.00"
     mem_limit: 768m
     pids_limit: 128
@@ -606,6 +608,7 @@ services:
     profiles: [edge]
     environment:
       BUSINESS_FINLYNQ_HOSTNAME: ${BUSINESS_FINLYNQ_HOSTNAME:-business.finlynq.com}
+      BUSINESS_FINLYNQ_DEVELOPMENT_HOSTNAME: ${BUSINESS_FINLYNQ_DEVELOPMENT_HOSTNAME:-dev.business.finlynq.com}
     ports:
       - "80:80"
       - "443:443"
@@ -632,7 +635,9 @@ services:
     cap_drop: [ALL]
     cap_add: [NET_BIND_SERVICE]
     restart: unless-stopped
-    networks: [business_finlynq_edge]
+    networks:
+      - business_finlynq_edge
+      - business_finlynq_development_edge
     cpus: "0.50"
     mem_limit: 256m
     pids_limit: 128
@@ -1404,11 +1409,11 @@ services:
 
 volumes:
   business_finlynq_pgdata:
-    name: business_finlynq_pgdata
+    name: ${BUSINESS_FINLYNQ_PGDATA_VOLUME:-business_finlynq_pgdata}
   business_finlynq_caddy_data:
-    name: business_finlynq_caddy_data
+    name: ${BUSINESS_FINLYNQ_CADDY_DATA_VOLUME:-business_finlynq_caddy_data}
   business_finlynq_caddy_config:
-    name: business_finlynq_caddy_config
+    name: ${BUSINESS_FINLYNQ_CADDY_CONFIG_VOLUME:-business_finlynq_caddy_config}
 
 secrets:
   business_finlynq_app_db_password:
@@ -1442,12 +1447,15 @@ secrets:
 
 networks:
   business_finlynq_private:
-    name: business_finlynq_private
+    name: ${BUSINESS_FINLYNQ_PRIVATE_NETWORK:-business_finlynq_private}
     internal: true
   business_finlynq_egress:
-    name: business_finlynq_egress
+    name: ${BUSINESS_FINLYNQ_EGRESS_NETWORK:-business_finlynq_egress}
   business_finlynq_edge:
-    name: business_finlynq_edge
+    name: ${BUSINESS_FINLYNQ_EDGE_NETWORK:-business_finlynq_edge}
+  business_finlynq_development_edge:
+    name: business_finlynq_development_edge
+    external: true
   business_finlynq_restore_drill:
-    name: business_finlynq_restore_drill
+    name: ${BUSINESS_FINLYNQ_RESTORE_DRILL_NETWORK:-business_finlynq_restore_drill}
     internal: true
