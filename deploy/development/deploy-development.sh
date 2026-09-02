@@ -25,7 +25,7 @@ validate_revision() {
 
 [[ "$(id -u)" == 0 ]] || fail "run this command as root"
 for command_name in awk bash chmod chown curl date docker env flock git grep id install jq \
-  mktemp mv readlink rm runuser sed sort stat sync uniq; do
+  mktemp mv readlink rm runuser sed sleep sort stat sync uniq; do
   command -v "$command_name" >/dev/null 2>&1 \
     || fail "required command is unavailable: $command_name"
 done
@@ -93,6 +93,24 @@ read_environment_value() {
   [[ "$(grep -c "^${key}=" "$compose_environment")" == 1 ]] \
     || fail "development environment must define $key exactly once"
   printf '%s' "$value"
+}
+
+wait_for_public_readiness() {
+  local deadline hostname public_health
+  hostname="$(read_environment_value BUSINESS_FINLYNQ_HOSTNAME)"
+  [[ "$hostname" == dev.business.finlynq.com ]] \
+    || fail "public acceptance requires the exact development hostname"
+  deadline=$((SECONDS + 120))
+  while (( SECONDS < deadline )); do
+    if public_health="$(curl --connect-timeout 2 --max-time 5 --fail --silent \
+      "https://$hostname/api/health" 2>/dev/null)" \
+      && jq -e '.status == "ready" and (has("checks") | not) and (has("revision") | not)' \
+        <<<"$public_health" >/dev/null; then
+      return 0
+    fi
+    sleep 2
+  done
+  fail "public development route did not become ready before browser acceptance"
 }
 
 [[ "$(git_as_deploy rev-parse --show-toplevel)" == "$repository" ]] \
@@ -261,6 +279,7 @@ else
 fi
 
 if [[ "$(read_environment_value DEVELOPMENT_REQUIRE_PUBLIC_ACCEPTANCE)" == true ]]; then
+  wait_for_public_readiness
   compose --profile acceptance run --rm --no-deps release_acceptance
 fi
 

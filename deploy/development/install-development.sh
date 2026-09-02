@@ -221,7 +221,7 @@ if [[ "$enable_all_features" == true ]]; then
       keys[13] = "BUSINESS_WRITES_ENABLED"
       keys[14] = "BANK_FEEDS_ENABLED"
       keys[15] = "DEVELOPMENT_REQUIRE_PUBLIC_ACCEPTANCE"
-      for (index = 1; index <= 15; index++) values[keys[index]] = "true"
+      for (key_index = 1; key_index <= 15; key_index++) values[keys[key_index]] = "true"
       values["AUTH_EMAIL_PROVIDER"] = "resend"
       values["AUTH_EMAIL_FROM"] = auth_email_from
       values["AUTH_EMAIL_REPLY_TO"] = auth_email_reply_to
@@ -239,8 +239,8 @@ if [[ "$enable_all_features" == true ]]; then
       print
     }
     END {
-      for (index = 1; index <= 15; index++) {
-        key = keys[index]
+      for (key_index = 1; key_index <= 15; key_index++) {
+        key = keys[key_index]
         if (!seen[key]) print key "=" values[key]
       }
     }

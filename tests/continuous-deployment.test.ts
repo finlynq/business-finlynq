@@ -10,6 +10,7 @@ const qualityGateWorkflow = read(".github", "workflows", "ci.yml");
 const deployMain = read("deploy", "continuous-deployment", "deploy-main.sh");
 const deployDevelopment = read("deploy", "development", "deploy-development.sh");
 const installDevelopment = read("deploy", "development", "install-development.sh");
+const playwrightConfig = read("playwright.config.ts");
 const compose = read("docker-compose.yml");
 const caddy = read("deploy", "Caddyfile.container");
 const allowRevisions = read(
@@ -118,9 +119,25 @@ describe("continuous deployment safety boundary", () => {
     ]) {
       expect(installDevelopment).toContain(`= "${gate}"`);
     }
-    expect(installDevelopment).toContain('values[keys[index]] = "true"');
+    expect(installDevelopment).toContain('values[keys[key_index]] = "true"');
+    expect(installDevelopment).not.toContain("for (index =");
     expect(deployDevelopment).toContain("SIGNUP_TURNSTILE_SITE_KEY");
     expect(deployDevelopment).toContain('[[ "$actual" == "$expected" ]] || return 1');
+  });
+
+  it("waits for the public route before externally targeted browser acceptance", () => {
+    const readiness = deployDevelopment.lastIndexOf("  wait_for_public_readiness");
+    const acceptance = deployDevelopment.lastIndexOf(
+      "compose --profile acceptance run --rm --no-deps release_acceptance",
+    );
+    expect(deployDevelopment).toContain("deadline=$((SECONDS + 120))");
+    expect(deployDevelopment).toContain('"https://$hostname/api/health"');
+    expect(readiness).toBeGreaterThan(0);
+    expect(acceptance).toBeGreaterThan(readiness);
+    expect(playwrightConfig).toContain(
+      "const externalBaseURL = process.env.PLAYWRIGHT_BASE_URL?.trim() || undefined;",
+    );
+    expect(playwrightConfig).toContain("webServer: externalBaseURL ? undefined : {");
   });
 
   it("updates recovery trust before mutation and latches any failed release", () => {

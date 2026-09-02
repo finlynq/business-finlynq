@@ -36,11 +36,11 @@ sudo systemctl start business-finlynq-development-deployment.service
 
 The installer creates independent random database credentials and encryption secrets without printing them. It also creates the external development edge network and gives `deploy` narrowly scoped permission to start, inspect, and read the journal for the development deployment service.
 
-The environment initially sets `DEVELOPMENT_REQUIRE_PUBLIC_ACCEPTANCE=false` so the first internal deployment can be validated before Caddy/DNS activation. After the A record for `dev.business.finlynq.com` resolves to the application host and the shared edge has been recreated from the promoted Compose/Caddy configuration, change that value to `true`, run the browser acceptance container once, and keep it true for later automatic deployments.
+The environment initially sets `DEVELOPMENT_REQUIRE_PUBLIC_ACCEPTANCE=false` so the first internal deployment can be validated before Caddy/DNS activation. After the A record for `dev.business.finlynq.com` resolves to the application host and the shared edge has been recreated from the promoted Compose/Caddy configuration, change that value to `true`, run the browser acceptance container once, and keep it true for later automatic deployments. On later releases, the deployer waits up to two minutes for the exact public `/api/health` response to return `ready` before starting browser acceptance. An externally targeted Playwright run never starts a second local Next.js server.
 
 ## Enable every development feature
 
-Keep the initial fail-closed installation until development-specific provider credentials exist. Create a separate Resend sending-access key and a separate Cloudflare Turnstile widget restricted to `dev.business.finlynq.com`; using the same verified sending domain is acceptable, but never copy a production API key or Turnstile secret into development.
+Keep the initial fail-closed installation until development-specific provider credentials exist. Create a separate Resend sending-access key and a separate Cloudflare Turnstile widget restricted to `dev.business.finlynq.com`; using the same verified sending domain is acceptable, but never copy a production API key or Turnstile secret into development. Treat the sender address domain as an exact provider contract: if Resend lists only `finlynq.com` as verified, use an address ending in `@finlynq.com`, such as `noreply-dev-business@finlynq.com`. Do not assume an unlisted nested sender domain such as `dev.business.finlynq.com` is covered; verify the intended `From` address with one delivery to an operator-owned mailbox before enabling automated delivery.
 
 Install each one-line secret without placing its value in shell history, then make it readable only by the deployment secret group:
 
@@ -62,7 +62,15 @@ sudo chown root:business-finlynq-secrets \
   /etc/business-finlynq-development/secrets/{resend-api-key,turnstile-secret-key}
 sudo chmod 0440 \
   /etc/business-finlynq-development/secrets/{resend-api-key,turnstile-secret-key}
+for secret_file in \
+  /etc/business-finlynq-development/secrets/{resend-api-key,turnstile-secret-key}; do
+  sudo awk 'END { print FNR, FILENAME }' "$secret_file"
+done
+sudo stat -c '%U:%G:%a %n' -- \
+  /etc/business-finlynq-development/secrets/{resend-api-key,turnstile-secret-key}
 ```
+
+The two `awk` results must each be `1`, and both `stat` results must begin with `root:business-finlynq-secrets:440`; these checks do not print either secret. When entering a secret through a browser-hosted server console, confirm the console keyboard layout before the masked prompt—on a US layout, underscore is `Shift`+`-`. Never omit or substitute a character that the console renders unexpectedly; verify the installed credential with its provider before enabling the feature gates.
 
 From a clean, reviewed `dev` checkout, opt in explicitly with the non-secret sender metadata and Turnstile site key:
 
@@ -70,7 +78,7 @@ From a clean, reviewed `dev` checkout, opt in explicitly with the non-secret sen
 sudo bash deploy/development/install-development.sh \
   --enable \
   --enable-all-features \
-  --auth-email-from 'Business Finlynq <noreply@finlynq.com>' \
+  --auth-email-from 'Business Finlynq Development <noreply-dev-business@finlynq.com>' \
   --auth-email-reply-to 'support@finlynq.com' \
   --turnstile-site-key '<development-site-key>'
 sudo systemctl start business-finlynq-development-deployment.service
