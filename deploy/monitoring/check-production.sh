@@ -505,9 +505,6 @@ if [[ "$MONITOR_MAINTENANCE_SCHEDULER" == "systemd" ]]; then
   if [[ "$MONITOR_EXPECT_DEMO_MAINTENANCE" == "true" ]]; then
     IFS='|' read -r demo_job_last_success demo_job_last_run_unixtime \
       <<<"$(systemd_job_metrics business-finlynq-demo-reconcile.service)"
-    if [[ "$demo_job_last_success" == "0" ]]; then
-      record_failure "latest demo reconciliation job failed"
-    fi
     service_state="$(systemctl show --property=ActiveState --value business-finlynq-demo-reconcile.service 2>/dev/null || true)"
     if [[ "$service_state" == "active" || "$service_state" == "activating" ]]; then
       maintenance_active="true"
@@ -522,9 +519,6 @@ else
   if [[ "$MONITOR_EXPECT_DEMO_MAINTENANCE" == "true" ]]; then
     IFS='|' read -r demo_job_last_success demo_job_last_run_unixtime \
       <<<"$(cron_job_metrics nightly-reconciliation)"
-    if [[ "$demo_job_last_success" == "0" ]]; then
-      record_failure "latest demo reconciliation cron job failed"
-    fi
     if [[ ! -f "$monitor_cron_maintenance_lock_file" || -L "$monitor_cron_maintenance_lock_file" ]]; then
       record_failure "deploy-owned cron maintenance lock is missing or is a symbolic link"
     else
@@ -565,10 +559,11 @@ if [[ "$MONITOR_EXPECT_DEMO_MAINTENANCE" == "true" ]]; then
     slot_counts="$(docker exec "$database_container_id" \
       psql --no-password --username business_finlynq_owner --dbname business_finlynq \
       --tuples-only --no-align --field-separator='|' --set=ON_ERROR_STOP=1 \
-      --command "SELECT count(*), count(*) FILTER (WHERE state = 'READY'), count(*) FILTER (WHERE state = 'ASSIGNED'), count(*) FILTER (WHERE state = 'DIRTY'), count(*) FILTER (WHERE state = 'RESETTING'), count(*) FILTER (WHERE state = 'QUARANTINED'), (SELECT (reset_after <= now())::int FROM demo_sandbox_pool WHERE singleton) FROM demo_sandbox_slots;" \
+      --command "SELECT count(*), count(*) FILTER (WHERE state = 'READY'), count(*) FILTER (WHERE state = 'ASSIGNED'), count(*) FILTER (WHERE state = 'DIRTY'), count(*) FILTER (WHERE state = 'RESETTING'), count(*) FILTER (WHERE state = 'QUARANTINED'), (SELECT (reset_after <= now())::int FROM demo_sandbox_pool WHERE singleton), (SELECT coalesce(extract(epoch FROM last_completed_reset_at)::bigint, 0) FROM demo_sandbox_pool WHERE singleton) FROM demo_sandbox_slots;" \
       2>/dev/null || true)"
   fi
-  IFS='|' read -r slot_total slot_ready slot_assigned slot_dirty slot_resetting slot_quarantined pool_reset_due slot_extra <<<"$slot_counts"
+  IFS='|' read -r slot_total slot_ready slot_assigned slot_dirty slot_resetting slot_quarantined \
+    pool_reset_due pool_last_completed_reset_unixtime slot_extra <<<"$slot_counts"
   if [[ -n "${slot_extra:-}" ]] \
     || [[ ! "${slot_total:-}" =~ ^[0-9]+$ ]] \
     || [[ ! "${slot_ready:-}" =~ ^[0-9]+$ ]] \
@@ -576,7 +571,8 @@ if [[ "$MONITOR_EXPECT_DEMO_MAINTENANCE" == "true" ]]; then
     || [[ ! "${slot_dirty:-}" =~ ^[0-9]+$ ]] \
     || [[ ! "${slot_resetting:-}" =~ ^[0-9]+$ ]] \
     || [[ ! "${slot_quarantined:-}" =~ ^[0-9]+$ ]] \
-    || [[ ! "${pool_reset_due:-}" =~ ^[01]$ ]]; then
+    || [[ ! "${pool_reset_due:-}" =~ ^[01]$ ]] \
+    || [[ ! "${pool_last_completed_reset_unixtime:-}" =~ ^[0-9]+$ ]]; then
     record_failure "demo sandbox pool state could not be verified"
   else
     (( slot_total == MONITOR_EXPECT_DEMO_POOL_SIZE )) \
@@ -590,6 +586,18 @@ if [[ "$MONITOR_EXPECT_DEMO_MAINTENANCE" == "true" ]]; then
         || record_failure "demo sandbox nightly reset is overdue"
       (( slot_ready >= MONITOR_MIN_DEMO_READY_SLOTS )) \
         || record_failure "demo sandbox pool has only $slot_ready ready slot(s); minimum is $MONITOR_MIN_DEMO_READY_SLOTS"
+    fi
+    if [[ "$demo_job_last_success" == "0" ]]; then
+      if (( pool_reset_due == 0 \
+        && pool_last_completed_reset_unixtime > demo_job_last_run_unixtime )); then
+        # A fail-closed deployment may complete the same full reconciliation
+        # after a scheduled attempt failed. Report the newer durable recovery,
+        # not the stale scheduler result that preceded it.
+        demo_job_last_success=1
+        demo_job_last_run_unixtime="$pool_last_completed_reset_unixtime"
+      else
+        record_failure "latest demo reconciliation failed without a newer successful pool recovery"
+      fi
     fi
   fi
 fi

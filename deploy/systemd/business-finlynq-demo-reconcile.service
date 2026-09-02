@@ -9,6 +9,9 @@ OnFailure=business-finlynq-monitor-notify@%n.service
 Type=oneshot
 WorkingDirectory=/home/deploy/business-finlynq
 EnvironmentFile=/etc/business-finlynq/operations.env
+Environment=DEMO_RESET_LOCK_FILE=/var/lib/business-finlynq/demo-sandbox-maintenance.lock
+StateDirectory=business-finlynq
+StateDirectoryMode=0775
 ExecCondition=/bin/bash /home/deploy/business-finlynq/deploy/systemd/check-scheduler-boundary.sh
 ExecStart=/bin/bash /home/deploy/business-finlynq/deploy/demo-sandbox/run-nightly-reconciliation.sh
 UMask=0077

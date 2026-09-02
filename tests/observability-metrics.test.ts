@@ -197,6 +197,37 @@ describe("internal observability metrics", () => {
     expect(alerts).not.toMatch(/organization|tenant|customer|email_address|currency|amount/);
   });
 
+  it("keeps systemd demo reconciliation writable and recognizes a newer pool recovery", () => {
+    const monitor = readFileSync(
+      join(process.cwd(), "deploy", "monitoring", "check-production.sh"),
+      "utf8",
+    );
+    const demoService = readFileSync(
+      join(process.cwd(), "deploy", "systemd", "business-finlynq-demo-reconcile.service"),
+      "utf8",
+    );
+    const scheduleVerifier = readFileSync(
+      join(process.cwd(), "deploy", "systemd", "verify-backup-schedule.sh"),
+      "utf8",
+    );
+
+    expect(demoService).toContain(
+      "Environment=DEMO_RESET_LOCK_FILE=/var/lib/business-finlynq/demo-sandbox-maintenance.lock",
+    );
+    expect(demoService).toContain("StateDirectory=business-finlynq");
+    expect(demoService).toContain("ProtectHome=read-only");
+    expect(scheduleVerifier).toContain(
+      "loaded demo-reconcile writable lock state differs from the candidate",
+    );
+    expect(monitor).toContain(
+      "pool_last_completed_reset_unixtime > demo_job_last_run_unixtime",
+    );
+    expect(monitor).toContain("demo_job_last_success=1");
+    expect(monitor).toContain(
+      "latest demo reconciliation failed without a newer successful pool recovery",
+    );
+  });
+
   it("excludes controlled email cancellation and supersession from delivery dead letters", () => {
     const migration = readFileSync(
       join(process.cwd(), "migrations", "drizzle", "0032_observability_correlation_metrics.sql"),
