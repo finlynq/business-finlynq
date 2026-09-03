@@ -86,7 +86,10 @@ non-root UID, read-only root filesystem, no credentials or published ports,
 a private app/scanner network, separate signature-update egress, and a
 project-scoped signature volume. The app waits for scanner health. Freshclam
 checks 12 times/day; the application rejects signature databases older than
-seven days. Scan limits are in `deploy/evidence/clamd.conf`. Review and update
+seven days. Scan limits are in `deploy/evidence/clamd.conf`. Compose embeds the same non-secret
+configuration and writes it to the scanner\'s bounded tmpfs at startup, so a
+restrictive deployment-checkout umask cannot block the non-root daemon. The
+Compose verifier checks that the embedded configuration matches the reviewed file. Review and update
 the pinned image as part of normal dependency maintenance.
 
 Local testing requires `EVIDENCE_SCANNER_HOST` and optionally

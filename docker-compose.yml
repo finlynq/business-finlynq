@@ -358,12 +358,40 @@ services:
     image: clamav/clamav@sha256:f0954d679017eb6d48221e2b2be3ac5457bf278a844f39b672376f55a085f591
     pull_policy: missing
     user: "100:101"
-    entrypoint: ["/init-unprivileged"]
+    entrypoint: ["/sbin/tini", "-g", "--", "/bin/sh", "-ec"]
+    command:
+      - |
+        printf '%s\n' "$$CLAMD_CONFIG" > /tmp/finlynq-clamd.conf
+        if [ ! -f /var/lib/clamav/main.cvd ]; then
+          freshclam --foreground --stdout
+        fi
+        freshclam --checks=12 --daemon --foreground --stdout --user=clamav &
+        exec clamd --foreground --config-file=/tmp/finlynq-clamd.conf
     environment:
-      FRESHCLAM_CHECKS: "12"
-    configs:
-      - source: evidence_clamd_config
-        target: /etc/clamav/clamd.conf
+      CLAMD_CONFIG: |
+        Foreground yes
+        LocalSocket /tmp/clamd.sock
+        TCPSocket 3310
+        DatabaseDirectory /var/lib/clamav
+        TemporaryDirectory /tmp
+        LogTime yes
+        StreamMaxLength 2M
+        MaxFileSize 16M
+        MaxScanSize 32M
+        MaxRecursion 10
+        MaxFiles 1000
+        MaxScanTime 10000
+        MaxThreads 2
+        MaxQueue 4
+        ReadTimeout 15
+        CommandReadTimeout 5
+        ConcurrentDatabaseReload no
+        SelfCheck 600
+        ScanPDF yes
+        AlertEncrypted yes
+        AlertExceedsMax yes
+        EnableShutdownCommand no
+        FailIfCvdOlderThan 7
     volumes:
       - business_finlynq_clamav:/var/lib/clamav
     tmpfs:
@@ -1444,10 +1472,6 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
-
-configs:
-  evidence_clamd_config:
-    file: ./deploy/evidence/clamd.conf
 
 volumes:
   business_finlynq_clamav:

@@ -99,6 +99,11 @@ if (!scanner || scanner.image !== "clamav/clamav@sha256:f0954d679017eb6d48221e2b
   || (scanner.ports ?? []).length || Object.keys(scanner.environment ?? {}).some((key) => /PASSWORD|SECRET|KEY/.test(key))) {
   fail("evidence scanner must be pinned, non-root, read-only, and receive no credentials or published ports");
 }
+if ((scanner.configs ?? []).length
+  || scanner.environment?.CLAMD_CONFIG?.trim() !== readFileSync("deploy/evidence/clamd.conf", "utf8").trim()
+  || !scanner.command?.[0]?.includes('--config-file=/tmp/finlynq-clamd.conf')) {
+  fail("scanner configuration must be delivered through bounded tmpfs, independent of checkout file permissions");
+}
 const scannerNetworks = Object.keys(scanner.networks ?? {}).sort().join(",");
 if (scannerNetworks !== "business_finlynq_evidence,business_finlynq_scanner_egress"
   || configuration.networks?.business_finlynq_evidence?.internal !== true) {
