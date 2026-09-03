@@ -610,13 +610,14 @@ services:
       BUSINESS_FINLYNQ_HOSTNAME: ${BUSINESS_FINLYNQ_HOSTNAME:-business.finlynq.com}
       BUSINESS_FINLYNQ_DEVELOPMENT_HOSTNAME: ${BUSINESS_FINLYNQ_DEVELOPMENT_HOSTNAME:-dev.business.finlynq.com}
       EPM_FINLYNQ_HOSTNAME: ${EPM_FINLYNQ_HOSTNAME:-epm.finlynq.com}
+      CONSULT_FINLYNQ_HOSTNAME: ${CONSULT_FINLYNQ_HOSTNAME:-consult.finlynq.com}
     ports:
       - "80:80"
       - "443:443"
       - "443:443/udp"
     volumes:
       - ./deploy/Caddyfile.container:/etc/caddy/Caddyfile:ro
-      - /home/deploy/epm-finlynq/secrets/external-basic-auth.caddy:/etc/caddy/epm-basic-auth:ro
+      - /home/deploy/epm-finlynq/secrets/external-basic-auth.caddy:/config/epm-basic-auth:ro
       - business_finlynq_caddy_data:/data
       - business_finlynq_caddy_config:/config
     depends_on:
@@ -641,6 +642,7 @@ services:
       - business_finlynq_edge
       - business_finlynq_development_edge
       - epm_finlynq_edge
+      - consult_finlynq_edge
     cpus: "0.50"
     mem_limit: 256m
     pids_limit: 128
@@ -1461,6 +1463,9 @@ networks:
     external: true
   epm_finlynq_edge:
     name: epm_finlynq_edge
+    external: true
+  consult_finlynq_edge:
+    name: consult_finlynq_edge
     external: true
   business_finlynq_restore_drill:
     name: ${BUSINESS_FINLYNQ_RESTORE_DRILL_NETWORK:-business_finlynq_restore_drill}
