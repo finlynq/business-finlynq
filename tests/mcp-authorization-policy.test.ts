@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { PERMISSIONS } from "@/modules/identity/permissions";
 import {
+  authorizeMcpWrite,
   effectiveToolMode,
   isMcpToolVisible,
   intersectMcpScopes,
@@ -10,6 +11,7 @@ import {
   type McpAuthorizationSnapshot,
   type McpToolPolicy,
 } from "@/modules/mcp/connection-policy";
+import { mcpSessionPrincipal } from "@/modules/mcp/oauth-store";
 
 function snapshot(overrides: Partial<McpAuthorizationSnapshot> = {}): McpAuthorizationSnapshot {
   return {
@@ -34,6 +36,8 @@ function snapshot(overrides: Partial<McpAuthorizationSnapshot> = {}): McpAuthori
     dailyMode: "CONFIRM_WRITES",
     setupMode: "OFF",
     toolOverrides: {},
+    directWriteSessionId: null,
+    directWriteStepUpExpiresAt: null,
     connectionVersion: 1,
     ...overrides,
   };
@@ -80,6 +84,50 @@ describe("remote MCP live authorization", () => {
     const selected = snapshot({ toolOverrides: { [writeTool.name]: "ALLOW_WRITES" } });
     expect(effectiveToolMode(selected, writeTool)).toBe("ALLOW_WRITES");
     expect(effectiveToolMode(snapshot({ dailyMode: "READ_ONLY" }), writeTool)).toBe("READ_ONLY");
+  });
+
+  it("runs Allow writes directly without creating a one-time approval", async () => {
+    await expect(authorizeMcpWrite(
+      snapshot({ dailyMode: "ALLOW_WRITES" }),
+      writeTool,
+      { idempotencyKey: "direct-1" },
+    )).resolves.toEqual({ allowed: true });
+  });
+
+  it("delegates the MFA browser session for direct high-assurance writes", async () => {
+    const delegatedSessionId = "66666666-6666-4666-8666-666666666666";
+    const stepUpExpiresAt = new Date(Date.now() + 60_000);
+    const authorization = await authorizeMcpWrite(
+      snapshot({
+        setupMode: "ALLOW_WRITES",
+        directWriteSessionId: delegatedSessionId,
+        directWriteStepUpExpiresAt: stepUpExpiresAt,
+      }),
+      { name: "finlynq_setup_create_gl_account", group: "SETUP", access: "WRITE" },
+      { idempotencyKey: "direct-setup-1" },
+    );
+
+    expect(authorization).toEqual({
+      allowed: true,
+      delegatedSessionId,
+      stepUpExpiresAt: stepUpExpiresAt.toISOString(),
+    });
+    expect(mcpSessionPrincipal(snapshot().principal, authorization.stepUpExpiresAt, authorization.delegatedSessionId)).toMatchObject({
+      sessionId: delegatedSessionId,
+      stepUpExpiresAt,
+    });
+  });
+
+  it("fails direct high-assurance writes after their MFA window instead of requesting approval", async () => {
+    await expect(authorizeMcpWrite(
+      snapshot({
+        setupMode: "ALLOW_WRITES",
+        directWriteSessionId: "66666666-6666-4666-8666-666666666666",
+        directWriteStepUpExpiresAt: new Date(0),
+      }),
+      { name: "finlynq_setup_create_gl_account", group: "SETUP", access: "WRITE" },
+      { idempotencyKey: "expired-direct-setup" },
+    )).rejects.toMatchObject({ code: "MCP_STEP_UP_REQUIRED" });
   });
 
   it("hashes canonical arguments and redacts sensitive approval summaries", () => {

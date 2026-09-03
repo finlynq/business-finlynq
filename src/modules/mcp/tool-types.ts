@@ -130,6 +130,8 @@ export function registerMcpTools(
       },
     }, async (args) => {
       let execution;
+      let approvalId: string | undefined;
+      let delegatedSessionId: string | undefined;
       let stepUpExpiresAt: string | undefined;
       try {
         execution = await beginMcpExecution(snapshot, definition.policy, args);
@@ -143,6 +145,8 @@ export function registerMcpTools(
             });
             return approvalResult(authorization);
           }
+          approvalId = authorization.approvalId;
+          delegatedSessionId = authorization.delegatedSessionId;
           stepUpExpiresAt = authorization.stepUpExpiresAt;
         }
         const result = await definition.invoke(args, {
@@ -150,9 +154,9 @@ export function registerMcpTools(
           snapshot,
           requestId: execution.requestId,
           requestUrl,
-          sessionPrincipal: mcpSessionPrincipal(snapshot.principal, stepUpExpiresAt),
+          sessionPrincipal: mcpSessionPrincipal(snapshot.principal, stepUpExpiresAt, delegatedSessionId),
         });
-        await finishMcpExecution(snapshot, execution, { status: "SUCCEEDED", result });
+        await finishMcpExecution(snapshot, execution, { status: "SUCCEEDED", approvalId, result });
         return successResult(result);
       } catch (error) {
         if (execution) {

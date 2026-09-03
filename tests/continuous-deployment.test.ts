@@ -94,8 +94,10 @@ describe("continuous deployment safety boundary", () => {
     expect(deployDevelopment).toContain(sharedLock);
     expect(compose).toContain("BUSINESS_FINLYNQ_APP_NETWORK_ALIAS:-production-app");
     expect(compose).toContain("business_finlynq_development_edge:");
+    expect(caddy).toContain("reverse_proxy production-app:3000");
     expect(caddy).toContain("BUSINESS_FINLYNQ_DEVELOPMENT_HOSTNAME:dev.business.finlynq.com");
     expect(caddy).toContain("reverse_proxy development-app:3000");
+    expect(caddy).not.toContain("reverse_proxy app:3000");
   });
 
   it("starts development with external identity integrations disabled", () => {

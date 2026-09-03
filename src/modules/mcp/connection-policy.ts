@@ -30,6 +30,8 @@ export type McpAuthorizationSnapshot = Readonly<{
   dailyMode: McpAccessMode;
   setupMode: McpAccessMode;
   toolOverrides: Readonly<Record<string, McpAccessMode | "INHERIT">>;
+  directWriteSessionId: string | null;
+  directWriteStepUpExpiresAt: Date | null;
   connectionVersion: number;
 }>;
 
@@ -86,10 +88,14 @@ export async function loadMcpAuthorizationSnapshot(
       daily_mode: string;
       setup_mode: string;
       tool_overrides: unknown;
+      direct_write_session_id: string | null;
+      direct_write_step_up_expires_at: Date | null;
       scopes: string[];
       version: number;
     }>(
-      `SELECT daily_mode, setup_mode, tool_overrides, scopes, version
+      `SELECT daily_mode, setup_mode, tool_overrides,
+         direct_write_session_id, direct_write_step_up_expires_at,
+         scopes, version
        FROM mcp_connections
        WHERE organization_id = $1 AND id = $2 AND user_id = $3
          AND client_id = $4 AND revoked_at IS NULL
@@ -121,6 +127,8 @@ export async function loadMcpAuthorizationSnapshot(
       dailyMode: parseAccessMode(selected.daily_mode),
       setupMode: parseAccessMode(selected.setup_mode),
       toolOverrides: parseToolOverrides(selected.tool_overrides),
+      directWriteSessionId: selected.direct_write_session_id,
+      directWriteStepUpExpiresAt: selected.direct_write_step_up_expires_at,
       connectionVersion: selected.version,
     };
   });
@@ -167,8 +175,16 @@ export type McpWriteAuthorization = Readonly<{
   approvalId?: string;
   approvalUrl?: string;
   expiresAt?: string;
+  delegatedSessionId?: string;
   stepUpExpiresAt?: string;
 }>;
+
+function directWriteStepUpError(): Error & Readonly<{ code: "MCP_STEP_UP_REQUIRED" }> {
+  return Object.assign(
+    new Error("Refresh the direct-write permission with a recent MFA verification before retrying this high-assurance action"),
+    { code: "MCP_STEP_UP_REQUIRED" as const },
+  );
+}
 
 export async function authorizeMcpWrite(
   snapshot: McpAuthorizationSnapshot,
@@ -178,8 +194,19 @@ export async function authorizeMcpWrite(
 ): Promise<McpWriteAuthorization> {
   const mode = effectiveToolMode(snapshot, tool);
   const requiresStepUp = mcpToolNameRequiresStepUp(tool.name);
-  if (mode === "ALLOW_WRITES" && !requiresStepUp) return { allowed: true };
-  if (mode !== "CONFIRM_WRITES" && mode !== "ALLOW_WRITES") return { allowed: false };
+  if (mode === "ALLOW_WRITES") {
+    if (!requiresStepUp) return { allowed: true };
+    if (!snapshot.directWriteSessionId || !snapshot.directWriteStepUpExpiresAt ||
+        snapshot.directWriteStepUpExpiresAt.getTime() <= Date.now()) {
+      throw directWriteStepUpError();
+    }
+    return {
+      allowed: true,
+      delegatedSessionId: snapshot.directWriteSessionId,
+      stepUpExpiresAt: snapshot.directWriteStepUpExpiresAt.toISOString(),
+    };
+  }
+  if (mode !== "CONFIRM_WRITES") return { allowed: false };
   const argumentsHash = mcpArgumentsHash(args);
   return withTenantTransaction({
     organizationId: snapshot.principal.organizationId,
@@ -191,12 +218,12 @@ export async function authorizeMcpWrite(
     sourceSurface: "MCP",
     reason: `Authorize ${tool.name}`,
   }, async (client) => {
-    const approved = await client.query<{ id: string; mfa_step_up_expires_at: Date | null }>(
-      `SELECT id, mfa_step_up_expires_at FROM mcp_approvals
+    const approved = await client.query<{ id: string; mfa_session_id: string | null; mfa_step_up_expires_at: Date | null }>(
+      `SELECT id, mfa_session_id, mfa_step_up_expires_at FROM mcp_approvals
        WHERE organization_id = $1 AND user_id = $2 AND connection_id = $3
          AND tool_name = $4 AND arguments_hash = $5
          AND status = 'APPROVED' AND expires_at > now()
-         AND (NOT $6::boolean OR mfa_step_up_expires_at > now())
+         AND (NOT $6::boolean OR (mfa_session_id IS NOT NULL AND mfa_step_up_expires_at > now()))
        ORDER BY decided_at DESC NULLS LAST
        LIMIT 1 FOR UPDATE`,
       [
@@ -219,6 +246,9 @@ export async function authorizeMcpWrite(
         return {
           allowed: true,
           approvalId: consumed.rows[0].id,
+          ...(requiresStepUp && approved.rows[0].mfa_session_id
+            ? { delegatedSessionId: approved.rows[0].mfa_session_id }
+            : {}),
           ...(requiresStepUp && approved.rows[0].mfa_step_up_expires_at
             ? { stepUpExpiresAt: approved.rows[0].mfa_step_up_expires_at.toISOString() }
             : {}),

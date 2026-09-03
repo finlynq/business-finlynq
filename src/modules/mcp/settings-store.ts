@@ -61,6 +61,9 @@ export async function updateMcpConnectionSettings(
 }>> {
   assertRealUser(principal);
   const input = updateMcpConnectionSchema.parse(unparsed);
+  const allowsDirectWrites = input.dailyMode === "ALLOW_WRITES" ||
+    input.setupMode === "ALLOW_WRITES" ||
+    Object.values(input.toolOverrides).some((mode) => mode === "ALLOW_WRITES");
   const elevatesAutonomy = input.dailyMode === "ALLOW_WRITES" ||
     input.setupMode === "CONFIRM_WRITES" || input.setupMode === "ALLOW_WRITES" ||
     Object.values(input.toolOverrides).some((mode) => mode === "ALLOW_WRITES");
@@ -77,14 +80,17 @@ export async function updateMcpConnectionSettings(
     }>(
       `UPDATE mcp_connections
        SET daily_mode = $1, setup_mode = $2, tool_overrides = $3::jsonb,
+         direct_write_session_id = $4, direct_write_step_up_expires_at = $5,
          version = version + 1
-       WHERE organization_id = $4 AND user_id = $5 AND id = $6
-         AND revoked_at IS NULL AND version = $7
+       WHERE organization_id = $6 AND user_id = $7 AND id = $8
+         AND revoked_at IS NULL AND version = $9
        RETURNING id, daily_mode, setup_mode, tool_overrides, version`,
       [
         input.dailyMode,
         input.setupMode,
         JSON.stringify(input.toolOverrides),
+        allowsDirectWrites ? principal.sessionId : null,
+        allowsDirectWrites ? principal.stepUpExpiresAt : null,
         principal.organizationId,
         principal.userId,
         input.connectionId,
@@ -204,7 +210,7 @@ export async function decideMcpApproval(
     }
     const result = await client.query<{ id: string }>(
       `UPDATE mcp_approvals SET status = $1, decided_at = now(),
-         mfa_step_up_expires_at = $5
+         mfa_session_id = $5, mfa_step_up_expires_at = $6
        WHERE organization_id = $2 AND user_id = $3 AND id = $4 AND status = 'PENDING'
        RETURNING id`,
       [
@@ -212,6 +218,7 @@ export async function decideMcpApproval(
         principal.organizationId,
         principal.userId,
         approvalId,
+        input.decision === "APPROVED" && requiresStepUp ? principal.sessionId : null,
         input.decision === "APPROVED" && requiresStepUp ? principal.stepUpExpiresAt : null,
       ],
     );

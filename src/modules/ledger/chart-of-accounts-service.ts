@@ -46,7 +46,9 @@ export async function createGlAccount(input: Readonly<{
   context: TenantTransactionContext;
 }> & z.input<typeof createGlAccountSchema>) {
   assertTenantWritesEnabled(input.context);
-  const command = createGlAccountSchema.parse(input);
+  const { context, ...unparsedCommand } = input;
+  void context;
+  const command = createGlAccountSchema.parse(unparsedCommand);
   return withTenantTransaction(input.context, async (client) => {
     await assertWritableOrganization(client, input.context);
     await assertAccountPermission(input.context, client);
@@ -111,7 +113,9 @@ export async function updateGlAccount(input: Readonly<{
   context: TenantTransactionContext;
 }> & z.input<typeof updateGlAccountSchema>) {
   assertTenantWritesEnabled(input.context);
-  const command = updateGlAccountSchema.parse(input);
+  const { context, ...unparsedCommand } = input;
+  void context;
+  const command = updateGlAccountSchema.parse(unparsedCommand);
   if (input.context.reason !== command.reason) throw new Error("Account-change reason must be bound to the transaction audit context");
   return withTenantTransaction(input.context, async (client) => {
     await assertWritableOrganization(client, input.context);

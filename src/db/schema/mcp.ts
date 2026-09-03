@@ -12,6 +12,7 @@ import {
   uniqueIndex,
   uuid,
 } from "drizzle-orm/pg-core";
+import { authSessions } from "./auth";
 import { organizationMemberships, organizations, users } from "./identity";
 
 export const mcpOauthClients = pgTable(
@@ -46,6 +47,8 @@ export const mcpConnections = pgTable(
     dailyMode: text("daily_mode").notNull().default("CONFIRM_WRITES"),
     setupMode: text("setup_mode").notNull().default("OFF"),
     toolOverrides: jsonb("tool_overrides").$type<Record<string, string>>().notNull().default({}),
+    directWriteSessionId: uuid("direct_write_session_id").references(() => authSessions.id, { onDelete: "restrict" }),
+    directWriteStepUpExpiresAt: timestamp("direct_write_step_up_expires_at", { withTimezone: true }),
     authorizedAt: timestamp("authorized_at", { withTimezone: true }).notNull().defaultNow(),
     lastUsedAt: timestamp("last_used_at", { withTimezone: true }),
     revokedAt: timestamp("revoked_at", { withTimezone: true }),
@@ -148,6 +151,7 @@ export const mcpApprovals = pgTable(
     requestedAt: timestamp("requested_at", { withTimezone: true }).notNull().defaultNow(),
     expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
     decidedAt: timestamp("decided_at", { withTimezone: true }),
+    mfaSessionId: uuid("mfa_session_id").references(() => authSessions.id, { onDelete: "restrict" }),
     mfaStepUpExpiresAt: timestamp("mfa_step_up_expires_at", { withTimezone: true }),
     consumedAt: timestamp("consumed_at", { withTimezone: true }),
   },

@@ -488,10 +488,11 @@ export async function revokeOAuthToken(rawToken: string, clientId?: string): Pro
 export function mcpSessionPrincipal(
   principal: McpConnectionPrincipal,
   stepUpExpiresAt?: string,
+  delegatedSessionId?: string,
 ): SessionPrincipal {
   const delegatedStepUpExpiry = stepUpExpiresAt ? new Date(stepUpExpiresAt) : null;
   return {
-    sessionId: principal.connectionId,
+    sessionId: delegatedSessionId ?? principal.connectionId,
     userId: principal.userId,
     organizationId: principal.organizationId,
     membershipId: principal.membershipId,

@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 const schemaMigration = readFileSync("migrations/drizzle/0034_clean_praxagora.sql", "utf8");
 const securityMigration = readFileSync("migrations/drizzle/0035_remote_mcp_security.sql", "utf8");
 const assuranceMigration = readFileSync("migrations/drizzle/0036_mcp_approval_assurance.sql", "utf8");
+const sessionBindingMigration = readFileSync("migrations/drizzle/0038_mcp_approval_session_binding.sql", "utf8");
 const settingsStore = readFileSync("src/modules/mcp/settings-store.ts", "utf8");
 const connectionPolicy = readFileSync("src/modules/mcp/connection-policy.ts", "utf8");
 const oauthStore = readFileSync("src/modules/mcp/oauth-store.ts", "utf8");
@@ -36,9 +37,16 @@ describe("remote MCP database security contract", () => {
 
   it("delegates high assurance only from an explicit unexpired browser MFA approval", () => {
     expect(assuranceMigration).toContain("mfa_step_up_expires_at");
+    expect(sessionBindingMigration).toContain("mfa_session_id");
+    expect(sessionBindingMigration).toContain("direct_write_session_id");
+    expect(sessionBindingMigration).toContain("REFERENCES \"public\".\"auth_sessions\"");
+    expect(settingsStore).toContain("input.decision === \"APPROVED\" && requiresStepUp ? principal.sessionId : null");
     expect(settingsStore).toContain("input.decision === \"APPROVED\" && requiresStepUp ? principal.stepUpExpiresAt : null");
     expect(connectionPolicy).toContain("mfa_step_up_expires_at > now()");
+    expect(connectionPolicy).toContain("mfa_session_id IS NOT NULL");
+    expect(connectionPolicy).toContain("delegatedSessionId: approved.rows[0].mfa_session_id");
     expect(oauthStore).toContain("stepUpExpiresAt: delegatedStepUpExpiry");
+    expect(oauthStore).toContain("sessionId: delegatedSessionId ?? principal.connectionId");
     expect(oauthStore).not.toContain("stepUpExpiresAt: principal.tokenExpiresAt");
   });
 

@@ -267,6 +267,13 @@
       "when": 1788441362466,
       "tag": "0037_shared_public_demo",
       "breakpoints": true
+    },
+    {
+      "idx": 38,
+      "version": "7",
+      "when": 1788444891210,
+      "tag": "0038_mcp_approval_session_binding",
+      "breakpoints": true
     }
   ]
 }
