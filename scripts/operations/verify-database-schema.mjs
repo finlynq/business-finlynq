@@ -20,6 +20,14 @@ const ownerOnlyRlsTables = new Set([
   "demo_daily_claims",
   "demo_sandbox_slots",
 ]);
+const userBoundRlsTables = new Set([
+  "mcp_access_tokens",
+  "mcp_approvals",
+  "mcp_connections",
+  "mcp_oauth_codes",
+  "mcp_refresh_tokens",
+  "mcp_tool_executions",
+]);
 // These policies existed before 0025 completed the FORCE RLS contract. Their
 // names are part of the reviewed historical database contract, so do not
 // silently normalize them to the generic tenant_isolation convention.
@@ -52,13 +60,17 @@ const runtimeSelectRelations = [
   "bank_observation_versions", "bank_balance_anchors",
   "bank_reconciliation_sessions", "bank_reconciliation_voids",
   "bank_match_allocations", "bank_match_allocation_voids", "bank_rules",
-  "bank_rule_runs", "bank_draft_proposals",
+  "bank_rule_runs", "bank_draft_proposals", "mcp_oauth_clients",
+  "mcp_connections", "mcp_oauth_codes", "mcp_access_tokens",
+  "mcp_refresh_tokens", "mcp_approvals", "mcp_tool_executions",
 ];
 const runtimeInsertUpdateRelations = [
   "journal_entries", "journal_lines", "parties", "party_addresses",
-  "party_accounts", "ledger_posting_policies", "ledger_number_sequences",
+  "party_accounts", "gl_accounts", "ledger_posting_policies", "ledger_number_sequences",
   "bank_connections", "bank_external_accounts", "bank_sync_runs",
-  "bank_reconciliation_sessions",
+  "bank_reconciliation_sessions", "mcp_connections", "mcp_oauth_codes",
+  "mcp_access_tokens", "mcp_refresh_tokens", "mcp_approvals",
+  "mcp_tool_executions",
 ];
 const runtimeInsertRelations = [
   "journal_approvals", "journal_entry_relations", "source_documents",
@@ -68,7 +80,7 @@ const runtimeInsertRelations = [
   "bank_observation_versions", "bank_balance_anchors",
   "bank_reconciliation_voids", "bank_match_allocations",
   "bank_match_allocation_voids", "bank_rules", "bank_rule_runs",
-  "bank_draft_proposals",
+  "bank_draft_proposals", "mcp_oauth_clients",
 ];
 const runtimeExecuteFunctions = [
   "public.digest(bytea, text)",
@@ -76,6 +88,7 @@ const runtimeExecuteFunctions = [
   "app.current_organization_id()",
   "app.current_actor_id()",
   "app.current_actor_has_permission(text)",
+  "app.mcp_user_is_active(uuid)",
   "app.segment_value_is_valid(uuid, uuid, text, date)",
   "app.currency_minor_units(text)",
   "app.current_demo_session_is_valid()",
@@ -774,7 +787,7 @@ export function normalizeColumnDefault(value) {
     .replace(/current_timestamp\b/g, "now()")
     // PostgreSQL adds the target column type to typed literals while Drizzle
     // snapshots retain the literal. The column type itself is compared above.
-    .replace(/('(?:[^']|'')*')::[a-z_][a-z0-9_ ]*(?:\([^)]*\))?/g, "$1");
+    .replace(/('(?:[^']|'')*')::[a-z_][a-z0-9_ ]*(?:\([^)]*\))?(?:\[\])?/g, "$1");
   // PostgreSQL folds this reviewed all-zero command-hash default into
   // repeat('0',64). Keep the rewrite deliberately exact: arbitrary function
   // defaults remain syntactically distinct and therefore reviewable.
@@ -880,6 +893,17 @@ function expectedRlsPolicy(table) {
       roles: ["PUBLIC"],
       usingExpression: "id = app.current_organization_id()",
       withCheckExpression: "id = app.current_organization_id()",
+    };
+  }
+  if (userBoundRlsTables.has(table.name)) {
+    const expression = "organization_id = app.current_organization_id() AND user_id = app.current_actor_id()";
+    return {
+      command: "ALL",
+      name: "mcp_user_isolation",
+      permissive: true,
+      roles: ["PUBLIC"],
+      usingExpression: expression,
+      withCheckExpression: expression,
     };
   }
   if (ownerOnlyRlsTables.has(table.name)) {

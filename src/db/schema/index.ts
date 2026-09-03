@@ -4,6 +4,7 @@ export * from "./banking";
 export * from "./identity";
 export * from "./journals";
 export * from "./ledger";
+export * from "./mcp";
 export * from "./parties";
 export * from "./platform-administration";
 export * from "./tax";

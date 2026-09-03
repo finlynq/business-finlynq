@@ -239,6 +239,27 @@
       "when": 1788311035538,
       "tag": "0033_self_service_signup_write_activation",
       "breakpoints": true
+    },
+    {
+      "idx": 34,
+      "version": "7",
+      "when": 1788399124622,
+      "tag": "0034_clean_praxagora",
+      "breakpoints": true
+    },
+    {
+      "idx": 35,
+      "version": "7",
+      "when": 1788399340579,
+      "tag": "0035_remote_mcp_security",
+      "breakpoints": true
+    },
+    {
+      "idx": 36,
+      "version": "7",
+      "when": 1788402809181,
+      "tag": "0036_mcp_approval_assurance",
+      "breakpoints": true
     }
   ]
 }

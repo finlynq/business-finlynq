@@ -25,7 +25,7 @@ const workspaceItems: readonly NavigationItem[] = [
 ];
 
 const connectionItems: readonly NavigationItem[] = [
-  { abbreviation: "AI", label: "AI & MCP", href: "/app/automation" },
+  { abbreviation: "AI", label: "AI & MCP", href: "/app/settings/mcp" },
 ];
 
 function createSearchIndex(includeDemoRecords: boolean): readonly SearchEntry[] {

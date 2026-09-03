@@ -64,9 +64,9 @@ describe("CI predecessor-upgrade and restore verification", () => {
     );
   });
 
-  it("replays exactly 0000-0024 before preserving a tenant sentinel through 0033", () => {
+  it("replays exactly 0000-0024 before preserving a tenant sentinel through 0036", () => {
     expect(migrationJournal.entries.map((entry) => entry.idx)).toEqual(
-      Array.from({ length: 34 }, (_, index) => index),
+      Array.from({ length: 37 }, (_, index) => index),
     );
     expect(migrationJournal.entries.find((entry) => entry.idx === 25)?.tag).toBe(
       "0025_tenant_rls_completion",
@@ -95,6 +95,15 @@ describe("CI predecessor-upgrade and restore verification", () => {
     expect(migrationJournal.entries.find((entry) => entry.idx === 33)?.tag).toBe(
       "0033_self_service_signup_write_activation",
     );
+    expect(migrationJournal.entries.find((entry) => entry.idx === 34)?.tag).toBe(
+      "0034_clean_praxagora",
+    );
+    expect(migrationJournal.entries.find((entry) => entry.idx === 35)?.tag).toBe(
+      "0035_remote_mcp_security",
+    );
+    expect(migrationJournal.entries.find((entry) => entry.idx === 36)?.tag).toBe(
+      "0036_mcp_approval_assurance",
+    );
     expect(tenantPolicyMigration).toContain("ALTER TABLE public.%I ENABLE ROW LEVEL SECURITY");
     expect(tenantPolicyMigration).toContain("ALTER TABLE public.%I FORCE ROW LEVEL SECURITY");
     expect(tenantPolicyMigration).toContain("auth_sessions");
@@ -118,9 +127,9 @@ describe("CI predecessor-upgrade and restore verification", () => {
     expect(lifecycleScript).toContain(
       'run_migrations "$predecessor_database" "$repository_root/migrations/drizzle"',
     );
-    expect(lifecycleScript).toContain('[[ "$upgraded_count" == "34" ]]');
+    expect(lifecycleScript).toContain('[[ "$upgraded_count" == "37" ]]');
     expect(lifecycleScript).toContain(
-      "tenant sentinel was not preserved through migrations 0025 through 0033",
+      "tenant sentinel was not preserved through migrations 0025 through 0036",
     );
     expect(lifecycleScript).toContain("ci.predecessor-audit-after-upgrade");
     expect(lifecycleScript).toContain(

@@ -13,6 +13,7 @@ export type RouteFailureOperation =
   | "mfa-enrollment-confirmation"
   | "mfa-step-up"
   | "metrics-readiness"
+  | "mcp-settings"
   | "optional-mfa-activation"
   | "organization-administration"
   | "password-reset-confirmation"

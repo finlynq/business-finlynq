@@ -259,7 +259,9 @@ BEGIN
     'bank_observations', 'bank_observation_versions', 'bank_balance_anchors',
     'bank_reconciliation_sessions', 'bank_reconciliation_voids', 'bank_match_allocations',
     'bank_match_allocation_voids', 'bank_rules', 'bank_rule_runs',
-    'bank_draft_proposals'
+    'bank_draft_proposals', 'mcp_oauth_clients', 'mcp_connections',
+    'mcp_oauth_codes', 'mcp_access_tokens', 'mcp_refresh_tokens',
+    'mcp_approvals', 'mcp_tool_executions'
   ] LOOP
     IF to_regclass(format('public.%I', selected_name)) IS NOT NULL THEN
       EXECUTE format('GRANT SELECT ON TABLE public.%I TO business_finlynq_app', selected_name);
@@ -270,10 +272,12 @@ BEGIN
   -- No application table receives DELETE.
   FOREACH selected_name IN ARRAY ARRAY[
     'journal_entries', 'journal_lines', 'parties', 'party_addresses',
-    'party_accounts',
+    'party_accounts', 'gl_accounts',
     'ledger_posting_policies', 'ledger_number_sequences',
     'bank_connections', 'bank_external_accounts', 'bank_sync_runs',
-    'bank_reconciliation_sessions'
+    'bank_reconciliation_sessions', 'mcp_connections', 'mcp_oauth_codes',
+    'mcp_access_tokens', 'mcp_refresh_tokens', 'mcp_approvals',
+    'mcp_tool_executions'
   ] LOOP
     IF to_regclass(format('public.%I', selected_name)) IS NOT NULL THEN
       EXECUTE format('GRANT INSERT, UPDATE ON TABLE public.%I TO business_finlynq_app', selected_name);
@@ -288,7 +292,7 @@ BEGIN
     'bank_connection_credential_events',
     'bank_observations', 'bank_observation_versions', 'bank_balance_anchors',
     'bank_reconciliation_voids', 'bank_match_allocations', 'bank_match_allocation_voids', 'bank_rules',
-    'bank_rule_runs', 'bank_draft_proposals'
+    'bank_rule_runs', 'bank_draft_proposals', 'mcp_oauth_clients'
   ] LOOP
     IF to_regclass(format('public.%I', selected_name)) IS NOT NULL THEN
       EXECUTE format('GRANT INSERT ON TABLE public.%I TO business_finlynq_app', selected_name);
@@ -309,6 +313,7 @@ BEGIN
     'app.current_organization_id()',
     'app.current_actor_id()',
     'app.current_actor_has_permission(text)',
+    'app.mcp_user_is_active(uuid)',
     'app.segment_value_is_valid(uuid,uuid,text,date)',
     'app.currency_minor_units(text)',
     'app.current_demo_session_is_valid()',
