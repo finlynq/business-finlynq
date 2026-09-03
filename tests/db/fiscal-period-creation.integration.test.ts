@@ -16,6 +16,7 @@ const ids = {
   unauthorizedSession: randomUUID(),
   role: randomUUID(),
   entity: randomUUID(),
+  conflictingEntity: randomUUID(),
   ledger: randomUUID(),
   conflictingLedger: randomUUID(),
   january: randomUUID(),
@@ -161,8 +162,10 @@ runDatabaseTests("fiscal-period creation PostgreSQL boundary", () => {
     await owner.query(
       `INSERT INTO legal_entities(
          id, organization_id, code, display_name, country_code, region_code, active
-       ) VALUES ($1,$2,'PERIODS','Period test entity','US','WA',true)`,
-      [ids.entity, ids.organization],
+       ) VALUES
+         ($1,$2,'PERIODS','Period test entity','US','WA',true),
+         ($3,$2,'CONFLICT','Conflict test entity','US','WA',true)`,
+      [ids.entity, ids.organization, ids.conflictingEntity],
     );
     await owner.query(
       `INSERT INTO ledgers(
@@ -170,8 +173,8 @@ runDatabaseTests("fiscal-period creation PostgreSQL boundary", () => {
          accounting_profile, functional_currency, active
        ) VALUES
          ($1,$2,$3,'PERIOD-PRIMARY','Period primary','PRIMARY','US_GAAP_NONPUBLIC','USD',true),
-         ($4,$2,$3,'PERIOD-CONFLICT','Period conflict','PRIMARY','US_GAAP_NONPUBLIC','USD',true)`,
-      [ids.ledger, ids.organization, ids.entity, ids.conflictingLedger],
+         ($4,$2,$5,'PERIOD-CONFLICT','Period conflict','PRIMARY','US_GAAP_NONPUBLIC','USD',true)`,
+      [ids.ledger, ids.organization, ids.entity, ids.conflictingLedger, ids.conflictingEntity],
     );
     await owner.query(
       `INSERT INTO fiscal_periods(
@@ -191,17 +194,8 @@ runDatabaseTests("fiscal-period creation PostgreSQL boundary", () => {
   });
 
   afterAll(async () => {
-    await owner.query("DELETE FROM audit_events WHERE organization_id = $1", [ids.organization]);
-    await owner.query("DELETE FROM fiscal_periods WHERE organization_id = $1", [ids.organization]);
-    await owner.query("DELETE FROM ledgers WHERE organization_id = $1", [ids.organization]);
-    await owner.query("DELETE FROM legal_entities WHERE organization_id = $1", [ids.organization]);
-    await owner.query("DELETE FROM auth_sessions WHERE organization_id = $1", [ids.organization]);
-    await owner.query("DELETE FROM membership_roles WHERE organization_id = $1", [ids.organization]);
-    await owner.query("DELETE FROM role_permissions WHERE organization_id = $1", [ids.organization]);
-    await owner.query("DELETE FROM roles WHERE organization_id = $1", [ids.organization]);
-    await owner.query("DELETE FROM organization_memberships WHERE organization_id = $1", [ids.organization]);
-    await owner.query("DELETE FROM users WHERE id IN ($1,$2)", [ids.actor, ids.unauthorizedActor]);
-    await owner.query("DELETE FROM organizations WHERE id = $1", [ids.organization]);
+    // Like the organization-administration integration suite, retain the audited
+    // fixture until the disposable database is destroyed. Audit rows are append-only.
     await Promise.all([owner.end(), app.end()]);
   });
 

@@ -61,6 +61,8 @@ const mocks = vi.hoisted(() => {
     })),
     loadPeriodControlWorkspace: vi.fn(async () => ({
       demoOnly: false,
+      canCreate: false,
+      ledgers: [],
       canClose: false,
       canReopen: false,
       canSeal: false,

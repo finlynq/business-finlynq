@@ -4,6 +4,7 @@ import { loadPeriodControlWorkspace } from "@/modules/ledger/tenant-workspace";
 import { requireWorkspacePrincipal } from "@/modules/workspace/access";
 import { principalCanWrite } from "@/modules/workspace/write-policy";
 import { CloseReadinessForm } from "../../../_components/close-readiness-form.client";
+import { PeriodCreationForm } from "../../../_components/period-creation-form.client";
 import { PeriodTransitionForm } from "../../../_components/period-transition-form.client";
 import { DemoNotice, PageHeader, StatusPill } from "../../../_components/ui";
 
@@ -19,13 +20,17 @@ export default async function PeriodClosePage() {
         <PageHeader
           eyebrow="Controls · Fiscal periods"
           title="Period controls"
-          description="Move periods through controlled close states. Reopening and irreversible sealing require current MFA, permission, a reason, and an optimistic version check."
+          description="Add monthly fiscal periods and manage controlled close states. Creating periods, reopening, and irreversible sealing require current MFA, permission, and a reason."
         />
         <aside className="demo-notice" aria-label="Period control warning">
           <span aria-hidden="true">i</span>
           <p>OPEN moves to ADJUSTMENT ONLY before HARD CLOSED. SEALED is irreversible, and unposted journals block hard close and seal.</p>
         </aside>
-        <PeriodTransitionForm workspace={workspace} />
+        <PeriodCreationForm workspace={workspace} defaultFiscalYear={new Date().getUTCFullYear()} />
+        <PeriodTransitionForm
+          key={workspace.periods.map((period) => `${period.id}:${period.version}`).join("|")}
+          workspace={workspace}
+        />
       </div>
     );
   }
