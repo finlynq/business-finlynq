@@ -109,7 +109,7 @@
 
 	handle {
 		basic_auth {
-			import /etc/caddy/epm-basic-auth
+			import /config/epm-basic-auth
 		}
 
 		request_body {
