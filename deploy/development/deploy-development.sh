@@ -10,7 +10,11 @@ readonly project="business-finlynq-development"
 readonly state_directory="/var/lib/business-finlynq-development"
 readonly deployment_lock="$state_directory/deployment.lock"
 readonly host_deployment_lock="/var/lib/business-finlynq/deployment-host.lock"
-readonly failure_latch="$state_directory/deployment-failed"
+readonly legacy_failure_latch="$state_directory/deployment-failed"
+readonly quarantine_file="$state_directory/quarantined-candidate"
+readonly hard_failure_latch="$state_directory/deployment-hard-failed"
+readonly accepted_revision_file="$state_directory/accepted-revision"
+readonly build_cache_limit="8GB"
 readonly clean_path="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
 fail() {
@@ -40,13 +44,17 @@ if [[ "${1:-}" == "--clear-failure" ]]; then
   validate_revision "$2"
   [[ "${DEVELOPMENT_DEPLOYMENT_FAILURE_ACK:-}" == "clear:$2" ]] \
     || fail "DEVELOPMENT_DEPLOYMENT_FAILURE_ACK must acknowledge the exact failed revision"
-  [[ -f "$failure_latch" && ! -L "$failure_latch" ]] \
-    || fail "the protected failure latch is unavailable"
-  grep -Fxq "candidateRevision=$2" "$failure_latch" \
-    || fail "the failure latch does not identify the acknowledged revision"
-  rm -- "$failure_latch"
+  cleared=false
+  for failure_state in "$legacy_failure_latch" "$hard_failure_latch" "$quarantine_file"; do
+    if [[ -f "$failure_state" && ! -L "$failure_state" ]] \
+      && grep -Fxq "candidateRevision=$2" "$failure_state"; then
+      rm -- "$failure_state"
+      cleared=true
+    fi
+  done
+  [[ "$cleared" == true ]] || fail "no protected failure state identifies the acknowledged revision"
   sync -f -- "$state_directory"
-  printf 'Development deployment failure latch cleared for %s.\n' "$2"
+  printf 'Development deployment failure state cleared for %s.\n' "$2"
   exit 0
 fi
 [[ "$#" == 0 ]] || fail "this command accepts no deployment arguments"
@@ -66,9 +74,6 @@ flock --exclusive --nonblock 9 || fail "another development deployment check is 
 exec 8>"$host_deployment_lock"
 chmod 0600 "$host_deployment_lock"
 flock --exclusive --nonblock 8 || fail "another production or development deployment is active"
-
-[[ ! -e "$failure_latch" && ! -L "$failure_latch" ]] \
-  || fail "a previous development deployment failed; inspect it and clear the protected latch explicitly"
 
 git_as_deploy() {
   runuser -u deploy -- /usr/bin/env -i \
@@ -93,6 +98,149 @@ read_environment_value() {
   [[ "$(grep -c "^${key}=" "$compose_environment")" == 1 ]] \
     || fail "development environment must define $key exactly once"
   printf '%s' "$value"
+}
+
+state_file_is_safe() {
+  local target="$1"
+  [[ -f "$target" && ! -L "$target" \
+    && "$(stat -c '%U:%G:%a' -- "$target")" == root:root:600 ]]
+}
+
+read_state_value() {
+  local target="$1" key="$2" value
+  state_file_is_safe "$target" || fail "protected deployment state is unavailable or unsafe: $target"
+  [[ "$(grep -c "^${key}=" "$target")" == 1 ]] \
+    || fail "protected deployment state must define $key exactly once: $target"
+  value="$(awk -F= -v selected="$key" '$1 == selected { sub(/^[^=]*=/, ""); print }' "$target")"
+  [[ -n "$value" ]] || fail "protected deployment state contains an empty $key: $target"
+  printf '%s' "$value"
+}
+
+write_accepted_revision() {
+  local revision="$1" temporary
+  validate_revision "$revision"
+  temporary="$(mktemp "${accepted_revision_file}.XXXXXX")"
+  printf 'revision=%s\nacceptedAt=%s\n' \
+    "$revision" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >"$temporary"
+  chmod 0600 "$temporary"
+  chown root:root "$temporary"
+  mv -f -- "$temporary" "$accepted_revision_file"
+  sync -f -- "$state_directory"
+}
+
+write_failure_state() {
+  local target="$1" kind="$2" source="$3" candidate="$4" stage="$5" recovered="$6" \
+    cleanup_complete="$7" temporary
+  validate_revision "$source"
+  validate_revision "$candidate"
+  [[ "$kind" == quarantine || "$kind" == hard ]] \
+    || fail "invalid development failure-state kind"
+  [[ "$cleanup_complete" == true || "$cleanup_complete" == false ]] \
+    || fail "invalid development cleanup state"
+  temporary="$(mktemp "${target}.XXXXXX")"
+  printf 'kind=%s\nsourceRevision=%s\ncandidateRevision=%s\nstage=%s\nfailedAt=%s\nrecoveredRevision=%s\ncleanupComplete=%s\n' \
+    "$kind" "$source" "$candidate" "$stage" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    "$recovered" "$cleanup_complete" >"$temporary"
+  chmod 0600 "$temporary"
+  chown root:root "$temporary"
+  mv -f -- "$temporary" "$target"
+  sync -f -- "$state_directory"
+}
+
+replace_environment_revision() {
+  local old_revision="$1" new_revision="$2" current_revision temporary
+  validate_revision "$old_revision"
+  validate_revision "$new_revision"
+  [[ -z "$(sed -n 's/^\([A-Z][A-Z0-9_]*\)=.*/\1/p' "$compose_environment" | sort | uniq -d)" ]] \
+    || return 1
+  current_revision="$(read_environment_value BUSINESS_FINLYNQ_IMAGE_REVISION)"
+  if [[ "$current_revision" == "$new_revision" ]]; then
+    return 0
+  fi
+  [[ "$current_revision" == "$old_revision" ]] || return 1
+  temporary="$(mktemp "${compose_environment}.deployment.XXXXXX")"
+  if ! awk -v old="$old_revision" -v new="$new_revision" '
+    $0 == "BUSINESS_FINLYNQ_IMAGE_REVISION=" old {
+      print "BUSINESS_FINLYNQ_IMAGE_REVISION=" new
+      count++
+      next
+    }
+    { print }
+    END { if (count != 1) exit 42 }
+  ' "$compose_environment" >"$temporary"; then
+    rm -f -- "$temporary"
+    return 1
+  fi
+  chown root:deploy "$temporary"
+  chmod 0600 "$temporary"
+  mv -f -- "$temporary" "$compose_environment"
+  sync -f -- "$compose_environment"
+}
+
+revision_project_container_ids() {
+  local revision="$1" container container_revision
+  validate_revision "$revision"
+  while IFS= read -r container; do
+    [[ -n "$container" ]] || continue
+    container_revision="$(docker inspect --format \
+      '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$container" 2>/dev/null || true)"
+    [[ "$container_revision" == "$revision" ]] && printf '%s\n' "$container"
+  done < <(docker ps --all --no-trunc --quiet \
+    --filter label=com.docker.compose.project="$project")
+}
+
+revision_is_used_outside_project() {
+  local revision="$1" container container_project container_revision
+  validate_revision "$revision"
+  while IFS= read -r container; do
+    [[ -n "$container" ]] || continue
+    container_revision="$(docker inspect --format \
+      '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$container" 2>/dev/null || true)"
+    [[ "$container_revision" == "$revision" ]] || continue
+    container_project="$(docker inspect --format \
+      '{{ index .Config.Labels "com.docker.compose.project" }}' "$container" 2>/dev/null || true)"
+    [[ "$container_project" == "$project" ]] || return 0
+  done < <(docker ps --all --no-trunc --quiet)
+  return 1
+}
+
+remove_revision_artifacts() {
+  local revision="$1" reference image_revision
+  local -a container_ids image_references
+  validate_revision "$revision"
+  mapfile -t container_ids < <(revision_project_container_ids "$revision")
+  if (( ${#container_ids[@]} > 0 )); then
+    docker rm --force -- "${container_ids[@]}" >/dev/null || return 1
+  fi
+
+  image_references=(
+    "business-finlynq-acceptance:$revision"
+    "business-finlynq-auth-worker:$revision"
+    "business-finlynq-app:$revision"
+    "business-finlynq-migrator:$revision"
+    "business-finlynq-operations:$revision"
+    "business-finlynq-database:$revision"
+  )
+  if revision_is_used_outside_project "$revision"; then
+    printf 'Development cleanup retained revision %s images used by another Compose project.\n' \
+      "$revision"
+  else
+    for reference in "${image_references[@]}"; do
+      docker image inspect "$reference" >/dev/null 2>&1 || continue
+      image_revision="$(docker image inspect --format \
+        '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$reference")"
+      [[ "$image_revision" == "$revision" ]] || return 1
+      docker image rm -- "$reference" >/dev/null || return 1
+    done
+    docker image prune --force \
+      --filter "label=org.opencontainers.image.revision=$revision" >/dev/null || return 1
+  fi
+  mapfile -t container_ids < <(revision_project_container_ids "$revision")
+  (( ${#container_ids[@]} == 0 ))
+}
+
+bound_build_cache() {
+  docker builder prune --force --max-used-space "$build_cache_limit" >/dev/null
 }
 
 wait_for_public_readiness() {
@@ -169,16 +317,17 @@ verify_compose_boundary() {
 }
 
 release_is_accepted() {
-  local app_container app_environment actual expected detailed_health public_health rendered \
-    hostname require_public setting
+  local expected_revision="$1" app_container app_environment actual expected detailed_health \
+    public_health rendered hostname require_public setting
   local -a app_containers
+  validate_revision "$expected_revision"
   mapfile -t app_containers < <(docker ps --no-trunc --quiet \
     --filter label=com.docker.compose.project="$project" \
     --filter label=com.docker.compose.service=app)
   [[ "${#app_containers[@]}" == 1 ]] || return 1
   app_container="${app_containers[0]}"
   [[ "$(docker inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' \
-    "$app_container")" == "$candidate_revision" ]] || return 1
+    "$app_container")" == "$expected_revision" ]] || return 1
   rendered="$(compose config --format json)" || return 1
   app_environment="$(docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' \
     "$app_container")" || return 1
@@ -195,7 +344,7 @@ release_is_accepted() {
   detailed_health="$(curl --noproxy '*' --fail --silent --show-error --max-time 20 \
     --header 'X-Business-Finlynq-Internal-Health: 1' http://127.0.0.1:3200/api/health)" \
     || return 1
-  jq -e --arg revision "$candidate_revision" \
+  jq -e --arg revision "$expected_revision" \
     '.status == "ready" and .revision == $revision' <<<"$detailed_health" >/dev/null \
     || return 1
   require_public="$(read_environment_value DEVELOPMENT_REQUIRE_PUBLIC_ACCEPTANCE)"
@@ -210,9 +359,164 @@ release_is_accepted() {
   fi
 }
 
+start_revision_runtime() {
+  compose up --detach --wait --no-deps --no-build database || return 1
+  compose up --detach --wait --no-deps --no-build app || return 1
+  if [[ "$(read_environment_value ACCOUNT_LOGIN_ENABLED)" == true ]]; then
+    compose --profile auth-email up --detach --wait --no-deps --no-build auth_email_worker \
+      || return 1
+  else
+    compose --profile auth-email rm --force --stop auth_email_worker >/dev/null 2>&1 || true
+  fi
+}
+
+restore_accepted_revision() {
+  local failed_revision="$1" recovery_revision="$2" current_head current_environment_revision
+  validate_revision "$failed_revision"
+  validate_revision "$recovery_revision"
+  [[ "$failed_revision" != "$recovery_revision" ]] || return 1
+  git_as_deploy merge-base --is-ancestor "$recovery_revision" "$failed_revision" || return 1
+
+  current_head="$(git_as_deploy rev-parse HEAD)" || return 1
+  if [[ "$current_head" == "$failed_revision" ]]; then
+    git_as_deploy reset --hard "$recovery_revision" >/dev/null || return 1
+  elif [[ "$current_head" != "$recovery_revision" ]]; then
+    return 1
+  fi
+  [[ -z "$(git_as_deploy status --porcelain=v1 --untracked-files=all)" ]] || return 1
+
+  current_environment_revision="$(read_environment_value BUSINESS_FINLYNQ_IMAGE_REVISION)"
+  if [[ "$current_environment_revision" == "$failed_revision" ]]; then
+    replace_environment_revision "$failed_revision" "$recovery_revision" || return 1
+  elif [[ "$current_environment_revision" != "$recovery_revision" ]]; then
+    return 1
+  fi
+
+  ( verify_compose_boundary ) || return 1
+  start_revision_runtime || return 1
+  ( release_is_accepted "$recovery_revision" )
+}
+
+run_public_acceptance() {
+  local attempt
+  for attempt in 1 2; do
+    if ( wait_for_public_readiness ) \
+      && compose --profile acceptance run --rm --no-deps release_acceptance; then
+      return 0
+    fi
+    printf 'Development public acceptance attempt %s failed. Retrying once.\n' "$attempt" >&2
+  done
+  return 1
+}
+
 verify_compose_boundary
+
+if [[ -e "$hard_failure_latch" || -L "$hard_failure_latch" ]]; then
+  [[ "$(read_state_value "$hard_failure_latch" kind)" == hard ]] \
+    || fail "the protected hard-failure state has an invalid kind"
+  hard_candidate="$(read_state_value "$hard_failure_latch" candidateRevision)"
+  validate_revision "$hard_candidate"
+  fail "development recovery could not be verified for $hard_candidate; inspect it and clear the exact hard failure explicitly"
+fi
+
+if [[ -e "$legacy_failure_latch" || -L "$legacy_failure_latch" ]]; then
+  legacy_source="$(read_state_value "$legacy_failure_latch" sourceRevision)"
+  legacy_candidate="$(read_state_value "$legacy_failure_latch" candidateRevision)"
+  validate_revision "$legacy_source"
+  validate_revision "$legacy_candidate"
+  if [[ "$legacy_candidate" == "$source_revision" ]] \
+    && release_is_accepted "$source_revision"; then
+    write_accepted_revision "$source_revision"
+    rm -- "$legacy_failure_latch"
+    sync -f -- "$state_directory"
+    printf 'Migrated the legacy failure latch after verifying live revision %s.\n' \
+      "$source_revision"
+  else
+    write_failure_state "$hard_failure_latch" hard "$legacy_source" "$legacy_candidate" \
+      legacy-failure-latch "" false
+    rm -- "$legacy_failure_latch"
+    sync -f -- "$state_directory"
+    fail "legacy failed deployment could not be verified as the live revision; hard recovery state recorded"
+  fi
+fi
+
+accepted_revision=""
+if [[ -e "$accepted_revision_file" || -L "$accepted_revision_file" ]]; then
+  accepted_revision="$(read_state_value "$accepted_revision_file" revision)"
+  validate_revision "$accepted_revision"
+  git_as_deploy merge-base --is-ancestor "$accepted_revision" "$candidate_revision" \
+    || fail "the accepted development revision is not an ancestor of the candidate"
+fi
+
+if [[ -z "$accepted_revision" ]]; then
+  if release_is_accepted "$source_revision"; then
+    write_accepted_revision "$source_revision"
+    accepted_revision="$source_revision"
+  else
+    mapfile -t existing_app_containers < <(docker ps --all --no-trunc --quiet \
+      --filter label=com.docker.compose.project="$project" \
+      --filter label=com.docker.compose.service=app)
+    if [[ "$source_revision" != "$candidate_revision" || ${#existing_app_containers[@]} != 0 ]]; then
+      write_failure_state "$hard_failure_latch" hard "$source_revision" "$candidate_revision" \
+        accepted-state-initialization "" false
+      fail "no verified accepted revision is available for automatic recovery"
+    fi
+    printf 'No prior development runtime exists; installing initial revision %s.\n' \
+      "$candidate_revision"
+  fi
+elif [[ "$source_revision" != "$accepted_revision" ]]; then
+  if release_is_accepted "$source_revision"; then
+    write_accepted_revision "$source_revision"
+    accepted_revision="$source_revision"
+    printf 'Recorded already healthy revision %s after an interrupted finalization.\n' \
+      "$source_revision"
+  elif release_is_accepted "$accepted_revision" \
+    && restore_accepted_revision "$source_revision" "$accepted_revision"; then
+    source_revision="$accepted_revision"
+    printf 'Restored accepted revision %s after an interrupted deployment.\n' \
+      "$accepted_revision"
+  else
+    write_failure_state "$hard_failure_latch" hard "$accepted_revision" "$source_revision" \
+      interrupted-recovery "" false
+    fail "the interrupted deployment could not be restored to its accepted revision"
+  fi
+fi
+
+if [[ -e "$quarantine_file" || -L "$quarantine_file" ]]; then
+  [[ "$(read_state_value "$quarantine_file" kind)" == quarantine ]] \
+    || fail "the protected quarantine state has an invalid kind"
+  quarantined_source="$(read_state_value "$quarantine_file" sourceRevision)"
+  quarantined_candidate="$(read_state_value "$quarantine_file" candidateRevision)"
+  quarantined_stage="$(read_state_value "$quarantine_file" stage)"
+  validate_revision "$quarantined_source"
+  validate_revision "$quarantined_candidate"
+  [[ "$quarantined_candidate" != "$accepted_revision" ]] \
+    || fail "the accepted revision cannot also be quarantined"
+  git_as_deploy merge-base --is-ancestor "$quarantined_candidate" "$candidate_revision" \
+    || fail "the quarantined revision is not an ancestor of the current candidate"
+
+  cleanup_complete=true
+  remove_revision_artifacts "$quarantined_candidate" || cleanup_complete=false
+  bound_build_cache || cleanup_complete=false
+  write_failure_state "$quarantine_file" quarantine "$quarantined_source" \
+    "$quarantined_candidate" "$quarantined_stage" "$accepted_revision" "$cleanup_complete"
+  [[ "$cleanup_complete" == true ]] \
+    || fail "quarantined revision cleanup is incomplete and will be retried automatically"
+
+  if [[ "$quarantined_candidate" == "$candidate_revision" ]]; then
+    printf 'Development candidate %s remains quarantined; cleanup is complete and a newer CI-approved revision is required.\n' \
+      "$candidate_revision"
+    exit 0
+  fi
+  rm -- "$quarantine_file"
+  sync -f -- "$state_directory"
+  printf 'Removed artifacts for quarantined revision %s before evaluating newer revision %s.\n' \
+    "$quarantined_candidate" "$candidate_revision"
+fi
+
 if [[ "$source_revision" == "$candidate_revision" ]]; then
-  if release_is_accepted; then
+  if release_is_accepted "$candidate_revision"; then
+    write_accepted_revision "$candidate_revision"
     printf 'Development already runs accepted dev revision %s.\n' "$candidate_revision"
     exit 0
   fi
@@ -220,56 +524,52 @@ if [[ "$source_revision" == "$candidate_revision" ]]; then
     "$candidate_revision"
 fi
 
-temporary_environment="$(mktemp "${compose_environment}.deployment.XXXXXX")"
 mutated=false
+deployment_stage=prepare
 cleanup() {
-  local status="$?" latch_temporary
-  [[ -z "$temporary_environment" ]] || rm -f -- "$temporary_environment"
+  local status="$?" cleanup_complete
+  trap - EXIT INT TERM
+  set +e
   if [[ "$status" != 0 && "$mutated" == true ]]; then
-    latch_temporary="$(mktemp "${failure_latch}.XXXXXX")"
-    printf 'sourceRevision=%s\ncandidateRevision=%s\nfailedAt=%s\n' \
-      "$source_revision" "$candidate_revision" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-      >"$latch_temporary"
-    chmod 0600 "$latch_temporary"
-    chown root:root "$latch_temporary"
-    mv -f -- "$latch_temporary" "$failure_latch"
-    sync -f -- "$state_directory"
+    if [[ -n "$accepted_revision" && "$accepted_revision" != "$candidate_revision" ]] \
+      && restore_accepted_revision "$candidate_revision" "$accepted_revision"; then
+      cleanup_complete=true
+      remove_revision_artifacts "$candidate_revision" || cleanup_complete=false
+      bound_build_cache || cleanup_complete=false
+      write_failure_state "$quarantine_file" quarantine "$accepted_revision" \
+        "$candidate_revision" "$deployment_stage" "$accepted_revision" "$cleanup_complete"
+      rm -f -- "$legacy_failure_latch" "$hard_failure_latch"
+      sync -f -- "$state_directory"
+      printf 'Development candidate %s failed during %s; restored accepted revision %s and quarantined the candidate (cleanupComplete=%s).\n' \
+        "$candidate_revision" "$deployment_stage" "$accepted_revision" "$cleanup_complete" >&2
+      exit 0
+    fi
+    write_failure_state "$hard_failure_latch" hard "${accepted_revision:-$source_revision}" \
+      "$candidate_revision" "$deployment_stage" "" false
+    printf 'Development candidate %s failed during %s and recovery could not be verified; hard failure state recorded and candidate artifacts retained.\n' \
+      "$candidate_revision" "$deployment_stage" >&2
   fi
   exit "$status"
 }
 trap cleanup EXIT INT TERM
 
-[[ "$(grep -Fxc "BUSINESS_FINLYNQ_IMAGE_REVISION=$source_revision" "$compose_environment")" == 1 ]] \
-  || fail "development environment does not identify the checked-out source revision"
-[[ -z "$(sed -n 's/^\([A-Z][A-Z0-9_]*\)=.*/\1/p' "$compose_environment" | sort | uniq -d)" ]] \
-  || fail "development environment contains duplicate keys"
-awk -v old="$source_revision" -v new="$candidate_revision" '
-  $0 == "BUSINESS_FINLYNQ_IMAGE_REVISION=" old {
-    print "BUSINESS_FINLYNQ_IMAGE_REVISION=" new
-    count++
-    next
-  }
-  { print }
-  END { if (count != 1) exit 42 }
-' "$compose_environment" >"$temporary_environment" \
-  || fail "could not prepare the development revision environment"
-chown root:deploy "$temporary_environment"
-chmod 0600 "$temporary_environment"
-
 mutated=true
+deployment_stage=checkout
 git_as_deploy merge --ff-only "$candidate_revision"
 [[ "$(git_as_deploy rev-parse HEAD)" == "$candidate_revision" \
   && -z "$(git_as_deploy status --porcelain=v1 --untracked-files=all)" ]] \
   || fail "the development checkout did not move cleanly to the candidate"
-mv -f -- "$temporary_environment" "$compose_environment"
-temporary_environment=""
-sync -f -- "$compose_environment"
+replace_environment_revision "$source_revision" "$candidate_revision" \
+  || fail "could not atomically select the candidate image revision"
 
 verify_compose_boundary
+deployment_stage=build
 compose build \
   database provision_auth_worker_role migrate reconcile_runtime_grants \
   reconcile_auth_worker_grants reconcile_backup_grants verify_database_contract \
   bootstrap_demo app auth_email_worker release_acceptance
+
+deployment_stage=live-apply
 compose up --detach --wait --no-build app
 
 if [[ "$(read_environment_value ACCOUNT_LOGIN_ENABLED)" == true ]]; then
@@ -279,12 +579,26 @@ else
 fi
 
 if [[ "$(read_environment_value DEVELOPMENT_REQUIRE_PUBLIC_ACCEPTANCE)" == true ]]; then
-  wait_for_public_readiness
-  compose --profile acceptance run --rm --no-deps release_acceptance
+  deployment_stage=public-acceptance
+  run_public_acceptance || fail "development public acceptance failed twice"
 fi
 
-release_is_accepted || fail "development deployment did not pass final acceptance"
-rm -f -- "$failure_latch"
+deployment_stage=final-verification
+release_is_accepted "$candidate_revision" \
+  || fail "development deployment did not pass final acceptance"
+write_accepted_revision "$candidate_revision"
+accepted_revision="$candidate_revision"
+rm -f -- "$legacy_failure_latch" "$hard_failure_latch" "$quarantine_file"
+sync -f -- "$state_directory"
 mutated=false
 trap - EXIT INT TERM
+
+if [[ "$source_revision" != "$candidate_revision" ]]; then
+  remove_revision_artifacts "$source_revision" \
+    || printf 'Warning: retired development revision %s could not be fully removed.\n' \
+      "$source_revision" >&2
+fi
+bound_build_cache \
+  || printf 'Warning: development build cache could not be bounded to %s.\n' \
+    "$build_cache_limit" >&2
 printf 'Development deployment accepted for dev revision %s.\n' "$candidate_revision"

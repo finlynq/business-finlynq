@@ -9,7 +9,7 @@ A same-repository push to `dev` must pass the complete `quality-gate` job before
 
 ## Isolation contract
 
-The development stack uses its own checkout, Compose project, loopback port, database volume, networks, secrets, state directory, and failure latch:
+The development stack uses its own checkout, Compose project, loopback port, database volume, networks, secrets, and deployment state:
 
 | Boundary | Development | Production |
 | --- | --- | --- |
@@ -86,6 +86,16 @@ sudo systemctl start business-finlynq-development-deployment.service
 
 The installer refuses provider secrets with unsafe ownership, mode, symlink status, or line structure. The opt-in atomically enables demo and real-account login, signup, email delivery, Turnstile, business writes, bank feeds, and public acceptance. The development deployer compares the running container with the reviewed Compose environment, so a gate or provider-metadata change forces recreation even when the Git revision is unchanged.
 
+## Direct-to-development acceptance and automatic recovery
+
+Every signalled candidate is installed directly on the development stack and validated against `https://dev.business.finlynq.com`; there is no second shadow stack. Public browser acceptance is attempted twice before the candidate is rejected. The PostgreSQL volume remains mounted throughout deployment and recovery.
+
+The deployer records the last fully accepted SHA in the root-only `accepted-revision` state file. If checkout, build, migration/startup, public acceptance, or final health verification fails, it attempts to restore that exact checkout and image revision. Recovery is considered successful only after the restored app reports the expected revision on its internal detailed health endpoint and the public HTTPS health endpoint remains ready.
+
+After verified recovery, the failed SHA is quarantined rather than globally latching all future deployments. The deployer removes only containers from the development Compose project whose image label matches that SHA, removes the exact Finlynq image tags for that SHA, prunes dangling images with the same revision label, and bounds BuildKit cache to 8 GB. It never runs `docker system prune`, never removes a volume, and preserves an image revision if another Compose project still uses it. The quarantine is a single atomic state file, not an artifact directory, so repeated failures cannot accumulate retained release folders.
+
+The same quarantined SHA is not retried. Its cleanup is retried automatically when needed, and a newer fast-forward SHA with its own successful CI signal is evaluated without operator acknowledgement. Only an inability to verify the restored runtime creates `deployment-hard-failed` and stops subsequent candidates for manual recovery; this is the safety boundary for potentially incompatible persistent-database changes.
+
 ## Promotion
 
 Develop and test on `dev`, then merge the exact accepted `dev` revision into `main` with a normal fast-forward or reviewed pull request. Never force-push either deployment branch. Production remains unchanged until the resulting `main` commit passes its own quality gate and receives its separate production deployment signal.
@@ -98,7 +108,9 @@ systemctl start business-finlynq-development-deployment.service
 journalctl -u business-finlynq-development-deployment.service --since today
 ```
 
-If a mutated deployment fails, later attempts remain latched. Review the journal and current development containers, then clear only the matching revision:
+Ordinary candidate failures do not need a manual latch-clear command. The service restores the last accepted revision, verifies it internally and through the live development HTTPS route, removes the failed revision’s development containers and image tags, bounds build cache, and waits for a newer CI-approved SHA. Inspect `/var/lib/business-finlynq-development/quarantined-candidate` and the journal for the compact failure record; no failed release directory is retained.
+
+Manual acknowledgement is reserved for `deployment-hard-failed`, which is written only when the prior accepted runtime cannot be restored and verified. Candidate artifacts are retained in that case because they may be required to diagnose or recover the persistent database. After recovery and review, clear only the exact recorded SHA:
 
 ```bash
 failed_revision=<full-failed-sha>

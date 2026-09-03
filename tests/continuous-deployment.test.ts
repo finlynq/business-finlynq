@@ -128,7 +128,9 @@ describe("continuous deployment safety boundary", () => {
   });
 
   it("waits for the public route before externally targeted browser acceptance", () => {
-    const readiness = deployDevelopment.lastIndexOf("  wait_for_public_readiness");
+    const readiness = deployDevelopment.lastIndexOf(
+      "    if ( wait_for_public_readiness",
+    );
     const acceptance = deployDevelopment.lastIndexOf(
       "compose --profile acceptance run --rm --no-deps release_acceptance",
     );
@@ -136,11 +138,62 @@ describe("continuous deployment safety boundary", () => {
     expect(deployDevelopment).toContain('"https://$hostname/api/health"');
     expect(readiness).toBeGreaterThan(0);
     expect(acceptance).toBeGreaterThan(readiness);
+    expect(deployDevelopment).toContain("for attempt in 1 2");
     expect(playwrightConfig).toContain(
       'const managedServer = process.env.PLAYWRIGHT_MANAGED_SERVER === "true";',
     );
     expect(playwrightConfig).toContain("webServer: managedServer ? undefined : {");
     expect(compose).toContain('PLAYWRIGHT_MANAGED_SERVER: "true"');
+  });
+
+  it("automatically restores dev and quarantines only the failed candidate", () => {
+    expect(deployDevelopment).toContain(
+      'readonly accepted_revision_file="$state_directory/accepted-revision"',
+    );
+    expect(deployDevelopment).toContain(
+      'readonly quarantine_file="$state_directory/quarantined-candidate"',
+    );
+    expect(deployDevelopment).toContain(
+      'readonly hard_failure_latch="$state_directory/deployment-hard-failed"',
+    );
+    expect(deployDevelopment).toContain(
+      'restore_accepted_revision "$candidate_revision" "$accepted_revision"',
+    );
+    expect(deployDevelopment).toContain(
+      'git_as_deploy reset --hard "$recovery_revision"',
+    );
+    expect(deployDevelopment).toContain(
+      'write_failure_state "$quarantine_file" quarantine "$accepted_revision"',
+    );
+    expect(deployDevelopment).toContain(
+      'release_is_accepted "$recovery_revision"',
+    );
+    expect(deployDevelopment).toContain(
+      "a newer CI-approved revision is required",
+    );
+    expect(deployDevelopment).toContain(
+      'write_failure_state "$hard_failure_latch" hard',
+    );
+  });
+
+  it("removes only exact failed-dev artifacts and never the persistent volume", () => {
+    expect(deployDevelopment).toContain(
+      '--filter label=com.docker.compose.project="$project"',
+    );
+    expect(deployDevelopment).toContain('docker rm --force -- "${container_ids[@]}"');
+    expect(deployDevelopment).toContain('docker image rm -- "$reference"');
+    expect(deployDevelopment).toContain(
+      '--filter "label=org.opencontainers.image.revision=$revision"',
+    );
+    expect(deployDevelopment).toContain(
+      'docker builder prune --force --max-used-space "$build_cache_limit"',
+    );
+    expect(deployDevelopment).toContain(
+      'revision_is_used_outside_project "$revision"',
+    );
+    expect(deployDevelopment).not.toContain("docker volume rm");
+    expect(deployDevelopment).not.toContain("down --volumes");
+    expect(deployDevelopment).not.toContain("docker system prune");
   });
 
   it("updates recovery trust before mutation and latches any failed release", () => {
