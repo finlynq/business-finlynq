@@ -3,10 +3,8 @@ import { describe, expect, it } from "vitest";
 
 const compose = readFileSync("docker-compose.yml", "utf8");
 const containerCaddy = readFileSync("deploy/Caddyfile.container", "utf8");
-const caddyfiles = [
-  containerCaddy,
-  readFileSync("deploy/Caddyfile.example", "utf8"),
-];
+const hostCaddy = readFileSync("deploy/Caddyfile.example", "utf8");
+const caddyfiles = [containerCaddy, hostCaddy];
 
 describe("shared edge isolation", () => {
   it("uses the unique production alias and attaches Caddy to the external EPM network", () => {
@@ -21,12 +19,16 @@ describe("shared edge isolation", () => {
     expect(caddyfile).toContain("epm.finlynq.com");
     expect(caddyfile).toMatch(/@planning_agent_api\s+path \/v1\/\*/u);
     expect(caddyfile).toMatch(/reverse_proxy\s+(?:epm-finlynq-api|127\.0\.0\.1):7100/u);
-    expect(caddyfile).toMatch(
-      /basic_auth\s*\{\s*import \/(?:etc\/caddy|config)\/epm-basic-auth\s*\}/u,
-    );
+    expect(caddyfile).toMatch(/basic_auth\s*\{\s*import \/(?:etc\/caddy|config)\/epm-basic-auth\s*\}/u);
     expect(caddyfile).toMatch(/reverse_proxy\s+(?:epm-finlynq-console|127\.0\.0\.1):7090[\s\S]*?header_up -Authorization/u);
     for (const header of ["X-Tenant-Id", "X-Principal-Id", "X-Planning-Principal-Id", "X-Policy", "X-Executor"]) {
       expect(caddyfile).toContain(`header_up -${header}`);
     }
+  });
+
+  it("keeps each EPM password include aligned with its deployment-specific mount", () => {
+    expect(containerCaddy).toContain("import /config/epm-basic-auth");
+    expect(containerCaddy).not.toContain("/etc/caddy/epm-basic-auth");
+    expect(hostCaddy).toContain("import /etc/caddy/epm-basic-auth");
   });
 });

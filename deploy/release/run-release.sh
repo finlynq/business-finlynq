@@ -372,6 +372,10 @@ run_compose() {
         [[ "$value" =~ ^[a-f0-9]{40}$ && ! "$value" =~ ^0+$ ]] \
           || fail "backup source revision override is invalid"
         ;;
+      BUSINESS_FINLYNQ_RELEASE_APP_IMAGE)
+        [[ "$value" =~ ^sha256:[a-f0-9]{64}$ ]] \
+          || fail "rollback-anchor application image override is invalid"
+        ;;
       DEMO_LOGIN_ENABLED|DEMO_WRITES_ENABLED|ACCOUNT_LOGIN_ENABLED|ACCOUNT_SIGNUP_ENABLED|AUTH_EMAIL_DELIVERY_ENABLED|SIGNUP_TURNSTILE_ENABLED|BUSINESS_WRITES_ENABLED|BANK_FEEDS_ENABLED)
         [[ "$value" == "true" || "$value" == "false" ]] \
           || fail "controlled Compose gate override is not boolean: $key"
@@ -747,6 +751,38 @@ capture_rehearsal_database_failure() {
   chmod 0600 -- "$evidence_directory/98-rehearsal-database.log" 2>/dev/null || true
 }
 
+restore_stopped_previous_app_anchor() {
+  local anchor_container anchor_image anchor_status
+
+  [[ "$mode" == "release" \
+    && "${previous_app_id:-}" =~ ^sha256:[a-f0-9]{64}$ \
+    && "${previous_app_revision:-}" =~ ^[a-f0-9]{40}$ ]] || return 1
+  [[ "$(docker image inspect --format '{{.Id}}' "$previous_app_id" 2>/dev/null)" \
+    == "$previous_app_id" ]] || return 1
+
+  compose_with_overrides \
+    "BUSINESS_FINLYNQ_RELEASE_APP_IMAGE=$previous_app_id" \
+    DEMO_LOGIN_ENABLED=false DEMO_WRITES_ENABLED=false \
+    ACCOUNT_LOGIN_ENABLED=false ACCOUNT_SIGNUP_ENABLED=false \
+    AUTH_EMAIL_DELIVERY_ENABLED=false SIGNUP_TURNSTILE_ENABLED=false \
+    BUSINESS_WRITES_ENABLED=false BANK_FEEDS_ENABLED=false -- \
+    up --no-start --no-deps --no-build --force-recreate app >/dev/null 2>&1 \
+    || return 1
+  anchor_container="$(compose ps --all --quiet app 2>/dev/null)"
+  [[ "$anchor_container" =~ ^[a-f0-9]{12,64}$ ]] || return 1
+  anchor_image="$(docker inspect --format '{{.Image}}' "$anchor_container" 2>/dev/null)"
+  anchor_status="$(docker inspect --format '{{.State.Status}}' "$anchor_container" 2>/dev/null)"
+  [[ "$anchor_image" == "$previous_app_id" && "$anchor_status" == "created" ]] || return 1
+  jq -n \
+    --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    --arg containerId "$anchor_container" \
+    --arg imageId "$anchor_image" \
+    --arg revision "$previous_app_revision" \
+    '{schemaVersion: 1, product: "business-finlynq", restoredAt: $at, containerId: $containerId, imageId: $imageId, revision: $revision, runtimeStatus: "created", writeGates: "disabled"}' \
+    >"$evidence_directory/97-failure-rollback-anchor.json" || return 1
+  chmod 0600 -- "$evidence_directory/97-failure-rollback-anchor.json" || return 1
+}
+
 on_exit() {
   local status=$?
   trap - EXIT ERR INT TERM
@@ -762,6 +798,13 @@ on_exit() {
     fi
     if [[ "$candidate_started" == "true" ]]; then
       compose --profile auth-email stop --timeout 30 app auth_email_worker >/dev/null 2>&1 || true
+      if [[ "$mode" == "release" ]]; then
+        if restore_stopped_previous_app_anchor; then
+          printf '%s\n' "Stopped previous-application rollback anchor restored for a safe retry." >&2
+        else
+          printf '%s\n' "URGENT: failed to restore the stopped previous-application rollback anchor." >&2
+        fi
+      fi
     fi
     jq -n \
       --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \

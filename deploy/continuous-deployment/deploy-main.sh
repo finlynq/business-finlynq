@@ -120,6 +120,7 @@ release_is_accepted() {
 if [[ "$source_revision" == "$candidate_revision" ]]; then
   release_is_accepted \
     || fail "main is checked out but the matching release is not accepted; automatic retry is unsafe"
+  bash "$repository/deploy/edge/reconcile-shared-edge.sh"
   printf 'Production already runs accepted main revision %s.\n' "$candidate_revision"
   exit 0
 fi
@@ -258,6 +259,7 @@ bash "$repository/deploy/release/run-release.sh" \
   --scheduler systemd
 
 release_is_accepted || fail "the release runner returned without an accepted live revision"
+bash "$repository/deploy/edge/reconcile-shared-edge.sh"
 mutated="false"
 trap - EXIT INT TERM
 printf 'Production deployment accepted for main revision %s.\n' "$candidate_revision"

@@ -36,7 +36,7 @@ sudo systemctl start business-finlynq-development-deployment.service
 
 The installer creates independent random database credentials and encryption secrets without printing them. It also creates the external development edge network and gives `deploy` narrowly scoped permission to start, inspect, and read the journal for the development deployment service.
 
-The environment initially sets `DEVELOPMENT_REQUIRE_PUBLIC_ACCEPTANCE=false` so the first internal deployment can be validated before Caddy/DNS activation. After the A record for `dev.business.finlynq.com` resolves to the application host and the shared edge has been recreated from the promoted Compose/Caddy configuration, change that value to `true`, run the browser acceptance container once, and keep it true for later automatic deployments.
+The environment initially sets `DEVELOPMENT_REQUIRE_PUBLIC_ACCEPTANCE=false` so the first internal deployment can be validated before Caddy/DNS activation. After the A record for `dev.business.finlynq.com` resolves to the application host, run `sudo bash /home/deploy/business-finlynq/deploy/edge/reconcile-shared-edge.sh` from the production checkout. The reconciler verifies the development backend and all other shared-edge deployments before converging only Caddy. Then change the value to `true`, run the browser acceptance container once, and keep it true for later automatic deployments.
 
 ## Promotion
 
@@ -59,4 +59,3 @@ sudo env \
   /usr/local/sbin/business-finlynq-deploy-development \
     --clear-failure "$failed_revision"
 ```
-

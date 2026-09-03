@@ -47,19 +47,21 @@ Install [deploy/Caddyfile.example](../../deploy/Caddyfile.example) into the host
 
 Set `TRUSTED_PROXY_HOPS=1` in the application deployment environment. The host Caddy is the only trusted hop and its default `reverse_proxy` handling replaces untrusted client-supplied forwarding values before sending `X-Forwarded-For` upstream. Do not expose `127.0.0.1:3100` beyond the local host.
 
-### Dedicated server with containerized Caddy
+### Dedicated multi-deployment server with containerized Caddy
 
-On a clean dedicated server where this stack should own public ports `80` and `443`, enable the optional `edge` profile:
+On the production server, exactly one Caddy container in the `business-finlynq` Compose project owns public ports `80` and `443`. It joins only the explicitly named external edge networks for Business Finlynq production, Business Finlynq development, EPM Finlynq, and Consult Finlynq; every sibling project retains its own containers, private networks, volumes, and lifecycle.
+
+Create all four external networks through their owning installation procedures, keep every referenced backend healthy, and install the EPM console password include at `/home/deploy/epm-finlynq/secrets/external-basic-auth.caddy` as a non-empty `root:root` mode-`0400` regular file. Then reconcile the shared edge from the canonical production checkout:
 
 ```bash
-docker compose -p business-finlynq build
-docker compose -p business-finlynq --profile edge up --detach --wait app edge
-docker compose -p business-finlynq --profile edge ps
+sudo bash /home/deploy/business-finlynq/deploy/edge/reconcile-shared-edge.sh
 ```
 
-The `edge` service uses [deploy/Caddyfile.container](../../deploy/Caddyfile.container), reaches the application only over `business_finlynq_edge`, and obtains and renews TLS certificates automatically. It publishes TCP `80`/`443` and UDP `443`; make sure the host firewall allows those ports and no host service or other container is already listening on them. Set `BUSINESS_FINLYNQ_HOSTNAME=business.finlynq.com`, and point the hostname's DNS records to the server before starting the profile. Do not install the host-proxy example in this arrangement.
+The reconciler holds the cross-deployment host lock, validates the reviewed Caddyfile and exact read-only secret mount in a disposable container, verifies every sibling backend before touching the listener, and runs a no-build/no-dependency Compose convergence for `edge` only. It deliberately does not use `down`, delete networks or volumes, restart sibling services, or force-recreate an unchanged edge. Production continuous deployment runs the same reconciliation after release acceptance and on no-op checks, so reviewed route or mount drift is repaired without coupling the sibling deployments.
 
-This arrangement also has exactly one trusted hop. Set `TRUSTED_PROXY_HOPS=1`; the application container must remain reachable only from the Compose edge network and the loopback diagnostic mapping. The containerized Caddy also removes the internal-health detail marker from every proxied request.
+The `edge` service uses [deploy/Caddyfile.container](../../deploy/Caddyfile.container), reaches each application only over its external edge network, and obtains and renews TLS certificates automatically. It publishes TCP `80`/`443` and UDP `443`; make sure the host firewall allows those ports and no host service or second container is listening on them. Set the four hostname variables in `/etc/business-finlynq/compose.env` and point their DNS records to the server before reconciliation. Do not install the host-proxy example in this arrangement.
+
+This arrangement also has exactly one trusted hop. Set `TRUSTED_PROXY_HOPS=1`; each application container must remain reachable only from its own edge network and any reviewed loopback diagnostic mapping. The containerized Caddy also removes the internal-health detail marker from every Business Finlynq request.
 
 Public `/api/health` performs the complete readiness check but returns only status. Operators retrieve checks and revision directly from `http://127.0.0.1:3100/api/health` with `X-Business-Finlynq-Internal-Health: 1`; never send that marker through the public hostname and never authorize health details from `X-Forwarded-For` or `X-Real-IP`. Caddy's active `/api/health` upstream probe needs no marker because it consumes only the HTTP status.
 

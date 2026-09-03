@@ -8,6 +8,7 @@ const read = (...parts: string[]) => readFileSync(join(root, ...parts), "utf8");
 const workflow = read(".github", "workflows", "signal-production-deployment.yml");
 const qualityGateWorkflow = read(".github", "workflows", "ci.yml");
 const deployMain = read("deploy", "continuous-deployment", "deploy-main.sh");
+const reconcileSharedEdge = read("deploy", "edge", "reconcile-shared-edge.sh");
 const deployDevelopment = read("deploy", "development", "deploy-development.sh");
 const installDevelopment = read("deploy", "development", "install-development.sh");
 const compose = read("docker-compose.yml");
@@ -47,6 +48,14 @@ describe("continuous deployment safety boundary", () => {
     expect(deployMain).toContain('git_as_deploy merge --ff-only "$candidate_revision"');
     expect(deployMain).toContain('bash "$repository/deploy/release/run-release.sh"');
     expect(deployMain).toContain("--scheduler systemd");
+    const releaseAccepted = deployMain.lastIndexOf(
+      'release_is_accepted || fail "the release runner returned without an accepted live revision"',
+    );
+    const edgeReconciled = deployMain.lastIndexOf(
+      'bash "$repository/deploy/edge/reconcile-shared-edge.sh"',
+    );
+    expect(edgeReconciled).toBeGreaterThan(releaseAccepted);
+    expect(deployMain.indexOf('mutated="false"', edgeReconciled)).toBeGreaterThan(edgeReconciled);
   });
 
   it("signals dev only after its complete quality gate succeeds", () => {
@@ -95,6 +104,42 @@ describe("continuous deployment safety boundary", () => {
     expect(compose).toContain("business_finlynq_development_edge:");
     expect(caddy).toContain("BUSINESS_FINLYNQ_DEVELOPMENT_HOSTNAME:dev.business.finlynq.com");
     expect(caddy).toContain("reverse_proxy development-app:3000");
+    expect(reconcileSharedEdge).toContain(sharedLock);
+  });
+
+  it("reconciles only the shared edge after validating every attached deployment", () => {
+    expect(reconcileSharedEdge).toContain('[[ "$(id -u)" == 0 ]]');
+    expect(reconcileSharedEdge).toContain('stat -c \'%U:%G:%a\' -- "$external_basic_auth"');
+    expect(reconcileSharedEdge).toContain('== "root:root:400"');
+    expect(reconcileSharedEdge).toContain("/config/epm-basic-auth");
+    expect(reconcileSharedEdge).toContain("--project-name business-finlynq");
+    for (const network of [
+      "business_finlynq_edge",
+      "business_finlynq_development_edge",
+      "epm_finlynq_edge",
+      "consult_finlynq_edge",
+    ]) {
+      expect(reconcileSharedEdge).toContain(network);
+    }
+    for (const backend of [
+      "production-app:3000/api/health",
+      "development-app:3000/api/health",
+      "epm-finlynq-api:7100/health",
+      "epm-finlynq-console:7090/api/health",
+      "consult-finlynq-app:8080/",
+    ]) {
+      expect(reconcileSharedEdge).toContain(backend);
+    }
+    expect(reconcileSharedEdge).toContain("caddy validate --config /etc/caddy/Caddyfile");
+    expect(reconcileSharedEdge).toContain("up --detach --no-deps --no-build");
+    expect(reconcileSharedEdge).toContain("--wait --wait-timeout 120 edge");
+    expect(reconcileSharedEdge).not.toMatch(/^[ \t]*(?!#)[^\n]*--force-recreate/mu);
+    expect(reconcileSharedEdge).not.toMatch(/^[ \t]*(?!#)[^\n]*\bdown\b/mu);
+    expect(reconcileSharedEdge).toContain("https://business.finlynq.com/api/health");
+    expect(reconcileSharedEdge).toContain("https://dev.business.finlynq.com/api/health");
+    expect(reconcileSharedEdge).toContain("https://epm.finlynq.com/");
+    expect(reconcileSharedEdge).toContain('[[ "$epm_status" == "401" ]]');
+    expect(reconcileSharedEdge).toContain("https://consult.finlynq.com/");
   });
 
   it("starts development with external identity integrations disabled", () => {

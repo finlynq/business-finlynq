@@ -6,9 +6,10 @@ Business Finlynq production has one deployable branch: `main`. The separate `dev
 - `origin/main` is a fast-forward descendant of the running revision;
 - the exact `deploy-production-<full-sha>` tag points to that `origin/main` commit;
 - the off-server backup receiver atomically accepts the running and candidate revisions; and
-- the existing production release runner accepts backup, migration, RLS/grant, readiness, browser, scheduler, and evidence checks.
+- the existing production release runner accepts backup, migration, RLS/grant, readiness, browser, scheduler, and evidence checks; and
+- the shared-edge reconciler validates every attached production, development, EPM, and Consult backend before converging only the Caddy service.
 
-Production and development acquire the same host deployment lock, preventing their builds and migrations from running concurrently on the shared server.
+Production, development, and shared-edge reconciliation acquire the same host deployment lock, preventing builds, migrations, and public-route changes from overlapping on the shared server. A no-op production check also runs edge reconciliation, which repairs reviewed Compose drift without force-recreating an unchanged proxy or operating on a sibling project's containers, networks, or volumes.
 
 No GitHub credential or general remote shell is stored on the production host. The production host uses a dedicated outbound Ed25519 key whose receiver-side forced command can only replace the backup receiver's revision allowlist with an already-trusted source plus one candidate. The production timer has no path for deploying a feature branch, an untagged commit, a force-pushed history, or an unreviewed environment change.
 

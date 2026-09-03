@@ -444,6 +444,10 @@ describe("commit-addressed release orchestration", () => {
     expect(release).toContain('compose_with_overrides BUSINESS_WRITES_ENABLED=false BANK_FEEDS_ENABLED=false --');
     expect(release).toContain('AUTH_EMAIL_DELIVERY_ENABLED=false SIGNUP_TURNSTILE_ENABLED=false');
     expect(release).toContain('previous_container="$(compose ps --all --quiet app)"');
+    expect(release).toContain("restore_stopped_previous_app_anchor() {");
+    expect(release).toContain('"BUSINESS_FINLYNQ_RELEASE_APP_IMAGE=$previous_app_id"');
+    expect(release).toContain("up --no-start --no-deps --no-build --force-recreate app");
+    expect(release).toContain("97-failure-rollback-anchor.json");
     expect(release).toContain('for _ in {1..30}; do');
     expect(release).toContain('public readiness did not become ready (last HTTP ${public_status:-unavailable})');
     expect(release).toContain('quiesced candidate gate is not disabled: $disabled_gate');
