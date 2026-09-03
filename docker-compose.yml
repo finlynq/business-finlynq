@@ -617,7 +617,7 @@ services:
       - "443:443/udp"
     volumes:
       - ./deploy/Caddyfile.container:/etc/caddy/Caddyfile:ro
-      - /home/deploy/epm-finlynq/secrets/external-basic-auth.caddy:/etc/caddy/epm-basic-auth:ro
+      - /home/deploy/epm-finlynq/secrets/external-basic-auth.caddy:/config/epm-basic-auth:ro
       - business_finlynq_caddy_data:/data
       - business_finlynq_caddy_config:/config
     depends_on:
