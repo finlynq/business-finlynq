@@ -359,6 +359,32 @@ release_is_accepted() {
   fi
 }
 
+ensure_revision_runtime_images() {
+  local revision="$1" reference image_revision needs_build=false
+  local -a services references
+  validate_revision "$revision"
+  services=(database app)
+  references=("business-finlynq-database:$revision" "business-finlynq-app:$revision")
+  if [[ "$(read_environment_value ACCOUNT_LOGIN_ENABLED)" == true ]]; then
+    services+=(auth_email_worker)
+    references+=("business-finlynq-auth-worker:$revision")
+  fi
+
+  for reference in "${references[@]}"; do
+    image_revision="$(docker image inspect --format \
+      '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$reference" 2>/dev/null || true)"
+    [[ "$image_revision" == "$revision" ]] || needs_build=true
+  done
+  if [[ "$needs_build" == true ]]; then
+    compose build "${services[@]}" || return 1
+  fi
+  for reference in "${references[@]}"; do
+    image_revision="$(docker image inspect --format \
+      '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$reference" 2>/dev/null || true)"
+    [[ "$image_revision" == "$revision" ]] || return 1
+  done
+}
+
 start_revision_runtime() {
   compose up --detach --wait --no-deps --no-build database || return 1
   compose up --detach --wait --no-deps --no-build app || return 1
@@ -393,6 +419,7 @@ restore_accepted_revision() {
   fi
 
   ( verify_compose_boundary ) || return 1
+  ensure_revision_runtime_images "$recovery_revision" || return 1
   start_revision_runtime || return 1
   ( release_is_accepted "$recovery_revision" )
 }

@@ -175,6 +175,10 @@ describe("continuous deployment safety boundary", () => {
       'release_is_accepted "$recovery_revision"',
     );
     expect(deployDevelopment).toContain(
+      'ensure_revision_runtime_images "$recovery_revision"',
+    );
+    expect(deployDevelopment).toContain('compose build "${services[@]}"');
+    expect(deployDevelopment).toContain(
       "a newer CI-approved revision is required",
     );
     expect(deployDevelopment).toContain(
