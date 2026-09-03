@@ -1451,6 +1451,7 @@ configs:
 
 volumes:
   business_finlynq_clamav:
+    name: ${BUSINESS_FINLYNQ_PGDATA_VOLUME:-business_finlynq_pgdata}_clamav
   business_finlynq_pgdata:
     name: ${BUSINESS_FINLYNQ_PGDATA_VOLUME:-business_finlynq_pgdata}
   business_finlynq_caddy_data:
@@ -1490,8 +1491,10 @@ secrets:
 
 networks:
   business_finlynq_evidence:
+    name: ${BUSINESS_FINLYNQ_PRIVATE_NETWORK:-business_finlynq_private}_evidence
     internal: true
   business_finlynq_scanner_egress:
+    name: ${BUSINESS_FINLYNQ_EGRESS_NETWORK:-business_finlynq_egress}_scanner
   business_finlynq_private:
     name: ${BUSINESS_FINLYNQ_PRIVATE_NETWORK:-business_finlynq_private}
     internal: true

@@ -701,6 +701,36 @@ if (rehearsalAppPort?.host_ip !== "127.0.0.1" || rehearsalAppPort?.published !==
   fail("release rehearsal app is not restricted to its unique loopback port");
 }
 
+
+const developmentRendered = JSON.parse(execFileSync("docker", [
+  "compose", "--project-name", "business-finlynq-development",
+  "--profile", "auth-email", "config", "--format", "json",
+], {
+  encoding: "utf8", maxBuffer: 16 * 1024 * 1024,
+  env: {
+    ...process.env,
+    BUSINESS_FINLYNQ_HOSTNAME: "dev.business.finlynq.com",
+    BUSINESS_FINLYNQ_APP_ORIGIN: "https://dev.business.finlynq.com",
+    BUSINESS_FINLYNQ_APP_PORT: "3200",
+    BUSINESS_FINLYNQ_APP_NETWORK_ALIAS: "development-app",
+    BUSINESS_FINLYNQ_PGDATA_VOLUME: "business_finlynq_development_pgdata",
+    BUSINESS_FINLYNQ_CADDY_DATA_VOLUME: "business_finlynq_development_caddy_data",
+    BUSINESS_FINLYNQ_CADDY_CONFIG_VOLUME: "business_finlynq_development_caddy_config",
+    BUSINESS_FINLYNQ_PRIVATE_NETWORK: "business_finlynq_development_private",
+    BUSINESS_FINLYNQ_EGRESS_NETWORK: "business_finlynq_development_egress",
+    BUSINESS_FINLYNQ_EDGE_NETWORK: "business_finlynq_development_edge",
+    BUSINESS_FINLYNQ_RESTORE_DRILL_NETWORK: "business_finlynq_development_restore_drill",
+  },
+}));
+for (const resource of [
+  ...Object.values(developmentRendered.volumes ?? {}),
+  ...Object.values(developmentRendered.networks ?? {}),
+]) {
+  if (!resource.name?.startsWith("business_finlynq_development_")) {
+    fail(`development resource is not deployment-isolated: ${resource.name ?? "unnamed"}`);
+  }
+}
+
 const rollbackImageId = `sha256:${"b".repeat(64)}`;
 const applicationRollbackRendered = execFileSync(
   "docker",
