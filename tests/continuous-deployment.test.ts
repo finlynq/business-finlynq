@@ -160,6 +160,12 @@ describe("continuous deployment safety boundary", () => {
       'restore_accepted_revision "$candidate_revision" "$accepted_revision"',
     );
     expect(deployDevelopment).toContain(
+      'restore_accepted_revision "$legacy_candidate" "$legacy_source"',
+    );
+    expect(deployDevelopment).toContain(
+      'write_failure_state "$quarantine_file" quarantine "$legacy_source" "$legacy_candidate"',
+    );
+    expect(deployDevelopment).toContain(
       'git_as_deploy reset --hard "$recovery_revision"',
     );
     expect(deployDevelopment).toContain(

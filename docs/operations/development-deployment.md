@@ -96,6 +96,8 @@ After verified recovery, the failed SHA is quarantined rather than globally latc
 
 The same quarantined SHA is not retried. Its cleanup is retried automatically when needed, and a newer fast-forward SHA with its own successful CI signal is evaluated without operator acknowledgement. Only an inability to verify the restored runtime creates `deployment-hard-failed` and stops subsequent candidates for manual recovery; this is the safety boundary for potentially incompatible persistent-database changes.
 
+On the one-time transition from the old global latch, the latch’s `sourceRevision` is treated as the recovery authority. The deployer restores and verifies that revision, quarantines and removes the recorded failed candidate, and only then evaluates the newer CI-approved SHA.
+
 ## Promotion
 
 Develop and test on `dev`, then merge the exact accepted `dev` revision into `main` with a normal fast-forward or reviewed pull request. Never force-push either deployment branch. Production remains unchanged until the resulting `main` commit passes its own quality gate and receives its separate production deployment signal.

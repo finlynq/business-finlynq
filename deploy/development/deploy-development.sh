@@ -424,19 +424,36 @@ if [[ -e "$legacy_failure_latch" || -L "$legacy_failure_latch" ]]; then
   legacy_candidate="$(read_state_value "$legacy_failure_latch" candidateRevision)"
   validate_revision "$legacy_source"
   validate_revision "$legacy_candidate"
-  if [[ "$legacy_candidate" == "$source_revision" ]] \
-    && release_is_accepted "$source_revision"; then
-    write_accepted_revision "$source_revision"
+  git_as_deploy merge-base --is-ancestor "$legacy_source" "$legacy_candidate" \
+    || fail "the legacy recovery revision is not an ancestor of its failed candidate"
+
+  legacy_recovered=false
+  if [[ "$source_revision" == "$legacy_candidate" ]] \
+    && restore_accepted_revision "$legacy_candidate" "$legacy_source"; then
+    source_revision="$legacy_source"
+    legacy_recovered=true
+  elif [[ "$source_revision" == "$legacy_source" ]] \
+    && release_is_accepted "$legacy_source"; then
+    legacy_recovered=true
+  fi
+
+  if [[ "$legacy_recovered" == true ]]; then
+    write_accepted_revision "$legacy_source"
+    cleanup_complete=true
+    remove_revision_artifacts "$legacy_candidate" || cleanup_complete=false
+    bound_build_cache || cleanup_complete=false
+    write_failure_state "$quarantine_file" quarantine "$legacy_source" "$legacy_candidate" \
+      legacy-failure-latch "$legacy_source" "$cleanup_complete"
     rm -- "$legacy_failure_latch"
     sync -f -- "$state_directory"
-    printf 'Migrated the legacy failure latch after verifying live revision %s.\n' \
-      "$source_revision"
+    printf 'Restored legacy accepted revision %s and quarantined failed candidate %s (cleanupComplete=%s).\n' \
+      "$legacy_source" "$legacy_candidate" "$cleanup_complete"
   else
     write_failure_state "$hard_failure_latch" hard "$legacy_source" "$legacy_candidate" \
       legacy-failure-latch "" false
     rm -- "$legacy_failure_latch"
     sync -f -- "$state_directory"
-    fail "legacy failed deployment could not be verified as the live revision; hard recovery state recorded"
+    fail "legacy accepted revision could not be restored and verified; hard recovery state recorded"
   fi
 fi
 
