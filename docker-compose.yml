@@ -354,6 +354,40 @@ services:
         max-size: "10m"
         max-file: "3"
 
+  evidence_scanner:
+    image: clamav/clamav@sha256:f0954d679017eb6d48221e2b2be3ac5457bf278a844f39b672376f55a085f591
+    pull_policy: missing
+    user: "100:101"
+    entrypoint: ["/init-unprivileged"]
+    environment:
+      FRESHCLAM_CHECKS: "12"
+    configs:
+      - source: evidence_clamd_config
+        target: /etc/clamav/clamd.conf
+    volumes:
+      - business_finlynq_clamav:/var/lib/clamav
+    tmpfs:
+      - /tmp:size=128m,mode=1777,noexec,nosuid,nodev
+      - /var/log/clamav:size=8m,uid=100,gid=101,mode=0700
+    read_only: true
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "clamdcheck.sh"]
+      interval: 30s
+      timeout: 10s
+      start_period: 180s
+      retries: 5
+    networks: [business_finlynq_evidence, business_finlynq_scanner_egress]
+    cpus: "1.00"
+    mem_limit: 3g
+    pids_limit: 64
+    logging:
+      options:
+        max-size: "10m"
+        max-file: "3"
+
   app:
     image: business-finlynq-app:${BUSINESS_FINLYNQ_IMAGE_REVISION:?set BUSINESS_FINLYNQ_IMAGE_REVISION}
     pull_policy: never
@@ -383,6 +417,8 @@ services:
       AUTH_EMAIL_FROM: ${AUTH_EMAIL_FROM:-}
       AUTH_EMAIL_REPLY_TO: ${AUTH_EMAIL_REPLY_TO:-}
       BUSINESS_WRITES_ENABLED: ${BUSINESS_WRITES_ENABLED:-false}
+      EVIDENCE_SCANNER_HOST: evidence_scanner
+      EVIDENCE_SCANNER_PORT: "3310"
       BANK_FEEDS_ENABLED: ${BANK_FEEDS_ENABLED:-false}
       BUSINESS_FINLYNQ_IMAGE_REVISION: ${BUSINESS_FINLYNQ_IMAGE_REVISION:-unknown}
       ORGANIZATION_ROOT_KEK_FILE: /run/secrets/business_finlynq_root_kek
@@ -399,6 +435,8 @@ services:
     depends_on:
       bootstrap_demo:
         condition: service_completed_successfully
+      evidence_scanner:
+        condition: service_healthy
     read_only: true
     init: true
     tmpfs:
@@ -410,6 +448,7 @@ services:
     networks:
       business_finlynq_private:
       business_finlynq_egress:
+      business_finlynq_evidence:
       business_finlynq_edge:
         aliases:
           - ${BUSINESS_FINLYNQ_APP_NETWORK_ALIAS:-production-app}
@@ -1406,7 +1445,12 @@ services:
         max-size: "10m"
         max-file: "3"
 
+configs:
+  evidence_clamd_config:
+    file: ./deploy/evidence/clamd.conf
+
 volumes:
+  business_finlynq_clamav:
   business_finlynq_pgdata:
     name: ${BUSINESS_FINLYNQ_PGDATA_VOLUME:-business_finlynq_pgdata}
   business_finlynq_caddy_data:
@@ -1445,6 +1489,9 @@ secrets:
     file: ${RESTORE_DATABASE_PASSWORD_FILE:-./deploy/backup/not-configured}
 
 networks:
+  business_finlynq_evidence:
+    internal: true
+  business_finlynq_scanner_egress:
   business_finlynq_private:
     name: ${BUSINESS_FINLYNQ_PRIVATE_NETWORK:-business_finlynq_private}
     internal: true

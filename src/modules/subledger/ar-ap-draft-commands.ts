@@ -1,4 +1,5 @@
 import "server-only";
+import { loadDocumentEvidence } from "./evidence-store";
 
 import { withTenantTransaction } from "@/db/transaction";
 import {
@@ -92,7 +93,13 @@ export async function getCurrentSubledgerDocument(
       sourceNumber,
       false,
     );
-    return row ? recordFromRow(row) : null;
+    if (!row) return null;
+    const document = recordFromRow(row);
+    return { ...document, attachments: await loadDocumentEvidence(client, {
+      organizationId: document.organizationId, ownerModule: document.ownerModule,
+      id: document.id, sourceNumber: document.sourceNumber, version: document.version,
+      evidence: "evidence" in document.snapshot ? document.snapshot.evidence : undefined,
+    }) };
   });
 }
 
@@ -224,7 +231,11 @@ export async function editBusinessDocumentDraft(
     } = command;
     void _idempotencyKey;
     void _expectedVersion;
-    const snapshot = buildBusinessDocumentSnapshot(documentInput, setup.functional_currency);
+    const prior = recordFromRow(current).snapshot;
+    const snapshot = {
+      ...buildBusinessDocumentSnapshot(documentInput, setup.functional_currency),
+      ...("evidence" in prior ? { evidence: prior.evidence } : {}),
+    };
     await validateDraftConfiguration(client, unparsedCommand.context, snapshot);
     const row = await appendSourceDocument(client, {
       context: unparsedCommand.context,

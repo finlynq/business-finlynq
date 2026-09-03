@@ -66,6 +66,24 @@ export async function loadActiveOrganizationKey(
   return { keyVersion: stored.version, dek };
 }
 
+
+export async function loadOrganizationKeyVersion(
+  client: PoolClient, organizationId: string, version: number,
+): Promise<ActiveOrganizationKey> {
+  const result = await client.query<StoredKeyEnvelope>(
+    "SELECT version, key_provider, wrapped_dek FROM organization_key_versions WHERE organization_id = $1 AND version = $2",
+    [organizationId, version],
+  );
+  const stored = result.rows[0];
+  if (!stored) throw new Error("Organization encryption key version is unavailable");
+  const wrapped = parseWrappedKey(stored.wrapped_dek);
+  if (stored.key_provider !== wrapped.provider || stored.version !== wrapped.keyVersion) {
+    throw new Error("Organization key envelope does not match its database metadata");
+  }
+  return { keyVersion: stored.version,
+    dek: withRootProvider((provider) => provider.unwrapOrganizationKey(organizationId, wrapped)) };
+}
+
 export async function provisionOrganizationKey(
   context: TenantTransactionContext,
 ): Promise<Readonly<{ keyVersion: number; alreadyProvisioned: boolean }>> {

@@ -1,6 +1,8 @@
 import "server-only";
+import { EVIDENCE_MCP_TOOLS } from "./evidence-tools";
 
 import { z } from "zod";
+import { validateSettlementFunding } from "@/modules/subledger/settlement-funding";
 import { PERMISSIONS } from "@/modules/identity/permissions";
 import { createManualJournal, reversePostedJournal } from "@/modules/ledger/journal-service";
 import { postJournal } from "@/modules/ledger/posting-service";
@@ -107,7 +109,7 @@ const createDocumentInput = createBusinessDocumentSchema.omit({ kind: true });
 const editDocumentInput = editBusinessDocumentSchema.omit({ kind: true });
 const issueDocumentInput = issueBusinessDocumentSchema.omit({ kind: true });
 const voidDocumentInput = voidBusinessDocumentSchema.omit({ kind: true });
-const settlementInput = recordSettlementSchema.omit({ kind: true });
+const settlementInput = z.object(recordSettlementSchema.shape).omit({ kind: true }).strict().superRefine(validateSettlementFunding);
 const voidSettlementInput = voidSettlementSchema.omit({ kind: true });
 
 function createDocumentTool(input: Readonly<{
@@ -233,6 +235,7 @@ function voidSettlementTool(input: Readonly<{
 }
 
 export const DAILY_MCP_TOOLS: readonly McpToolDefinition[] = [
+  ...EVIDENCE_MCP_TOOLS,
   defineMcpTool({
     policy: { name: "finlynq_daily_get_accounting_context", group: "DAILY", access: "READ", permission: PERMISSIONS.readMcpLedger },
     title: "Get accounting entry context",
@@ -329,7 +332,7 @@ export const DAILY_MCP_TOOLS: readonly McpToolDefinition[] = [
   issueDocumentTool({ name: "finlynq_daily_issue_supplier_bill", title: "Issue supplier bill", description: "Issue and post the exact current supplier-bill draft, creating its tax evidence, journal, subledger event, and supplier open item atomically.", kind: "SUPPLIER_BILL", permission: PERMISSIONS.postPayables }),
   voidDocumentTool({ name: "finlynq_daily_void_supplier_bill", title: "Void supplier bill", description: "Void an issued supplier bill by creating immutable document and journal reversals in the selected open period.", kind: "SUPPLIER_BILL", permission: PERMISSIONS.voidPayables }),
   settlementTool({ name: "finlynq_daily_record_customer_receipt", title: "Record customer receipt", description: "Record an actual customer receipt and allocate it to specific receivable open items. This records settlement evidence; it does not initiate a bank payment.", kind: "CUSTOMER_RECEIPT", permission: PERMISSIONS.settleReceivables }),
-  settlementTool({ name: "finlynq_daily_record_supplier_payment", title: "Record supplier payment", description: "Record an actual supplier payment and allocate it to specific payable open items. This records settlement evidence; it does not initiate a bank payment.", kind: "SUPPLIER_PAYMENT", permission: PERMISSIONS.settlePayables }),
+  settlementTool({ name: "finlynq_daily_record_supplier_payment", title: "Record supplier settlement", description: "Record supplier settlement evidence against exact payable open items. Use settlementAccountCombinationId and settlementMethod BANK (non-control asset), CORPORATE_CARD, SHAREHOLDER_ADVANCE, EMPLOYEE_REIMBURSEMENT, or OTHER_NON_CASH (non-control liability). Legacy bankAccountCombinationId remains supported for BANK. This does not initiate a transfer or bank payment.", kind: "SUPPLIER_PAYMENT", permission: PERMISSIONS.settlePayables }),
   voidSettlementTool({ name: "finlynq_daily_void_customer_receipt", title: "Void customer receipt", description: "Reverse a recorded customer receipt and its exact open-item allocations without deleting accounting history.", kind: "CUSTOMER_RECEIPT", permission: PERMISSIONS.voidReceivables }),
   voidSettlementTool({ name: "finlynq_daily_void_supplier_payment", title: "Void supplier payment", description: "Reverse a recorded supplier payment and its exact open-item allocations without deleting accounting history.", kind: "SUPPLIER_PAYMENT", permission: PERMISSIONS.voidPayables }),
   defineMcpTool({

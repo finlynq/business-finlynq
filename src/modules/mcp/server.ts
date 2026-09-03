@@ -1,4 +1,5 @@
 import "server-only";
+import { MutationBodyError, readBoundedJson } from "@/modules/ledger/request-body";
 
 import {
   McpServer,
@@ -73,7 +74,20 @@ export async function handleMcpRequest(request: Request): Promise<Response> {
   });
   const authorization = await gate(request);
   if (authorization instanceof Response) return authorization;
-  const response = await handler.fetch(request, { authInfo: authorization });
+  let boundedRequest = request;
+  if (request.method === "POST") {
+    try {
+      const body = await readBoundedJson(request, 3 * 1024 * 1024);
+      const headers = new Headers(request.headers);
+      headers.delete("content-length");
+      boundedRequest = new Request(request.url, { method: "POST", headers, body: JSON.stringify(body), signal: request.signal });
+    } catch (error) {
+      if (!(error instanceof MutationBodyError)) throw error;
+      return Response.json({ jsonrpc: "2.0", id: null, error: { code: -32600, message: error.message } },
+        { status: error.status, headers: { "Cache-Control": "private, no-store" } });
+    }
+  }
+  const response = await handler.fetch(boundedRequest, { authInfo: authorization });
   const headers = new Headers(response.headers);
   headers.set("cache-control", "private, no-store");
   headers.set("vary", "Authorization, MCP-Protocol-Version");

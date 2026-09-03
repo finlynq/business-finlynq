@@ -27,6 +27,8 @@ jobs:
           --health-retries 10
 
     env:
+      EVIDENCE_SCANNER_HOST: 127.0.0.1
+      EVIDENCE_SCANNER_PORT: "53310"
       POSTGRES_PASSWORD: postgres
       DATABASE_MIGRATION_URL: postgresql://postgres:postgres@127.0.0.1:5432/business_finlynq_test
       TEST_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/business_finlynq_test
@@ -58,6 +60,7 @@ jobs:
         with:
           node-version: 24
           cache: npm
+      - run: sh deploy/evidence/start-test-scanner.sh
       - run: npm ci
       - name: Verify Drizzle declaration and snapshot agreement
         run: npm run db:check-drift

@@ -92,8 +92,21 @@ if (secretSources(worker).includes("business_finlynq_root_kek")) fail("auth_emai
 if ((worker.ports ?? []).length > 0) fail("auth_email_worker publishes a port");
 if ((worker.networks ?? {}).business_finlynq_edge) fail("auth_email_worker is attached to the public edge network");
 
+const scanner = services.evidence_scanner;
+if (!scanner || scanner.image !== "clamav/clamav@sha256:f0954d679017eb6d48221e2b2be3ac5457bf278a844f39b672376f55a085f591"
+  || scanner.user !== "100:101" || scanner.read_only !== true
+  || !(scanner.cap_drop ?? []).includes("ALL") || secretSources(scanner).length
+  || (scanner.ports ?? []).length || Object.keys(scanner.environment ?? {}).some((key) => /PASSWORD|SECRET|KEY/.test(key))) {
+  fail("evidence scanner must be pinned, non-root, read-only, and receive no credentials or published ports");
+}
+const scannerNetworks = Object.keys(scanner.networks ?? {}).sort().join(",");
+if (scannerNetworks !== "business_finlynq_evidence,business_finlynq_scanner_egress"
+  || configuration.networks?.business_finlynq_evidence?.internal !== true) {
+  fail("evidence scanner must be isolated from the database and public edge");
+}
 const app = services.app;
 if (!app) fail("app service is missing");
+if (dependencyCondition(app, "evidence_scanner") !== "service_healthy" || app.environment?.EVIDENCE_SCANNER_HOST !== "evidence_scanner") fail("app evidence scanning must be mandatory and health-gated");
 const expectedReleaseImages = {
   database: `business-finlynq-database:${process.env.BUSINESS_FINLYNQ_IMAGE_REVISION}`,
   app: `business-finlynq-app:${process.env.BUSINESS_FINLYNQ_IMAGE_REVISION}`,

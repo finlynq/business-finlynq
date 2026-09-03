@@ -1,5 +1,6 @@
 import type { PoolClient } from "pg";
 import { z } from "zod";
+import { resolveSettlementFunding } from "./settlement-funding";
 import type { TenantTransactionContext } from "@/db/transaction";
 import {
   DOCUMENT_KIND_POLICY,
@@ -362,9 +363,12 @@ export function assertSettlementMappings(
       control.control_kind !== expectedControlKind) {
     throw new Error("Settlement control account combination does not match the party account");
   }
-  const bank = combinations.get(command.bankAccountCombinationId);
-  if (!bank || bank.control_kind !== "NONE" || bank.account_class !== "ASSET") {
-    throw new Error("Settlement bank mapping requires a non-control asset account");
+  const funding = resolveSettlementFunding(command);
+  const account = combinations.get(funding.accountCombinationId);
+  if (!account || account.control_kind !== "NONE" || account.account_class !== funding.accountClass) {
+    throw new Error(funding.method === "BANK"
+      ? "Settlement bank mapping requires a non-control asset account"
+      : `Settlement ${funding.method} mapping requires a non-control liability account`);
   }
   const gain = combinations.get(command.realizedFxGainAccountCombinationId);
   if (!gain || gain.control_kind !== "NONE" || gain.account_class !== "REVENUE") {

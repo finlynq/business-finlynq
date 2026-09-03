@@ -53,7 +53,7 @@ export function mcpArgumentsHash(value: unknown): string {
 
 export function safeArgumentsSummary(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) return {};
-  const sensitive = /secret|password|token|credential|private|cipher|setup.?url|registration|tax.?id/i;
+  const sensitive = /secret|password|token|credential|private|cipher|content.?base64|filename|setup.?url|registration|tax.?id/i;
   const output: Record<string, unknown> = {};
   for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
     if (sensitive.test(key)) {

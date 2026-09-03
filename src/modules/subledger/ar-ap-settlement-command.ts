@@ -40,12 +40,13 @@ import {
   settlementReplayResult,
 } from "./ar-ap-persistence";
 import type { RecordSettlementCommand, SettlementResult } from "./ar-ap-types";
+import { normalizeSettlementFunding, resolveSettlementFunding } from "./settlement-funding";
 
 export async function recordCustomerReceiptOrSupplierPayment(
   unparsedCommand: RecordSettlementCommand,
 ): Promise<SettlementResult> {
   assertTenantWritesEnabled(unparsedCommand.context);
-  const command = recordSettlementSchema.parse(withoutContext(unparsedCommand));
+  const command = normalizeSettlementFunding(recordSettlementSchema.parse(withoutContext(unparsedCommand)));
   assertSettlementCommandAmounts(command);
   const policy = SETTLEMENT_KIND_POLICY[command.kind];
   const idempotencyKey = subledgerOperationKey(
@@ -106,7 +107,7 @@ export async function recordCustomerReceiptOrSupplierPayment(
       accountingDate: command.accountingDate,
       ids: [
         command.controlAccountCombinationId,
-        command.bankAccountCombinationId,
+        resolveSettlementFunding(command).accountCombinationId,
         command.realizedFxGainAccountCombinationId,
         command.realizedFxLossAccountCombinationId,
         ...(command.fxRoundingAccountCombinationId ? [command.fxRoundingAccountCombinationId] : []),

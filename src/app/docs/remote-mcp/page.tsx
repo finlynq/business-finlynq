@@ -32,6 +32,21 @@ export default function RemoteMcpDocumentationPage() {
         <p className="panel-note">OAuth scope is only the outer boundary. Every request also checks the connection&apos;s Daily/Setup mode, optional per-tool override, current organization membership, live role permissions, organization write state, and the accounting workflow&apos;s own controls.</p>
       </section>
       <section className="panel">
+        <div className="panel-heading"><div><p className="eyebrow">Payables</p><h2>Bank and non-cash supplier settlements</h2></div></div>
+        <p><code>finlynq_daily_record_supplier_payment</code> accepts <code>settlementAccountCombinationId</code> and <code>settlementMethod</code>: BANK, CORPORATE_CARD, SHAREHOLDER_ADVANCE, EMPLOYEE_REIMBURSEMENT, or OTHER_NON_CASH.</p>
+        <p>BANK requires a non-control asset account; the other methods require a non-control liability account in the same ledger and entity. Legacy <code>bankAccountCombinationId</code> remains supported for bank settlements. A shareholder-funded bill debits AP and credits the shareholder liability, without reducing corporate cash. No bank transfer is initiated.</p>
+      </section>
+      <section className="panel">
+        <div className="panel-heading"><div><p className="eyebrow">Source evidence</p><h2>Attach invoices and receipts</h2></div></div>
+        <ol>
+          <li>Upload a PDF, PNG, or JPEG up to 2 MiB with <code>finlynq_daily_upload_document_evidence</code>. Supply module, filename, MIME type, exact byte size, SHA-256, base64 content, and an idempotency key.</li>
+          <li>Use <code>finlynq_daily_attach_document_evidence</code> with the returned asset ID, document kind/number, exact current draft version, purpose, reason, and another idempotency key. Each attachment creates a new version.</li>
+          <li><code>finlynq_daily_get_document</code> returns attachment metadata and authenticated download links. Explicit binary downloads use <code>finlynq_daily_download_document_evidence</code>.</li>
+          <li><code>finlynq_daily_detach_document_evidence</code> only changes a draft. Historical links remain retained; editing, posting, and voiding preserve evidence.</li>
+        </ol>
+        <p>Files are encrypted, malware-scanned, and tenant-scoped. Every read rechecks authorization. No arbitrary file URLs are fetched. View linked files in a bill or invoice&apos;s View details → Source documents section.</p>
+      </section>
+      <section className="panel">
         <div className="panel-heading"><div><p className="eyebrow">Write safety</p><h2>Confirmation and audit behavior</h2></div></div>
         <ul>
           <li>New daily write access asks for confirmation; setup is off until the user enables it.</li>

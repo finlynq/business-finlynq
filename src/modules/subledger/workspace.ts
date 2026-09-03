@@ -1,4 +1,6 @@
 import "server-only";
+import { loadDocumentEvidence } from "./evidence-store";
+import type { DocumentEvidenceMetadata } from "./evidence-model";
 
 import { randomUUID } from "node:crypto";
 import type { PoolClient } from "pg";
@@ -74,6 +76,7 @@ export type SubledgerEntityOptionDto = Readonly<{
   lineAccounts: readonly SubledgerAccountOptionDto[];
   taxAccounts: readonly SubledgerAccountOptionDto[];
   bankAccounts: readonly SubledgerAccountOptionDto[];
+  liabilitySettlementAccounts: readonly SubledgerAccountOptionDto[];
   fxGainAccounts: readonly SubledgerAccountOptionDto[];
   fxLossAccounts: readonly SubledgerAccountOptionDto[];
   roundingAccounts: readonly SubledgerAccountOptionDto[];
@@ -105,6 +108,7 @@ export type SubledgerOpenItemDto = Readonly<{
 }>;
 
 export type SubledgerWorkspaceDocumentDto = Readonly<{
+  attachments?: readonly DocumentEvidenceMetadata[];
   id: string;
   sourceNumber: string;
   sourceType: string;
@@ -769,6 +773,9 @@ export async function loadSubledgerWorkspace(
           : account.account_class === "ASSET" || account.account_class === "EXPENSE"
             || account.account_class === "LIABILITY"),
         bankAccounts: accountOptions(accounts, (account) => account.account_class === "ASSET"),
+        liabilitySettlementAccounts: ownerModule === "payables"
+          ? accountOptions(accounts, (account) => account.account_class === "LIABILITY")
+          : [],
         fxGainAccounts: accountOptions(accounts, (account) => account.account_class === "REVENUE"),
         fxLossAccounts: accountOptions(accounts, (account) => account.account_class === "EXPENSE"),
         roundingAccounts: accountOptions(accounts, () => true),
@@ -789,11 +796,17 @@ export async function loadSubledgerWorkspace(
     const partyAccountById = new Map(entities.flatMap((entity) =>
       entity.partyAccounts.map((account) => [account.id, account] as const)));
     const documentPage = registerPageWindow(documentsResult.rows, page);
-    const documents = documentPage.rows.map<SubledgerWorkspaceDocumentDto>((row) => {
+    const documents: SubledgerWorkspaceDocumentDto[] = [];
+    for (const row of documentPage.rows) {
       const snapshot = subledgerSourceSnapshotSchema.parse(row.snapshot);
       const party = partyAccountById.get(snapshot.partyAccountId);
       const entity = entityById.get(snapshot.legalEntityId);
-      return {
+      documents.push({
+        attachments: await loadDocumentEvidence(client, {
+          organizationId: principal.organizationId, ownerModule, id: row.id,
+          sourceNumber: row.source_number, version: row.version,
+          evidence: "evidence" in snapshot ? snapshot.evidence : undefined,
+        }),
         id: row.id,
         sourceNumber: row.source_number,
         sourceType: row.source_type,
@@ -809,8 +822,8 @@ export async function loadSubledgerWorkspace(
         openItemId: row.open_item_id,
         openAmount: row.open_amount,
         openStatus: row.open_status,
-      };
-    });
+      });
+    }
     const openItems = openItemsResult.rows.map<SubledgerOpenItemDto>((item) => ({
       id: item.id,
       sourceNumber: item.source_number,

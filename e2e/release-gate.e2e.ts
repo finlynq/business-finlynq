@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import { createHash } from "node:crypto";
 
 type ReadinessState = "ready" | "disabled";
 
@@ -89,6 +90,58 @@ async function createBillDraft(
 
   const bill = page.getByRole("row").filter({ hasText: input.number });
   await expect(bill).toContainText("DRAFT");
+}
+
+
+async function evidenceRequestHeaders(page: Page) {
+  // Chromium accepts Secure cookies on loopback HTTP; APIRequestContext does
+  // not. Explicitly forward this browser context's cookies for local acceptance.
+  return { Origin: new URL(page.url()).origin,
+    "User-Agent": await page.evaluate(() => navigator.userAgent),
+    Cookie: (await page.context().cookies()).map((cookie) => `${cookie.name}=${cookie.value}`).join("; ") };
+}
+async function attachInvoiceAndReceipt(page: Page, sourceNumber: string) {
+  const headers = await evidenceRequestHeaders(page);
+  let expectedVersion = 1;
+  const attachments: Array<{ assetId: string; filename: string; downloadUrl: string }> = [];
+  for (const purpose of ["INVOICE", "RECEIPT"] as const) {
+    const bytes = Buffer.from("%PDF-1.4\n1 0 obj << /Type /Catalog >> endobj\n%%EOF");
+    const filename = `${sourceNumber}-${purpose.toLowerCase()}.pdf`;
+    const upload = { module: "payables", filename, mimeType: "application/pdf", byteSize: bytes.length,
+      sha256: createHash("sha256").update(bytes).digest("hex"), contentBase64: bytes.toString("base64"),
+      idempotencyKey: crypto.randomUUID() };
+    const response = await page.request.post("/api/document-evidence", { headers, data: upload });
+    expect(response.status(), await response.text()).toBe(201);
+    const assetId = (await response.json()).asset.assetId as string;
+    const replay = await page.request.post("/api/document-evidence", { headers, data: upload });
+    expect(replay.status()).toBe(200);
+    expect((await replay.json()).asset.assetId).toBe(assetId);
+    const link = { kind: "SUPPLIER_BILL", sourceNumber, expectedVersion, assetId, purpose,
+      idempotencyKey: crypto.randomUUID(), reason: "Release acceptance source evidence" };
+    const linked = await page.request.post("/api/document-evidence/links", { headers, data: link });
+    expect(linked.status(), await linked.text()).toBe(201);
+    const document = (await linked.json()).document;
+    expectedVersion = document.version;
+    const linkReplay = await page.request.post("/api/document-evidence/links", { headers, data: link });
+    expect(linkReplay.status()).toBe(200);
+    attachments.push({ assetId, filename, downloadUrl: `/api/document-evidence/${assetId}?sourceDocumentId=${document.id}` });
+  }
+  await page.reload();
+  const bill = page.getByRole("row").filter({ hasText: sourceNumber });
+  await bill.getByRole("button", { name: "Edit draft", exact: true }).click();
+  await page.getByLabel("Description", { exact: true }).first().fill("Supplier bill with retained invoice and receipt");
+  await page.getByRole("button", { name: "Save draft" }).click();
+  await bill.getByRole("button", { name: "View details", exact: true }).click();
+  for (const attachment of attachments) {
+    await expect(page.getByRole("link", { name: attachment.filename, exact: true })).toBeVisible();
+    const download = await page.request.get(attachment.downloadUrl, { headers });
+    expect(download.status()).toBe(200);
+    expect(download.headers()["content-disposition"]).toContain("attachment;");
+    expect(download.headers()["cache-control"]).toContain("no-store");
+    expect((await download.body()).toString()).toContain("%PDF-1.4");
+  }
+  await page.getByRole("button", { name: "Close details" }).click();
+  return attachments;
 }
 
 test("public website, readiness, and security headers are release-ready", async ({ page, request }) => {
@@ -241,7 +294,8 @@ test("writable demo can create, post, and void an AR invoice", async ({ page }) 
   expect(errors).toEqual([]);
 });
 
-test("writable demo completes and exactly reverses an AP bill payment lifecycle", async ({ page }) => {
+for (const fundingMethod of ["BANK", "SHAREHOLDER_ADVANCE"] as const) {
+test(`writable demo completes and exactly reverses an AP bill ${fundingMethod} settlement lifecycle`, async ({ page }) => {
   const errors = collectBrowserErrors(page);
   const billNumber = `BILL-E2E-PAY-${crypto.randomUUID().slice(0, 8).toUpperCase()}`;
   const paymentNumber = `PAY-E2E-${crypto.randomUUID().slice(0, 8).toUpperCase()}`;
@@ -253,26 +307,28 @@ test("writable demo completes and exactly reverses an AP bill payment lifecycle"
     amount: "100.00",
   });
 
+  const evidence = fundingMethod === "SHAREHOLDER_ADVANCE" ? await attachInvoiceAndReceipt(page, billNumber) : [];
   const bill = page.getByRole("row").filter({ hasText: billNumber });
   await bill.getByRole("button", { name: "Issue", exact: true }).click();
   await expect(bill).toContainText("POSTED");
   await expect(bill).toContainText("CAD 100.00");
   await expect(bill).toContainText("OPEN");
 
-  await bill.getByRole("button", { name: "Record payment", exact: true }).click();
-  await expect(page.getByRole("heading", { name: "Record payment" })).toBeVisible();
-  await page.getByLabel("Payment number").fill(paymentNumber);
+  await bill.getByRole("button", { name: "Record settlement", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Record settlement" })).toBeVisible();
+  await page.getByLabel("Settlement number").fill(paymentNumber);
+  await page.getByRole("combobox", { name: /^Settlement method/ }).selectOption(fundingMethod);
   await page.getByLabel("Description", { exact: true }).fill("Release-gate supplier payment");
   await page.getByLabel(`Allocation for ${billNumber}`).fill("100.00");
   await expect(page.getByLabel("Total allocated")).toHaveValue("CAD 100.00");
-  await page.getByRole("button", { name: "Record and post payment" }).click();
+  await page.getByRole("button", { name: "Record and post settlement" }).click();
 
   const payment = page.getByRole("row").filter({ hasText: paymentNumber });
   await expect(payment).toContainText("POSTED");
   await expect(payment).toContainText("1 open item");
   await expect(bill).toContainText("CAD 0.00");
   await expect(bill).toContainText("SETTLED");
-  await expect(bill.getByRole("button", { name: "Reverse payment first" })).toBeDisabled();
+  await expect(bill.getByRole("button", { name: "Reverse settlement first" })).toBeDisabled();
 
   await payment.getByRole("button", { name: "Void", exact: true }).click();
   await expect(page.getByRole("heading", { name: `Void ${paymentNumber}` })).toBeVisible();
@@ -289,10 +345,28 @@ test("writable demo completes and exactly reverses an AP bill payment lifecycle"
   await page.getByRole("button", { name: "Void and reverse" }).click();
   await expect(bill).toContainText("VOIDED");
   await expect(bill).toContainText("Release acceptance bill reversal");
-
+  if (evidence.length) {
+    await bill.getByRole("button", { name: "View details", exact: true }).click();
+    const headers = await evidenceRequestHeaders(page);
+    for (const attachment of evidence) {
+      const link = page.getByRole("link", { name: attachment.filename, exact: true });
+      await expect(link).toBeVisible();
+      expect((await page.request.get((await link.getAttribute("href"))!, { headers })).status()).toBe(200);
+      expect((await page.request.get(attachment.downloadUrl, { headers })).status()).toBe(200);
+    }
+    const forbidden = await page.request.delete("/api/document-evidence/links", {
+      headers,
+      data: { kind: "SUPPLIER_BILL", sourceNumber: billNumber, expectedVersion: 6,
+        assetId: evidence[0].assetId, idempotencyKey: crypto.randomUUID(), reason: "Posted evidence cannot be detached" },
+    });
+    expect(forbidden.status()).toBe(409);
+  }
   await revokeDemoSession(page);
+  for (const attachment of evidence) expect((await page.request.get(attachment.downloadUrl)).status()).toBe(401);
   expect(errors).toEqual([]);
 });
+
+}
 
 test("concurrent demo visitors share one company and see each other's changes", async ({ browser }, testInfo) => {
   test.setTimeout(90_000);

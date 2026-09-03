@@ -1,4 +1,5 @@
 export * from "./audit";
+export * from "./evidence";
 export * from "./auth";
 export * from "./banking";
 export * from "./identity";

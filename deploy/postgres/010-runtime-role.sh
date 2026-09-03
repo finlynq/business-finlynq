@@ -248,7 +248,7 @@ BEGIN
     'segment_values', 'account_combinations',
     'accounting_hierarchies', 'accounting_hierarchy_nodes',
     'journal_type_definitions',
-    'source_documents', 'journal_entries', 'journal_approvals',
+    'source_documents', 'document_evidence_assets', 'journal_entries', 'journal_approvals',
     'journal_lines', 'journal_entry_relations', 'parties',
     'party_addresses', 'party_accounts', 'subledger_events', 'open_items',
     'document_settlement_allocations', 'open_item_void_events',
@@ -285,7 +285,7 @@ BEGIN
   END LOOP;
 
   FOREACH selected_name IN ARRAY ARRAY[
-    'journal_approvals', 'journal_entry_relations', 'source_documents',
+    'journal_approvals', 'journal_entry_relations', 'source_documents', 'document_evidence_assets',
     'subledger_events', 'open_items', 'document_settlement_allocations',
     'open_item_void_events',
     'tax_determination_snapshots',

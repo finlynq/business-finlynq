@@ -445,12 +445,12 @@ SQL
   run_migrations "$predecessor_database" "$repository_root/migrations/drizzle"
   upgraded_count="$(psql_value "$predecessor_database" \
     "SELECT count(*) FROM drizzle.__drizzle_migrations;")"
-  [[ "$upgraded_count" == "40" ]] ||
-    fail "predecessor upgrade recorded $upgraded_count migrations instead of 40"
+  [[ "$upgraded_count" == "41" ]] ||
+    fail "predecessor upgrade recorded $upgraded_count migrations instead of 41"
   preserved_sentinel="$(psql_value "$predecessor_database" \
     "SELECT slug || '|' || display_name FROM organizations WHERE id = '$predecessor_sentinel_id';")"
   [[ "$preserved_sentinel" == "ci-predecessor-sentinel|CI predecessor tenant sentinel" ]] ||
-    fail "tenant sentinel was not preserved through migrations 0025 through 0039"
+    fail "tenant sentinel was not preserved through migrations 0025 through 0040"
 
   PGPASSWORD="$PGPASSWORD" psql \
     --host "$PGHOST" \
@@ -499,7 +499,7 @@ SQL
   verify_fail_closed_default_privileges "$predecessor_database"
   verify_schema_and_grants "$predecessor_database"
   printf '%s\n' \
-    "Predecessor upgrade verification passed: replayed 0000-0024, preserved tenant and audit sentinels, upgraded through 0039, and verified schema/grants/journal types."
+    "Predecessor upgrade verification passed: replayed 0000-0024, preserved tenant and audit sentinels, upgraded through 0040, and verified schema/grants/journal types."
 else
   # Create two otherwise-identical business events with explicit request IDs.
   # Their exact audit/outbox correlation must survive the populated logical
@@ -558,8 +558,8 @@ SQL
 
   source_migration_count="$(psql_value "$POSTGRES_DB" \
     "SELECT count(*) FROM drizzle.__drizzle_migrations;")"
-  [[ "$source_migration_count" == "40" ]] ||
-    fail "source database is not fully migrated through 0039 (found $source_migration_count records)"
+  [[ "$source_migration_count" == "41" ]] ||
+    fail "source database is not fully migrated through 0040 (found $source_migration_count records)"
   source_organization_count="$(psql_value "$POSTGRES_DB" "SELECT count(*) FROM organizations;")"
   [[ "$source_organization_count" =~ ^[1-9][0-9]*$ ]] ||
     fail "source database has no populated organization data to restore"

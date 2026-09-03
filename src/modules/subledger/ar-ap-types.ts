@@ -1,4 +1,5 @@
 import type { z } from "zod";
+import type { DocumentEvidenceMetadata } from "./evidence-model";
 import type { TenantTransactionContext } from "@/db/transaction";
 import {
   createBusinessDocumentSchema,
@@ -32,6 +33,7 @@ export type SourceDocumentRow = Readonly<{
 }>;
 
 export type SubledgerDocumentRecord = Readonly<{
+  attachments?: readonly DocumentEvidenceMetadata[];
   id: string;
   organizationId: string;
   legalEntityId: string;

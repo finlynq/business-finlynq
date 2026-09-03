@@ -12,6 +12,8 @@ services:
       BUSINESS_FINLYNQ_TEST_CONTEXT: playwright
 
 volumes:
+  business_finlynq_clamav:
+    name: ${RELEASE_REHEARSAL_PROJECT:?set RELEASE_REHEARSAL_PROJECT}-clamav
   business_finlynq_pgdata:
     name: ${RELEASE_REHEARSAL_PROJECT:?set RELEASE_REHEARSAL_PROJECT}-pgdata
   business_finlynq_caddy_data:
@@ -20,6 +22,11 @@ volumes:
     name: ${RELEASE_REHEARSAL_PROJECT:?set RELEASE_REHEARSAL_PROJECT}-caddy-config
 
 networks:
+  business_finlynq_evidence:
+    name: ${RELEASE_REHEARSAL_PROJECT:?set RELEASE_REHEARSAL_PROJECT}-evidence
+    internal: true
+  business_finlynq_scanner_egress:
+    name: ${RELEASE_REHEARSAL_PROJECT:?set RELEASE_REHEARSAL_PROJECT}-scanner-egress
   business_finlynq_private:
     name: ${RELEASE_REHEARSAL_PROJECT:?set RELEASE_REHEARSAL_PROJECT}-private
     internal: true

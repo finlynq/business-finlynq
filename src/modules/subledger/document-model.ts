@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
+import { evidenceReferencesSchema } from "./evidence-model";
 import {
   exact,
   isQuantizedMoney,
@@ -9,6 +10,7 @@ import {
 } from "@/kernel/money";
 import { decideTax } from "@/modules/tax/engine";
 import type { TaxDecision, TaxDirection, TaxFacts } from "@/modules/tax/types";
+import { settlementMethodSchema, validateSettlementFunding } from "./settlement-funding";
 
 const positiveAmountSchema = z.string().trim().regex(/^\d+(?:\.\d{1,9})?$/).refine(
   (value) => exact(value).greaterThan(0),
@@ -180,14 +182,16 @@ export const recordSettlementSchema = z.object({
   currency: z.string().trim().toUpperCase().regex(/^[A-Z]{3}$/),
   amount: positiveAmountSchema,
   fx: fxSnapshotSchema,
-  bankAccountCombinationId: z.uuid(),
+  bankAccountCombinationId: z.uuid().optional(),
+  settlementAccountCombinationId: z.uuid().optional(),
+  settlementMethod: settlementMethodSchema.optional(),
   realizedFxGainAccountCombinationId: z.uuid(),
   realizedFxLossAccountCombinationId: z.uuid(),
   fxRoundingAccountCombinationId: z.uuid().optional(),
   description: z.string().trim().min(1).max(500),
   allocations: z.array(settlementAllocationInputSchema).min(1).max(200),
   idempotencyKey: idempotencyKeySchema,
-}).strict();
+}).strict().superRefine(validateSettlementFunding);
 
 export const voidSettlementSchema = z.object({
   kind: settlementDocumentKindSchema,
@@ -288,6 +292,7 @@ export const businessDocumentSnapshotSchema = z.object({
   taxTotal: z.string(),
   grossTotal: z.string(),
   grossFunctional: z.string(),
+  evidence: evidenceReferencesSchema.optional(),
 }).strict();
 
 export const settlementSnapshotAllocationSchema = z.object({
@@ -317,13 +322,15 @@ export const settlementDocumentSnapshotSchema = z.object({
   amount: z.string(),
   settlementFunctionalAmount: z.string(),
   fx: fxSnapshotSchema,
-  bankAccountCombinationId: z.uuid(),
+  bankAccountCombinationId: z.uuid().optional(),
+  settlementAccountCombinationId: z.uuid().optional(),
+  settlementMethod: settlementMethodSchema.optional(),
   realizedFxGainAccountCombinationId: z.uuid(),
   realizedFxLossAccountCombinationId: z.uuid(),
   fxRoundingAccountCombinationId: z.uuid().nullable(),
   description: z.string(),
   allocations: z.array(settlementSnapshotAllocationSchema).min(1),
-}).strict();
+}).strict().superRefine(validateSettlementFunding);
 
 export const subledgerSourceSnapshotSchema = z.discriminatedUnion("kind", [
   businessDocumentSnapshotSchema,

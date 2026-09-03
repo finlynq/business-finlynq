@@ -51,7 +51,7 @@ const runtimeSelectRelations = [
   "gl_accounts", "segment_definitions", "segment_values",
   "account_combinations", "accounting_hierarchies",
   "accounting_hierarchy_nodes", "journal_type_definitions",
-  "source_documents", "journal_entries", "journal_approvals", "journal_lines",
+  "source_documents", "document_evidence_assets", "journal_entries", "journal_approvals", "journal_lines",
   "journal_entry_relations", "parties", "party_addresses", "party_accounts",
   "subledger_events", "open_items", "document_settlement_allocations",
   "open_item_void_events", "open_item_balances", "tax_pack_versions",
@@ -74,7 +74,7 @@ const runtimeInsertUpdateRelations = [
   "mcp_tool_executions",
 ];
 const runtimeInsertRelations = [
-  "journal_approvals", "journal_entry_relations", "source_documents",
+  "journal_approvals", "journal_entry_relations", "source_documents", "document_evidence_assets",
   "subledger_events", "open_items", "document_settlement_allocations",
   "open_item_void_events", "tax_determination_snapshots",
   "bank_connection_credential_events", "bank_observations",
@@ -888,6 +888,13 @@ function ownerOnlyPolicyExpression(tableName) {
 }
 
 function expectedRlsPolicy(table) {
+  if (table.name === "document_evidence_assets") {
+    return {
+      command: "ALL", name: "tenant_isolation", permissive: true, roles: ["PUBLIC"],
+      usingExpression: "organization_id = app.current_organization_id() AND (app.current_actor_has_permission(owner_module || '.read'::text) OR app.current_actor_has_permission(owner_module || '.manage'::text))",
+      withCheckExpression: "organization_id = app.current_organization_id() AND app.current_actor_has_permission(owner_module || '.manage'::text)",
+    };
+  }
   if (table.name === "organizations") {
     return {
       command: "ALL",

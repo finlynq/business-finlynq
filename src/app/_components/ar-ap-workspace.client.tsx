@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { resolveSettlementFunding, SETTLEMENT_METHOD_LABELS, type SettlementMethod } from "@/modules/subledger/settlement-funding";
 import { useMemo, useState, useTransition, type FormEvent } from "react";
 import { useRouter } from "next/navigation";
 import type {
@@ -80,6 +81,7 @@ type SettlementDraft = Readonly<{
   fxSource: string;
   fxEffectiveAt: string;
   bankAccountCombinationId: string;
+  settlementMethod: SettlementMethod;
   realizedFxGainAccountCombinationId: string;
   realizedFxLossAccountCombinationId: string;
   fxRoundingAccountCombinationId: string;
@@ -285,6 +287,7 @@ function defaultSettlementDraft(
     fxSource: fxEvidence.source,
     fxEffectiveAt: fxEvidence.effectiveAt,
     bankAccountCombinationId: preferredAccount(entity?.bankAccounts ?? [], "1000"),
+    settlementMethod: "BANK",
     realizedFxGainAccountCombinationId: preferredAccount(entity?.fxGainAccounts ?? [], "4900"),
     realizedFxLossAccountCombinationId: preferredAccount(entity?.fxLossAccounts ?? [], "7100"),
     fxRoundingAccountCombinationId: preferredAccount(entity?.roundingAccounts ?? [], "7190"),
@@ -337,6 +340,7 @@ function accountLabel(
     ...(entity?.lineAccounts ?? []),
     ...(entity?.taxAccounts ?? []),
     ...(entity?.bankAccounts ?? []),
+    ...(entity?.liabilitySettlementAccounts ?? []),
     ...(entity?.fxGainAccounts ?? []),
     ...(entity?.fxLossAccounts ?? []),
     ...(entity?.roundingAccounts ?? []),
@@ -367,7 +371,7 @@ export function DocumentDetails({
     : snapshot as SettlementDocumentSnapshot;
   const documentLabel = businessSnapshot
     ? workspace.ownerModule === "receivables" ? "Invoice" : "Bill"
-    : workspace.ownerModule === "receivables" ? "Receipt" : "Payment";
+    : workspace.ownerModule === "receivables" ? "Receipt" : "Settlement";
 
   return (
     <section className={`panel form-panel ${styles.detailPanel}`} id="subledger-detail" aria-labelledby="subledger-detail-title" tabIndex={-1}>
@@ -387,6 +391,23 @@ export function DocumentDetails({
         <div><span>Journal entry</span><strong>{document.journalId ? <Link href={`/app/journals/${document.journalId}`}>{journalLinkLabel("View journal entry", document.journalNumber)}</Link> : "Not posted"}</strong></div>
       </div>
       <p className={styles.detailNarrative}>{snapshot.description}</p>
+      {businessSnapshot && (
+        <section aria-label="Source document attachments">
+          <h3>Source documents</h3>
+          {document.attachments?.length ? <ul>{document.attachments.map((attachment) => (
+            <li key={attachment.assetId}>
+              <a href={attachment.downloadUrl}>{attachment.filename}</a>
+              {" · "}{attachment.purpose.toLowerCase()}{" · "}{attachment.byteSize.toLocaleString()} bytes
+              {" · "}version {attachment.sourceVersion}
+              <details><summary>File audit details</summary>
+                <p>SHA-256: <code>{attachment.sha256}</code></p>
+                <p>Uploaded {attachment.uploadedAt} by {attachment.uploadedBy}</p>
+                <p>Scanned {attachment.scannedAt} · {attachment.scannerVersion}</p>
+              </details>
+            </li>
+          ))}</ul> : <p>No source files attached. PDF invoices and receipts can be added through the MCP evidence tools while this document is a draft.</p>}
+        </section>
+      )}
 
       {businessSnapshot ? (
         <>
@@ -432,7 +453,8 @@ export function DocumentDetails({
             <div><span>Settlement date</span><strong>{settlementSnapshot.settlementDate}</strong></div>
             <div><span>Amount</span><strong>{displayExactMoney(settlementSnapshot.currency, settlementSnapshot.amount)}</strong></div>
             <div><span>Functional amount</span><strong>{displayExactMoney(settlementSnapshot.functionalCurrency, settlementSnapshot.settlementFunctionalAmount)}</strong></div>
-            <div><span>Bank / cash account</span><strong>{accountLabel(entity, settlementSnapshot.bankAccountCombinationId)}</strong></div>
+            <div><span>Settlement funding account</span><strong>{accountLabel(entity, resolveSettlementFunding(settlementSnapshot).accountCombinationId)}</strong></div>
+            <div><span>Settlement method</span><strong>{SETTLEMENT_METHOD_LABELS[resolveSettlementFunding(settlementSnapshot).method]}</strong></div>
             <div><span>FX rate</span><strong>{settlementSnapshot.fx.rate} {settlementSnapshot.functionalCurrency}/{settlementSnapshot.currency}</strong></div>
             <div><span>FX source</span><strong>{settlementSnapshot.fx.source}</strong></div>
           </div>
@@ -572,7 +594,7 @@ export function ArApWorkspace({
     [settlementDraft.allocations, settlementDraft.currency],
   );
   const businessLabel = workspace.ownerModule === "receivables" ? "invoice" : "bill";
-  const settlementLabel = workspace.ownerModule === "receivables" ? "receipt" : "payment";
+  const settlementLabel = workspace.ownerModule === "receivables" ? "receipt" : "settlement";
   const counterpartyLabel = workspace.ownerModule === "receivables" ? "customer" : "supplier";
   const hasRegisterCriteria = Boolean(
     workspace.registerFilter && (
@@ -862,6 +884,7 @@ export function ArApWorkspace({
       fxSource: fxEvidence.source,
       fxEffectiveAt: fxEvidence.effectiveAt,
       bankAccountCombinationId: preferredAccount(entity?.bankAccounts ?? [], "1000"),
+    settlementMethod: "BANK",
       realizedFxGainAccountCombinationId: preferredAccount(entity?.fxGainAccounts ?? [], "4900"),
       realizedFxLossAccountCombinationId: preferredAccount(entity?.fxLossAccounts ?? [], "7100"),
       fxRoundingAccountCombinationId: preferredAccount(entity?.roundingAccounts ?? [], "7190"),
@@ -942,7 +965,8 @@ export function ArApWorkspace({
           effectiveAt: settlementDraft.fxEffectiveAt,
           quoteConvention: "FUNCTIONAL_UNITS_PER_TRANSACTION_UNIT",
         },
-        bankAccountCombinationId: settlementDraft.bankAccountCombinationId,
+        settlementAccountCombinationId: settlementDraft.bankAccountCombinationId,
+        settlementMethod: settlementDraft.settlementMethod,
         realizedFxGainAccountCombinationId: settlementDraft.realizedFxGainAccountCombinationId,
         realizedFxLossAccountCombinationId: settlementDraft.realizedFxLossAccountCombinationId,
         ...(settlementDraft.fxRoundingAccountCombinationId
@@ -1210,10 +1234,21 @@ export function ArApWorkspace({
       {composer === "SETTLEMENT" && settlementEntity && (
         <section className="panel form-panel" id="subledger-composer" aria-labelledby="settlement-composer-title">
           <div className="panel-heading">
-            <div><p className="eyebrow">Cash application</p><h2 id="settlement-composer-title">Record {settlementLabel}</h2></div>
+            <div><p className="eyebrow">Settlement funding</p><h2 id="settlement-composer-title">Record {settlementLabel}</h2></div>
             <button className="secondary-button compact-button" type="button" onClick={() => setComposer(null)}>Cancel</button>
           </div>
           <form className="journal-form subledger-form" onSubmit={(event) => { void saveSettlement(event); }}>
+            {workspace.ownerModule === "payables" && <label className="full-field">
+              <span>Settlement method</span>
+              <select value={settlementDraft.settlementMethod} onChange={(event) => {
+                const method = event.target.value as SettlementMethod;
+                setSettlementDraft((draft) => ({ ...draft, settlementMethod: method,
+                  bankAccountCombinationId: preferredAccount(method === "BANK" ? settlementEntity.bankAccounts : settlementEntity.liabilitySettlementAccounts, method === "BANK" ? "1000" : "2400") }));
+              }}>
+                {Object.entries(SETTLEMENT_METHOD_LABELS).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+              </select>
+              <small>Non-cash methods credit a liability account. No corporate bank balance is affected.</small>
+            </label>}
             <div className="form-grid form-grid-three">
               <label className="full-field">
                 <span>{settlementLabel[0]?.toUpperCase()}{settlementLabel.slice(1)} number</span>
@@ -1294,7 +1329,7 @@ export function ArApWorkspace({
             <details className="mapping-details">
               <summary>Accounting mappings</summary>
               <div className="form-grid form-grid-three">
-                <AccountSelect label="Bank / cash account" value={settlementDraft.bankAccountCombinationId} accounts={settlementEntity.bankAccounts} onChange={(value) => setSettlementDraft((draft) => ({ ...draft, bankAccountCombinationId: value }))} />
+                <AccountSelect label={settlementDraft.settlementMethod === "BANK" ? "Bank / cash account" : "Settlement liability account"} value={settlementDraft.bankAccountCombinationId} accounts={settlementDraft.settlementMethod === "BANK" ? settlementEntity.bankAccounts : settlementEntity.liabilitySettlementAccounts} onChange={(value) => setSettlementDraft((draft) => ({ ...draft, bankAccountCombinationId: value }))} />
                 <AccountSelect label="Realized FX gain" value={settlementDraft.realizedFxGainAccountCombinationId} accounts={settlementEntity.fxGainAccounts} onChange={(value) => setSettlementDraft((draft) => ({ ...draft, realizedFxGainAccountCombinationId: value }))} />
                 <AccountSelect label="Realized FX loss" value={settlementDraft.realizedFxLossAccountCombinationId} accounts={settlementEntity.fxLossAccounts} onChange={(value) => setSettlementDraft((draft) => ({ ...draft, realizedFxLossAccountCombinationId: value }))} />
                 <AccountSelect label="FX rounding" value={settlementDraft.fxRoundingAccountCombinationId} accounts={settlementEntity.roundingAccounts} onChange={(value) => setSettlementDraft((draft) => ({ ...draft, fxRoundingAccountCombinationId: value }))} required={false} />
