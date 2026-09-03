@@ -154,3 +154,31 @@
 		format json
 	}
 }
+
+{$CONSULT_FINLYNQ_HOSTNAME:consult.finlynq.com} {
+	encode zstd gzip
+
+	request_body {
+		max_size 32MB
+	}
+
+	reverse_proxy consult-finlynq-app:8080 {
+		health_uri /
+		health_interval 30s
+		health_timeout 5s
+	}
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "no-referrer"
+		Permissions-Policy "camera=(), geolocation=(), payment=()"
+		-Server
+	}
+
+	log {
+		output stdout
+		format json
+	}
+}
