@@ -1,6 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import type {
   OrganizationAdministrationDto,
@@ -126,6 +127,7 @@ export function OrganizationSettings({ workspace }: { workspace: OrganizationAdm
               maxLength={6}
             />
           </label>
+          <p className="form-footnote">Need to add or restart an authenticator? <Link href="/app/account#mfa-enrollment">Open Account &amp; security</Link>.</p>
         </section>
       )}
 

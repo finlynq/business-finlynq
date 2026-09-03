@@ -122,8 +122,10 @@ describe("workspace account and entity experience", () => {
     expect(markup).toContain("VERIFIED");
     expect(markup).toContain("ENABLED");
     expect(markup).toContain("Authenticator enrollment");
+    expect(markup).toContain('id="mfa-enrollment"');
     expect(markup).toContain("Authenticator protection is enabled");
     expect(markup).toContain("Verified for this session");
+    expect(markup).toContain('href="/app/settings/mcp"');
     expect(markup).toContain('href="/app/settings"');
     expect(markup).toContain('href="/security"');
     expect(markup).not.toContain("type=\"password\"");

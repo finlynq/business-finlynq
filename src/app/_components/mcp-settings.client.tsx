@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import type { McpConnectionSettings } from "@/modules/mcp/connection-policy";
 import type { McpAccessMode } from "@/modules/mcp/protocol";
@@ -14,6 +15,7 @@ const MODES: readonly Readonly<{ value: McpAccessMode; label: string }>[] = [
 ];
 
 type Feedback = Readonly<{ kind: "error" | "success"; message: string }> | null;
+type MfaEnrollmentState = "ENABLED" | "PENDING" | "NOT_ENROLLED" | "UNAVAILABLE";
 
 async function responseMessage(response: Response): Promise<string> {
   const payload = await response.json().catch(() => null) as { error?: unknown } | null;
@@ -29,11 +31,13 @@ export function McpSettings({
   initialConnections,
   initialApprovals,
   enabled,
+  mfaEnrollmentState,
 }: {
   endpoint: string;
   initialConnections: readonly McpConnectionSettings[];
   initialApprovals: readonly PendingMcpApproval[];
   enabled: boolean;
+  mfaEnrollmentState: MfaEnrollmentState;
 }) {
   const router = useRouter();
   const [connections, setConnections] = useState(initialConnections);
@@ -130,7 +134,18 @@ export function McpSettings({
         </div>
       </section>
 
-      {needsStepUp && enabled && (
+      {enabled && mfaEnrollmentState !== "ENABLED" && (
+        <section className="panel form-panel" aria-labelledby="mcp-mfa-enrollment-title">
+          <div className="panel-heading"><div><p className="eyebrow">Security readiness</p><h2 id="mcp-mfa-enrollment-title">{mfaEnrollmentState === "PENDING" ? "Finish authenticator setup" : mfaEnrollmentState === "NOT_ENROLLED" ? "Add an authenticator for protected access" : "Review authenticator status"}</h2><p>{mfaEnrollmentState === "PENDING"
+            ? "Your previous authenticator setup was not confirmed. Restart it before enabling autonomous daily writes, setup writes, or approving high-assurance actions."
+            : mfaEnrollmentState === "NOT_ENROLLED"
+              ? "This password-only account can use ordinary and read-only features. Enroll an authenticator before enabling autonomous daily writes, setup writes, or approving high-assurance actions."
+              : "FinLynQ could not confirm an active authenticator for this session. Review Account & security before making a protected change."}</p></div></div>
+          <div className="form-actions"><Link className="primary-button" href="/app/account#mfa-enrollment">{mfaEnrollmentState === "PENDING" ? "Restart authenticator setup" : mfaEnrollmentState === "NOT_ENROLLED" ? "Add authenticator" : "Review account security"}</Link></div>
+        </section>
+      )}
+
+      {needsStepUp && enabled && mfaEnrollmentState === "ENABLED" && (
         <section className="panel form-panel" aria-labelledby="mcp-step-up-title">
           <div className="panel-heading"><div><p className="eyebrow">Security check</p><h2 id="mcp-step-up-title">Verify a protected change</h2><p>Autonomous daily writes, setup writes, and high-assurance approvals require a fresh authenticator check.</p></div></div>
           <div className="close-form">

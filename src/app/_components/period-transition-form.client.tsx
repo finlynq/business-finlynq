@@ -1,6 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
+import Link from "next/link";
 import type { PeriodControlWorkspaceDto } from "@/modules/ledger/tenant-workspace";
 
 type Period = PeriodControlWorkspaceDto["periods"][number];
@@ -195,7 +196,7 @@ export function PeriodTransitionForm({ workspace }: { workspace: PeriodControlWo
               <label>
                 <span>Authenticator code</span>
                 <input value={otp} onChange={(event) => setOtp(event.target.value.replace(/\D/g, "").slice(0, 6))} inputMode="numeric" autoComplete="one-time-code" pattern="[0-9]{6}" maxLength={6} disabled={busy} />
-                <small>Reopening and irreversible sealing require a current MFA step-up.</small>
+                <small>Reopening and irreversible sealing require a current MFA step-up. Need an authenticator? <Link href="/app/account#mfa-enrollment">Open Account &amp; security</Link>.</small>
               </label>
             )
           )}

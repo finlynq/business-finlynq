@@ -1,6 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
   accountSegmentKeys,
@@ -431,6 +432,7 @@ export function AccountingSettings({
         <section className="panel form-panel" aria-labelledby="accounting-step-up-title">
           <div className="panel-heading"><span className="eyebrow">Security check</span><h2 id="accounting-step-up-title">Verify before changing accounting setup</h2><p>Entity, posting policy, currency, rate, and chart-dimension changes require a fresh authenticator check.</p></div>
           <label className="full-field"><span>Six-digit authenticator code</span><input value={otp} onChange={(event) => setOtp(event.target.value.replace(/\D/g, "").slice(0, 6))} inputMode="numeric" autoComplete="one-time-code" pattern="[0-9]{6}" maxLength={6} /></label>
+          <p className="form-footnote">Need to add or restart an authenticator? <Link href="/app/account#mfa-enrollment">Open Account &amp; security</Link>.</p>
         </section>
       )}
 

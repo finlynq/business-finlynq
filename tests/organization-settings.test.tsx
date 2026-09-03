@@ -64,6 +64,7 @@ describe("organization settings UI", () => {
     }} />);
     expect(markup).toContain("Verify before changing access");
     expect(markup).toContain("Six-digit authenticator code");
+    expect(markup).toContain('href="/app/account#mfa-enrollment"');
     expect(markup).toContain("Send invitation");
   });
 

@@ -103,7 +103,7 @@ export default async function AccountPage() {
       </div>
 
       {principal.sessionMode === "real" && (
-        <section className="panel" aria-labelledby="account-authenticator-title">
+        <section id="mfa-enrollment" className="panel" aria-labelledby="account-authenticator-title">
           <div className="panel-heading">
             <div><p className="eyebrow">Optional protection</p><h2 id="account-authenticator-title">Authenticator enrollment</h2></div>
             <StatusPill status={authenticatorStatus} />
@@ -120,6 +120,7 @@ export default async function AccountPage() {
           <div><p className="eyebrow">Safe destinations</p><h2 id="account-links-title">Related settings and policies</h2></div>
         </div>
         <div className="panel-actions account-safe-links">
+          <Link className="secondary-button" href="/app/settings/mcp">AI & MCP connections</Link>
           <Link className="secondary-button" href="/app/settings">Organization settings</Link>
           <Link className="secondary-button" href="/security">Security approach</Link>
           <Link className="secondary-button" href="/privacy">Privacy policy</Link>
