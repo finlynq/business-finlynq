@@ -32,6 +32,33 @@ describe("request-scoped content security policy", () => {
     expect(response.headers.get("content-security-policy")).toContain("'nonce-");
   });
 
+  it("allows only the validated OAuth callback origin during consent", () => {
+    const callback = "https://chatgpt.com/connector_platform_oauth_redirect?private=value";
+    const response = proxy(new NextRequest(
+      `https://business.finlynq.com/oauth/authorize?redirect_uri=${encodeURIComponent(callback)}`,
+    ));
+    const policy = response.headers.get("content-security-policy");
+
+    expect(policy).toContain("form-action 'self' https://chatgpt.com");
+    expect(policy).not.toContain("connector_platform_oauth_redirect");
+    expect(policy).not.toContain("private=value");
+
+    const unrelated = proxy(new NextRequest(
+      `https://business.finlynq.com/login?redirect_uri=${encodeURIComponent(callback)}`,
+    ));
+    expect(unrelated.headers.get("content-security-policy")).toContain("form-action 'self';");
+    expect(unrelated.headers.get("content-security-policy")).not.toContain("https://chatgpt.com");
+  });
+
+  it("does not add unsafe OAuth callback schemes to form-action", () => {
+    const response = proxy(new NextRequest(
+      "https://business.finlynq.com/oauth/authorize?redirect_uri=http%3A%2F%2Fexample.com%2Fcallback",
+    ));
+
+    expect(response.headers.get("content-security-policy")).toContain("form-action 'self';");
+    expect(response.headers.get("content-security-policy")).not.toContain("http://example.com");
+  });
+
   it("runs on HTML and API routes while excluding immutable asset routes", () => {
     expect(config.matcher).toEqual([
       "/((?!_next/static|_next/image|favicon.ico|.*\\.[^/]+$).*)",

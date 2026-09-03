@@ -7,6 +7,7 @@ import {
   readFormBody,
   validateAuthorizationRequest,
 } from "@/modules/mcp/oauth-http";
+import { oauthAuthorizationContentSecurityPolicy } from "@/modules/mcp/oauth-csp";
 import { createAuthorizationGrant } from "@/modules/mcp/oauth-store";
 import { McpOAuthError, oauthErrorResponse } from "@/modules/mcp/protocol";
 
@@ -19,7 +20,6 @@ const pageHeaders = {
   "x-frame-options": "DENY",
   "x-content-type-options": "nosniff",
   "referrer-policy": "no-referrer",
-  "content-security-policy": "default-src 'none'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
 };
 
 function continuationPath(search: string): string {
@@ -29,6 +29,7 @@ function continuationPath(search: string): string {
 function consentPage(input: Readonly<{
   clientName: string;
   organizationName: string;
+  redirectUri: string;
   scopes: readonly string[];
   fields: URLSearchParams;
 }>): Response {
@@ -52,7 +53,13 @@ function consentPage(input: Readonly<{
 <p>Daily writes default to “confirm each write.” Setup tools default to off. You can change or revoke either group in FinLynq.</p>
 <form method="post" action="/oauth/authorize">${hidden}<button type="submit" name="decision" value="allow">Authorize</button> <button type="submit" name="decision" value="deny">Deny</button></form>
 </main></body></html>`;
-  return new Response(html, { status: 200, headers: pageHeaders });
+  return new Response(html, {
+    status: 200,
+    headers: {
+      ...pageHeaders,
+      "content-security-policy": oauthAuthorizationContentSecurityPolicy(input.redirectUri),
+    },
+  });
 }
 
 export async function GET(request: NextRequest): Promise<Response> {
@@ -66,6 +73,7 @@ export async function GET(request: NextRequest): Promise<Response> {
     return consentPage({
       clientName: authorization.client.clientName,
       organizationName: principal.organizationName,
+      redirectUri: authorization.redirectUri,
       scopes: authorization.scopes,
       fields: request.nextUrl.searchParams,
     });

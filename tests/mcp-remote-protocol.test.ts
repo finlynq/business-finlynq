@@ -3,6 +3,10 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { validateRedirectUri, escapeHtml } from "@/modules/mcp/oauth-http";
 import {
+  oauthAuthorizationContentSecurityPolicy,
+  oauthCallbackFormActionSource,
+} from "@/modules/mcp/oauth-csp";
+import {
   MCP_OAUTH_SCOPES,
   mintBoundToken,
   oauthPublicOrigin,
@@ -70,5 +74,15 @@ describe("remote MCP OAuth protocol", () => {
 
   it("escapes every HTML-significant consent-page character", () => {
     expect(escapeHtml(`<script a='b'>&\"`)).toBe("&lt;script a=&#39;b&#39;&gt;&amp;&quot;");
+  });
+
+  it("scopes OAuth consent form navigation to the registered callback origin", () => {
+    expect(oauthCallbackFormActionSource("https://chatgpt.com/oauth/callback?secret=value"))
+      .toBe("https://chatgpt.com");
+    expect(oauthCallbackFormActionSource("http://127.0.0.1:8765/callback"))
+      .toBe("http://127.0.0.1:8765");
+    expect(oauthCallbackFormActionSource("http://example.com/callback")).toBeNull();
+    expect(oauthAuthorizationContentSecurityPolicy("https://chatgpt.com/oauth/callback"))
+      .toContain("form-action 'self' https://chatgpt.com");
   });
 });

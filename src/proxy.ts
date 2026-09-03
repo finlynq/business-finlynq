@@ -5,10 +5,11 @@ import {
   REQUEST_ID_HEADER,
   REQUEST_ID_INPUT_HEADER,
 } from "@/observability/request-correlation";
+import { oauthCallbackFormActionSource } from "@/modules/mcp/oauth-csp";
 
 const TURNSTILE_ORIGIN = "https://challenges.cloudflare.com";
 
-function contentSecurityPolicy(nonce: string): string {
+function contentSecurityPolicy(nonce: string, formActionSource: string | null): string {
   const developmentScriptPolicy = process.env.NODE_ENV === "development"
     ? " 'unsafe-eval'"
     : "";
@@ -26,7 +27,7 @@ function contentSecurityPolicy(nonce: string): string {
     `frame-src ${TURNSTILE_ORIGIN}`,
     "object-src 'none'",
     "base-uri 'self'",
-    "form-action 'self'",
+    `form-action 'self'${formActionSource ? ` ${formActionSource}` : ""}`,
     "frame-ancestors 'none'",
   ].join("; ") + productionUpgrade;
 }
@@ -45,7 +46,10 @@ function cookieName(): string {
 export function proxy(request: NextRequest) {
   const nonce = randomBytes(16).toString("base64");
   const requestId = normalizedRequestId(request.headers.get(REQUEST_ID_INPUT_HEADER)) ?? randomUUID();
-  const policy = contentSecurityPolicy(nonce);
+  const formActionSource = request.method === "GET" && request.nextUrl.pathname === "/oauth/authorize"
+    ? oauthCallbackFormActionSource(request.nextUrl.searchParams.get("redirect_uri"))
+    : null;
+  const policy = contentSecurityPolicy(nonce, formActionSource);
   const requestHeaders = new Headers(request.headers);
   requestHeaders.set("x-nonce", nonce);
   requestHeaders.set("Content-Security-Policy", policy);
