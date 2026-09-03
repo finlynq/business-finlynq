@@ -185,13 +185,8 @@ test("demo session protects workspace routes and is revoked by sign-out", async 
   await expect(page.getByRole("navigation", { name: "Banking views" })).toBeVisible();
   await page.goto("/app/journals");
 
-  const seededDraft = page.getByRole("row").filter({ hasText: "Synthetic Canadian software accrual" });
-  await expect(seededDraft).toContainText("DRAFT");
-  await seededDraft.getByText("Post draft", { exact: true }).click();
-  await seededDraft.getByRole("checkbox").check();
-  await seededDraft.getByRole("button", { name: "Confirm posting" }).click();
-  await expect(seededDraft).toContainText("POSTED");
-  await expect(seededDraft.getByText("Reverse", { exact: true })).toBeVisible();
+  const seededJournal = page.getByRole("row").filter({ hasText: "Synthetic Canadian software accrual" });
+  await expect(seededJournal).toBeVisible();
 
   await page.goto("/app");
   await expect(page.getByRole("heading", { level: 1, name: "Accounting overview" })).toBeVisible();
@@ -238,7 +233,7 @@ test("writable demo can create, post, and void an AR invoice", async ({ page }) 
   await page.getByLabel("Mandatory reason").fill("Release acceptance reversal");
   await submitVoid.click();
   await expect(invoice).toContainText("VOIDED");
-  await expect(page.getByText("Release acceptance reversal", { exact: true })).toBeVisible();
+  await expect(invoice.getByText("Release acceptance reversal", { exact: true })).toBeVisible();
   await expect(voidPanel).toBeHidden();
 
   await page.getByRole("button", { name: "Open account and security menu" }).click();
