@@ -91,7 +91,7 @@ export default async function TrialBalancePage({
       <ReportNavigation active="trial-balance" selection={selection} />
       {principal.sessionMode === "demo" && (
         <DemoNotice>
-          This report reflects your isolated writable sandbox. Changes persist for this browser until the seeded business is restored nightly.
+          This report reflects the shared writable demo. Changes from every visitor remain visible until the seeded business is restored nightly.
         </DemoNotice>
       )}
       {selection && (

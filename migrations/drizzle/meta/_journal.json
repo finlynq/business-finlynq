@@ -260,6 +260,13 @@
       "when": 1788402809181,
       "tag": "0036_mcp_approval_assurance",
       "breakpoints": true
+    },
+    {
+      "idx": 37,
+      "version": "7",
+      "when": 1788441362466,
+      "tag": "0037_shared_public_demo",
+      "breakpoints": true
     }
   ]
 }

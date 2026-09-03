@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import { NextRequest } from "next/server";
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -8,10 +7,10 @@ const mocks = vi.hoisted(() => {
     userId: "20000000-0000-4000-8000-000000000002",
     organizationId: "20000000-0000-4000-8000-000000000003",
     membershipId: "20000000-0000-4000-8000-000000000004",
-    organizationName: "Northstar Demo Sandbox 001",
-    roleLabel: "Demo owner",
-    displayName: "Demo owner",
-    initials: "DO",
+    organizationName: "Northstar Demo Group",
+    roleLabel: "Demo accountant",
+    displayName: "Demo accountant",
+    initials: "DA",
     sessionMode: "demo" as const,
     authMethod: "DEMO_LINK" as const,
     expiresAt: new Date("2026-08-28T08:15:00Z"),
@@ -68,51 +67,48 @@ afterAll(() => {
   else process.env.DEMO_LOGIN_ENABLED = previousDemoLogin;
 });
 
-describe("daily demo claim routes", () => {
-  it("reuses a claim after session expiry and replaces only the short-lived session", async () => {
+describe("shared demo session routes", () => {
+  it("issues a fresh short-lived session without reading or setting a browser claim", async () => {
     mocks.issueDemoSession.mockResolvedValue({
       session_id: "30000000-0000-4000-8000-000000000001",
       claim_created: false,
       claim_expires_at: new Date("2026-08-28T08:15:00Z"),
     });
-    const rawClaim = "daily-browser-claim-".padEnd(48, "x");
     const request = new NextRequest("https://business.finlynq.com/try-demo?next=/app/journals", {
-      headers: { cookie: `business_finlynq_session=stale-session-token-that-is-long-enough; business_finlynq_demo_claim=${rawClaim}` },
+      headers: { cookie: "business_finlynq_session=stale-session-token-that-is-long-enough" },
     });
     const response = await tryDemo(request);
     expect(response.status).toBe(303);
     expect(response.headers.get("location")).toBe("https://business.finlynq.com/app/journals");
-    expect(mocks.issueDemoSession).toHaveBeenCalledWith(expect.objectContaining({
-      claimTokenHash: createHash("sha256").update(rawClaim, "utf8").digest("hex"),
-    }));
+    expect(mocks.issueDemoSession).toHaveBeenCalledWith({
+      tokenHash: expect.stringMatching(/^[0-9a-f]{64}$/),
+      ipHash: "i".repeat(64),
+      userAgentHash: "user-agent-hash:",
+      requestId: expect.any(String),
+    });
     const cookies = response.headers.get("set-cookie") ?? "";
     expect(cookies).toContain("business_finlynq_session=");
     expect(cookies).not.toContain("business_finlynq_demo_claim=");
   });
 
-  it("sets a separate HttpOnly claim through the Toronto nightly boundary for a new browser", async () => {
+  it("sets only the HttpOnly session cookie for a new browser", async () => {
     mocks.issueDemoSession.mockResolvedValue({
       session_id: "30000000-0000-4000-8000-000000000002",
-      claim_created: true,
+      claim_created: false,
       claim_expires_at: new Date("2026-08-28T08:15:00Z"),
     });
     const response = await tryDemo(new NextRequest("https://business.finlynq.com/try-demo?next=/app"));
     const cookies = response.headers.get("set-cookie") ?? "";
     expect(cookies).toContain("business_finlynq_session=");
-    expect(cookies).toContain("business_finlynq_demo_claim=");
     expect(cookies).toContain("HttpOnly");
-    expect(cookies).toContain("Expires=Fri, 28 Aug 2026 08:15:00 GMT");
-    expect(mocks.issueDemoSession).toHaveBeenCalledWith(expect.objectContaining({
-      claimTokenHash: null,
-      userAgentHash: "user-agent-hash:",
-    }));
+    expect(cookies).not.toContain("demo_claim");
   });
 
-  it("allows explicit sandbox-only privileged confirmation but never accepts a real session", async () => {
+  it("allows explicit demo-only privileged confirmation but never accepts a real session", async () => {
     mocks.requestPrincipal.mockResolvedValue(mocks.demoPrincipal);
     const confirmed = await confirmDemoPrivilege(new NextRequest("https://business.finlynq.com/api/auth/demo-step-up", { method: "POST" }));
     expect(confirmed.status).toBe(200);
-    await expect(confirmed.json()).resolves.toMatchObject({ confirmed: true, sandboxOnly: true });
+    await expect(confirmed.json()).resolves.toMatchObject({ confirmed: true, demoOnly: true });
     expect(mocks.markDemoStepUp).toHaveBeenCalledWith(mocks.demoPrincipal.sessionId, expect.any(String));
 
     mocks.requestPrincipal.mockResolvedValue({ ...mocks.demoPrincipal, sessionMode: "real", authMethod: "PASSWORD" });

@@ -5,7 +5,7 @@ Real accounting writes require two independent controls:
 1. the deployment-wide `BUSINESS_WRITES_ENABLED=true` gate; and
 2. a non-null `organizations.writes_enabled_at` value for the exact active `REAL` organization UUID.
 
-Neither layer substitutes for the other. An organization may be staged while the global gate is false, but its writes are not effective. Enabling one organization does not enable another. Demo write policy is separate and this procedure must never be used for a sandbox or public-demo organization.
+Neither layer substitutes for the other. An organization may be staged while the global gate is false, but its writes are not effective. Enabling one organization does not enable another. Demo write policy is separate and this procedure must never be used for the shared public-demo organization.
 
 A successfully completed self-service owner signup automatically sets its own organization layer through migration `0033`. The transition uses the same organization activation fence and emits the paired `organization.writes-enabled` audit/outbox records with the `SELF_SERVICE_SIGNUP` policy marker. It does not bypass the deployment-wide gate, tenant RLS, owner membership, role permissions, MFA step-up, posting policy, or accounting controls. An audited operator disable remains durable and is never reversed by the automatic policy or its forward reconciliation.
 

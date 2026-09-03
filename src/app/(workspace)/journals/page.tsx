@@ -45,7 +45,7 @@ export default async function JournalsPage({ searchParams }: { searchParams: Pro
         description="Review the debit, credit, and ending posted balance for every booked account. Posted journals are immutable; correction ownership follows the source module."
         actions={workspace.canDraft ? <Link className="primary-button" href="/app/journals/new">＋ New journal</Link> : undefined}
       />
-      {workspace.demoOnly && <DemoNotice>This is your isolated writable sandbox. Changes persist for this browser until the seeded company is restored nightly.</DemoNotice>}
+      {workspace.demoOnly && <DemoNotice>This is one shared writable demo company. Everyone sees changes until the seeded company is restored nightly.</DemoNotice>}
       <aside className="demo-notice" aria-label="Journal correction ownership">
         <span aria-hidden="true">i</span>
         <p>Manual journals can be posted or fully reversed here when your role permits. AR and AP journals remain immutable in the general ledger and must be corrected in their source module.</p>

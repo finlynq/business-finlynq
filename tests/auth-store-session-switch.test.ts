@@ -84,8 +84,6 @@ describe("MFA session issuance", () => {
     });
     await issueDemoSession({
       tokenHash: "demo-session-token-hash",
-      claimTokenHash: null,
-      replacementClaimTokenHash: "replacement-claim-token-hash",
       ipHash: "ip-hash",
       userAgentHash: "empty-user-agent-hash",
       requestId: "demo-session-request",
@@ -94,6 +92,7 @@ describe("MFA session issuance", () => {
     const [, passwordValues] = mocks.queryDatabase.mock.calls[0] as [string, unknown[]];
     const [, demoValues] = mocks.queryDatabase.mock.calls[1] as [string, unknown[]];
     expect(passwordValues[5]).toBe("empty-user-agent-hash");
+    expect(demoValues.slice(1, 3)).toEqual([null, null]);
     expect(demoValues[4]).toBe("empty-user-agent-hash");
   });
 

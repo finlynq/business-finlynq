@@ -6,14 +6,14 @@ const resetImplementation = readFileSync(
   "src/modules/onboarding/demo-bootstrap.ts",
   "utf8",
 );
-const poolUpdateStart = resetImplementation.indexOf(
-  "UPDATE demo_sandbox_pool SET",
+const stateUpdateStart = resetImplementation.indexOf(
+  "UPDATE shared_demo_reset_state SET",
 );
-const poolUpdateEnd = resetImplementation.indexOf(
-  "RETURNING cycle",
-  poolUpdateStart,
+const stateUpdateEnd = resetImplementation.indexOf(
+  "RETURNING baseline_version",
+  stateUpdateStart,
 );
-const poolUpdate = resetImplementation.slice(poolUpdateStart, poolUpdateEnd);
+const stateUpdate = resetImplementation.slice(stateUpdateStart, stateUpdateEnd);
 
 describe("demo reset operator contract", () => {
   it("accepts only the destructive nightly reconciliation mode", () => {
@@ -26,7 +26,7 @@ describe("demo reset operator contract", () => {
     expect(() => parseDemoResetMode([], "all")).toThrow(/exactly nightly/);
   });
 
-  it("cannot accept a tenant, sandbox, or slot selector", () => {
+  it("cannot accept a tenant, organization, or other selector", () => {
     for (const argument of [
       "10000000-0000-4000-8000-000000000001",
       "--organization=10000000-0000-4000-8000-000000000001",
@@ -38,32 +38,33 @@ describe("demo reset operator contract", () => {
   });
 
   it("schedules the next cycle from reconciliation completion, not the prior boundary", () => {
-    expect(poolUpdateStart).toBeGreaterThanOrEqual(0);
-    expect(poolUpdateEnd).toBeGreaterThan(poolUpdateStart);
-    expect(poolUpdate).toContain(
+    expect(stateUpdateStart).toBeGreaterThanOrEqual(0);
+    expect(stateUpdateEnd).toBeGreaterThan(stateUpdateStart);
+    expect(stateUpdate).toContain(
       "reset_after = app.next_demo_reset_after(statement_timestamp())",
     );
-    expect(poolUpdate).toContain(
+    expect(stateUpdate).toContain(
       "last_completed_reset_at = statement_timestamp()",
     );
-    expect(poolUpdate).not.toContain(
+    expect(stateUpdate).not.toContain(
       "next_demo_reset_after(greatest(now(), reset_after))",
     );
   });
 
-  it("promotes an overdue deploy bootstrap to a complete nightly reconciliation", () => {
+  it("resets on nightly runs, overdue bootstrap, failure, or baseline upgrade", () => {
     expect(resetImplementation).toContain(
-      "reset_after <= statement_timestamp() AS overdue",
+      "reset_after <= statement_timestamp() AS reset_due",
     );
     expect(resetImplementation).toContain(
-      "const effectiveMode = await resolveDemoSandboxResetMode(client, options.mode)",
+      'const shouldReset = options.mode === "nightly" || state.status !== "READY"',
     );
     expect(resetImplementation).toContain(
-      "listSandboxCandidates(client, effectiveMode)",
+      "state.baseline_version < DEMO_BASELINE_VERSION || state.reset_due",
     );
     expect(resetImplementation).toContain(
-      "claimSandboxForReset(client, candidate, effectiveMode)",
+      "WHERE organization_id = $1 AND session_mode = 'DEMO' AND revoked_at IS NULL",
     );
-    expect(resetImplementation).toContain('if (effectiveMode === "nightly")');
+    expect(resetImplementation).toContain("purgeSharedDemoBusinessData(client, DEMO_ORGANIZATION_ID)");
+    expect(resetImplementation).not.toContain("listSandboxCandidates");
   });
 });

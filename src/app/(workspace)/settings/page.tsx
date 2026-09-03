@@ -17,7 +17,7 @@ export default async function SettingsPage() {
       />
       {workspace.isDemo && (
         <DemoNotice>
-          This page has the same organization and access controls as a standard account, but all members and invitations are synthetic, email delivery is suppressed, and the seeded sandbox resets nightly.
+          This page has the same organization and access controls as a standard account, but the demo is shared, all members and invitations are synthetic, email delivery is suppressed, and the seeded company resets nightly.
         </DemoNotice>
       )}
       <OrganizationSettings workspace={workspace} />

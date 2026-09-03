@@ -10,8 +10,8 @@ Use this checklist for every Business Finlynq release. Releases are commit-addre
 - The most recent restore drill is within 30 days and includes separate key recovery.
 - Database capacity, disk, TLS, external uptime monitor, alert delivery, and auth email worker health are green.
 - Any migration was reviewed for locks, runtime-role grants, backup-role grants, rollback compatibility, and required forward repair.
-- The last demo-sandbox nightly reconciliation passed, no slot is unexpectedly quarantined or overdue, and the single nightly scheduler is enabled on hosts that allow writable demos.
-- The mandatory operations environment contains the full release SHA, matching monitor revision, every app-gate expectation (including the independent bank-feed gate), and reviewed demo-pool thresholds.
+- The last shared-demo nightly reset passed, the durable state is READY with a future boundary, and the single scheduler is enabled on hosts that allow writable demos.
+- The mandatory operations environment contains the full release SHA, matching monitor revision, every app-gate expectation, and the reviewed shared-demo maintenance expectation.
 - A named operator owns the release and another owns rollback/acceptance.
 
 ## Scripted release contract
@@ -125,7 +125,7 @@ Normal `main` releases may be triggered by the root-managed, immutable-tag CI/CD
 2. Activate the durable maintenance marker; disable and drain every installed Business Finlynq timer/service or remove the exact deployed cron block; prove the alternate scheduler and labeled scheduled one-shot containers inactive. Then stop both app and authentication worker and prove they are stopped.
 3. With all write surfaces still stopped, run the bounded encrypted backup and exact backup verifier, including its off-site marker. Keep the app and worker stopped through migration and every pre-traffic verifier.
 4. Recreate PostgreSQL against the existing data volume with the captured immutable database image, wait for health, and retain structured evidence that the running container uses that exact image ID. Only then run the immutable-ID-pinned migrator as database owner. Before bootstrap or app startup, run the mandatory post-migration runtime, authentication-worker, and backup-role reconcilers plus schema/RLS/grant, journal-type, and accounting-evidence verifiers.
-5. Run additive `bootstrap_demo`, re-run and retain accounting-evidence verification, start the immutable candidate with all gates disabled, and complete readiness plus browser acceptance. Normal bootstrap prepares only additive dirty slots and preserves assigned claims; destructive full-pool acceptance belongs only in an explicit maintenance window or fresh install.
+5. Run `bootstrap_demo`, retain accounting-evidence verification, start the immutable candidate with all gates disabled, and complete readiness plus shared-browser acceptance. Bootstrap is idempotent while the baseline is current; a due or failed shared demo is fully reset before entry reopens.
 6. Recreate the app and optional auth worker from the same captured IDs with the reviewed final gates. Verify exact IDs/labels, readiness, and environment stability; install and verify the scheduler assets; resume only the selected scheduler and run its installed monitor.
 7. Verify public `/api/live`, minimal public `/api/health`, loopback-only detailed readiness, response security headers, release revision, auth worker, backup/reconciliation/accounting job evidence, and external monitoring. Confirm public readiness contains neither `checks` nor `revision`.
 8. Re-enable writes only after tenant isolation, posting authorization, idempotency, audit insertion, period controls, and browser acceptance pass against the deployed release.
@@ -168,7 +168,7 @@ export ROLLBACK_COMPATIBILITY_ACK='f8485-one-release-only'
 ./deploy/rollback/run-legacy-restore-rehearsal.sh
 ```
 
-The command restores only into the tmpfs-backed `restore_database`, runs current forward migrations plus all three role reconcilers, verifies restored key recovery before creating any new demo key, recreates the demo-sandbox baseline for the current release, starts the hard-pinned image as `rollback_rehearsal_app` on only the internal restore network, and runs `verify-legacy-app.sh`. That verifier proves readiness and that demo login remains disabled without issuing a session. It publishes no port and cleans up only the explicitly named disposable restore/rehearsal containers. A missing recorded local image fails closed because pulling and rebuilding are disabled.
+The command restores only into the tmpfs-backed `restore_database`, runs current forward migrations plus all three role reconcilers, verifies restored key recovery before creating any new demo key, recreates the shared-demo baseline for the current release, starts the hard-pinned image as `rollback_rehearsal_app` on only the internal restore network, and runs `verify-legacy-app.sh`. That verifier proves readiness and that demo login remains disabled without issuing a session. It publishes no port and cleans up only the explicitly named disposable restore/rehearsal containers. A missing recorded local image fails closed because pulling and rebuilding are disabled.
 
 During an actual rollback, first keep every login and write gate disabled and confirm the availability-only limitation, then set the acknowledgement:
 

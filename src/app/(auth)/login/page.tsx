@@ -27,7 +27,7 @@ export default async function LoginPage({ searchParams }: { searchParams: Promis
       eyebrow={accountLoginEnabled ? "Secure workspace" : "Public product preview"}
       title={accountLoginEnabled ? "Welcome back" : "Explore Business Finlynq"}
       description={principal?.sessionMode === "demo" && accountLoginEnabled
-        ? "Sign in to switch from the public demo to your private organization. Your daily demo claim remains available until its nightly reset."
+        ? "Sign in to switch from the shared public demo to your private organization."
         : accountLoginEnabled
           ? "Sign in to your organization’s accounting workspace."
           : "Open the synthetic business directly—no registration or credentials required."}

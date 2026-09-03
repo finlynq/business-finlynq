@@ -48,7 +48,7 @@ export function LoginForm({ next, initialMessage, accountLoginEnabled }: { next:
       )}
       <Link className={styles.demoButton} href={`/try-demo?next=${encodeURIComponent(next)}`} prefetch={false}>Open the public demo <span aria-hidden="true">→</span></Link>
       <Link className={styles.afterFormLink} href="/signup">Create a new business account</Link>
-      <p className={styles.securityNote}>{accountLoginEnabled ? "The public demo is a separate disposable synthetic sandbox; it cannot administer recovery, security, banks, live payments, tax filing, or MCP access." : "This hosted preview provides an isolated disposable synthetic sandbox. Real account login and real-organization writes remain server-disabled."}</p>
+      <p className={styles.securityNote}>{accountLoginEnabled ? "The public demo is one shared synthetic account. Everyone sees its changes until the nightly reset; do not enter real information. Recovery, external systems, and MCP access remain disabled." : "This hosted preview is one shared synthetic account. Everyone sees its changes until the nightly reset; real account login and real-organization writes remain server-disabled."}</p>
     </>
   );
 }

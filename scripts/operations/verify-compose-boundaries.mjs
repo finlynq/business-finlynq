@@ -667,7 +667,6 @@ const releaseRehearsalRendered = execFileSync(
       BACKUP_REQUIRE_OFFSITE: "false",
       BUSINESS_FINLYNQ_APP_ORIGIN: "http://127.0.0.1:3311",
       BUSINESS_FINLYNQ_APP_PORT: "3311",
-      DEMO_CLAIM_COOKIE_NAME: "business_finlynq_rehearsal_claim",
       MONITOR_BACKUP_DIR: "/tmp/business-finlynq-release-evidence/rehearsal-backup",
       MONITOR_REQUIRE_OFFSITE: "false",
       RELEASE_REHEARSAL_PROJECT: releaseRehearsalProject,

@@ -19,7 +19,7 @@ export default async function AccountingSettingsPage() {
         description="Manage legal entities, account dimensions, currencies, effective-dated exchange rates, and tax-pack capability without rewriting posted history."
         actions={<Link className="secondary-button" href="/app/settings">Organization & members</Link>}
       />
-      {principal.sessionMode === "demo" && <DemoNotice>Configuration changes are available in this isolated sandbox and return to the seeded setup during the nightly reset.</DemoNotice>}
+      {principal.sessionMode === "demo" && <DemoNotice>Configuration changes are shared with every demo visitor and return to the seeded setup during the nightly reset.</DemoNotice>}
       <AccountingSettings
         configuration={configuration}
         hierarchies={hierarchies}

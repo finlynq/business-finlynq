@@ -131,7 +131,6 @@ if [[ ! -e "$compose_environment" ]]; then
     printf 'BUSINESS_FINLYNQ_RESTORE_DRILL_NETWORK=business_finlynq_development_restore_drill\n'
     printf 'TRUSTED_PROXY_HOPS=1\n'
     printf 'SESSION_COOKIE_NAME=__Host-business_finlynq_development_session\n'
-    printf 'DEMO_CLAIM_COOKIE_NAME=__Host-business_finlynq_development_demo_claim\n'
     printf 'DEMO_LOGIN_ENABLED=true\n'
     printf 'DEMO_WRITES_ENABLED=true\n'
     printf 'ACCOUNT_LOGIN_ENABLED=false\n'

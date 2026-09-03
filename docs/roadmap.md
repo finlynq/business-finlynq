@@ -18,11 +18,11 @@ The detailed release order and acceptance gates now live in the [product impleme
 
 ## P0 writable interactive demo baseline implemented
 
-- Each browser claims an isolated, independently encrypted synthetic sandbox instead of sharing a mutable demo tenant.
+- Every browser enters the same shared, independently encrypted synthetic organization, so visitors can see changes made by other visitors until reset.
 - Manual GL, service/non-stock AR/AP, recorded settlement and allocation, transaction-tax snapshot, trial-balance/reporting, and period-control workflows persist across logout and session expiry until nightly reset.
-- `DEMO_LOGIN_ENABLED=true` and `DEMO_WRITES_ENABLED=true` authorize sandbox-only mutations. Real login, signup, and business writes use separate gates and never inherit demo authority.
-- Sessions expire after 15 minutes idle or one hour total. A hash-only host claim reopens the same organization, while 04:15 Toronto nightly reconciliation invalidates all claims and rebuilds the additive 128-slot pool.
-- Inventory, live bank credentials in the sandbox, live payment execution, production tax returns/filing, and public MCP access remain out of scope. Synthetic banking/reconciliation is reset with the rest of the demo.
+- `DEMO_LOGIN_ENABLED=true` and `DEMO_WRITES_ENABLED=true` authorize mutations only for the fixed shared demo. Real login, signup, and business writes use separate gates.
+- Sessions expire after 15 minutes idle or one hour total. There is no browser claim or capacity pool; 04:15 Toronto nightly reconciliation revokes all demo sessions and rebuilds the single baseline.
+- Inventory, live bank credentials in the public demo, live payment execution, production tax returns/filing, and public MCP access remain out of scope. Synthetic banking/reconciliation is reset with the rest of the demo.
 - The release passes the isolation, browser, reset, and monitoring checklist in [operations/interactive-demo.md](operations/interactive-demo.md).
 
 P0 demonstrates durable accounting behavior inside disposable synthetic tenants; it does not satisfy or bypass any real-account milestone exit gate.

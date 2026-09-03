@@ -873,7 +873,6 @@ app_port="$(jq -r '.services.app.ports[] | select(.target == 3000) | .published'
 [[ "$app_port" =~ ^[0-9]+$ && "$app_port" -ge 1024 && "$app_port" -le 65535 ]] || fail "rendered app port is invalid"
 app_origin="$(jq -r '.services.app.environment.APP_ORIGIN // empty' <<<"$rendered_compose")"
 session_cookie_name="$(jq -r '.services.app.environment.SESSION_COOKIE_NAME // empty' <<<"$rendered_compose")"
-demo_claim_cookie_name="$(jq -r '.services.app.environment.DEMO_CLAIM_COOKIE_NAME // empty' <<<"$rendered_compose")"
 public_base_url=""
 
 for gate in DEMO_LOGIN_ENABLED DEMO_WRITES_ENABLED ACCOUNT_LOGIN_ENABLED ACCOUNT_SIGNUP_ENABLED BUSINESS_WRITES_ENABLED BANK_FEEDS_ENABLED; do
@@ -931,8 +930,6 @@ if [[ "$mode" == "release" ]]; then
   MONITOR_EXPECT_OUTBOX_PUBLISHER="$(read_operations_value MONITOR_EXPECT_OUTBOX_PUBLISHER)"
   MONITOR_REQUIRE_OFFSITE="$(read_operations_value MONITOR_REQUIRE_OFFSITE)"
   MONITOR_EXPECT_DEMO_MAINTENANCE="$(read_operations_value MONITOR_EXPECT_DEMO_MAINTENANCE)"
-  MONITOR_EXPECT_DEMO_POOL_SIZE="$(read_operations_value MONITOR_EXPECT_DEMO_POOL_SIZE)"
-  MONITOR_MIN_DEMO_READY_SLOTS="$(read_operations_value MONITOR_MIN_DEMO_READY_SLOTS)"
   export BUSINESS_FINLYNQ_IMAGE_REVISION MONITOR_EXPECT_REVISION MONITOR_MAINTENANCE_SCHEDULER \
     MONITOR_BASE_URL MONITOR_HOSTNAME MONITOR_BACKUP_DIR MONITOR_MAX_BACKUP_AGE_HOURS \
     SCHEDULED_BACKUP_TIMEOUT_SECONDS \
@@ -940,7 +937,7 @@ if [[ "$mode" == "release" ]]; then
     ACCOUNTING_EVIDENCE_VERIFY_TIMEOUT_SECONDS MONITOR_MIN_TLS_DAYS \
     MONITOR_MAX_DISK_PERCENT MONITOR_EXPECT_EDGE MONITOR_EXPECT_AUTH_EMAIL_WORKER \
     MONITOR_EXPECT_OUTBOX_PUBLISHER MONITOR_REQUIRE_OFFSITE \
-    MONITOR_EXPECT_DEMO_MAINTENANCE MONITOR_EXPECT_DEMO_POOL_SIZE MONITOR_MIN_DEMO_READY_SLOTS
+    MONITOR_EXPECT_DEMO_MAINTENANCE
   for explicit_boolean in MONITOR_EXPECT_EDGE MONITOR_EXPECT_AUTH_EMAIL_WORKER \
     MONITOR_EXPECT_OUTBOX_PUBLISHER MONITOR_REQUIRE_OFFSITE MONITOR_EXPECT_DEMO_MAINTENANCE; do
     [[ "${!explicit_boolean}" == "true" || "${!explicit_boolean}" == "false" ]] \
@@ -949,7 +946,7 @@ if [[ "$mode" == "release" ]]; then
   for explicit_number in MONITOR_MAX_BACKUP_AGE_HOURS SCHEDULED_BACKUP_TIMEOUT_SECONDS \
     MONITOR_MAX_BACKUP_ACTIVE_SECONDS \
     MONITOR_BACKUP_VERIFY_TIMEOUT_SECONDS ACCOUNTING_EVIDENCE_VERIFY_TIMEOUT_SECONDS \
-    MONITOR_MIN_TLS_DAYS MONITOR_MAX_DISK_PERCENT MONITOR_EXPECT_DEMO_POOL_SIZE MONITOR_MIN_DEMO_READY_SLOTS; do
+    MONITOR_MIN_TLS_DAYS MONITOR_MAX_DISK_PERCENT; do
     [[ "${!explicit_number}" =~ ^[0-9]+$ ]] \
       || fail "$explicit_number must be explicitly numeric in the canonical operations environment"
   done
@@ -970,8 +967,6 @@ if [[ "$mode" == "release" ]]; then
   [[ "$app_origin" == "$MONITOR_BASE_URL" ]] || fail "production APP_ORIGIN must exactly match the monitored HTTPS origin"
   [[ "$session_cookie_name" == "__Host-business_finlynq_session" ]] \
     || fail "production release requires the host-only secure session cookie"
-  [[ "$demo_claim_cookie_name" == "__Host-business_finlynq_demo_claim" ]] \
-    || fail "production release requires the host-only secure demo-claim cookie"
   public_base_url="$MONITOR_BASE_URL"
 else
   rehearsal_resources="$(jq -r '.volumes[].name, .networks[].name' <<<"$rendered_compose")"
@@ -988,7 +983,6 @@ else
   [[ "$app_port" != "3100" ]] || fail "rehearsal must use a non-production loopback port"
   [[ "$app_origin" == "http://127.0.0.1:$app_port" ]] || fail "rehearsal APP_ORIGIN must be its isolated loopback listener"
   [[ -n "$session_cookie_name" && "$session_cookie_name" != __Host-* ]] || fail "rehearsal must use a non-__Host session cookie"
-  [[ -n "$demo_claim_cookie_name" && "$demo_claim_cookie_name" != __Host-* ]] || fail "rehearsal must use a non-__Host demo-claim cookie"
   [[ "$backup_directory" == "$evidence_root"/* ]] || fail "rehearsal backups must stay below the evidence root"
   [[ "$(jq -r '.services.backup.environment.BACKUP_REQUIRE_OFFSITE' <<<"$rendered_compose")" == "false" ]] \
     || fail "rehearsal backup must not contact an off-site remote"

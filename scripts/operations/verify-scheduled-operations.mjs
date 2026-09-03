@@ -179,11 +179,11 @@ if (schedulerPause.includes('chown -- "$deploy_uid" "$marker_temporary"')) {
 }
 
 const resetImplementation = read("src/modules/onboarding/demo-bootstrap.ts");
-requireText(resetImplementation, "resetDemoSandboxes", "demo-sandbox reset implementation");
-requireText(resetImplementation, "registeredDemoSandboxResetTables", "demo-sandbox reset registration hook");
+requireText(resetImplementation, "resetSharedDemoOrganization", "shared-demo reset implementation");
+requireText(resetImplementation, "registeredSharedDemoResetTables", "shared-demo reset registration hook");
+requireText(resetImplementation, "shared_demo_reset_state", "shared-demo durable reset state");
 const dailyClaimMigration = read("migrations/drizzle/0012_daily_demo_claims.sql");
 requireText(dailyClaimMigration, "open_item_void_events", "demo-sandbox reset table coverage");
-requireText(dailyClaimMigration, "generate_series(1, 128)", "demo-sandbox pool capacity");
 if (resetImplementation.includes("command_hash = EXCLUDED.command_hash")) {
   throw new Error("demo bootstrap may not rewrite the immutable party creation fingerprint during an upgrade");
 }
@@ -197,8 +197,6 @@ for (const expected of [
   "MONITOR_EXPECT_ACCOUNT_LOGIN_ENABLED",
   "MONITOR_EXPECT_BUSINESS_WRITES_ENABLED",
   "MONITOR_EXPECT_BANK_FEEDS_ENABLED",
-  "MONITOR_EXPECT_DEMO_POOL_SIZE",
-  "MONITOR_MIN_DEMO_READY_SLOTS",
   'MONITOR_MAINTENANCE_SCHEDULER="${MONITOR_MAINTENANCE_SCHEDULER:-systemd}"',
   'MONITOR_MAINTENANCE_SCHEDULER" == "cron"',
   "deploy-owned cron schedule does not match the reviewed four-job block",
@@ -220,9 +218,9 @@ for (const expected of [
   'backup_verification_status" == "75"',
   "Backup verification deferred while an encrypted backup is active",
   "newest encrypted backup failed isolated container verification",
-  "FROM demo_sandbox_slots",
-  "quarantined slot(s)",
-  "stranded resetting slot(s)",
+  "FROM shared_demo_reset_state",
+  "shared demo reset state could not be verified",
+  "shared demo nightly reset is overdue",
   "app image OCI revision label does not match the monitored release",
   "readiness bank-feed gate does not match the monitored release boundary",
 ]) requireText(monitor, expected, "production monitor");

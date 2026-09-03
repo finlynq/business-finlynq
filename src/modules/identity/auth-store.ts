@@ -175,8 +175,6 @@ export async function issuePasswordUserSession(input: {
 
 export async function issueDemoSession(input: {
   tokenHash: string;
-  claimTokenHash: string | null;
-  replacementClaimTokenHash: string;
   ipHash: string;
   userAgentHash: string;
   requestId: string;
@@ -186,8 +184,8 @@ export async function issueDemoSession(input: {
     organization_name: string; role_label: string; claim_created: boolean; claim_expires_at: Date;
   }>("SELECT * FROM app.auth_issue_demo_session($1,$2,$3,$4,$5,$6)", [
     input.tokenHash,
-    input.claimTokenHash,
-    input.replacementClaimTokenHash,
+    null,
+    null,
     input.ipHash,
     input.userAgentHash,
     input.requestId,

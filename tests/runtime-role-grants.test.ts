@@ -42,6 +42,7 @@ describe("runtime role reconciliation contract", () => {
     expect(script).toContain("app.auth_email_delivery_readiness(integer)");
     expect(script).toContain("app.auth_issue_demo_session(text,text,text,text,text,text)");
     expect(script).toContain("app.auth_mark_demo_step_up(uuid,text)");
+    expect(script).toContain("app.shared_demo_operations_state()");
     expect(script).toContain("app.auth_begin_organization_signup(uuid,uuid,uuid,uuid,text,text,text,text,text,text,text,text,text,text,accounting_profile,integer,manual_posting_mode,text,text,text,text,uuid,text,text,text)");
     expect(script).toContain("app.auth_consume_signup_accept_limits(text)");
     expect(script).toContain("app.auth_accept_organization_signup(text,text,uuid,text,text,text)");
@@ -72,6 +73,7 @@ describe("runtime role reconciliation contract", () => {
     expect(script).toContain("app.accounting_add_tax_registration(uuid,uuid,text,text,integer,text,text,text,text,text,date,date)");
     expect(script).not.toContain("app.organization_admin_authorize(text,boolean)");
     expect(script).not.toContain("app.reset_demo_sandbox_extensions(uuid,uuid)");
+    expect(script).not.toContain("app.reset_shared_demo_extensions(uuid,uuid)");
     expect(script).not.toContain("'app.auth_issue_user_session(");
   });
 

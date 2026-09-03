@@ -234,7 +234,7 @@ function invitationIdentity(principal: SessionPrincipal, email: string) {
   const fingerprint = identityLookupHash(
     `demo-organization-invitation|${principal.organizationId}|${normalized}`,
   ).slice(0, 20);
-  const synthetic = `sandbox-${fingerprint}@example.invalid`;
+  const synthetic = `shared-demo-${fingerprint}@example.invalid`;
   return { email: synthetic, lookupHash: emailLookupHash(synthetic) };
 }
 

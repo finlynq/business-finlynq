@@ -44,9 +44,6 @@ demo_job_last_run_unixtime=0
 : "${MONITOR_EXPECT_BANK_FEEDS_ENABLED:?MONITOR_EXPECT_BANK_FEEDS_ENABLED is required}"
 : "${MONITOR_EXPECT_DEMO_MAINTENANCE:?MONITOR_EXPECT_DEMO_MAINTENANCE is required}"
 
-MONITOR_EXPECT_DEMO_POOL_SIZE="${MONITOR_EXPECT_DEMO_POOL_SIZE:-128}"
-MONITOR_MIN_DEMO_READY_SLOTS="${MONITOR_MIN_DEMO_READY_SLOTS:-4}"
-
 failures=()
 
 record_failure() {
@@ -56,8 +53,7 @@ record_failure() {
 for numeric_value in \
   MONITOR_MAX_BACKUP_AGE_HOURS SCHEDULED_BACKUP_TIMEOUT_SECONDS \
   MONITOR_MAX_BACKUP_ACTIVE_SECONDS MONITOR_BACKUP_VERIFY_TIMEOUT_SECONDS \
-  MONITOR_MIN_TLS_DAYS MONITOR_MAX_DISK_PERCENT \
-  MONITOR_EXPECT_DEMO_POOL_SIZE MONITOR_MIN_DEMO_READY_SLOTS; do
+  MONITOR_MIN_TLS_DAYS MONITOR_MAX_DISK_PERCENT; do
   [[ "${!numeric_value}" =~ ^[0-9]+$ ]] || {
     printf 'Invalid numeric monitoring setting: %s\n' "$numeric_value" >&2
     exit 2
@@ -81,10 +77,6 @@ for boolean_value in \
     exit 2
   }
 done
-(( MONITOR_EXPECT_DEMO_POOL_SIZE > 0 )) || {
-  printf '%s\n' "MONITOR_EXPECT_DEMO_POOL_SIZE must be greater than zero" >&2
-  exit 2
-}
 (( SCHEDULED_BACKUP_TIMEOUT_SECONDS > 0 && SCHEDULED_BACKUP_TIMEOUT_SECONDS <= 5400 \
   && MONITOR_MAX_BACKUP_ACTIVE_SECONDS > 0 && MONITOR_MAX_BACKUP_ACTIVE_SECONDS <= 4800 \
   && MONITOR_MAX_BACKUP_ACTIVE_SECONDS < SCHEDULED_BACKUP_TIMEOUT_SECONDS \
@@ -92,11 +84,6 @@ done
   printf '%s\n' "Backup timeout settings exceed the reviewed recovery envelope" >&2
   exit 2
 }
-(( MONITOR_MIN_DEMO_READY_SLOTS >= 0 && MONITOR_MIN_DEMO_READY_SLOTS <= MONITOR_EXPECT_DEMO_POOL_SIZE )) || {
-  printf '%s\n' "MONITOR_MIN_DEMO_READY_SLOTS must be between zero and the expected pool size" >&2
-  exit 2
-}
-
 if [[ ! "$MONITOR_EXPECT_REVISION" =~ ^([a-f0-9]{40}|[a-f0-9]{64})$ || "$MONITOR_EXPECT_REVISION" =~ ^0+$ ]]; then
   printf 'MONITOR_EXPECT_REVISION must be a full 40- or 64-character hexadecimal Git revision\n' >&2
   exit 2
@@ -554,49 +541,39 @@ else
 fi
 
 if [[ "$MONITOR_EXPECT_DEMO_MAINTENANCE" == "true" ]]; then
-  slot_counts=""
+  shared_demo_state=""
   if [[ -n "$database_container_id" ]]; then
-    slot_counts="$(docker exec "$database_container_id" \
+    shared_demo_state="$(docker exec "$database_container_id" \
       psql --no-password --username business_finlynq_owner --dbname business_finlynq \
       --tuples-only --no-align --field-separator='|' --set=ON_ERROR_STOP=1 \
-      --command "SELECT count(*), count(*) FILTER (WHERE state = 'READY'), count(*) FILTER (WHERE state = 'ASSIGNED'), count(*) FILTER (WHERE state = 'DIRTY'), count(*) FILTER (WHERE state = 'RESETTING'), count(*) FILTER (WHERE state = 'QUARANTINED'), (SELECT (reset_after <= now())::int FROM demo_sandbox_pool WHERE singleton), (SELECT coalesce(extract(epoch FROM last_completed_reset_at)::bigint, 0) FROM demo_sandbox_pool WHERE singleton) FROM demo_sandbox_slots;" \
+      --command "SELECT status, (reset_after <= now())::int, coalesce(extract(epoch FROM last_completed_reset_at)::bigint, 0) FROM shared_demo_reset_state WHERE singleton;" \
       2>/dev/null || true)"
   fi
-  IFS='|' read -r slot_total slot_ready slot_assigned slot_dirty slot_resetting slot_quarantined \
-    pool_reset_due pool_last_completed_reset_unixtime slot_extra <<<"$slot_counts"
-  if [[ -n "${slot_extra:-}" ]] \
-    || [[ ! "${slot_total:-}" =~ ^[0-9]+$ ]] \
-    || [[ ! "${slot_ready:-}" =~ ^[0-9]+$ ]] \
-    || [[ ! "${slot_assigned:-}" =~ ^[0-9]+$ ]] \
-    || [[ ! "${slot_dirty:-}" =~ ^[0-9]+$ ]] \
-    || [[ ! "${slot_resetting:-}" =~ ^[0-9]+$ ]] \
-    || [[ ! "${slot_quarantined:-}" =~ ^[0-9]+$ ]] \
-    || [[ ! "${pool_reset_due:-}" =~ ^[01]$ ]] \
-    || [[ ! "${pool_last_completed_reset_unixtime:-}" =~ ^[0-9]+$ ]]; then
-    record_failure "demo sandbox pool state could not be verified"
+  IFS='|' read -r shared_demo_status shared_demo_reset_due \
+    shared_demo_last_completed_reset_unixtime shared_demo_extra <<<"$shared_demo_state"
+  if [[ -n "${shared_demo_extra:-}" ]] \
+    || [[ ! "${shared_demo_status:-}" =~ ^(READY|RESETTING|FAILED)$ ]] \
+    || [[ ! "${shared_demo_reset_due:-}" =~ ^[01]$ ]] \
+    || [[ ! "${shared_demo_last_completed_reset_unixtime:-}" =~ ^[0-9]+$ ]]; then
+    record_failure "shared demo reset state could not be verified"
   else
-    (( slot_total == MONITOR_EXPECT_DEMO_POOL_SIZE )) \
-      || record_failure "demo sandbox pool has $slot_total slots; expected $MONITOR_EXPECT_DEMO_POOL_SIZE"
-    (( slot_quarantined == 0 )) \
-      || record_failure "demo sandbox pool has $slot_quarantined quarantined slot(s)"
     if [[ "$maintenance_active" != "true" ]]; then
-      (( slot_resetting == 0 )) \
-        || record_failure "demo sandbox pool has $slot_resetting stranded resetting slot(s)"
-      (( pool_reset_due == 0 )) \
-        || record_failure "demo sandbox nightly reset is overdue"
-      (( slot_ready >= MONITOR_MIN_DEMO_READY_SLOTS )) \
-        || record_failure "demo sandbox pool has only $slot_ready ready slot(s); minimum is $MONITOR_MIN_DEMO_READY_SLOTS"
+      [[ "$shared_demo_status" == "READY" ]] \
+        || record_failure "shared demo reset state is $shared_demo_status"
+      (( shared_demo_reset_due == 0 )) \
+        || record_failure "shared demo nightly reset is overdue"
     fi
     if [[ "$demo_job_last_success" == "0" ]]; then
-      if (( pool_reset_due == 0 \
-        && pool_last_completed_reset_unixtime > demo_job_last_run_unixtime )); then
+      if [[ "$shared_demo_status" == "READY" ]] \
+        && (( shared_demo_reset_due == 0 \
+          && shared_demo_last_completed_reset_unixtime > demo_job_last_run_unixtime )); then
         # A fail-closed deployment may complete the same full reconciliation
         # after a scheduled attempt failed. Report the newer durable recovery,
         # not the stale scheduler result that preceded it.
         demo_job_last_success=1
-        demo_job_last_run_unixtime="$pool_last_completed_reset_unixtime"
+        demo_job_last_run_unixtime="$shared_demo_last_completed_reset_unixtime"
       else
-        record_failure "latest demo reconciliation failed without a newer successful pool recovery"
+        record_failure "latest demo reconciliation failed without a newer successful shared reset"
       fi
     fi
   fi

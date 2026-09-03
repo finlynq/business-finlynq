@@ -15,7 +15,7 @@ Mutation transactions set the same request context used by both `audit_events.re
 
 ## Internal metrics
 
-`/api/metrics` returns Prometheus text only on the loopback/private-network application listener with `X-Business-Finlynq-Internal-Metrics: 1`. Caddy unconditionally strips that marker, and a public request receives a minimal `404`. The aggregate-only database function and the handler expose API request/error/latency, authentication failures, outbox count/age/lineage, email queue/delivery/heartbeat, and demo pool/reset signals. Metric labels are prohibited except the fixed Prometheus histogram boundary.
+`/api/metrics` returns Prometheus text only on the loopback/private-network application listener with `X-Business-Finlynq-Internal-Metrics: 1`. Caddy unconditionally strips that marker, and a public request receives a minimal `404`. The aggregate-only database function and the handler expose API request/error/latency, authentication failures, outbox count/age/lineage, email queue/delivery/heartbeat, and shared-demo session/reset signals. Metric labels are prohibited except the fixed Prometheus histogram boundary.
 
 The five-minute host monitor atomically replaces `MONITOR_METRICS_FILE` (default `/var/lib/business-finlynq/host.prom`) with its outcome, isolated backup-verification result, and the allowlisted `encrypted_backup` and `demo_reconciliation` timer/job results. A separate four-hour accounting-evidence job performs the deliberately full-history audit/outbox verification under both an advisory lock and hard query/process timeouts, then atomically writes aggregate success, duration, last-run, and last-success gauges to `/var/lib/business-finlynq/accounting-evidence.prom`. The systemd units create `/var/lib/business-finlynq`; for the cron fallback, create the configured textfile directory in advance and grant the `deploy` user write access. Configure node_exporter's textfile collector, or an equivalent host agent, to read both files and scrape the application endpoint over loopback. Do not proxy any telemetry surface to the public network.
 
@@ -51,9 +51,9 @@ This procedure does not install a scraper, rule engine, Alertmanager, notificati
 - certificate validity beyond the configured threshold;
 - expected app, database, and edge container state;
 - exact app-container demo/account/business write gates for the reviewed release;
-- the selected systemd or deploy-owned cron reset/reconciliation scheduler when writable sandboxes are expected;
+- the selected systemd or deploy-owned cron reset/reconciliation scheduler when the writable shared demo is expected;
 - the full externally served, configured, and container release revision;
-- aggregate sandbox capacity and state, including size, minimum ready capacity, stranded reset work, and quarantine;
+- aggregate shared-demo state, including active sessions, reset readiness, due status, failures, and last completion;
 - backup filesystem utilization;
 - newest backup age, internally consistent manifest/artifact/checksum, and verified off-site marker.
 
@@ -83,7 +83,7 @@ Set `MONITOR_EXPECT_REVISION` to the same full reviewed Git SHA as `BUSINESS_FIN
 
 Set `MONITOR_EXPECT_AUTH_EMAIL_WORKER=true` at the same cutover that enables real account email delivery. Before that cutover it stays false so the intentionally absent profile is not reported as an outage.
 
-The production writable-demo boundary requires the reviewed login/write gates and `MONITOR_EXPECT_DEMO_MAINTENANCE=true`. The host monitor fails if the app differs, the selected scheduler is missing or altered, the pool is not exactly 128 slots, any slot is quarantined, a reset is stranded or overdue, or ready capacity falls below four outside an active maintenance pass. Set maintenance false only when demo login and writes are intentionally disabled, such as during rollback to an artifact that predates sandbox resets.
+The production writable-demo boundary requires the reviewed login/write gates and `MONITOR_EXPECT_DEMO_MAINTENANCE=true`. The host monitor fails if the app differs, the selected scheduler is missing or altered, the shared state is failed, resetting without active maintenance, overdue, or lacks a recorded successful completion. Set maintenance false only when demo login and writes are intentionally disabled.
 
 The database readiness contract intentionally reports delivery dead-letter count separately from worker availability: one permanently failed address must not disable every account login. Controlled cancellation, MFA invalidation, and supersession states also use the durable `DEAD` terminal state, so the delivery-failure metric and page exclude those reviewed error codes. Configure centralized worker-log/provider telemetry to page on actual delivery exhaustion, and retain a metric for oldest pending age. When the worker is expected, the host metric makes a missing first heartbeat alert just like a stale heartbeat. The public readiness endpoint catches a stopped worker, stuck lease, or materially delayed due queue without exposing counts or recipients.
 
@@ -94,12 +94,12 @@ Production requires an independent external uptime/alerting service that calls `
 - disk use at or above 85%;
 - backup reaches 6 hours or lacks off-site verification;
 - database/container unhealthy or restart loop;
-- demo reset/reconciliation timer inactive, reset failure, quarantined slot, or repeated pool exhaustion;
+- demo reset/reconciliation timer inactive, reset failure, stranded reset, or overdue shared state;
 - auth email worker stopped, repeated delivery failures, and password-recovery abuse rate;
 - sustained 5xx responses and abnormal latency;
 - audit-chain verification failure.
 
-Readiness, TLS, disk, backup, container, revision, app-gate, demo-timer, quarantine, stranded-reset, minimum-capacity, backup-verification, and key-job checks are implemented by the five-minute host script. Audit-graph and audit/outbox-lineage integrity are implemented by the separate four-hour bounded verifier; its six-hour alert threshold safely covers the schedule, random delay, and execution timeout. Both systemd and reviewed-cron scheduler modes invoke that same verifier. Reviewed Prometheus thresholds are committed, but the production scraper/rule engine, Alertmanager-equivalent routing, centralized JSON log storage, provider delivery webhook, receiver textfile scrape, and off-host uptime probe remain external services that operators must configure and test. Production-scale `EXPLAIN (ANALYZE, BUFFERS)` evidence for the bounded hot metric queries and full verifier must be captured on representative cardinality before pilot traffic. The generalized business-outbox publisher is not built yet; its lag alert is deliberately gated while request/audit/outbox lineage remains enforced and monitored. Repeated claim exhaustion still requires centralized service-log telemetry. Demo maintenance notifications must be tested before writable demo traffic; identity-provider notifications must be tested before real account login or business writes.
+Readiness, TLS, disk, backup, container, revision, app-gate, demo-timer, shared reset state, backup verification, and key-job checks are implemented by the five-minute host script. Audit-graph and audit/outbox-lineage integrity are implemented by the separate four-hour bounded verifier. Reviewed Prometheus thresholds are committed, while scraper, routing, centralized logs, provider webhooks, receiver scrape, and off-host uptime remain operator-managed. Demo maintenance notifications must be tested before writable demo traffic.
 
 ## Incident triage
 

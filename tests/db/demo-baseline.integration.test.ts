@@ -4,7 +4,8 @@ import { DEMO_ORGANIZATION_ID } from "@/modules/demo/constants";
 import { demoAccountingCalendar, demoPeriodState } from "@/modules/demo/accounting-clock";
 import {
   bootstrapDemoOrganization,
-  resetDemoSandboxes,
+  DEMO_BASELINE_VERSION,
+  resetSharedDemoOrganization,
 } from "@/modules/onboarding/demo-bootstrap";
 
 const databaseUrl = process.env.TEST_DATABASE_URL;
@@ -12,7 +13,7 @@ const runDatabaseTests = databaseUrl ? describe : describe.skip;
 
 runDatabaseTests("rich nightly demo baseline", () => {
   const pool = new Pool({ connectionString: databaseUrl });
-  let organizationId = "";
+  const organizationId = DEMO_ORGANIZATION_ID;
   let resetSchedule: {
     is_future: boolean;
     is_within_next_day: boolean;
@@ -21,12 +22,12 @@ runDatabaseTests("rich nightly demo baseline", () => {
 
   beforeAll(async () => {
     // Exercise the same destructive maintenance boundary used by the nightly
-    // job, then prove that the additive deploy bootstrap can run repeatedly.
+    // job, then prove that an up-to-date deploy bootstrap is non-destructive.
     // TEST_DATABASE_URL always identifies the disposable integration database.
     await pool.query(
-      "UPDATE demo_sandbox_pool SET reset_after = now() + interval '7 days' WHERE singleton",
+      "UPDATE shared_demo_reset_state SET reset_after = now() + interval '7 days' WHERE singleton",
     );
-    await resetDemoSandboxes(pool, { mode: "nightly" });
+    await resetSharedDemoOrganization(pool, { mode: "nightly" });
     const schedule = await pool.query<{
       is_future: boolean;
       is_within_next_day: boolean;
@@ -36,45 +37,46 @@ runDatabaseTests("rich nightly demo baseline", () => {
          reset_after > last_completed_reset_at AS is_future,
          reset_after <= last_completed_reset_at + interval '25 hours' AS is_within_next_day,
          to_char(reset_after AT TIME ZONE 'America/Toronto', 'HH24:MI') AS toronto_time
-       FROM demo_sandbox_pool
+       FROM shared_demo_reset_state
        WHERE singleton`,
     );
-    if (!schedule.rows[0]) throw new Error("Demo sandbox pool state is missing");
+    if (!schedule.rows[0]) throw new Error("Shared demo reset state is missing");
     resetSchedule = schedule.rows[0];
     await bootstrapDemoOrganization(pool);
     await bootstrapDemoOrganization(pool);
 
     const ready = await pool.query<{
       organization_id: string;
-      state: string;
+      status: string;
       baseline_version: number;
       active: boolean;
       is_demo: boolean;
       organization_mode: string;
-      active_claims: number;
+      active_sessions: number;
     }>(
-      `SELECT sandbox.organization_id, sandbox.state, sandbox.baseline_version,
-         organization.active, organization.is_demo, organization.organization_mode,
-         (SELECT count(*)::int FROM demo_daily_claims claim
-            WHERE claim.organization_id = sandbox.organization_id
-              AND claim.invalidated_at IS NULL) AS active_claims
-       FROM demo_sandbox_slots sandbox
-       JOIN organizations organization ON organization.id = sandbox.organization_id
-       WHERE sandbox.state = 'READY' AND sandbox.baseline_version = 6
-       ORDER BY sandbox.slot
-       LIMIT 1`,
+      `SELECT organization.id AS organization_id, reset_state.status,
+         reset_state.baseline_version, organization.active,
+         organization.is_demo, organization.organization_mode,
+         (SELECT count(*)::int FROM auth_sessions selected_session
+            WHERE selected_session.organization_id = organization.id
+              AND selected_session.session_mode = 'DEMO'
+              AND selected_session.revoked_at IS NULL) AS active_sessions
+       FROM organizations organization
+       CROSS JOIN shared_demo_reset_state reset_state
+       WHERE organization.id = $1 AND reset_state.singleton`,
+      [DEMO_ORGANIZATION_ID],
     );
     const selected = ready.rows[0];
-    if (!selected) throw new Error("No baseline-v6 READY demo sandbox is available");
+    if (!selected) throw new Error("The shared public demo is unavailable");
     expect(selected).toMatchObject({
-      state: "READY",
-      baseline_version: 6,
+      organization_id: DEMO_ORGANIZATION_ID,
+      status: "READY",
+      baseline_version: DEMO_BASELINE_VERSION,
       active: true,
       is_demo: true,
-      organization_mode: "SANDBOX",
-      active_claims: 0,
+      organization_mode: "PUBLIC_DEMO",
+      active_sessions: 0,
     });
-    organizationId = selected.organization_id;
   }, 300_000);
 
   afterAll(async () => pool.end());
@@ -218,31 +220,7 @@ runDatabaseTests("rich nightly demo baseline", () => {
       distinct_tax_sources: 4,
     });
 
-    const publicTemplate = await pool.query<{
-      registrations: number;
-      source_documents: number;
-      posted_journals: number;
-      bank_connections: number;
-    }>(
-      `SELECT
-         (SELECT count(*)::int FROM entity_tax_registrations
-            WHERE organization_id = $1) AS registrations,
-         (SELECT count(*)::int FROM source_documents
-            WHERE organization_id = $1) AS source_documents,
-         (SELECT count(*)::int FROM journal_entries
-            WHERE organization_id = $1 AND status = 'POSTED') AS posted_journals,
-         (SELECT count(*)::int FROM bank_connections
-            WHERE organization_id = $1) AS bank_connections`,
-      [DEMO_ORGANIZATION_ID],
-    );
-    expect(publicTemplate.rows[0]).toEqual({
-      registrations: 2,
-      source_documents: 0,
-      posted_journals: 0,
-      bank_connections: 0,
-    });
-
-    const sandboxBanking = await pool.query<{
+    const sharedDemoBanking = await pool.query<{
       connections: number;
       credential_events: number;
       accounts: number;
@@ -269,7 +247,7 @@ runDatabaseTests("rich nightly demo baseline", () => {
          (SELECT count(*)::int FROM bank_draft_proposals WHERE organization_id = $1) AS proposals`,
       [organizationId],
     );
-    expect(sandboxBanking.rows[0]).toEqual({
+    expect(sharedDemoBanking.rows[0]).toEqual({
       connections: 1,
       credential_events: 1,
       accounts: 2,

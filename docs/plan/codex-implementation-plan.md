@@ -63,7 +63,7 @@ Small, contained, all verified at file:line. Land as individual commits.
 - `package.json`: add `"engines": { "node": ">=24", "npm": ">=11" }`.
 - Dockerfile / docker-compose: pin base images by `@sha256` digest.
 - Document DB-integration test setup (`TEST_DATABASE_URL`, `TEST_APP_DATABASE_URL`, `TEST_AUTH_WORKER_DATABASE_URL`, role provisioning via `deploy/postgres/`) in README + `.env.example`; make the skipped suites print a loud warning.
-- Add integration tests for `resetDemoSandboxes` failure branches (`src/modules/onboarding/demo-bootstrap.ts:1023-1058`): forced reset failure → slot QUARANTINED and non-claimable; quarantine-of-quarantine; lost claim.
+- Add integration tests for shared demo reset failure branches: forced identity or purge failure records FAILED and closes entry; repaired rerun restores READY; nightly reset revokes every live visitor session and restores the exact baseline.
 - Split `src/modules/subledger/ar-ap-service.ts` (2,525 lines) along its seams: locks/idempotency helpers, pure line-building (already pure at :860-929), persistence, and the four command orchestrations. Pure refactor — tests must pass unmodified.
 
 ---

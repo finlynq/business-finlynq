@@ -148,9 +148,10 @@ export async function withTenantTransaction<T>(
       context.demoWriteAuthorized === true ? "true" : "false",
     ]);
     if (context.sessionMode === "demo") {
-      // The SECURITY DEFINER assertion locks the authentication row first and
-      // its sandbox slot second for this transaction's full lifetime. Reset,
-      // logout, and lease handoff take those rows in the same order.
+      // The SECURITY DEFINER assertion holds the shared-demo reset fence and
+      // locks this authentication row for the transaction's full lifetime.
+      // Nightly reset takes the exclusive side of the same fence before it
+      // revokes every visitor session and reconstructs the shared company.
       try {
         await client.query("SELECT app.assert_current_demo_session_lease()");
       } catch (error) {

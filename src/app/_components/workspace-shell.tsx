@@ -59,7 +59,7 @@ export function WorkspaceShell({
 }) {
   const organization = {
     name: principal.organizationName,
-    environment: principal.sessionMode === "demo" ? "Nightly-reset sandbox" : "Private workspace",
+    environment: principal.sessionMode === "demo" ? "Shared nightly demo" : "Private workspace",
   };
   const searchIndex = createSearchIndex(principal.sessionMode === "demo");
   const accountPrincipal: AccountMenuPrincipal = {

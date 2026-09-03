@@ -140,7 +140,7 @@ write_fixture() {
         wrappedOrganizationKeys: 2,
         encryptedOrganizationsMissingKeys: 0,
         encryptedIdentities: 1,
-        syntheticDemoIdentities: 128,
+        syntheticDemoIdentities: 1,
         encryptedPartyNames: 4,
         encryptedPartyAddresses: 4,
         encryptedBankingFields: 8

@@ -13,7 +13,7 @@ export default function ForgotPasswordPage() {
     <AuthShell
       eyebrow="Account recovery"
       title={accountLoginEnabled ? "Reset your password" : "Recovery is not enabled in the preview"}
-      description={accountLoginEnabled ? "We’ll send a one-hour reset link if the email belongs to an eligible account." : "Real account recovery is disabled. The public demo opens a disposable synthetic sandbox without an account."}
+      description={accountLoginEnabled ? "We’ll send a one-hour reset link if the email belongs to an eligible account." : "Real account recovery is disabled. The shared public demo opens without an account."}
     >
       {accountLoginEnabled && <ForgotPasswordForm />}
       <Link className={styles.afterFormLink} href="/login">Return to sign in</Link>

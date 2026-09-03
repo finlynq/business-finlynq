@@ -335,7 +335,6 @@ describe("commit-addressed release orchestration", () => {
         BUSINESS_FINLYNQ_APP_ORIGIN: "http://127.0.0.1:3201",
         BUSINESS_FINLYNQ_APP_PORT: "3201",
         SESSION_COOKIE_NAME: "business_finlynq_rehearsal_session",
-        DEMO_CLAIM_COOKIE_NAME: "business_finlynq_rehearsal_demo_claim",
       },
     );
 

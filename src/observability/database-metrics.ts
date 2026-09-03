@@ -15,14 +15,10 @@ export type DatabaseMetricRow = Readonly<{
   email_failures_5m: string;
   email_oldest_due_at: Date | null;
   email_worker_last_heartbeat_at: Date | null;
-  demo_slots_total: string;
-  demo_slots_ready: string;
-  demo_slots_assigned: string;
-  demo_slots_dirty: string;
-  demo_slots_resetting: string;
-  demo_slots_quarantined: string;
-  demo_pool_reset_due: boolean;
-  demo_last_completed_reset_at: Date | null;
+  shared_demo_active_sessions: string;
+  shared_demo_reset_due: boolean;
+  shared_demo_reset_status: "READY" | "RESETTING" | "FAILED";
+  shared_demo_last_completed_reset_at: Date | null;
 }>;
 
 const unsignedIntegerPattern = /^\d+$/;
@@ -42,7 +38,15 @@ function presence(timestamp: Date | null): string {
 }
 
 export async function databaseMetricSnapshot(): Promise<DatabaseMetricRow> {
-  const result = await queryDatabase<DatabaseMetricRow>("SELECT * FROM app.operations_metrics()");
+  const result = await queryDatabase<DatabaseMetricRow>(
+    `SELECT base_metrics.*,
+       demo_state.active_sessions AS shared_demo_active_sessions,
+       demo_state.reset_due AS shared_demo_reset_due,
+       demo_state.reset_status AS shared_demo_reset_status,
+       demo_state.last_completed_reset_at AS shared_demo_last_completed_reset_at
+     FROM app.operations_metrics() base_metrics
+     CROSS JOIN app.shared_demo_operations_state() demo_state`,
+  );
   const row = result.rows[0];
   if (!row || !(row.observed_at instanceof Date) || !Number.isFinite(row.observed_at.getTime())) {
     throw new Error("Operations metrics are unavailable");
@@ -67,15 +71,12 @@ export function renderDatabasePrometheusMetrics(row: DatabaseMetricRow): string 
     ["business_finlynq_auth_email_oldest_due_age_seconds", "Age of the oldest due or expired-lease authentication email.", "gauge", secondsSince(row.observed_at, row.email_oldest_due_at)],
     ["business_finlynq_auth_email_worker_heartbeat_present", "Whether an authentication email worker heartbeat exists.", "gauge", presence(row.email_worker_last_heartbeat_at)],
     ["business_finlynq_auth_email_worker_heartbeat_age_seconds", "Age of the latest authentication email worker heartbeat.", "gauge", secondsSince(row.observed_at, row.email_worker_last_heartbeat_at)],
-    ["business_finlynq_demo_slots_total", "Total isolated demo sandbox slots.", "gauge", count(row.demo_slots_total)],
-    ["business_finlynq_demo_slots_ready", "Demo sandbox slots ready for a claim.", "gauge", count(row.demo_slots_ready)],
-    ["business_finlynq_demo_slots_assigned", "Demo sandbox slots currently assigned.", "gauge", count(row.demo_slots_assigned)],
-    ["business_finlynq_demo_slots_dirty", "Demo sandbox slots awaiting reset.", "gauge", count(row.demo_slots_dirty)],
-    ["business_finlynq_demo_slots_resetting", "Demo sandbox slots currently resetting.", "gauge", count(row.demo_slots_resetting)],
-    ["business_finlynq_demo_slots_quarantined", "Demo sandbox slots quarantined after reset failure.", "gauge", count(row.demo_slots_quarantined)],
-    ["business_finlynq_demo_pool_reset_due", "Whether the nightly demo reset is due.", "gauge", row.demo_pool_reset_due ? "1" : "0"],
-    ["business_finlynq_demo_last_reset_present", "Whether a completed nightly demo reset has been recorded.", "gauge", presence(row.demo_last_completed_reset_at)],
-    ["business_finlynq_demo_last_reset_age_seconds", "Age of the last completed nightly demo reset.", "gauge", secondsSince(row.observed_at, row.demo_last_completed_reset_at)],
+    ["business_finlynq_shared_demo_active_sessions", "Active visitor sessions in the shared public demo.", "gauge", count(row.shared_demo_active_sessions)],
+    ["business_finlynq_shared_demo_reset_ready", "Whether the shared demo baseline is ready for visitors.", "gauge", row.shared_demo_reset_status === "READY" ? "1" : "0"],
+    ["business_finlynq_shared_demo_reset_due", "Whether the shared demo is due or unavailable for reset.", "gauge", row.shared_demo_reset_due ? "1" : "0"],
+    ["business_finlynq_shared_demo_reset_failed", "Whether the latest shared demo reset failed.", "gauge", row.shared_demo_reset_status === "FAILED" ? "1" : "0"],
+    ["business_finlynq_shared_demo_last_reset_present", "Whether a completed shared demo reset has been recorded.", "gauge", presence(row.shared_demo_last_completed_reset_at)],
+    ["business_finlynq_shared_demo_last_reset_age_seconds", "Age of the last completed shared demo reset.", "gauge", secondsSince(row.observed_at, row.shared_demo_last_completed_reset_at)],
   ];
 
   return `${metrics.flatMap(([name, help, type, value]) => [

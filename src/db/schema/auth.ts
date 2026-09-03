@@ -29,6 +29,17 @@ export const demoSandboxPool = pgTable("demo_sandbox_pool", {
   lastCompletedResetAt: timestamp("last_completed_reset_at", { withTimezone: true }),
 });
 
+export const sharedDemoResetState = pgTable("shared_demo_reset_state", {
+  singleton: boolean("singleton").primaryKey().default(true),
+  status: text("status").notNull().default("RESETTING"),
+  baselineVersion: integer("baseline_version").notNull().default(0),
+  resetAfter: timestamp("reset_after", { withTimezone: true }).notNull(),
+  initializedAt: timestamp("initialized_at", { withTimezone: true }).notNull().defaultNow(),
+  resetStartedAt: timestamp("reset_started_at", { withTimezone: true }),
+  lastCompletedResetAt: timestamp("last_completed_reset_at", { withTimezone: true }),
+  lastError: text("last_error"),
+});
+
 export const demoSandboxResetTables = pgTable("demo_sandbox_reset_tables", {
   tableName: text("table_name").primaryKey(),
   purgeOrder: integer("purge_order").notNull().unique("demo_sandbox_reset_tables_purge_order_key"),

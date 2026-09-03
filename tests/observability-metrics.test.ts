@@ -40,14 +40,10 @@ function databaseRow() {
     email_failures_5m: "0",
     email_oldest_due_at: null,
     email_worker_last_heartbeat_at: new Date("2026-08-31T11:59:30.000Z"),
-    demo_slots_total: "128",
-    demo_slots_ready: "120",
-    demo_slots_assigned: "8",
-    demo_slots_dirty: "0",
-    demo_slots_resetting: "0",
-    demo_slots_quarantined: "0",
-    demo_pool_reset_due: false,
-    demo_last_completed_reset_at: new Date("2026-08-31T08:15:00.000Z"),
+    shared_demo_active_sessions: "8",
+    shared_demo_reset_due: false,
+    shared_demo_reset_status: "READY",
+    shared_demo_last_completed_reset_at: new Date("2026-08-31T08:15:00.000Z"),
   };
 }
 
@@ -77,12 +73,15 @@ describe("internal observability metrics", () => {
 
     expect(response.status).toBe(200);
     expect(response.headers.get("content-type")).toContain("text/plain");
-    expect(mocks.queryDatabase).toHaveBeenCalledWith("SELECT * FROM app.operations_metrics()");
+    expect(mocks.queryDatabase).toHaveBeenCalledWith(expect.stringContaining(
+      "CROSS JOIN app.shared_demo_operations_state() demo_state",
+    ));
     expect(body).toContain("business_finlynq_api_requests_total 1");
     expect(body).toContain("business_finlynq_api_request_duration_seconds_count 1");
     expect(body).toContain("business_finlynq_auth_failures_5m 2");
     expect(body).toContain("business_finlynq_outbox_oldest_unpublished_age_seconds 120");
-    expect(body).toContain("business_finlynq_demo_slots_ready 120");
+    expect(body).toContain("business_finlynq_shared_demo_active_sessions 8");
+    expect(body).toContain("business_finlynq_shared_demo_reset_ready 1");
     expect(body).not.toContain("organization_id");
     expect(body).not.toContain("user_id");
     expect(body).not.toContain("currency");
@@ -197,7 +196,7 @@ describe("internal observability metrics", () => {
     expect(alerts).not.toMatch(/organization|tenant|customer|email_address|currency|amount/);
   });
 
-  it("keeps systemd demo reconciliation writable and recognizes a newer pool recovery", () => {
+  it("keeps systemd demo reconciliation writable and recognizes a newer shared-demo recovery", () => {
     const monitor = readFileSync(
       join(process.cwd(), "deploy", "monitoring", "check-production.sh"),
       "utf8",
@@ -220,11 +219,11 @@ describe("internal observability metrics", () => {
       "loaded demo-reconcile writable lock state differs from the candidate",
     );
     expect(monitor).toContain(
-      "pool_last_completed_reset_unixtime > demo_job_last_run_unixtime",
+      "shared_demo_last_completed_reset_unixtime > demo_job_last_run_unixtime",
     );
     expect(monitor).toContain("demo_job_last_success=1");
     expect(monitor).toContain(
-      "latest demo reconciliation failed without a newer successful pool recovery",
+      "latest demo reconciliation failed without a newer successful shared reset",
     );
   });
 

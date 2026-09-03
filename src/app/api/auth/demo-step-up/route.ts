@@ -13,7 +13,7 @@ async function post(request: NextRequest) {
   const requestId = requestIdFor(request);
   try {
     if (!validateSameOriginMutation(request)) {
-      return NextResponse.json({ error: "The sandbox confirmation could not be verified." }, { status: 403, headers: noStoreHeaders });
+      return NextResponse.json({ error: "The demo confirmation could not be verified." }, { status: 403, headers: noStoreHeaders });
     }
     const principal = await requestPrincipal(request);
     if (!principal || principal.sessionMode !== "demo") {
@@ -27,7 +27,7 @@ async function post(request: NextRequest) {
     ]);
     if (!sessionLimit.allowed || !ipLimit.allowed) {
       return NextResponse.json(
-        { error: "Too many sandbox confirmations. Try again later." },
+        { error: "Too many demo confirmations. Try again later." },
         {
           status: 429,
           headers: { ...noStoreHeaders, "Retry-After": String(Math.max(sessionLimit.retry_after_seconds, ipLimit.retry_after_seconds)) },
@@ -36,12 +36,12 @@ async function post(request: NextRequest) {
     }
     const marked = await markDemoStepUp(principal.sessionId, requestId);
     if (!marked) {
-      return NextResponse.json({ error: "The sandbox confirmation expired. Reopen the demo and try again." }, { status: 409, headers: noStoreHeaders });
+      return NextResponse.json({ error: "The demo confirmation expired. Reopen the demo and try again." }, { status: 409, headers: noStoreHeaders });
     }
-    return NextResponse.json({ confirmed: true, sandboxOnly: true }, { headers: noStoreHeaders });
+    return NextResponse.json({ confirmed: true, demoOnly: true }, { headers: noStoreHeaders });
   } catch (error) {
     logRouteFailure("demo-step-up", requestId, error);
-    return NextResponse.json({ error: "The sandbox confirmation could not be completed." }, { status: 409, headers: noStoreHeaders });
+    return NextResponse.json({ error: "The demo confirmation could not be completed." }, { status: 409, headers: noStoreHeaders });
   }
 }
 

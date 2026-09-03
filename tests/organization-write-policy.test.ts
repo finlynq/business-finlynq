@@ -68,12 +68,12 @@ describe("per-organization write policy", () => {
     });
   });
 
-  it("keeps an authorized sandbox on the independent demo gate", async () => {
+  it("keeps the shared public demo on the independent demo gate", async () => {
     process.env.DEMO_WRITES_ENABLED = "true";
     const { client } = clientWithOrganization({
       active: true,
       is_demo: true,
-      organization_mode: "SANDBOX",
+      organization_mode: "PUBLIC_DEMO",
       writes_enabled_at: null,
     });
     const context: TenantTransactionContext = {

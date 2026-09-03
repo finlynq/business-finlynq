@@ -14,6 +14,10 @@ const demoReset = readFileSync(
   join(process.cwd(), "src", "modules", "onboarding", "demo-bootstrap.ts"),
   "utf8",
 );
+const sharedDemoMigration = readFileSync(
+  join(process.cwd(), "migrations", "drizzle", "0037_shared_public_demo.sql"),
+  "utf8",
+);
 const runtimeGrants = readFileSync(
   join(process.cwd(), "deploy", "postgres", "010-runtime-role.sh"),
   "utf8",
@@ -105,20 +109,21 @@ describe("organization administration database boundary", () => {
     expect(migration).toContain("organization_memberships_one_active_user_unique");
   });
 
-  it("makes demo invitations local and includes their identities in the nightly reset extension", () => {
+  it("keeps shared-demo invitations local and removes their identities at nightly reset", () => {
     expect(migration).toContain("Demo invitations must remain synthetic and local");
     expect(coexistenceMigration).toContain("Demo sandbox member limit of 32 reached");
     expect(coexistenceMigration).toMatch(/selected_organization\.is_demo[\s\S]*?count\(\*\)[\s\S]*?organization_memberships[\s\S]*?>= 32/);
     expect(migration).toContain("'organization_invitations'");
-    expect(migration).toContain("CREATE OR REPLACE FUNCTION app.reset_demo_sandbox_extensions");
-    expect(migration).toContain("settings_version = 1");
-    expect(migration).toContain("selected_user.id = ANY(extra_user_ids)");
+    expect(sharedDemoMigration).toContain("CREATE OR REPLACE FUNCTION app.reset_shared_demo_extensions");
+    expect(sharedDemoMigration).toContain("settings_version = 1");
+    expect(sharedDemoMigration).toContain("selected_user.id = ANY(extra_user_ids)");
+    expect(sharedDemoMigration).toContain("PUBLIC_DEMO");
   });
 
   it("keeps replica mode scoped to business purges and runs identity cleanup after triggers return to origin", () => {
     const replica = demoReset.indexOf("SET LOCAL session_replication_role = replica");
     const origin = demoReset.indexOf("SET LOCAL session_replication_role = origin", replica);
-    const extension = demoReset.indexOf("SELECT app.reset_demo_sandbox_extensions($1, $2)", origin);
+    const extension = demoReset.indexOf("SELECT app.reset_shared_demo_extensions($1, $2)", origin);
     expect(replica).toBeGreaterThan(0);
     expect(origin).toBeGreaterThan(replica);
     expect(extension).toBeGreaterThan(origin);
@@ -126,7 +131,7 @@ describe("organization administration database boundary", () => {
     expect(migration).toMatch(/IF NOT selected_organization\.is_demo THEN\s+INSERT INTO auth_security_events/);
     expect(migration).toContain("DELETE FROM organization_memberships");
     expect(migration).toContain("DELETE FROM users selected_user");
-    expect(runtimeGrants).not.toContain("app.reset_demo_sandbox_extensions(uuid,uuid)");
+    expect(runtimeGrants).not.toContain("app.reset_shared_demo_extensions(uuid,uuid)");
   });
 });
 

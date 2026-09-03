@@ -162,7 +162,7 @@ For the one-release rollback window, the target server also has a separate hard-
 1. Declare the incident, stop accounting writes, and record the chosen recovery point/checksum.
 2. Provision an isolated destination with the same pinned application revision and supported PostgreSQL major version.
 3. Restore and verify using the drill above.
-4. Run reviewed forward migrations, then reconcile the non-owner runtime role with `deploy/postgres/010-runtime-role.sh`, reconcile the authentication worker with `deploy/postgres/015-auth-worker-role.sh`, and re-run the backup-role provisioner. Recreate the verified demo-sandbox pool when demo login is enabled. The migration and all three role reconciliations are mandatory after an ACL-free restore.
+4. Run reviewed forward migrations, then reconcile the non-owner runtime role with `deploy/postgres/010-runtime-role.sh`, reconcile the authentication worker with `deploy/postgres/015-auth-worker-role.sh`, and re-run the backup-role provisioner. Recreate the verified shared-demo baseline when demo login is enabled. The migration and all three role reconciliations are mandatory after an ACL-free restore.
 5. Start the application and email worker with production secret mounts. Verify public `/api/live`, minimal public `/api/health`, detailed internal readiness, tenant isolation, key unwrap/decryption, authentication delivery, and browser release tests.
 6. Switch DNS only after operator sign-off. Keep the old system offline and recoverable through the acceptance window.
 7. Take a new encrypted off-site backup from the recovered system and verify its remote checksum.

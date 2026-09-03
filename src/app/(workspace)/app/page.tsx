@@ -88,7 +88,7 @@ export default async function OverviewPage({
 
       {principal.sessionMode === "demo" && (
         <DemoNotice>
-          This is your isolated writable sandbox. This browser returns to the same business after logout or session expiry; the seeded setup is restored nightly. <Link href="/signup">Create a permanent business account</Link>.
+          This is one shared writable demo company. Every demo visitor sees the same changes until the seeded setup is restored nightly. <Link href="/signup">Create a permanent business account</Link>.
         </DemoNotice>
       )}
 

@@ -337,6 +337,7 @@ BEGIN
     'app.auth_issue_demo_session(text,text,text,text,text,text)',
     'app.auth_demo_session_lease_valid(uuid)',
     'app.auth_mark_demo_step_up(uuid,text)',
+    'app.shared_demo_operations_state()',
     'app.auth_issue_mfa_user_session(uuid,uuid,uuid,uuid,bigint,text,text,text,text)',
     'app.auth_issue_password_user_session(uuid,uuid,uuid,text,text,text,text)',
     'app.auth_resolve_session(text,text)',

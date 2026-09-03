@@ -166,7 +166,7 @@ export function OrganizationSettings({ workspace }: { workspace: OrganizationAdm
             <span className="eyebrow">Controlled onboarding</span>
             <h2 id="invite-member-title">Invite a team member</h2>
             <p>{workspace.isDemo
-              ? "The sandbox creates a synthetic local invitation. No email is sent and the nightly reset removes it."
+              ? "The shared demo creates a synthetic local invitation visible to every visitor. No email is sent and the nightly reset removes it."
               : "The invitation is encrypted, expires after 72 hours, and stays within this organization."}</p>
           </div>
           <form
@@ -178,7 +178,7 @@ export function OrganizationSettings({ workspace }: { workspace: OrganizationAdm
                 displayName: inviteName,
                 roleId: inviteRole,
                 reason: inviteReason,
-              }, workspace.isDemo ? "Synthetic sandbox invitation created." : "Invitation queued for secure delivery.");
+              }, workspace.isDemo ? "Synthetic shared-demo invitation created." : "Invitation queued for secure delivery.");
             }}
           >
             <div className="form-grid form-grid-three">

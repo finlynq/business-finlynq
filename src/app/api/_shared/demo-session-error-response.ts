@@ -8,9 +8,9 @@ const noStoreHeaders = {
 };
 
 /**
- * Converts only the typed, fail-closed demo lease race into an authentication
- * response. The browser-local demo claim remains intact so a later demo entry
- * can return to the same daily sandbox.
+ * Converts only the typed, fail-closed shared-demo reset race into an
+ * authentication response. A later demo entry creates a fresh session in the
+ * same shared company after maintenance completes.
  */
 export function demoSessionLeaseLostResponse(error: unknown): NextResponse | null {
   if (!isDemoSessionLeaseLostError(error)) return null;

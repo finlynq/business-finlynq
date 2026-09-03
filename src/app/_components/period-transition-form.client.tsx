@@ -79,7 +79,7 @@ export function PeriodTransitionForm({ workspace }: { workspace: PeriodControlWo
     try {
       if (needsStepUp && !stepUpReady) {
         if (workspace.demoOnly && !demoConfirmed) {
-          setMessage({ kind: "error", text: "Confirm that this privileged action is only a nightly-reset sandbox simulation." });
+          setMessage({ kind: "error", text: "Confirm that this privileged action is only a nightly-reset shared-demo simulation." });
           return;
         }
         if (!workspace.demoOnly && !/^\d{6}$/.test(otp)) {
@@ -190,7 +190,7 @@ export function PeriodTransitionForm({ workspace }: { workspace: PeriodControlWo
             workspace.demoOnly ? (
               <label className="checkbox-field">
                 <input type="checkbox" checked={demoConfirmed} onChange={(event) => setDemoConfirmed(event.target.checked)} disabled={busy} />
-                <span>This simulates privileged confirmation only inside my disposable sandbox. It is not real MFA.</span>
+                <span>This simulates privileged confirmation only in the shared nightly-reset demo. It is not real MFA.</span>
               </label>
             ) : (
               <label>

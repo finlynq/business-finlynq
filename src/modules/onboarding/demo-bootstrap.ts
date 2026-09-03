@@ -36,15 +36,14 @@ import { ensureOperatorOrganizationKey } from "./organization-service";
 
 export { DEMO_ORGANIZATION_ID } from "@/modules/demo/constants";
 
-// Increment whenever the exact reconstructed sandbox fixture changes. Bootstrap
-// may refresh only unclaimed READY slots on an older version; assigned visitor
-// workspaces remain untouched until the ordinary nightly reset.
-const DEMO_BASELINE_VERSION = 6;
+// Increment whenever the exact reconstructed shared-demo fixture changes.
+// Bootstrap refreshes an obsolete baseline before admitting new visitors.
+export const DEMO_BASELINE_VERSION = 7;
 const DEMO_CALENDAR = demoAccountingCalendar();
 const DEMO_FISCAL_YEAR = DEMO_CALENDAR.fiscalYear;
 const DEMO_CURRENT_PERIOD = DEMO_CALENDAR.periodNumber;
 const BASELINE_TIMESTAMP = DEMO_CALENDAR.timestamp;
-const RESET_ADVISORY_LOCK_KEY = "business-finlynq-demo-sandbox-reset";
+const RESET_ADVISORY_LOCK_KEY = "business-finlynq-shared-demo-reset";
 
 const MONTH_NAMES = [
   "January", "February", "March", "April", "May", "June",
@@ -296,18 +295,6 @@ type SeededJournalToPost = Readonly<{
   journalId: string;
   ownerModule: SubledgerOwnerModule | "ledger";
   journalTypeKey: "receivables.sales-invoice" | "payables.supplier-bill" | "ledger.manual";
-}>;
-
-type SandboxSlot = Readonly<{
-  slot: number;
-  organization_id: string;
-  user_id: string | null;
-}>;
-
-type SandboxCandidate = Readonly<{
-  slot: number;
-  organization_id: string;
-  baseline_version: number;
 }>;
 
 function deterministicUuid(organizationId: string, scope: string): string {
@@ -1618,38 +1605,25 @@ async function seedOrganizationBaseline(
     creditAccount: "1000",
     amount: "2400.00",
   });
-  // The fixed PUBLIC_DEMO organization is an operator-owned, draft-only
-  // template and is intentionally never handed to a visitor. Synthetic bank
-  // evidence belongs only in the isolated SANDBOX organizations that are
-  // purged and reconstructed by the nightly reset. Keeping the public template
-  // bank-free also makes ordinary additive bootstrap safe to repeat without
-  // weakening the append-only banking tables with conflict updates.
-  if (!identity.publicTemplate) {
-    await seedDemoBankingData(client, identity, foundations);
-    // Banking inserts exercise the ordinary permission guards and therefore
-    // install a transaction-local actor context. Clear it before the remaining
-    // database-owner fixture inserts so they are not misclassified as live
-    // demo-session mutations.
-    await clearDemoSeedApplicationContext(client);
-  }
+  await seedDemoBankingData(client, identity, foundations);
+  // Banking inserts exercise the ordinary permission guards and therefore
+  // install a transaction-local actor context. Clear it before the remaining
+  // database-owner fixture inserts so they are not misclassified as live
+  // demo-session mutations.
+  await clearDemoSeedApplicationContext(client);
 
   const journalsToPost: SeededJournalToPost[] = [];
-  if (!identity.publicTemplate) {
-    for (const fixture of DEMO_ISSUED_DOCUMENTS) {
-      journalsToPost.push(
-        await seedIssuedDemoDocument(client, identity, foundations, partyData, fixture),
-      );
-    }
-    journalsToPost.push({
-      fixtureKey: "us-prepaid-expense",
-      journalId: usPrepaidJournalId,
-      ownerModule: "ledger",
-      journalTypeKey: "ledger.manual",
-    });
+  for (const fixture of DEMO_ISSUED_DOCUMENTS) {
+    journalsToPost.push(
+      await seedIssuedDemoDocument(client, identity, foundations, partyData, fixture),
+    );
   }
-  if (identity.publicTemplate && journalsToPost.length !== 0) {
-    throw new Error("The fixed public demo template must remain draft-only");
-  }
+  journalsToPost.push({
+    fixtureKey: "us-prepaid-expense",
+    journalId: usPrepaidJournalId,
+    ownerModule: "ledger",
+    journalTypeKey: "ledger.manual",
+  });
   return journalsToPost;
 }
 
@@ -1662,133 +1636,11 @@ async function assertOperatorDatabaseOwner(client: PoolClient): Promise<void> {
      WHERE database.datname = current_database()`,
   );
   if (!result.rows[0]?.owns_database || !result.rows[0]?.can_reset) {
-    throw new Error("Demo sandbox reset must run as the database-owner maintenance role");
+    throw new Error("Shared demo reset must run as the database-owner maintenance role");
   }
 }
 
-async function listSandboxCandidates(
-  client: PoolClient,
-  mode: DemoSandboxResetMode,
-): Promise<readonly SandboxCandidate[]> {
-  const result = await client.query<SandboxCandidate>(
-    `SELECT slot.slot, slot.organization_id, slot.baseline_version
-     FROM demo_sandbox_slots slot
-     WHERE $1::boolean
-       OR slot.state IN ('DIRTY', 'RESETTING')
-       OR (slot.state = 'READY' AND slot.baseline_version < $2)
-     ORDER BY slot.slot`,
-    [mode === "nightly", DEMO_BASELINE_VERSION],
-  );
-  return result.rows;
-}
-
-async function resolveDemoSandboxResetMode(
-  client: PoolClient,
-  requestedMode: DemoSandboxResetMode,
-): Promise<DemoSandboxResetMode> {
-  if (requestedMode === "nightly") return requestedMode;
-
-  const schedule = await client.query<{ overdue: boolean }>(
-    `SELECT reset_after <= statement_timestamp() AS overdue
-     FROM demo_sandbox_pool
-     WHERE singleton
-     FOR SHARE`,
-  );
-  if (!schedule.rows[0]) throw new Error("Demo sandbox pool state is missing");
-  return schedule.rows[0].overdue ? "nightly" : requestedMode;
-}
-
-async function claimSandboxForReset(
-  client: PoolClient,
-  candidate: SandboxCandidate,
-  mode: DemoSandboxResetMode,
-): Promise<SandboxSlot | null> {
-  await client.query("BEGIN");
-  try {
-    await client.query("SET LOCAL statement_timeout = '60s'");
-    await client.query("SET LOCAL lock_timeout = '45s'");
-
-    // Tenant transactions lock their live auth row, daily claim, and slot in
-    // this order. The nightly reset takes the same locks exclusively before
-    // invalidating access; bootstrap may claim only never-assigned dirty slots.
-    await client.query(
-      `SELECT id FROM auth_sessions
-       WHERE organization_id = $1 AND session_mode = 'DEMO' AND revoked_at IS NULL
-       ORDER BY id
-       FOR UPDATE`,
-      [candidate.organization_id],
-    );
-    await client.query(
-      `SELECT id FROM demo_daily_claims
-       WHERE organization_id = $1 AND invalidated_at IS NULL
-       ORDER BY id
-       FOR UPDATE`,
-      [candidate.organization_id],
-    );
-    const selected = await client.query<{ state: string; baseline_version: number }>(
-      `SELECT slot.state, slot.baseline_version
-       FROM demo_sandbox_slots slot
-       WHERE slot.slot = $1 AND slot.organization_id = $2
-       FOR UPDATE OF slot`,
-      [candidate.slot, candidate.organization_id],
-    );
-    const slot = selected.rows[0];
-    const eligible = mode === "nightly" || slot?.state === "DIRTY" || slot?.state === "RESETTING" || (
-      slot?.state === "READY" && slot.baseline_version < DEMO_BASELINE_VERSION
-    );
-    if (!slot || !eligible) {
-      await client.query("COMMIT");
-      return null;
-    }
-
-    await client.query(
-      `UPDATE auth_sessions
-       SET revoked_at = coalesce(revoked_at, now())
-       WHERE organization_id = $1 AND session_mode = 'DEMO' AND revoked_at IS NULL`,
-      [candidate.organization_id],
-    );
-    await client.query(
-      `UPDATE demo_daily_claims
-       SET invalidated_at = coalesce(invalidated_at, now())
-       WHERE organization_id = $1 AND invalidated_at IS NULL`,
-      [candidate.organization_id],
-    );
-    await client.query(
-      `UPDATE demo_sandbox_slots
-       SET state = 'RESETTING'
-       WHERE slot = $1 AND organization_id = $2`,
-      [candidate.slot, candidate.organization_id],
-    );
-    const membership = await client.query<{ user_id: string }>(
-      `SELECT selected_membership.user_id
-       FROM organization_memberships selected_membership
-       JOIN membership_roles selected_assignment
-         ON selected_assignment.organization_id = selected_membership.organization_id
-        AND selected_assignment.membership_id = selected_membership.id
-       JOIN roles selected_role
-         ON selected_role.organization_id = selected_assignment.organization_id
-        AND selected_role.id = selected_assignment.role_id
-       WHERE selected_membership.organization_id = $1
-         AND selected_membership.active
-         AND selected_role.active
-         AND selected_role.key = 'demo_accountant'
-       ORDER BY selected_membership.id
-       LIMIT 1`,
-      [candidate.organization_id],
-    );
-    await client.query("COMMIT");
-    return {
-      slot: candidate.slot,
-      organization_id: candidate.organization_id,
-      user_id: membership.rows[0]?.user_id ?? null,
-    };
-  } catch (error) {
-    await client.query("ROLLBACK");
-    throw error;
-  }
-}
-
-export async function registeredDemoSandboxResetTables(client: PoolClient): Promise<readonly string[]> {
+export async function registeredSharedDemoResetTables(client: PoolClient): Promise<readonly string[]> {
   const result = await client.query<{ table_name: string; valid: boolean }>(
     `SELECT registry.table_name,
        class.oid IS NOT NULL AND attribute.attname IS NOT NULL AS valid
@@ -1804,13 +1656,13 @@ export async function registeredDemoSandboxResetTables(client: PoolClient): Prom
      ORDER BY registry.purge_order`,
   );
   if (result.rows.length === 0 || result.rows.some((row) => !row.valid || !SAFE_RESET_TABLE_NAME.test(row.table_name))) {
-    throw new Error("Demo sandbox reset registry contains an invalid organization-owned table");
+    throw new Error("Shared demo reset registry contains an invalid organization-owned table");
   }
   return result.rows.map((row) => row.table_name);
 }
 
-async function purgeSandboxBusinessData(client: PoolClient, organizationId: string): Promise<void> {
-  const resetTables = await registeredDemoSandboxResetTables(client);
+async function purgeSharedDemoBusinessData(client: PoolClient, organizationId: string): Promise<void> {
+  const resetTables = await registeredSharedDemoResetTables(client);
   await client.query("SET LOCAL session_replication_role = replica");
   try {
     for (const table of resetTables) {
@@ -1822,7 +1674,7 @@ async function purgeSandboxBusinessData(client: PoolClient, organizationId: stri
   }
 }
 
-async function verifySandboxBaseline(client: PoolClient, organizationId: string): Promise<void> {
+async function verifySharedDemoBaseline(client: PoolClient, organizationId: string): Promise<void> {
   const sealedPeriodsPerLedger = Math.max(DEMO_CURRENT_PERIOD - 2, 0);
   const hardClosedPeriodsPerLedger = DEMO_CURRENT_PERIOD > 1 ? 1 : 0;
   const openPeriodsPerLedger = 12 - sealedPeriodsPerLedger - hardClosedPeriodsPerLedger;
@@ -1937,7 +1789,7 @@ async function verifySandboxBaseline(client: PoolClient, organizationId: string)
     bank_proposals: "1",
   };
   if (!counts || Object.entries(expected).some(([key, value]) => counts[key] !== value)) {
-    throw new Error(`Demo sandbox baseline verification failed for ${organizationId}`);
+    throw new Error(`Shared demo baseline verification failed for ${organizationId}`);
   }
 
   const integrity = await client.query<Record<string, string>>(
@@ -2007,7 +1859,7 @@ async function verifySandboxBaseline(client: PoolClient, organizationId: string)
     !integrityResult ||
     Object.entries(integrityExpected).some(([key, value]) => integrityResult[key] !== value)
   ) {
-    throw new Error(`Demo sandbox integrity verification failed for ${organizationId}`);
+    throw new Error(`Shared demo integrity verification failed for ${organizationId}`);
   }
 
   const journalTotals = await client.query<{
@@ -2039,7 +1891,7 @@ async function verifySandboxBaseline(client: PoolClient, organizationId: string)
     { source_number: "INV-US-2001", line_count: 3, debit: "15477.00", credit: "15477.00" },
   ];
   if (JSON.stringify(journalTotals.rows) !== JSON.stringify(expectedJournalTotals)) {
-    throw new Error(`Demo sandbox journal totals verification failed for ${organizationId}`);
+    throw new Error(`Shared demo journal totals verification failed for ${organizationId}`);
   }
 
   const openBalances = await client.query<{
@@ -2089,53 +1941,7 @@ async function verifySandboxBaseline(client: PoolClient, organizationId: string)
     },
   ];
   if (JSON.stringify(openBalances.rows) !== JSON.stringify(expectedOpenBalances)) {
-    throw new Error(`Demo sandbox open-balance verification failed for ${organizationId}`);
-  }
-}
-
-async function quarantineSlot(client: PoolClient, slot: SandboxSlot): Promise<void> {
-  await client.query("BEGIN");
-  try {
-    await client.query("SET LOCAL lock_timeout = '45s'");
-    await client.query(
-      `SELECT id FROM auth_sessions
-       WHERE organization_id = $1 AND session_mode = 'DEMO' AND revoked_at IS NULL
-       ORDER BY id
-       FOR UPDATE`,
-      [slot.organization_id],
-    );
-    await client.query(
-      `SELECT id FROM demo_daily_claims
-       WHERE organization_id = $1 AND invalidated_at IS NULL
-       ORDER BY id FOR UPDATE`,
-      [slot.organization_id],
-    );
-    await client.query(
-      `UPDATE auth_sessions SET revoked_at = coalesce(revoked_at, now())
-       WHERE organization_id = $1 AND session_mode = 'DEMO' AND revoked_at IS NULL`,
-      [slot.organization_id],
-    );
-    await client.query(
-      `UPDATE demo_daily_claims SET invalidated_at = coalesce(invalidated_at, now())
-       WHERE organization_id = $1 AND invalidated_at IS NULL`,
-      [slot.organization_id],
-    );
-    await client.query(
-      `SELECT slot FROM demo_sandbox_slots
-       WHERE slot = $1 AND organization_id = $2
-       FOR UPDATE`,
-      [slot.slot, slot.organization_id],
-    );
-    await client.query(
-      `UPDATE demo_sandbox_slots
-       SET state = 'QUARANTINED'
-       WHERE slot = $1 AND organization_id = $2 AND state = 'RESETTING'`,
-      [slot.slot, slot.organization_id],
-    );
-    await client.query("COMMIT");
-  } catch (error) {
-    await client.query("ROLLBACK");
-    throw error;
+    throw new Error(`Shared demo open-balance verification failed for ${organizationId}`);
   }
 }
 
@@ -2183,122 +1989,31 @@ async function postSeededJournal(
   }
 }
 
-async function resetClaimedSandbox(client: PoolClient, slot: SandboxSlot): Promise<void> {
-  if (!slot.user_id) {
-    throw new Error(`Demo sandbox slot ${slot.slot} has no active demo accountant`);
-  }
-  const suffix = String(slot.slot).padStart(3, "0");
-  const identity: SeedIdentity = {
-    organizationId: slot.organization_id,
-    userId: slot.user_id,
-    slug: `northstar-sandbox-${suffix}`,
-    organizationName: `Northstar Demo Sandbox ${suffix}`,
-  };
-  let journalsToPost: readonly SeededJournalToPost[] = [];
-
-  // Purge and reconstruct all immutable source data as database-owner
-  // fixtures, then commit before crossing the ordinary posting boundary.
+async function markSharedDemoResetFailed(client: PoolClient, error: unknown): Promise<void> {
+  const message = error instanceof Error ? error.message : "Shared demo reset failed";
   await client.query("BEGIN");
   try {
-    await client.query("SET LOCAL statement_timeout = '300s'");
     await client.query("SET LOCAL lock_timeout = '45s'");
-    await client.query(
-      `SELECT id FROM auth_sessions
-       WHERE organization_id = $1 AND session_mode = 'DEMO' AND revoked_at IS NULL
-       ORDER BY id
-       FOR UPDATE`,
-      [slot.organization_id],
+    const failed = await client.query(
+      `UPDATE shared_demo_reset_state SET
+         status = 'FAILED',
+         reset_started_at = NULL,
+         last_error = left($1, 1000)
+       WHERE singleton
+       RETURNING singleton`,
+      [message],
     );
-    await client.query(
-      `SELECT id FROM demo_daily_claims
-       WHERE organization_id = $1 AND invalidated_at IS NULL
-       ORDER BY id FOR UPDATE`,
-      [slot.organization_id],
-    );
-    await client.query(
-      `UPDATE auth_sessions SET revoked_at = coalesce(revoked_at, now())
-       WHERE organization_id = $1 AND session_mode = 'DEMO' AND revoked_at IS NULL`,
-      [slot.organization_id],
-    );
-    await client.query(
-      `UPDATE demo_daily_claims SET invalidated_at = coalesce(invalidated_at, now())
-       WHERE organization_id = $1 AND invalidated_at IS NULL`,
-      [slot.organization_id],
-    );
-    const selected = await client.query<{ organization_mode: string; state: string }>(
-      `SELECT organization.organization_mode, sandbox.state
-       FROM demo_sandbox_slots sandbox
-       JOIN organizations organization ON organization.id = sandbox.organization_id
-       WHERE sandbox.slot = $1 AND sandbox.organization_id = $2
-       FOR UPDATE OF sandbox`,
-      [slot.slot, slot.organization_id],
-    );
-    if (selected.rows[0]?.organization_mode !== "SANDBOX" || selected.rows[0]?.state !== "RESETTING") {
-      throw new Error(`Demo sandbox slot ${slot.slot} is not eligible for reset`);
-    }
-
-    await client.query(
-      `UPDATE organizations SET
-         slug = $2, display_name = $3, active = true,
-         is_demo = true, organization_mode = 'SANDBOX'
-       WHERE id = $1`,
-      [slot.organization_id, `northstar-sandbox-${suffix}`, `Northstar Demo Sandbox ${suffix}`],
-    );
-    await purgeSandboxBusinessData(client, slot.organization_id);
-    await client.query("SELECT app.reset_demo_sandbox_extensions($1, $2)", [slot.organization_id, slot.user_id]);
-    journalsToPost = await seedOrganizationBaseline(client, identity);
-    if (journalsToPost.length !== DEMO_ISSUED_DOCUMENTS.length + 1) {
-      throw new Error(`Demo sandbox slot ${slot.slot} did not seed every issued fixture`);
-    }
+    if (failed.rowCount !== 1) throw new Error("Shared demo reset state is missing");
     await client.query("COMMIT");
-  } catch (error) {
+  } catch (stateError) {
     await client.query("ROLLBACK");
-    throw error;
-  }
-
-  // Each journal posts through the production permission, validation,
-  // numbering, audit, and outbox controls. Separate transactions also keep
-  // the append-only audit chain strictly ordered.
-  for (const journal of journalsToPost) {
-    await postSeededJournal(client, identity, journal);
-  }
-
-  await client.query("BEGIN");
-  try {
-    await client.query("SET LOCAL statement_timeout = '60s'");
-    await client.query("SET LOCAL lock_timeout = '45s'");
-    const selected = await client.query<{ organization_mode: string; state: string }>(
-      `SELECT organization.organization_mode, sandbox.state
-       FROM demo_sandbox_slots sandbox
-       JOIN organizations organization ON organization.id = sandbox.organization_id
-       WHERE sandbox.slot = $1 AND sandbox.organization_id = $2
-       FOR UPDATE OF sandbox`,
-      [slot.slot, slot.organization_id],
-    );
-    if (selected.rows[0]?.organization_mode !== "SANDBOX" || selected.rows[0]?.state !== "RESETTING") {
-      throw new Error(`Demo sandbox slot ${slot.slot} lost its reset claim before verification`);
-    }
-    await verifySandboxBaseline(client, slot.organization_id);
-    const released = await client.query(
-      `UPDATE demo_sandbox_slots SET
-         state = 'READY',
-         generation = generation + 1,
-         baseline_version = $2,
-         last_claimed_at = NULL,
-         last_reset_at = now()
-       WHERE slot = $1 AND organization_id = $3 AND state = 'RESETTING'
-       RETURNING slot`,
-      [slot.slot, DEMO_BASELINE_VERSION, slot.organization_id],
-    );
-    if (released.rowCount !== 1) throw new Error(`Demo sandbox slot ${slot.slot} lost its reset claim`);
-    await client.query("COMMIT");
-  } catch (error) {
-    await client.query("ROLLBACK");
-    throw error;
+    throw new Error("Shared demo reset failed and its failure state could not be recorded", {
+      cause: stateError,
+    });
   }
 }
 
-export async function resetDemoSandboxes(
+export async function resetSharedDemoOrganization(
   pool: Pool,
   options: Readonly<{ mode: DemoSandboxResetMode }>,
 ): Promise<void> {
@@ -2308,52 +2023,146 @@ export async function resetDemoSandboxes(
     await assertOperatorDatabaseOwner(client);
     await client.query("SELECT pg_advisory_lock(hashtextextended($1, 0))", [RESET_ADVISORY_LOCK_KEY]);
     lockHeld = true;
-    // A deploy can legitimately span the Toronto reset boundary while the
-    // scheduler is paused. Promote that overdue bootstrap to the same complete
-    // reconciliation used by the nightly job so browser acceptance never sees
-    // healthy slots behind an expired pool cycle.
-    const effectiveMode = await resolveDemoSandboxResetMode(client, options.mode);
-    const candidates = await listSandboxCandidates(client, effectiveMode);
-    const failures: string[] = [];
-    for (const candidate of candidates) {
-      const claimed = await claimSandboxForReset(client, candidate, effectiveMode);
-      if (!claimed) continue;
-      try {
-        await resetClaimedSandbox(client, claimed);
-      } catch (error) {
-        let quarantineFailure = "";
-        try {
-          await quarantineSlot(client, claimed);
-        } catch (quarantineError) {
-          quarantineFailure = `; quarantine failed: ${quarantineError instanceof Error ? quarantineError.message : "unknown error"}`;
-        }
-        failures.push(
-          `slot ${claimed.slot}: ${error instanceof Error ? error.message : "reset failed"}${quarantineFailure}`,
-        );
-      }
+    const selectedState = await client.query<{
+      status: "READY" | "RESETTING" | "FAILED";
+      baseline_version: number;
+      reset_due: boolean;
+    }>(
+      `SELECT status, baseline_version,
+         reset_after <= statement_timestamp() AS reset_due
+       FROM shared_demo_reset_state
+       WHERE singleton`,
+    );
+    const state = selectedState.rows[0];
+    if (!state) throw new Error("Shared demo reset state is missing");
+    const shouldReset = options.mode === "nightly" || state.status !== "READY" ||
+      state.baseline_version < DEMO_BASELINE_VERSION || state.reset_due;
+    if (!shouldReset) return;
+
+    await client.query("BEGIN");
+    try {
+      await client.query("SET LOCAL lock_timeout = '45s'");
+      await client.query("SELECT singleton FROM shared_demo_reset_state WHERE singleton FOR UPDATE");
+      await client.query(
+        `UPDATE shared_demo_reset_state SET
+           status = 'RESETTING', reset_started_at = statement_timestamp(), last_error = NULL
+         WHERE singleton`,
+      );
+      await client.query(
+        `SELECT id FROM auth_sessions
+         WHERE organization_id = $1 AND session_mode = 'DEMO' AND revoked_at IS NULL
+         ORDER BY id FOR UPDATE`,
+        [DEMO_ORGANIZATION_ID],
+      );
+      await client.query(
+        `UPDATE auth_sessions SET revoked_at = coalesce(revoked_at, statement_timestamp())
+         WHERE organization_id = $1 AND session_mode = 'DEMO' AND revoked_at IS NULL`,
+        [DEMO_ORGANIZATION_ID],
+      );
+      // Retire any claim rows left by the pre-shared-demo release. They are
+      // never consulted by current session issuance.
+      await client.query(
+        `UPDATE demo_daily_claims SET invalidated_at = coalesce(invalidated_at, statement_timestamp())
+         WHERE organization_id = $1 AND invalidated_at IS NULL`,
+        [DEMO_ORGANIZATION_ID],
+      );
+      await client.query("COMMIT");
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
     }
-    if (failures.length > 0) {
-      throw new Error(`Demo sandbox reset quarantined ${failures.length} slot(s): ${failures.join("; ")}`);
-    }
-    if (effectiveMode === "nightly") {
+
+    const identity: SeedIdentity = {
+      organizationId: DEMO_ORGANIZATION_ID,
+      userId: DEMO_USER_ID,
+      slug: "northstar-demo",
+      organizationName: "Northstar Demo Group",
+      publicTemplate: true,
+    };
+
+    try {
+      let journalsToPost: readonly SeededJournalToPost[] = [];
       await client.query("BEGIN");
       try {
+        await client.query("SET LOCAL statement_timeout = '300s'");
         await client.query("SET LOCAL lock_timeout = '45s'");
-        await client.query("SELECT singleton FROM demo_sandbox_pool WHERE singleton FOR UPDATE");
-        const completed = await client.query(
-          `UPDATE demo_sandbox_pool SET
-             cycle = cycle + 1,
-             reset_after = app.next_demo_reset_after(statement_timestamp()),
-             last_completed_reset_at = statement_timestamp()
-           WHERE singleton
-           RETURNING cycle`,
+        const principal = await client.query<{ organization_mode: string; role_key: string }>(
+          `SELECT organization.organization_mode, role.key AS role_key
+           FROM organizations organization
+           JOIN organization_memberships membership
+             ON membership.organization_id = organization.id
+            AND membership.user_id = $2 AND membership.active
+           JOIN users selected_user
+             ON selected_user.id = membership.user_id
+            AND selected_user.active AND selected_user.is_demo
+           JOIN membership_roles assignment
+             ON assignment.organization_id = membership.organization_id
+            AND assignment.membership_id = membership.id
+           JOIN roles role
+             ON role.organization_id = assignment.organization_id
+            AND role.id = assignment.role_id AND role.active
+           WHERE organization.id = $1 AND organization.active AND organization.is_demo
+           FOR UPDATE OF organization`,
+          [DEMO_ORGANIZATION_ID, DEMO_USER_ID],
         );
-        if (completed.rowCount !== 1) throw new Error("Demo sandbox pool state is missing");
+        if (principal.rows[0]?.organization_mode !== "PUBLIC_DEMO" ||
+            principal.rows[0]?.role_key !== "demo_accountant") {
+          throw new Error("Shared public demo identity has not been installed by migrations");
+        }
+        await client.query(
+          `UPDATE organizations SET
+             slug = $2, display_name = $3, active = true,
+             is_demo = true, organization_mode = 'PUBLIC_DEMO'
+           WHERE id = $1`,
+          [DEMO_ORGANIZATION_ID, identity.slug, identity.organizationName],
+        );
+        await purgeSharedDemoBusinessData(client, DEMO_ORGANIZATION_ID);
+        await client.query("SELECT app.reset_shared_demo_extensions($1, $2)", [DEMO_ORGANIZATION_ID, DEMO_USER_ID]);
+        await seedTaxPackVersions(client);
+        journalsToPost = await seedOrganizationBaseline(client, identity);
+        if (journalsToPost.length !== DEMO_ISSUED_DOCUMENTS.length + 1) {
+          throw new Error("Shared demo did not seed every issued fixture");
+        }
         await client.query("COMMIT");
       } catch (error) {
         await client.query("ROLLBACK");
         throw error;
       }
+
+      // Each journal posts through the production permission, validation,
+      // numbering, audit, and outbox controls. Separate transactions keep the
+      // append-only audit chain strictly ordered.
+      for (const journal of journalsToPost) {
+        await postSeededJournal(client, identity, journal);
+      }
+
+      await client.query("BEGIN");
+      try {
+        await client.query("SET LOCAL statement_timeout = '60s'");
+        await client.query("SET LOCAL lock_timeout = '45s'");
+        await client.query("SELECT singleton FROM shared_demo_reset_state WHERE singleton FOR UPDATE");
+        await verifySharedDemoBaseline(client, DEMO_ORGANIZATION_ID);
+        const completed = await client.query(
+          `UPDATE shared_demo_reset_state SET
+             status = 'READY',
+             baseline_version = $1,
+             reset_after = app.next_demo_reset_after(statement_timestamp()),
+             reset_started_at = NULL,
+             last_completed_reset_at = statement_timestamp(),
+             last_error = NULL
+           WHERE singleton AND status = 'RESETTING'
+           RETURNING baseline_version`,
+          [DEMO_BASELINE_VERSION],
+        );
+        if (completed.rowCount !== 1) throw new Error("Shared demo lost its reset state before verification");
+        await client.query("COMMIT");
+      } catch (error) {
+        await client.query("ROLLBACK");
+        throw error;
+      }
+    } catch (error) {
+      await markSharedDemoResetFailed(client, error);
+      throw error;
     }
   } finally {
     try {
@@ -2367,71 +2176,5 @@ export async function resetDemoSandboxes(
 }
 
 export async function bootstrapDemoOrganization(pool: Pool): Promise<void> {
-  const client = await pool.connect();
-  try {
-    await assertOperatorDatabaseOwner(client);
-    await client.query("BEGIN");
-    await client.query("SET TRANSACTION ISOLATION LEVEL SERIALIZABLE");
-    await client.query("SET LOCAL statement_timeout = '120s'");
-    await client.query("SELECT pg_advisory_xact_lock(hashtextextended('business-finlynq-demo-bootstrap', 0))");
-    const demo = await client.query<{ is_demo: boolean; organization_mode: string }>(
-      "SELECT is_demo, organization_mode FROM organizations WHERE id = $1 FOR UPDATE",
-      [DEMO_ORGANIZATION_ID],
-    );
-    if (!demo.rows[0]?.is_demo || demo.rows[0].organization_mode !== "PUBLIC_DEMO") {
-      throw new Error("Fixed public demo template has not been installed by migrations");
-    }
-    const user = await client.query("SELECT 1 FROM users WHERE id = $1 AND is_demo AND active", [DEMO_USER_ID]);
-    if (user.rows.length !== 1) throw new Error("Fixed public demo user has not been installed by migrations");
-
-    await seedTaxPackVersions(client);
-    const publicJournalsToPost = await seedOrganizationBaseline(client, {
-      organizationId: DEMO_ORGANIZATION_ID,
-      userId: DEMO_USER_ID,
-      slug: "northstar-demo",
-      organizationName: "Northstar Demo Group",
-      publicTemplate: true,
-    });
-    if (publicJournalsToPost.length !== 0) {
-      throw new Error("The fixed public demo template cannot contain posted baseline fixtures");
-    }
-    const publicTemplateInvariant = await client.query<{
-      registrations: string;
-      source_documents: string;
-      posted_journals: string;
-      bank_connections: string;
-    }>(
-      `SELECT
-         (SELECT count(*) FROM entity_tax_registrations
-            WHERE organization_id = $1)::text AS registrations,
-         (SELECT count(*) FROM source_documents
-            WHERE organization_id = $1)::text AS source_documents,
-         (SELECT count(*) FROM journal_entries
-            WHERE organization_id = $1 AND status = 'POSTED')::text AS posted_journals,
-         (SELECT count(*) FROM bank_connections
-            WHERE organization_id = $1)::text AS bank_connections`,
-      [DEMO_ORGANIZATION_ID],
-    );
-    if (
-      publicTemplateInvariant.rows[0]?.registrations !== "2" ||
-      publicTemplateInvariant.rows[0]?.source_documents !== "0" ||
-      publicTemplateInvariant.rows[0]?.posted_journals !== "0" ||
-      publicTemplateInvariant.rows[0]?.bank_connections !== "0"
-    ) {
-      throw new Error("The fixed public demo template violated its draft-only, bank-free baseline invariant");
-    }
-    await client.query("COMMIT");
-  } catch (error) {
-    await client.query("ROLLBACK");
-    throw error;
-  } finally {
-    client.release();
-  }
-
-  // Ordinary deploys prepare additive DIRTY slots and unclaimed READY slots
-  // whose baseline is obsolete. Assigned browser claims and their data survive
-  // bootstrap, logout, and session expiry until the nightly boundary. If that
-  // boundary passed while deployment schedulers were paused, bootstrap safely
-  // completes the overdue nightly cycle before release acceptance.
-  await resetDemoSandboxes(pool, { mode: "bootstrap" });
+  await resetSharedDemoOrganization(pool, { mode: "bootstrap" });
 }

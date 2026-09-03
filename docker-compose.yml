@@ -371,7 +371,6 @@ services:
       APP_ORIGIN: ${BUSINESS_FINLYNQ_APP_ORIGIN:-https://${BUSINESS_FINLYNQ_HOSTNAME:-business.finlynq.com}}
       TRUSTED_PROXY_HOPS: ${TRUSTED_PROXY_HOPS:-0}
       SESSION_COOKIE_NAME: ${SESSION_COOKIE_NAME:-__Host-business_finlynq_session}
-      DEMO_CLAIM_COOKIE_NAME: ${DEMO_CLAIM_COOKIE_NAME:-__Host-business_finlynq_demo_claim}
       DEMO_LOGIN_ENABLED: ${DEMO_LOGIN_ENABLED:-false}
       DEMO_WRITES_ENABLED: ${DEMO_WRITES_ENABLED:-false}
       ACCOUNT_LOGIN_ENABLED: ${ACCOUNT_LOGIN_ENABLED:-false}
@@ -1256,7 +1255,6 @@ services:
       # follows its external redirect target.
       APP_ORIGIN: https://${BUSINESS_FINLYNQ_HOSTNAME:-business.finlynq.com}
       SESSION_COOKIE_NAME: business_finlynq_restore_session
-      DEMO_CLAIM_COOKIE_NAME: business_finlynq_restore_demo_claim
       DEMO_LOGIN_ENABLED: "true"
       # Restore verification is deliberately degraded/read-only. Sandbox reset
       # operators and maintenance timers are not part of this drill surface.
