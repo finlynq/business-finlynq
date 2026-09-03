@@ -274,6 +274,13 @@
       "when": 1788444891210,
       "tag": "0038_mcp_approval_session_binding",
       "breakpoints": true
+    },
+    {
+      "idx": 39,
+      "version": "7",
+      "when": 1788456201495,
+      "tag": "0039_create_fiscal_periods",
+      "breakpoints": true
     }
   ]
 }

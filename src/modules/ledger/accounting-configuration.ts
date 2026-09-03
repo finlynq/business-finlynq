@@ -23,6 +23,7 @@ import {
 } from "@/modules/workspace/write-policy";
 import { withWorkspaceTenantRead } from "@/modules/workspace/tenant-read";
 import { supportedCurrencies } from "@/kernel/money";
+import { createCommandFingerprint } from "@/kernel/command-fingerprint";
 import { presentAccountKey } from "./account-key-display";
 import {
   accountSegmentKeys,
@@ -68,6 +69,68 @@ export const legalEntityConfigurationSchema = z.object({
   manualPostingMode: z.enum(["REVIEW_REQUIRED", "AUTO_POST"]),
   reason: z.string().trim().min(8).max(500),
 }).strict();
+
+export const fiscalPeriodCreationSchema = z.object({
+  ledgerId: z.uuid(),
+  fiscalYear: z.number().int().min(2000).max(2200),
+  periodPattern: z.literal("MONTHLY"),
+  initialState: z.literal("OPEN"),
+  idempotencyKey: z.string().trim().min(1).max(180),
+  reason: z.string().trim().min(8).max(500),
+}).strict();
+
+const fiscalPeriodOutcomeSchema = z.enum([
+  "CREATED",
+  "ALREADY_EXISTING",
+  "REJECTED",
+]);
+const fiscalPeriodRejectionSchema = z.enum([
+  "INCOMPATIBLE_PERIOD_DEFINITION",
+  "OVERLAPPING_PERIOD",
+  "BATCH_REJECTED",
+]);
+const fiscalPeriodStateSchema = z.enum([
+  "OPEN",
+  "ADJUSTMENT_ONLY",
+  "HARD_CLOSED",
+  "SEALED",
+]);
+
+export const fiscalPeriodCreationResultSchema = z.object({
+  accepted: z.boolean(),
+  idempotentReplay: z.boolean(),
+  ledgerId: z.uuid(),
+  fiscalYear: z.number().int(),
+  periodPattern: z.literal("MONTHLY"),
+  initialState: z.literal("OPEN"),
+  summary: z.object({
+    created: z.number().int().nonnegative(),
+    existing: z.number().int().nonnegative(),
+    rejected: z.number().int().nonnegative(),
+  }).strict(),
+  periods: z.array(z.object({
+    periodId: z.uuid().nullable(),
+    periodNumber: z.number().int().min(1).max(12),
+    label: z.string(),
+    startsOn: z.iso.date(),
+    endsOn: z.iso.date(),
+    state: fiscalPeriodStateSchema.nullable(),
+    outcome: fiscalPeriodOutcomeSchema,
+    rejectionCode: fiscalPeriodRejectionSchema.nullable(),
+  }).strict()).length(12),
+  conflicts: z.array(z.object({
+    periodId: z.uuid(),
+    fiscalYear: z.number().int(),
+    periodNumber: z.number().int(),
+    label: z.string(),
+    startsOn: z.iso.date(),
+    endsOn: z.iso.date(),
+    state: fiscalPeriodStateSchema,
+    rejectionCode: fiscalPeriodRejectionSchema.exclude(["BATCH_REJECTED"]),
+  }).strict()),
+}).strict();
+
+export type FiscalPeriodCreationResult = z.output<typeof fiscalPeriodCreationResultSchema>;
 
 export const organizationCurrencyConfigurationSchema = z.object({
   currencyCode: currencySchema,
@@ -773,11 +836,12 @@ async function mutateConfiguration<T>(input: Readonly<{
   principal: SessionPrincipal;
   requestId: string;
   reason: string;
+  sourceSurface?: "API" | "MCP";
 }>, work: Parameters<typeof withTenantTransaction<T>>[1]): Promise<T> {
   assertConfigurationMutationSession(input.principal);
   const context = mutationContext(input.principal, input.requestId, {
     reason: input.reason,
-    sourceSurface: "API",
+    sourceSurface: input.sourceSurface ?? "API",
   });
   assertTenantWritesEnabled(context);
   return withTenantTransaction(context, async (client) => {
@@ -951,5 +1015,49 @@ export async function createLegalEntity(input: Readonly<{
     const entity = result.rows[0];
     if (!entity) throw new Error("Legal entity was not created");
     return { legalEntityId: entity.legal_entity_id, ledgerId: entity.ledger_id };
+  });
+}
+
+export async function createFiscalPeriods(input: Readonly<{
+  principal: SessionPrincipal;
+  requestId: string;
+  sourceSurface?: "API" | "MCP";
+}> & z.output<typeof fiscalPeriodCreationSchema>): Promise<FiscalPeriodCreationResult> {
+  const businessRequestId = `period-create:${createCommandFingerprint(
+    "ledger.fiscal-periods.idempotency-key",
+    {
+      organizationId: input.principal.organizationId,
+      idempotencyKey: input.idempotencyKey,
+    },
+  )}`;
+  const commandHash = createCommandFingerprint("ledger.fiscal-periods.create", {
+    ledgerId: input.ledgerId,
+    fiscalYear: input.fiscalYear,
+    periodPattern: input.periodPattern,
+    initialState: input.initialState,
+    reason: input.reason,
+  });
+
+  return mutateConfiguration({
+    principal: input.principal,
+    requestId: businessRequestId,
+    reason: input.reason,
+    sourceSurface: input.sourceSurface,
+  }, async (client) => {
+    const result = await client.query<{ result: unknown }>(
+      `SELECT app.accounting_create_fiscal_periods(
+         $1::uuid,$2::integer,$3::text,$4::period_state,$5::text
+       ) AS result`,
+      [
+        input.ledgerId,
+        input.fiscalYear,
+        input.periodPattern,
+        input.initialState,
+        commandHash,
+      ],
+    );
+    const created = result.rows[0]?.result;
+    if (!created) throw new Error("Fiscal periods were not created");
+    return fiscalPeriodCreationResultSchema.parse(created);
   });
 }

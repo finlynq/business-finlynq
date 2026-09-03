@@ -19,6 +19,7 @@ export type McpToolDefinition = Readonly<{
   description: string;
   inputSchema: z.ZodType<Record<string, unknown>>;
   destructive: boolean;
+  idempotent: boolean;
   openWorld: boolean;
   invoke: (args: unknown, runtime: McpToolRuntime) => unknown | Promise<unknown>;
 }>;
@@ -29,6 +30,7 @@ export function defineMcpTool<TSchema extends z.ZodType<Record<string, unknown>>
   description: string;
   inputSchema: TSchema;
   destructive?: boolean;
+  idempotent?: boolean;
   openWorld?: boolean;
   invoke: (args: z.output<TSchema>, runtime: McpToolRuntime) => unknown | Promise<unknown>;
 }>): McpToolDefinition {
@@ -38,6 +40,7 @@ export function defineMcpTool<TSchema extends z.ZodType<Record<string, unknown>>
     description: input.description,
     inputSchema: input.inputSchema,
     destructive: input.destructive ?? false,
+    idempotent: input.idempotent ?? input.policy.access === "READ",
     openWorld: input.openWorld ?? false,
     invoke: (args, runtime) => input.invoke(input.inputSchema.parse(args), runtime),
   };
@@ -121,7 +124,7 @@ export function registerMcpTools(
       annotations: {
         readOnlyHint: definition.policy.access === "READ",
         destructiveHint: definition.destructive,
-        idempotentHint: definition.policy.access === "READ",
+        idempotentHint: definition.idempotent,
         openWorldHint: definition.openWorld,
       },
       _meta: {

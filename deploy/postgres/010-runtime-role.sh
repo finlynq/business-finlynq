@@ -328,6 +328,7 @@ BEGIN
     'app.accounting_add_segment_value(text,text,text,date,date)',
     'app.accounting_create_account_combination(uuid,uuid,uuid,uuid,uuid,uuid,uuid,uuid,uuid,uuid,uuid,uuid,uuid,uuid,uuid)',
     'app.accounting_create_legal_entity(text,text,text,text,text,accounting_profile,integer,manual_posting_mode)',
+    'app.accounting_create_fiscal_periods(uuid,integer,text,period_state,text)',
     'app.accounting_create_hierarchy_draft(text,uuid,text,text,uuid)',
     'app.accounting_replace_hierarchy_draft(uuid,integer,jsonb)',
     'app.accounting_publish_hierarchy(uuid,integer,date)',
