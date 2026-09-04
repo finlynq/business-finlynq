@@ -95,12 +95,15 @@
 		}
 
 		reverse_proxy epm-finlynq-api:7100 {
+			header_up -Cookie
+			header_up -Proxy-Authorization
 			header_up -Forwarded
 			header_up -X-Tenant-Id
 			header_up -X-Principal-Id
 			header_up -X-Planning-Principal-Id
 			header_up -X-Policy
 			header_up -X-Executor
+			header_down -Set-Cookie
 			health_uri /health
 			health_interval 30s
 			health_timeout 5s

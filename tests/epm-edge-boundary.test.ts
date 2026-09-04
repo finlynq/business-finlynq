@@ -19,6 +19,9 @@ describe("shared edge isolation", () => {
     expect(caddyfile).toContain("epm.finlynq.com");
     expect(caddyfile).toMatch(/@planning_agent_api\s+path \/v1\/\*/u);
     expect(caddyfile).toMatch(/reverse_proxy\s+(?:epm-finlynq-api|127\.0\.0\.1):7100/u);
+    expect(caddyfile).toMatch(/reverse_proxy\s+(?:epm-finlynq-api|127\.0\.0\.1):7100[\s\S]*?header_up -Cookie/u);
+    expect(caddyfile).toMatch(/reverse_proxy\s+(?:epm-finlynq-api|127\.0\.0\.1):7100[\s\S]*?header_up -Proxy-Authorization/u);
+    expect(caddyfile).toMatch(/reverse_proxy\s+(?:epm-finlynq-api|127\.0\.0\.1):7100[\s\S]*?header_down -Set-Cookie/u);
     expect(caddyfile).toMatch(/basic_auth\s*\{\s*import \/(?:etc\/caddy|config)\/epm-basic-auth\s*\}/u);
     expect(caddyfile).toMatch(/reverse_proxy\s+(?:epm-finlynq-console|127\.0\.0\.1):7090[\s\S]*?header_up -Authorization/u);
     for (const header of ["X-Tenant-Id", "X-Principal-Id", "X-Planning-Principal-Id", "X-Policy", "X-Executor"]) {
