@@ -334,8 +334,10 @@ document_provider_configuration_matches() {
       continue
     fi
     [[ -n "$target" ]] || return 1
-    source="$(jq -r --arg target "${target##*/}" \
-      '. as $config | .services.app.secrets[] | select((.target // .source) == $target) | $config.secrets[.source].file' <<<"$rendered")"
+    # Compose versions render secret targets as either a filename or the
+    # full /run/secrets path. Accept those two exact forms, not any basename.
+    source="$(jq -r --arg target "$target" \
+      '. as $config | .services.app.secrets[] | select((.target // .source) == $target or (.target // .source) == ($target | split("/") | last)) | $config.secrets[.source].file' <<<"$rendered")"
     [[ -f "$source" && ! -L "$source" ]] || return 1
     jq -e --arg source "$source" --arg target "$target" \
       '[.[] | select(.Source == $source and .Destination == $target and .RW == false)] | length == 1' \

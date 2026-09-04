@@ -14,14 +14,14 @@ function fixture() {
   const environment: Record<string, string> = {};
   const secrets: Record<string, { file: string }> = {};
   const mounts: { Source: string; Destination: string; RW: boolean }[] = [];
-  const appSecrets: { source: string; target: string }[] = [];
+  const appSecrets: { source: string; target?: string }[] = [];
   for (const provider of ["GOOGLE", "MICROSOFT"]) {
     const name = provider.toLowerCase(); const target = `/run/secrets/${name}`; const file = join(directory, name);
     writeFileSync(file, `${name}-synthetic-secret\n`, { mode: 0o600 });
     writeFileSync(join(runtime, name), readFileSync(file), { mode: 0o600 });
     environment[`DOCUMENT_${provider}_CLIENT_ID`] = `${name}-synthetic-id`;
     environment[`DOCUMENT_${provider}_CLIENT_SECRET_FILE`] = target;
-    secrets[name] = { file }; appSecrets.push({ source: name, target: name });
+    secrets[name] = { file }; appSecrets.push({ source: name, target });
     mounts.push({ Source: file, Destination: target, RW: false });
   }
   const config = { services: { app: { environment, secrets: appSecrets } }, secrets };
@@ -52,6 +52,18 @@ document_provider_configuration_matches app "$(cat "$FIXTURE/config.json")"
 describe("development document-provider configuration drift", () => {
   it("accepts matching credentials without leaking values or hashes", () => {
     const result = fixture().run(); expect(result.status).toBe(0); expect(result.stdout + result.stderr).toBe("");
+  });
+  it.each(["absolute", "relative", "default"])("accepts %s Compose secret targets", (format) => {
+    const f = fixture();
+    for (const secret of f.config.services.app.secrets) {
+      if (format === "relative") secret.target = secret.source;
+      if (format === "default") delete secret.target;
+    }
+    const result = f.run(); expect(result.status).toBe(0); expect(result.stdout + result.stderr).toBe("");
+  });
+  it("rejects an unrelated absolute target with the same filename", () => {
+    const f = fixture(); f.config.services.app.secrets[0].target = "/different/google";
+    expect(f.run().status).toBe(1);
   });
   it("detects enablement, disabling, and rotation of client IDs at the same revision", () => {
     for (const value of ["", "new-client-id"]) {
