@@ -28,7 +28,9 @@ export type RouteFailureOperation =
 export type ObservedRouteOperation = RouteFailureOperation
   | "accounting-mutation"
   | "service-liveness"
-  | "document-evidence-download";
+  | "document-evidence-download"
+  | "document-storage"
+  | "document-storage-callback";
 
 type RouteErrorType = "Error" | "RangeError" | "SyntaxError" | "TypeError" | "Unknown";
 const requestIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;

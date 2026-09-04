@@ -12,6 +12,8 @@ The shipped names use explicit `finlynq_daily_*` and `finlynq_setup_*` prefixes 
 
 ## 1. Executive decision
 
+The [document inbox and external storage plan](mcp-document-inbox-2026-09.md) records an extension implemented in source on 2026-09-04: the user's MCP client drives document identification and ingestion in the free offering, with hosted model API processing deferred. Its nine cloud inbox tools extend the catalog described above; provider setup and live client acceptance are documented in the [operations guide](../operations/document-cloud-inbox.md).
+
 Build one public, remote MCP resource server at the configured FinLynQ HTTPS application origin, under `/mcp` (a dedicated MCP hostname can route to the same handler). It exposes two logical, independently configurable tool groups through the same OAuth connection:
 
 1. **Daily accounting** — journals, invoices, bills, receipts, recorded supplier payments, open items, bank activity, reconciliation, and reports.

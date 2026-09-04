@@ -25,6 +25,7 @@ const configuration = JSON.parse(rendered);
 const services = configuration.services ?? {};
 const providerSecret = "business_finlynq_resend_api_key";
 const turnstileSecret = "business_finlynq_turnstile_secret_key";
+const documentSecrets = ["business_finlynq_document_google_secret", "business_finlynq_document_microsoft_secret"];
 const appDatabaseSecret = "business_finlynq_app_db_password";
 const workerDatabaseSecret = "business_finlynq_auth_worker_db_password";
 const backupDatabaseSecret = "business_finlynq_backup_db_password";
@@ -70,6 +71,11 @@ const turnstileSecretConsumers = Object.entries(services)
   .sort();
 if (turnstileSecretConsumers.join(",") !== "app") {
   fail(`Turnstile secret consumers must be only app; found ${turnstileSecretConsumers.join(",") || "none"}`);
+}
+
+for (const secret of documentSecrets) {
+  const consumers = Object.entries(services).filter(([, service]) => secretSources(service).includes(secret)).map(([name]) => name);
+  if (consumers.join(",") !== "app") fail(`${secret} must be mounted only by app`);
 }
 
 for (const [name, service] of Object.entries(services)) {

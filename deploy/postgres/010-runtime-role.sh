@@ -261,7 +261,8 @@ BEGIN
     'bank_match_allocation_voids', 'bank_rules', 'bank_rule_runs',
     'bank_draft_proposals', 'mcp_oauth_clients', 'mcp_connections',
     'mcp_oauth_codes', 'mcp_access_tokens', 'mcp_refresh_tokens',
-    'mcp_approvals', 'mcp_tool_executions'
+    'mcp_approvals', 'mcp_tool_executions',
+    'document_storage_connections', 'document_storage_oauth', 'document_inbox_items'
   ] LOOP
     IF to_regclass(format('public.%I', selected_name)) IS NOT NULL THEN
       EXECUTE format('GRANT SELECT ON TABLE public.%I TO business_finlynq_app', selected_name);
@@ -277,7 +278,8 @@ BEGIN
     'bank_connections', 'bank_external_accounts', 'bank_sync_runs',
     'bank_reconciliation_sessions', 'mcp_connections', 'mcp_oauth_codes',
     'mcp_access_tokens', 'mcp_refresh_tokens', 'mcp_approvals',
-    'mcp_tool_executions'
+    'mcp_tool_executions',
+    'document_storage_connections', 'document_storage_oauth', 'document_inbox_items'
   ] LOOP
     IF to_regclass(format('public.%I', selected_name)) IS NOT NULL THEN
       EXECUTE format('GRANT INSERT, UPDATE ON TABLE public.%I TO business_finlynq_app', selected_name);

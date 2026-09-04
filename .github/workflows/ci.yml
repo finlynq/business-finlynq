@@ -62,6 +62,8 @@ jobs:
           cache: npm
       - run: sh deploy/evidence/start-test-scanner.sh
       - run: npm ci
+      - name: Install PDF content readers
+        run: sudo apt-get update -qq && sudo apt-get install -y poppler-utils
       - name: Verify Drizzle declaration and snapshot agreement
         run: npm run db:check-drift
       - name: Verify generated journal-type seed contract

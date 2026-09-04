@@ -447,6 +447,10 @@ services:
       BUSINESS_WRITES_ENABLED: ${BUSINESS_WRITES_ENABLED:-false}
       EVIDENCE_SCANNER_HOST: evidence_scanner
       EVIDENCE_SCANNER_PORT: "3310"
+      DOCUMENT_GOOGLE_CLIENT_ID: ${DOCUMENT_GOOGLE_CLIENT_ID:-}
+      DOCUMENT_GOOGLE_CLIENT_SECRET_FILE: /run/secrets/business_finlynq_document_google_secret
+      DOCUMENT_MICROSOFT_CLIENT_ID: ${DOCUMENT_MICROSOFT_CLIENT_ID:-}
+      DOCUMENT_MICROSOFT_CLIENT_SECRET_FILE: /run/secrets/business_finlynq_document_microsoft_secret
       BANK_FEEDS_ENABLED: ${BANK_FEEDS_ENABLED:-false}
       BUSINESS_FINLYNQ_IMAGE_REVISION: ${BUSINESS_FINLYNQ_IMAGE_REVISION:-unknown}
       ORGANIZATION_ROOT_KEK_FILE: /run/secrets/business_finlynq_root_kek
@@ -456,6 +460,8 @@ services:
       - business_finlynq_identity_secret
       - business_finlynq_app_db_password
       - business_finlynq_turnstile_secret_key
+      - business_finlynq_document_google_secret
+      - business_finlynq_document_microsoft_secret
     group_add:
       - ${BUSINESS_FINLYNQ_SECRET_GID:?set BUSINESS_FINLYNQ_SECRET_GID}
     ports:
@@ -1484,6 +1490,10 @@ volumes:
     name: ${BUSINESS_FINLYNQ_CADDY_CONFIG_VOLUME:-business_finlynq_caddy_config}
 
 secrets:
+  business_finlynq_document_google_secret:
+    file: ${DOCUMENT_GOOGLE_CLIENT_SECRET_FILE:-./deploy/backup/not-configured}
+  business_finlynq_document_microsoft_secret:
+    file: ${DOCUMENT_MICROSOFT_CLIENT_SECRET_FILE:-./deploy/backup/not-configured}
   business_finlynq_app_db_password:
     file: ${APP_DATABASE_PASSWORD_FILE:?set APP_DATABASE_PASSWORD_FILE}
   business_finlynq_root_kek:

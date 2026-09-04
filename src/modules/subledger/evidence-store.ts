@@ -10,12 +10,14 @@ import type { DocumentEvidenceMetadata, EvidenceMetadata, EvidenceReference } fr
 export type EvidenceRow = {
   id: string; organization_id: string; owner_module: SubledgerOwnerModule;
   filename_ciphertext: string; content_ciphertext?: string; key_version: number;
+  storage_backend?: "DATABASE" | "CLOUD"; storage_connection_id?: string | null; provider_file_id?: string | null;
   mime_type: string; byte_size: number; sha256: string; uploaded_by: string;
   created_at: Date | string; scanner_version: string; scanned_at: Date | string;
   command_hash: string;
 };
 export const EVIDENCE_METADATA_COLUMNS = `id, organization_id, owner_module, filename_ciphertext,
-  key_version, mime_type, byte_size, sha256, uploaded_by, created_at, scanner_version, scanned_at, command_hash`;
+  key_version, mime_type, byte_size, sha256, uploaded_by, created_at, scanner_version, scanned_at, command_hash,
+  storage_backend, storage_connection_id, provider_file_id`;
 export function evidenceEncryptionContext(row: Pick<EvidenceRow, "id" | "organization_id" | "key_version">, column: string) {
   return { organizationId: row.organization_id, table: "document_evidence_assets", column,
     recordId: row.id, keyVersion: row.key_version };

@@ -288,6 +288,34 @@
       "when": 1788468556364,
       "tag": "0040_document_evidence_assets",
       "breakpoints": true
+    },
+    {
+      "idx": 41,
+      "version": "7",
+      "when": 1788484641057,
+      "tag": "0041_document_cloud_inbox",
+      "breakpoints": true
+    },
+    {
+      "idx": 42,
+      "version": "7",
+      "when": 1788485452259,
+      "tag": "0042_inbox_duplicate_detection",
+      "breakpoints": true
+    },
+    {
+      "idx": 43,
+      "version": "7",
+      "when": 1788485688120,
+      "tag": "0043_inbox_upload_idempotency",
+      "breakpoints": true
+    },
+    {
+      "idx": 44,
+      "version": "7",
+      "when": 1788486005443,
+      "tag": "0044_storage_oauth_revocation",
+      "breakpoints": true
     }
   ]
 }

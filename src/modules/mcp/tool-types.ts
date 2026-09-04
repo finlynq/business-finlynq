@@ -22,6 +22,7 @@ export type McpToolDefinition = Readonly<{
   idempotent: boolean;
   openWorld: boolean;
   invoke: (args: unknown, runtime: McpToolRuntime) => unknown | Promise<unknown>;
+  formatResult?: (result: unknown) => CallToolResult;
 }>;
 
 export function defineMcpTool<TSchema extends z.ZodType<Record<string, unknown>>>(input: Readonly<{
@@ -33,6 +34,7 @@ export function defineMcpTool<TSchema extends z.ZodType<Record<string, unknown>>
   idempotent?: boolean;
   openWorld?: boolean;
   invoke: (args: z.output<TSchema>, runtime: McpToolRuntime) => unknown | Promise<unknown>;
+  formatResult?: (result: unknown) => CallToolResult;
 }>): McpToolDefinition {
   return {
     policy: input.policy,
@@ -43,6 +45,7 @@ export function defineMcpTool<TSchema extends z.ZodType<Record<string, unknown>>
     idempotent: input.idempotent ?? input.policy.access === "READ",
     openWorld: input.openWorld ?? false,
     invoke: (args, runtime) => input.invoke(input.inputSchema.parse(args), runtime),
+    formatResult: input.formatResult,
   };
 }
 
@@ -160,7 +163,7 @@ export function registerMcpTools(
           sessionPrincipal: mcpSessionPrincipal(snapshot.principal, stepUpExpiresAt, delegatedSessionId),
         });
         await finishMcpExecution(snapshot, execution, { status: "SUCCEEDED", approvalId, result });
-        return successResult(result);
+        return definition.formatResult ? definition.formatResult(result) : successResult(result);
       } catch (error) {
         if (execution) {
           try {

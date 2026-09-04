@@ -1,11 +1,13 @@
 import "server-only";
 
 import { randomUUID } from "node:crypto";
+import type { PoolClient } from "pg";
 import { z } from "zod";
 import { withTenantTransaction, type TenantTransactionContext } from "@/db/transaction";
 import { loadActiveOrganizationKey } from "@/security/organization-key-store";
 import { encryptField, serializeEncryptedField } from "@/security/organization-encryption";
 import { scanEvidence } from "@/security/evidence-scanner";
+import { downloadCloudEvidence } from "@/modules/document-storage/evidence";
 import { assertTenantWritesEnabled, assertWritableOrganization } from "@/modules/workspace/write-policy";
 import { assertPermission, permissionForOwner, withoutContext } from "./ar-ap-access";
 import { acquireDocumentIdentityLock, acquireIdempotencyLock, assertIdempotentSource,
@@ -77,6 +79,13 @@ async function changeEvidence(
   unparsed: Context & (z.input<typeof attachEvidenceSchema> | z.input<typeof detachEvidenceSchema>),
   operation: "attach" | "detach",
 ) {
+  return withTenantTransaction(unparsed.context, (client) => changeEvidenceInTransaction(client, unparsed, operation));
+}
+export async function changeEvidenceInTransaction(
+  client: PoolClient,
+  unparsed: Context & (z.input<typeof attachEvidenceSchema> | z.input<typeof detachEvidenceSchema>),
+  operation: "attach" | "detach",
+) {
   assertTenantWritesEnabled(unparsed.context);
   const command = operation === "attach"
     ? attachEvidenceSchema.parse(withoutContext(unparsed))
@@ -84,41 +93,39 @@ async function changeEvidence(
   const policy = DOCUMENT_KIND_POLICY[command.kind];
   const hash = canonicalHash({ operation: `evidence-${operation}`, command });
   const key = `evidence-${operation}:${canonicalHash(command.idempotencyKey)}`;
-  return withTenantTransaction(unparsed.context, async (client) => {
-    await assertWritableOrganization(client, unparsed.context);
-    await assertPermission(client, unparsed.context, permissionForOwner(policy.ownerModule, "manage"));
-    await acquireIdempotencyLock(client, unparsed.context.organizationId, key);
-    const replay = await findSourceByIdempotency(client, unparsed.context.organizationId, key);
-    if (replay) {
-      assertIdempotentSource(replay, { current: hash, legacy: hash }, "DRAFT");
-      return { document: recordFromRow(replay), idempotentReplay: true };
-    }
-    await acquireDocumentIdentityLock(client, unparsed.context.organizationId, policy.sourceType, command.sourceNumber);
-    const current = await currentSourceDocument(client, unparsed.context.organizationId, policy.sourceType, command.sourceNumber, true);
-    if (!current || current.status !== "DRAFT" || current.version !== command.expectedVersion) {
-      throw new Error("Evidence changes require the exact current DRAFT version");
-    }
-    const snapshot = businessDocumentSnapshotSchema.parse(current.snapshot);
-    const refs = snapshot.evidence ?? [];
-    const existing = refs.find((ref) => ref.assetId === command.assetId);
-    if (operation === "attach") {
-      const asset = await client.query<{ id: string }>(
-        "SELECT id FROM document_evidence_assets WHERE organization_id = $1 AND owner_module = $2 AND id = $3",
-        [unparsed.context.organizationId, policy.ownerModule, command.assetId]);
-      if (!asset.rows[0]) throw new Error("Evidence asset is unavailable for this document");
-      if (existing) throw new Error("Evidence is already attached; reuse the original idempotency key");
-    } else if (!existing) throw new Error("Evidence is not attached to this document version");
-    const evidence = evidenceReferencesSchema.parse(operation === "attach"
-      ? [...refs, { assetId: command.assetId, purpose: "purpose" in command ? command.purpose : undefined }]
-      : refs.filter((ref) => ref.assetId !== command.assetId));
-    const row = await appendSourceDocument(client, {
-      context: { ...unparsed.context, reason: command.reason }, ownerModule: policy.ownerModule,
-      sourceType: policy.sourceType, sourceNumber: command.sourceNumber, legalEntityId: current.legal_entity_id,
-      version: current.version + 1, status: "DRAFT", snapshot: { ...snapshot, evidence },
-      idempotencyKey: key, commandHash: hash, supersedesSourceDocumentId: current.id,
-    });
-    return { document: recordFromRow(row), idempotentReplay: false };
+  await assertWritableOrganization(client, unparsed.context);
+  await assertPermission(client, unparsed.context, permissionForOwner(policy.ownerModule, "manage"));
+  await acquireIdempotencyLock(client, unparsed.context.organizationId, key);
+  const replay = await findSourceByIdempotency(client, unparsed.context.organizationId, key);
+  if (replay) {
+    assertIdempotentSource(replay, { current: hash, legacy: hash }, "DRAFT");
+    return { document: recordFromRow(replay), idempotentReplay: true };
+  }
+  await acquireDocumentIdentityLock(client, unparsed.context.organizationId, policy.sourceType, command.sourceNumber);
+  const current = await currentSourceDocument(client, unparsed.context.organizationId, policy.sourceType, command.sourceNumber, true);
+  if (!current || current.status !== "DRAFT" || current.version !== command.expectedVersion) {
+    throw new Error("Evidence changes require the exact current DRAFT version");
+  }
+  const snapshot = businessDocumentSnapshotSchema.parse(current.snapshot);
+  const refs = snapshot.evidence ?? [];
+  const existing = refs.find((ref) => ref.assetId === command.assetId);
+  if (operation === "attach") {
+    const asset = await client.query<{ id: string }>(
+      "SELECT id FROM document_evidence_assets WHERE organization_id = $1 AND owner_module = $2 AND id = $3",
+      [unparsed.context.organizationId, policy.ownerModule, command.assetId]);
+    if (!asset.rows[0]) throw new Error("Evidence asset is unavailable for this document");
+    if (existing) throw new Error("Evidence is already attached; reuse the original idempotency key");
+  } else if (!existing) throw new Error("Evidence is not attached to this document version");
+  const evidence = evidenceReferencesSchema.parse(operation === "attach"
+    ? [...refs, { assetId: command.assetId, purpose: "purpose" in command ? command.purpose : undefined }]
+    : refs.filter((ref) => ref.assetId !== command.assetId));
+  const row = await appendSourceDocument(client, {
+    context: { ...unparsed.context, reason: command.reason }, ownerModule: policy.ownerModule,
+    sourceType: policy.sourceType, sourceNumber: command.sourceNumber, legalEntityId: current.legal_entity_id,
+    version: current.version + 1, status: "DRAFT", snapshot: { ...snapshot, evidence },
+    idempotencyKey: key, commandHash: hash, supersedesSourceDocumentId: current.id,
   });
+  return { document: recordFromRow(row), idempotentReplay: false };
 }
 export const attachDocumentEvidence = (command: Context & z.input<typeof attachEvidenceSchema>) => changeEvidence(command, "attach");
 export const detachDocumentEvidence = (command: Context & z.input<typeof detachEvidenceSchema>) => changeEvidence(command, "detach");
@@ -145,6 +152,7 @@ export async function downloadDocumentEvidence(command: Context & { assetId: str
       id: document.id, sourceNumber: document.source_number, version: document.version,
       evidence: snapshot.evidence.filter((ref) => ref.assetId === assetId),
     });
-    return { metadata: metadata[0], bytes: await decryptEvidenceContent(client, row) };
+    return { metadata: metadata[0], bytes: row.storage_backend === "CLOUD"
+      ? await downloadCloudEvidence(client, command.context, row) : await decryptEvidenceContent(client, row) };
   });
 }

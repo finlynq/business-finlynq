@@ -12,7 +12,7 @@ export const EVIDENCE_MCP_TOOLS = [
   defineMcpTool({
     policy: { name: "finlynq_daily_upload_document_evidence", group: "DAILY", access: "WRITE", permissionsAny: managePermissions },
     title: "Upload source-document evidence",
-    description: "Upload up to 2 MiB of PDF, PNG, or JPEG evidence as canonical base64, with filename, exact byteSize, SHA-256, and idempotencyKey. Content must pass malware scanning and is encrypted for this organization. No URLs are fetched. Returns an opaque assetId; then attach it to the exact current invoice/bill draft version.",
+    description: "Legacy database storage: upload up to 2 MiB of PDF, PNG, or JPEG evidence as canonical base64, with filename, exact byteSize, SHA-256, and idempotencyKey. For Google Drive/OneDrive storage use finlynq_daily_upload_inbox_document instead. This tool stores scanned, organization-encrypted bytes in PostgreSQL. Returns an assetId to attach to the exact current invoice/bill draft version.",
     inputSchema: uploadEvidenceSchema,
     idempotent: true,
     invoke: (args, runtime) => uploadDocumentEvidence({

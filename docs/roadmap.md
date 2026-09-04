@@ -76,6 +76,10 @@ The initial release provides hardened SimpleFIN connection/sync for private tena
 
 No public MCP endpoint is active in the writable-demo release.
 
+### Document inbox and external storage
+
+The implementation uses the user's Codex, ChatGPT, or compatible MCP client to identify inbox documents, create drafts or link supporting evidence, and trigger deterministic cloud filing. Google Drive/OneDrive retain original files; FinLynQ retains metadata, workflow state, and accounting records. Hosted model API processing is deferred. Shared application services leave room for a future API adapter without introducing model API calls or an AI-key requirement now. See the [MCP document inbox plan](plan/mcp-document-inbox-2026-09.md) for the agreed scope, provider access constraints, naming rules, and delivery gates. Implemented in source; live provider/client acceptance and production activation remain pending. See the [cloud inbox operations guide](operations/document-cloud-inbox.md).
+
 ## Later modular work
 
 Inventory is designed for but not built. A future inventory manifest can add item/location/valuation/subledger contracts without changing the 13-field account key. Manufacturing, projects, insurance, payroll, fixed assets, budgeting, consolidation, and secondary ledgers follow the same module contract and release gates.

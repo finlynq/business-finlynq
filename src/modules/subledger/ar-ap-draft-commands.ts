@@ -1,5 +1,7 @@
 import "server-only";
 import { loadDocumentEvidence } from "./evidence-store";
+import type { PoolClient } from "pg";
+import { evidenceReferencesSchema, type EvidenceReference } from "./evidence-model";
 
 import { withTenantTransaction } from "@/db/transaction";
 import {
@@ -8,6 +10,7 @@ import {
 } from "@/modules/workspace/write-policy";
 import {
   buildBusinessDocumentSnapshot,
+  canonicalHash,
   createBusinessDocumentSchema,
   DOCUMENT_KIND_POLICY,
   editBusinessDocumentSchema,
@@ -106,6 +109,15 @@ export async function getCurrentSubledgerDocument(
 export async function createBusinessDocumentDraft(
   unparsedCommand: CreateBusinessDocumentCommand,
 ): Promise<DocumentMutationResult> {
+  return withTenantTransaction(unparsedCommand.context, (client) => createBusinessDocumentDraftInTransaction(client, unparsedCommand));
+}
+
+/** Shared with inbox completion so draft creation and evidence linking commit together. */
+export async function createBusinessDocumentDraftInTransaction(
+  client: PoolClient,
+  unparsedCommand: CreateBusinessDocumentCommand,
+  evidence: readonly EvidenceReference[] = [],
+): Promise<DocumentMutationResult> {
   assertTenantWritesEnabled(unparsedCommand.context);
   const command = createBusinessDocumentSchema.parse(withoutContext(unparsedCommand));
   const policy = DOCUMENT_KIND_POLICY[command.kind];
@@ -114,63 +126,62 @@ export async function createBusinessDocumentDraft(
     "draft-create",
     command.idempotencyKey,
   );
-  const fingerprints = subledgerCommandFingerprints(policy.ownerModule, "draft-create", command);
+  const refs = evidenceReferencesSchema.parse(evidence);
+  const fingerprint = refs.length ? canonicalHash({ command, evidence: refs }) : null;
+  const fingerprints = fingerprint ? { current: fingerprint, legacy: fingerprint } : subledgerCommandFingerprints(policy.ownerModule, "draft-create", command);
+  await assertWritableOrganization(client, unparsedCommand.context);
+  await assertPermission(client, unparsedCommand.context, permissionForOwner(policy.ownerModule, "manage"));
+  await acquireIdempotencyLock(client, unparsedCommand.context.organizationId, idempotencyKey);
+  const replay = await findSourceByIdempotency(
+    client,
+    unparsedCommand.context.organizationId,
+    idempotencyKey,
+  );
+  if (replay) {
+    assertIdempotentSource(replay, fingerprints, "DRAFT");
+    return { document: recordFromRow(replay), idempotentReplay: true };
+  }
 
-  return withTenantTransaction(unparsedCommand.context, async (client) => {
-    await assertWritableOrganization(client, unparsedCommand.context);
-    await assertPermission(client, unparsedCommand.context, permissionForOwner(policy.ownerModule, "manage"));
-    await acquireIdempotencyLock(client, unparsedCommand.context.organizationId, idempotencyKey);
-    const replay = await findSourceByIdempotency(
-      client,
-      unparsedCommand.context.organizationId,
-      idempotencyKey,
-    );
-    if (replay) {
-      assertIdempotentSource(replay, fingerprints, "DRAFT");
-      return { document: recordFromRow(replay), idempotentReplay: true };
-    }
+  await acquireDocumentIdentityLock(
+    client,
+    unparsedCommand.context.organizationId,
+    policy.sourceType,
+    command.sourceNumber,
+  );
+  if (await currentSourceDocument(
+    client,
+    unparsedCommand.context.organizationId,
+    policy.sourceType,
+    command.sourceNumber,
+    true,
+  )) {
+    throw new Error("Source number already exists in this organization and document type");
+  }
 
-    await acquireDocumentIdentityLock(
-      client,
-      unparsedCommand.context.organizationId,
-      policy.sourceType,
-      command.sourceNumber,
-    );
-    if (await currentSourceDocument(
-      client,
-      unparsedCommand.context.organizationId,
-      policy.sourceType,
-      command.sourceNumber,
-      true,
-    )) {
-      throw new Error("Source number already exists in this organization and document type");
-    }
-
-    const setup = await loadAccountingSetup(client, {
-      organizationId: unparsedCommand.context.organizationId,
-      ledgerId: command.ledgerId,
-      legalEntityId: command.legalEntityId,
-      periodId: command.periodId,
-      partyAccountId: command.partyAccountId,
-    });
-    const { idempotencyKey: _idempotencyKey, ...documentInput } = command;
-    void _idempotencyKey;
-    const snapshot = buildBusinessDocumentSnapshot(documentInput, setup.functional_currency);
-    await validateDraftConfiguration(client, unparsedCommand.context, snapshot);
-    const row = await appendSourceDocument(client, {
-      context: unparsedCommand.context,
-      ownerModule: policy.ownerModule,
-      sourceType: policy.sourceType,
-      sourceNumber: command.sourceNumber,
-      legalEntityId: command.legalEntityId,
-      version: 1,
-      status: "DRAFT",
-      snapshot,
-      idempotencyKey,
-      commandHash: fingerprints.current,
-    });
-    return { document: recordFromRow(row), idempotentReplay: false };
+  const setup = await loadAccountingSetup(client, {
+    organizationId: unparsedCommand.context.organizationId,
+    ledgerId: command.ledgerId,
+    legalEntityId: command.legalEntityId,
+    periodId: command.periodId,
+    partyAccountId: command.partyAccountId,
   });
+  const { idempotencyKey: _idempotencyKey, ...documentInput } = command;
+  void _idempotencyKey;
+  const snapshot = { ...buildBusinessDocumentSnapshot(documentInput, setup.functional_currency), ...(refs.length ? { evidence: refs } : {}) };
+  await validateDraftConfiguration(client, unparsedCommand.context, snapshot);
+  const row = await appendSourceDocument(client, {
+    context: unparsedCommand.context,
+    ownerModule: policy.ownerModule,
+    sourceType: policy.sourceType,
+    sourceNumber: command.sourceNumber,
+    legalEntityId: command.legalEntityId,
+    version: 1,
+    status: "DRAFT",
+    snapshot,
+    idempotencyKey,
+    commandHash: fingerprints.current,
+  });
+  return { document: recordFromRow(row), idempotentReplay: false };
 }
 
 export async function editBusinessDocumentDraft(

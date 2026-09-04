@@ -11,6 +11,7 @@ import {
   type AuthInfo,
 } from "@modelcontextprotocol/server";
 import { DAILY_MCP_TOOLS } from "./daily-tools";
+import { INBOX_MCP_TOOLS } from "./inbox-tools";
 import { loadMcpAuthorizationSnapshot } from "./connection-policy";
 import {
   verifyAccessToken,
@@ -21,7 +22,7 @@ import { SETUP_MCP_TOOLS } from "./setup-tools";
 import { SHARED_MCP_TOOLS } from "./shared-tools";
 import { registerMcpTools } from "./tool-types";
 
-const allTools = [...SHARED_MCP_TOOLS, ...DAILY_MCP_TOOLS, ...SETUP_MCP_TOOLS];
+const allTools = [...SHARED_MCP_TOOLS, ...DAILY_MCP_TOOLS, ...INBOX_MCP_TOOLS, ...SETUP_MCP_TOOLS];
 
 function principalFromAuthInfo(authInfo: AuthInfo | undefined): McpConnectionPrincipal {
   const value = authInfo?.extra?.finlynqPrincipal;

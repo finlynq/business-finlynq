@@ -1,0 +1,1 @@
+ALTER TABLE "document_storage_connections" ADD COLUMN "oauth_state_hash" text;

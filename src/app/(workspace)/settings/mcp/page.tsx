@@ -26,7 +26,7 @@ export default async function McpSettingsPage() {
         eyebrow="Secure agent access"
         title="AI & MCP connections"
         description="Connect Claude, ChatGPT, or another standards-compatible client over HTTPS. Every request is restricted to your current organization membership and live role permissions."
-        actions={<Link className="secondary-button" href="/app/settings">Organization settings</Link>}
+        actions={<><Link className="secondary-button" href="/app/settings/documents">Document inbox</Link><Link className="secondary-button" href="/app/settings">Organization settings</Link></>}
       />
       {!realUser && <DemoNotice>Remote OAuth connections are disabled in the public demo.</DemoNotice>}
       <McpSettings

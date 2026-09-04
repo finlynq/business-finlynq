@@ -1,0 +1,2 @@
+ALTER TABLE "document_inbox_items" ADD COLUMN "business_key" text;--> statement-breakpoint
+CREATE INDEX "document_inbox_items_business_key_idx" ON "document_inbox_items" USING btree ("organization_id","business_key");

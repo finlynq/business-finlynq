@@ -64,6 +64,7 @@ const runtimeSelectRelations = [
   "bank_rule_runs", "bank_draft_proposals", "mcp_oauth_clients",
   "mcp_connections", "mcp_oauth_codes", "mcp_access_tokens",
   "mcp_refresh_tokens", "mcp_approvals", "mcp_tool_executions",
+  "document_storage_connections", "document_storage_oauth", "document_inbox_items",
 ];
 const runtimeInsertUpdateRelations = [
   "journal_entries", "journal_lines", "parties", "party_addresses",
@@ -72,6 +73,7 @@ const runtimeInsertUpdateRelations = [
   "bank_reconciliation_sessions", "mcp_connections", "mcp_oauth_codes",
   "mcp_access_tokens", "mcp_refresh_tokens", "mcp_approvals",
   "mcp_tool_executions",
+  "document_storage_connections", "document_storage_oauth", "document_inbox_items",
 ];
 const runtimeInsertRelations = [
   "journal_approvals", "journal_entry_relations", "source_documents", "document_evidence_assets",
@@ -888,6 +890,15 @@ function ownerOnlyPolicyExpression(tableName) {
 }
 
 function expectedRlsPolicy(table) {
+  if (["document_storage_connections", "document_storage_oauth", "document_inbox_items"].includes(table.name)) {
+    const moduleRead = "organization_id = app.current_organization_id() AND (app.current_actor_has_permission(owner_module || '.read'::text) OR app.current_actor_has_permission(owner_module || '.manage'::text))";
+    const connectionAccess = "organization_id = app.current_organization_id() AND (app.current_actor_has_permission(owner_module || '.read'::text) OR app.current_actor_has_permission(owner_module || '.manage'::text) OR app.current_actor_has_permission('organization.settings.manage'::text))";
+    const oauthAccess = "organization_id = app.current_organization_id() AND actor_id = app.current_actor_id() AND session_id = NULLIF(current_setting('app.session_id'::text, true), ''::text)::uuid AND app.current_actor_has_permission('organization.settings.manage'::text)";
+    return { command: "ALL", name: "tenant_isolation", permissive: true, roles: ["PUBLIC"],
+      usingExpression: table.name === "document_storage_oauth" ? oauthAccess : table.name === "document_storage_connections" ? connectionAccess : moduleRead,
+      withCheckExpression: table.name === "document_storage_oauth" ? oauthAccess : table.name === "document_storage_connections" ? connectionAccess : "organization_id = app.current_organization_id() AND app.current_actor_has_permission(owner_module || '.manage'::text)",
+    };
+  }
   if (table.name === "document_evidence_assets") {
     return {
       command: "ALL", name: "tenant_isolation", permissive: true, roles: ["PUBLIC"],

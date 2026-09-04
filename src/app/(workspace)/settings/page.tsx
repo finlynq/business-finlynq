@@ -13,7 +13,7 @@ export default async function SettingsPage() {
         eyebrow="Business administration"
         title="Organization settings"
         description="Maintain the business profile, invite team members, assign fixed roles, and control active access without deleting identity history."
-        actions={<Link className="primary-button" href="/app/settings/accounting">Accounting configuration</Link>}
+        actions={<><Link className="secondary-button" href="/app/settings/documents">Document inbox</Link><Link className="primary-button" href="/app/settings/accounting">Accounting configuration</Link></>}
       />
       {workspace.isDemo && (
         <DemoNotice>
