@@ -238,6 +238,14 @@ test("demo session protects workspace routes and is revoked by sign-out", async 
   await expect(page.getByRole("navigation", { name: "Banking views" })).toBeVisible();
   await page.goto("/app/journals");
 
+  // The public demo is shared and writable, so visitor-created journals can
+  // legitimately push an older baseline fixture beyond the first register page.
+  // Use the register's supported search path to verify that the fixture remains
+  // available without coupling release acceptance to mutable page-one ordering.
+  const journalFilter = page.getByRole("form", { name: "Filter journal register" });
+  await journalFilter.getByRole("searchbox", { name: "Journal, description, entity, or type" })
+    .fill("Synthetic Canadian software accrual");
+  await journalFilter.getByRole("button", { name: "Search", exact: true }).click();
   const seededJournal = page.getByRole("row").filter({ hasText: "Synthetic Canadian software accrual" });
   await expect(seededJournal).toBeVisible();
 
