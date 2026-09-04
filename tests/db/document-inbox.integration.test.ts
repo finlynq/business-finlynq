@@ -193,6 +193,9 @@ run("cloud inbox PostgreSQL lifecycle", () => {
     finally { cloud.injectedChild = ""; }
     expect((await owner.query("SELECT id FROM document_inbox_items WHERE provider_file_id=$1", [outside])).rows).toEqual([]);
     const late = await discover("added-directly-in-drive.png"); expect(late.status).toBe("PENDING");
+    const lateClaim = randomUUID(); await claimInboxDocument(requestContext(), { itemId: late.id, claimId: lateClaim });
+    const read = await readInboxDocument(requestContext(), { itemId: late.id, claimId: lateClaim });
+    expect(read.imageBase64).toBe(png.toString("base64")); expect(read.sha256).toBe(checksum);
   });
   it("rejects a source moved during reading even if its contents and version stay the same", async () => {
     const item = await discover("moved-during-read.png"); const claim = randomUUID();

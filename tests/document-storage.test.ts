@@ -48,21 +48,38 @@ describe("provider network boundaries", () => {
     await expect(boundedResponse(new Response(new Uint8Array(11)), 10)).rejects.toThrow(/size/);
     expect(await boundedResponse(new Response("invoice"), 10)).toEqual(Buffer.from("invoice"));
   });
-  it("never sends a Graph credential to a download host", async () => {
-    const fetcher = vi.fn().mockResolvedValueOnce(new Response(null, { status: 302, headers: { location: "https://files.example.sharepoint.com/download?token=secret" } })).mockResolvedValueOnce(new Response("invoice"));
-    vi.stubGlobal("fetch", fetcher);
-    expect(await new CloudDrive("ONEDRIVE", "graph-secret", "drive").download("file")).toEqual(Buffer.from("invoice"));
-    expect(fetcher.mock.calls[0][1].headers.Authorization).toBe("Bearer graph-secret");
-    expect(fetcher.mock.calls[1][1]).not.toHaveProperty("headers");
-    expect(fetcher.mock.calls[1][1].redirect).toBe("error");
+  it("supports bounded Microsoft download hosts without forwarding the Graph credential", async () => {
+    const locations = [
+      "https://my.microsoftpersonalcontent.com/personal/account/_layouts/15/download.aspx?token=secret",
+      "https://b0mpua-by3301.files.1drv.com/download?token=secret",
+      "https://files.example.sharepoint.com/download?token=secret",
+      "https://legacy.livefilestore.com/download?token=secret",
+      "https://onedrive.com/download?token=secret",
+    ];
+    for (const location of locations) {
+      const fetcher = vi.fn().mockResolvedValueOnce(new Response(null, { status: 302, headers: { location } })).mockResolvedValueOnce(new Response("invoice"));
+      vi.stubGlobal("fetch", fetcher);
+      expect(await new CloudDrive("ONEDRIVE", "graph-secret", "drive").download("file")).toEqual(Buffer.from("invoice"));
+      expect(fetcher.mock.calls[0][1].headers.Authorization).toBe("Bearer graph-secret");
+      expect(fetcher.mock.calls[1][1]).not.toHaveProperty("headers");
+      expect(fetcher.mock.calls[1][1].redirect).toBe("error");
+    }
   });
-  it("blocks private/untrusted download redirects and poisoned pagination URLs", async () => {
-    const fetcher = vi.fn().mockResolvedValue(new Response(null, { status: 302, headers: { location: "http://127.0.0.1/secrets" } }));
-    vi.stubGlobal("fetch", fetcher);
+  it("blocks malformed, private, and lookalike download redirects", async () => {
+    const locations = [null, "not a URL", "http://127.0.0.1/secrets", "https://onedrive.com.evil.example/secrets", "https://evilonedrive.com/secrets", "https://user@onedrive.com/secrets", "https://onedrive.com:8443/secrets", "https://onedrive.com/secrets#fragment"];
     const drive = new CloudDrive("ONEDRIVE", "secret", "drive");
-    await expect(drive.download("file")).rejects.toThrow(/download location/);
+    for (const location of locations) {
+      const fetcher = vi.fn().mockResolvedValue(new Response(null, { status: 302, headers: location ? { location } : {} }));
+      vi.stubGlobal("fetch", fetcher);
+      await expect(drive.download("file")).rejects.toMatchObject({ code: "STORAGE_DOWNLOAD_HOST" });
+      expect(fetcher).toHaveBeenCalledTimes(1);
+    }
+  });
+  it("blocks poisoned pagination URLs", async () => {
+    const fetcher = vi.fn(); vi.stubGlobal("fetch", fetcher);
+    const drive = new CloudDrive("ONEDRIVE", "secret", "drive");
     await expect(drive.children("inbox", "https://graph.microsoft.com/v1.0/me/messages")).rejects.toThrow(/sync/);
-    expect(fetcher).toHaveBeenCalledTimes(1);
+    expect(fetcher).not.toHaveBeenCalled();
   });
   it("does not expose provider error bodies", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response('secret access_token=abc', { status: 403 })));

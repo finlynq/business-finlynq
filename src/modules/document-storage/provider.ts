@@ -113,6 +113,18 @@ const graphFileSchema = z.object({ id, name: z.string().max(1000), size: z.numbe
   parentReference: z.object({ id: z.string().optional(), driveId: z.string().optional() }).optional(), deleted: z.unknown().optional(), remoteItem: z.unknown().optional() });
 const googleFields = "id,name,mimeType,size,md5Checksum,version,parents,trashed";
 const graphFields = "id,name,size,eTag,cTag,file,folder,parentReference,deleted,remoteItem";
+const microsoftDownloadDomainFamilies = ["sharepoint.com", "1drv.com", "storage.live.com", "onedrive.com", "livefilestore.com"];
+// Personal OneDrive currently returns this exact host; do not widen it to the parent domain.
+const microsoftDownloadExactHosts = new Set(["my.microsoftpersonalcontent.com"]);
+function microsoftDownloadUrl(location: string | null): URL | null {
+  if (!location) return null;
+  let url: URL;
+  try { url = new URL(location); } catch { return null; }
+  const hostname = url.hostname.toLowerCase();
+  const trustedHost = microsoftDownloadExactHosts.has(hostname)
+    || microsoftDownloadDomainFamilies.some((domain) => hostname === domain || hostname.endsWith(`.${domain}`));
+  return url.protocol === "https:" && !url.port && !url.username && !url.password && !url.hash && trustedHost ? url : null;
+}
 function googleFile(raw: unknown): CloudFile {
   const f = googleFileSchema.parse(raw);
   if (f.trashed) throw new StorageError("STORAGE_MISSING", "The file is in the trash.");
@@ -236,9 +248,9 @@ export class CloudDrive {
       if (!response.ok) await jsonResponse(response);
       return boundedResponse(response, MAX_EVIDENCE_BYTES);
     }
-    const url = new URL(response.headers.get("location") ?? "");
+    const url = microsoftDownloadUrl(response.headers.get("location"));
     await response.body?.cancel();
-    if (url.protocol !== "https:" || url.port || url.username || url.password || ![".sharepoint.com", ".1drv.com", ".storage.live.com", ".onedrive.com"].some((suffix) => url.hostname.endsWith(suffix))) throw new StorageError("STORAGE_DOWNLOAD_HOST", "The provider returned an unsupported download location.");
+    if (!url) throw new StorageError("STORAGE_DOWNLOAD_HOST", "The provider returned an unsupported download location.");
     const download = await fetch(url, { redirect: "error", cache: "no-store", signal: AbortSignal.timeout(20000) });
     if (!download.ok) await jsonResponse(download);
     return boundedResponse(download, MAX_EVIDENCE_BYTES);
