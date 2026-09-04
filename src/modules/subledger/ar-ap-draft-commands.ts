@@ -27,6 +27,7 @@ import {
 } from "./ar-ap-idempotency";
 import { loadAccountingSetup, validateDraftConfiguration } from "./ar-ap-accounting";
 import { appendSourceDocument, recordFromRow } from "./ar-ap-persistence";
+import { resolveFx } from "@/modules/fx/rate-resolver";
 import {
   SOURCE_TYPES_BY_OWNER,
   type CreateBusinessDocumentCommand,
@@ -165,9 +166,19 @@ export async function createBusinessDocumentDraftInTransaction(
     periodId: command.periodId,
     partyAccountId: command.partyAccountId,
   });
-  const { idempotencyKey: _idempotencyKey, ...documentInput } = command;
+  const { idempotencyKey: _idempotencyKey, fx: suppliedFx, ...unresolvedDocumentInput } = command;
   void _idempotencyKey;
-  const snapshot = { ...buildBusinessDocumentSnapshot(documentInput, setup.functional_currency), ...(refs.length ? { evidence: refs } : {}) };
+  const fx = await resolveFx(client, {
+    organizationId: unparsedCommand.context.organizationId,
+    transactionCurrency: command.currency,
+    functionalCurrency: setup.functional_currency,
+    asOfDate: command.accountingDate,
+    explicitFx: suppliedFx,
+  });
+  const snapshot = {
+    ...buildBusinessDocumentSnapshot({ ...unresolvedDocumentInput, fx }, setup.functional_currency),
+    ...(refs.length ? { evidence: refs } : {}),
+  };
   await validateDraftConfiguration(client, unparsedCommand.context, snapshot);
   const row = await appendSourceDocument(client, {
     context: unparsedCommand.context,
@@ -238,13 +249,21 @@ export async function editBusinessDocumentDraft(
     const {
       idempotencyKey: _idempotencyKey,
       expectedVersion: _expectedVersion,
-      ...documentInput
+      fx: suppliedFx,
+      ...unresolvedDocumentInput
     } = command;
     void _idempotencyKey;
     void _expectedVersion;
+    const fx = await resolveFx(client, {
+      organizationId: unparsedCommand.context.organizationId,
+      transactionCurrency: command.currency,
+      functionalCurrency: setup.functional_currency,
+      asOfDate: command.accountingDate,
+      explicitFx: suppliedFx,
+    });
     const prior = recordFromRow(current).snapshot;
     const snapshot = {
-      ...buildBusinessDocumentSnapshot(documentInput, setup.functional_currency),
+      ...buildBusinessDocumentSnapshot({ ...unresolvedDocumentInput, fx }, setup.functional_currency),
       ...("evidence" in prior ? { evidence: prior.evidence } : {}),
     };
     await validateDraftConfiguration(client, unparsedCommand.context, snapshot);

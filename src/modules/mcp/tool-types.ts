@@ -1,7 +1,7 @@
 import type { McpServer, CallToolResult, JSONValue } from "@modelcontextprotocol/server";
 import { z } from "zod";
 import type { McpAuthorizationSnapshot, McpToolPolicy } from "./connection-policy";
-import { authorizeMcpWrite, isMcpToolVisible } from "./connection-policy";
+import { authorizeMcpWrite, isMcpToolVisible, mcpToolAuthorizationMetadata } from "./connection-policy";
 import { beginMcpExecution, finishMcpExecution } from "./execution-store";
 import { mcpSessionPrincipal, type McpConnectionPrincipal } from "./oauth-store";
 
@@ -133,6 +133,7 @@ export function registerMcpTools(
       _meta: {
         "finlynq/toolGroup": definition.policy.group,
         "finlynq/access": definition.policy.access,
+        ...mcpToolAuthorizationMetadata(snapshot, definition.policy),
       },
     }, async (args) => {
       let execution;

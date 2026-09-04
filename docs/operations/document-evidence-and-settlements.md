@@ -72,6 +72,30 @@ encrypted with the organization DEK and record/column-bound AES-GCM; historical
 key versions remain usable for retained evidence. Plaintext filenames and file
 contents are redacted from MCP execution/approval summaries.
 
+## Refresh ChatGPT after MCP catalog changes
+
+After deploying a change to MCP tool names, descriptions, schemas, annotations,
+or authentication, open the Business FinLynQ connection in ChatGPT developer
+mode and select **Refresh**. Review the newly discovered tools, then start a new
+ChatGPT conversation and enable the refreshed connection before running
+acceptance prompts. When testing with Codex, start a new task after refreshing
+the connection so the task receives the current tool definitions. Follow the
+same lifecycle after reconnecting an account.
+
+Changing FinLynQ connection permissions or advancing its connection version
+updates the live authorization policy, but it cannot purge tool metadata already
+held by ChatGPT. FinLynQ resolves the authorized catalog for every MCP request
+and returns it with private, no-store cache semantics; ChatGPT controls its own
+connection metadata lifecycle. For a published plugin, scan the updated MCP
+server, submit a new plugin version, and publish the approved metadata snapshot.
+There is no FinLynQ server operation that can invalidate ChatGPT's private
+catalog cache.
+
+Before testing through ChatGPT, inspect the public HTTPS MCP endpoint with MCP
+Inspector and confirm that `tools/list` contains the expected names and JSON
+schemas. The [official OpenAI plugin testing guide](https://developers.openai.com/plugins/deploy/connect-chatgpt#refresh-metadata)
+documents the Refresh and new-conversation sequence.
+
 ## Operations
 
 Migration `0040_document_evidence_assets` adds the append-only, FORCE-RLS asset

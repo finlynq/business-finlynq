@@ -68,6 +68,28 @@ Reading returns actual MCP image blocks, available PDF text, page count, SHA-256
 
 Completion uses the existing accounting validation, tax/FX rules, source history, and write controls. It creates a draft with evidence or attaches to an exact draft version in one database transaction. It never posts or pays. Invoices require matching date, currency, and calculated total. Exact-content duplicates and matching company/supplier/invoice-reference/currency combinations block creation of another draft; a user can review and deliberately link an existing draft instead. Supporting documents can be archived without creating a bill. Missing dates, uncertain matches, or unreadable files should be marked for review.
 
+
+## Foreign-currency drafts
+
+Invoice and settlement requests may omit `fx`. FinLynQ then selects the latest
+enabled, organization-owned direct rate from transaction currency to functional
+currency whose UTC effective date is on or before the accounting date (or the
+settlement date for receipts and payments). Ties are resolved by effective time,
+recorded time, and rate ID. The selected rate ID, source, effective time, lookup
+time, and resolver policy version are frozen in the immutable document snapshot.
+Replaying the same idempotency key returns that snapshot even if a newer rate is
+recorded later.
+
+This release does not fetch rates from the internet, invert a pair, calculate a
+cross-rate, or guess. If no eligible direct rate exists, completion fails with
+`FX_RATE_UNAVAILABLE` before it creates a draft, links evidence, or moves the
+cloud file. An organization administrator must record an approved direct rate
+through Accounting settings or `finlynq_setup_record_fx_rate`, or the caller may
+use the existing explicit FX evidence path. Provider ingestion, staleness rules,
+manual-override authorization, and an `FX_PENDING` draft state remain separate
+product work.
+
+
 ## Recovery and retention
 
 - `READY_TO_FILE` means the accounting/evidence transaction committed. `FILING_FAILED` preserves the saved record and an actionable reason. Retry filing from settings or MCP; the service reconciles a lost move response and never repeats draft creation.
@@ -84,6 +106,6 @@ Automated tests cover canonical naming, bounded provider responses, credential-s
 
 Baseline verification for revision `795c396` on 2026-09-04: production build, lint, clean migrations/schema/grants, Compose boundaries, Caddy configuration, and authenticated desktop/mobile settings checks passed. That version's full suite passed 840 tests across 151 files with `npm run test -- --testTimeout=15000` against fresh, bootstrapped disposable PostgreSQL; two existing live-scanner tests were skipped because no scanner endpoint was supplied. The timeout override accommodates this host’s existing release-orchestration test. Native Poppler rendering was exercised with text and image-only PDF pages. These historical checks do not substitute for the current release gate.
 
-Before public activation, complete a personal OneDrive OAuth connection and, where one exists, reconnect a legacy Google connection. Drop files directly into each cloud inbox, process a text PDF and scanned invoice in each supported Codex/ChatGPT client, and verify the final archive and attachment download. Client transport payload tests do not establish live client compatibility. On 2026-09-04 the dev personal-OneDrive flow passed OAuth, direct PDF drop, MCP sync/list, and claim. Its first page read exposed the redirect-host compatibility issue tracked as BUSINESS-FINLYNQ-8; repeat read, draft creation, filing, and evidence hash verification after that fix is deployed.
+Before public activation, complete a personal OneDrive OAuth connection and, where one exists, reconnect a legacy Google connection. Drop files directly into each cloud inbox, process a text PDF and scanned invoice in each supported Codex/ChatGPT client, and verify the final archive and attachment download. Client transport payload tests do not establish live client compatibility. On 2026-09-04 the dev personal-OneDrive flow passed OAuth, direct PDF drop, MCP sync/list, claim, and the post-fix page read tracked as BUSINESS-FINLYNQ-8. The retest returned one page with text and the expected SHA-256 without exposing a storage redirect host. The subsequent draft remained `NEEDS_REVIEW` because the test organization lacked the required supplier account and due date; that accounting-validation result is separate from cloud-storage access.
 
-Authorization-model verification: 63 tests across seven suites passed against disposable PostgreSQL 16, including runtime RLS, cross-organization denial, later external-drop discovery, moved roots/files, refresh/revocation errors, original-account reconnect, historical cloud and database attachments, safe callback feedback, in-flight Google authorization denial, and executable development configuration-drift checks. Production build, lint, TypeScript, and shell syntax checks passed. Provider transport and malware scanning in the database suites are mocked; these results do not validate real Google/OneDrive grants or live MCP-client/provider compatibility. The BUSINESS-FINLYNQ-8 regression adds mocked personal/business redirect variants, malformed and lookalike rejection, bounded redirected content, signed-URL error sanitization, and external-drop claim/read hashing; the live end-to-end retry remains separate.
+Authorization-model verification: 63 tests across seven suites passed against disposable PostgreSQL 16, including runtime RLS, cross-organization denial, later external-drop discovery, moved roots/files, refresh/revocation errors, original-account reconnect, historical cloud and database attachments, safe callback feedback, in-flight Google authorization denial, and executable development configuration-drift checks. Production build, lint, TypeScript, and shell syntax checks passed. Provider transport and malware scanning in the database suites are mocked; these results do not validate real Google/OneDrive grants or live MCP-client/provider compatibility. The BUSINESS-FINLYNQ-8 regression adds mocked personal/business redirect variants, malformed and lookalike rejection, bounded redirected content, signed-URL error sanitization, and external-drop claim/read hashing; its live personal-OneDrive page-read retry also passed on development.

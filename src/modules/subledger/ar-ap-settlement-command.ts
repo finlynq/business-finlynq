@@ -7,7 +7,12 @@ import {
   assertTenantWritesEnabled,
   assertWritableOrganization,
 } from "@/modules/workspace/write-policy";
-import { recordSettlementSchema, SETTLEMENT_KIND_POLICY } from "./document-model";
+import {
+  recordSettlementSchema,
+  resolvedSettlementSchema,
+  SETTLEMENT_KIND_POLICY,
+} from "./document-model";
+import { resolveFx } from "@/modules/fx/rate-resolver";
 import { assertPermission, permissionForOwner, withoutContext } from "./ar-ap-access";
 import {
   assertRoutineSetup,
@@ -46,15 +51,21 @@ export async function recordCustomerReceiptOrSupplierPayment(
   unparsedCommand: RecordSettlementCommand,
 ): Promise<SettlementResult> {
   assertTenantWritesEnabled(unparsedCommand.context);
-  const command = normalizeSettlementFunding(recordSettlementSchema.parse(withoutContext(unparsedCommand)));
-  assertSettlementCommandAmounts(command);
-  const policy = SETTLEMENT_KIND_POLICY[command.kind];
+  const unresolvedCommand = normalizeSettlementFunding(
+    recordSettlementSchema.parse(withoutContext(unparsedCommand)),
+  );
+  assertSettlementCommandAmounts(unresolvedCommand);
+  const policy = SETTLEMENT_KIND_POLICY[unresolvedCommand.kind];
   const idempotencyKey = subledgerOperationKey(
     policy.ownerModule,
     "settlement",
-    command.idempotencyKey,
+    unresolvedCommand.idempotencyKey,
   );
-  const fingerprints = subledgerCommandFingerprints(policy.ownerModule, "settlement", command);
+  const fingerprints = subledgerCommandFingerprints(
+    policy.ownerModule,
+    "settlement",
+    unresolvedCommand,
+  );
 
   return withTenantTransaction(unparsedCommand.context, async (client) => {
     await assertWritableOrganization(client, unparsedCommand.context);
@@ -74,24 +85,32 @@ export async function recordCustomerReceiptOrSupplierPayment(
       client,
       unparsedCommand.context.organizationId,
       policy.sourceType,
-      command.sourceNumber,
+      unresolvedCommand.sourceNumber,
     );
     if (await currentSourceDocument(
       client,
       unparsedCommand.context.organizationId,
       policy.sourceType,
-      command.sourceNumber,
+      unresolvedCommand.sourceNumber,
       true,
     )) {
       throw new Error("Settlement source number already exists in this organization and document type");
     }
     const setup = await loadAccountingSetup(client, {
       organizationId: unparsedCommand.context.organizationId,
-      ledgerId: command.ledgerId,
-      legalEntityId: command.legalEntityId,
-      periodId: command.periodId,
-      partyAccountId: command.partyAccountId,
+      ledgerId: unresolvedCommand.ledgerId,
+      legalEntityId: unresolvedCommand.legalEntityId,
+      periodId: unresolvedCommand.periodId,
+      partyAccountId: unresolvedCommand.partyAccountId,
     });
+    const fx = await resolveFx(client, {
+      organizationId: unparsedCommand.context.organizationId,
+      transactionCurrency: unresolvedCommand.currency,
+      functionalCurrency: setup.functional_currency,
+      asOfDate: unresolvedCommand.settlementDate,
+      explicitFx: unresolvedCommand.fx,
+    });
+    const command = resolvedSettlementSchema.parse({ ...unresolvedCommand, fx });
     assertRoutineSetup(setup, {
       accountingDate: command.accountingDate,
       currency: command.currency,

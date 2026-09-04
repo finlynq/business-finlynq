@@ -27,6 +27,8 @@ export function calculateSettlementAllocations(
   openItems: ReadonlyMap<string, LockedOpenItemRow>,
   functionalCurrency: string,
 ): readonly CalculatedSettlementAllocation[] {
+  const fx = command.fx;
+  if (!fx) throw new Error("Settlement FX must be resolved before allocation");
   const policy = SETTLEMENT_KIND_POLICY[command.kind];
   return command.allocations.map((allocation) => {
     const item = openItems.get(allocation.openItemId);
@@ -57,7 +59,7 @@ export function calculateSettlementAllocations(
           functionalCurrency,
         );
     const settlementFunctional = quantizeMoney(
-      transactionAmount.times(command.fx.rate),
+      transactionAmount.times(fx.rate),
       functionalCurrency,
     );
     if (!carryingFunctional.greaterThan(0) || !settlementFunctional.greaterThan(0)) {
@@ -93,6 +95,7 @@ export function buildSettlementSnapshot(
   functionalCurrency: string,
   allocations: readonly CalculatedSettlementAllocation[],
 ): SettlementDocumentSnapshot {
+  if (!command.fx) throw new Error("Settlement FX must be resolved before snapshot creation");
   const policy = SETTLEMENT_KIND_POLICY[command.kind];
   const funding = resolveSettlementFunding(command);
   return settlementDocumentSnapshotSchema.parse({

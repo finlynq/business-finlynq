@@ -5,7 +5,9 @@ import {
   effectiveToolMode,
   isMcpToolVisible,
   intersectMcpScopes,
+  mcpToolAuthorizationMetadata,
   mcpToolNameRequiresStepUp,
+  mcpToolRequiresStepUp,
   mcpArgumentsHash,
   safeArgumentsSummary,
   type McpAuthorizationSnapshot,
@@ -56,9 +58,53 @@ describe("remote MCP live authorization", () => {
   });
 
   it("classifies Setup writes and reconciliation transitions as high assurance", () => {
+    expect(mcpToolNameRequiresStepUp("finlynq_setup_create_party")).toBe(false);
     expect(mcpToolNameRequiresStepUp("finlynq_setup_update_party")).toBe(true);
     expect(mcpToolNameRequiresStepUp("finlynq_daily_transition_bank_reconciliation")).toBe(true);
     expect(mcpToolNameRequiresStepUp("finlynq_daily_create_journal")).toBe(false);
+  });
+
+  it("honors the explicit ordinary-party policy without weakening protected Setup writes", async () => {
+    const partyTool: McpToolPolicy = {
+      name: "finlynq_setup_create_party",
+      group: "SETUP",
+      access: "WRITE",
+      permission: PERMISSIONS.manageParties,
+      actionClass: "PARTY",
+      mfaRequirement: "NOT_REQUIRED",
+    };
+    const protectedTool: McpToolPolicy = {
+      name: "finlynq_setup_configure_currency",
+      group: "SETUP",
+      access: "WRITE",
+      permission: PERMISSIONS.manageOrganizationSettings,
+    };
+    const selected = snapshot({
+      setupMode: "ALLOW_WRITES",
+      directWriteSessionId: null,
+      directWriteStepUpExpiresAt: null,
+    });
+
+    expect(mcpToolRequiresStepUp(partyTool)).toBe(false);
+    expect(mcpToolRequiresStepUp(protectedTool)).toBe(true);
+    expect(mcpToolRequiresStepUp({
+      ...protectedTool,
+      actionClass: "PARTY",
+      mfaRequirement: "NOT_REQUIRED",
+    })).toBe(true);
+    await expect(authorizeMcpWrite(selected, partyTool, {
+      partyNumber: "HETZNER",
+      idempotencyKey: "supplier-onboarding",
+    })).resolves.toEqual({ allowed: true });
+    await expect(authorizeMcpWrite(selected, protectedTool, {
+      currencyCode: "EUR",
+    })).rejects.toMatchObject({ code: "MCP_STEP_UP_REQUIRED" });
+    expect(mcpToolAuthorizationMetadata(selected, partyTool)).toMatchObject({
+      "finlynq/actionClass": "PARTY",
+      "finlynq/approvalRequirement": "NOT_REQUIRED",
+      "finlynq/mfaRequirement": "NOT_REQUIRED",
+      "finlynq/mfaDecision": "NOT_REQUIRED",
+    });
   });
 
   it("intersects OAuth scope, group mode, and live role permissions", () => {

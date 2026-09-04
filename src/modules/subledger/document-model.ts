@@ -84,12 +84,35 @@ export const SETTLEMENT_KIND_POLICY: Readonly<Record<SettlementDocumentKind, Rea
   },
 };
 
-export const fxSnapshotSchema = z.object({
+export const fxInputSchema = z.object({
   rate: positiveRateSchema,
   source: z.string().trim().min(1).max(100),
   effectiveAt: z.iso.datetime({ offset: true }),
   quoteConvention: z.literal("FUNCTIONAL_UNITS_PER_TRANSACTION_UNIT")
     .default("FUNCTIONAL_UNITS_PER_TRANSACTION_UNIT"),
+}).strict();
+
+const fxProvenanceSchema = z.object({
+  mode: z.enum(["FUNCTIONAL", "ORGANIZATION_RATE", "EXPLICIT"]),
+  asOfDate: z.iso.date(),
+  resolvedAt: z.iso.datetime({ offset: true }),
+  policyKey: z.string().trim().min(1).max(100),
+  policyVersion: z.number().int().positive(),
+  organizationRateId: z.uuid().optional(),
+  rateRecordedAt: z.iso.datetime({ offset: true }).optional(),
+}).strict().superRefine((value, context) => {
+  const stored = value.mode === "ORGANIZATION_RATE";
+  if (stored !== Boolean(value.organizationRateId) || stored !== Boolean(value.rateRecordedAt)) {
+    context.addIssue({
+      code: "custom",
+      message: "Stored organization FX provenance requires its rate identity and recorded time",
+    });
+  }
+});
+
+export const fxSnapshotSchema = fxInputSchema.extend({
+  // Optional only so immutable snapshots written before server-side resolution remain readable.
+  provenance: fxProvenanceSchema.optional(),
 }).strict();
 
 export const taxInputSchema = z.object({
@@ -137,11 +160,15 @@ export const businessDocumentInputSchema = z.object({
   lines: z.array(businessDocumentLineInputSchema).min(1).max(200),
 }).strict();
 
-export const createBusinessDocumentSchema = businessDocumentInputSchema.extend({
+const businessDocumentRequestSchema = businessDocumentInputSchema.extend({
+  fx: fxInputSchema.optional(),
+}).strict();
+
+export const createBusinessDocumentSchema = businessDocumentRequestSchema.extend({
   idempotencyKey: idempotencyKeySchema,
 }).strict();
 
-export const editBusinessDocumentSchema = businessDocumentInputSchema.extend({
+export const editBusinessDocumentSchema = businessDocumentRequestSchema.extend({
   expectedVersion: z.number().int().positive(),
   idempotencyKey: idempotencyKeySchema,
 }).strict();
@@ -181,7 +208,7 @@ export const recordSettlementSchema = z.object({
   settlementDate: z.iso.date(),
   currency: z.string().trim().toUpperCase().regex(/^[A-Z]{3}$/),
   amount: positiveAmountSchema,
-  fx: fxSnapshotSchema,
+  fx: fxInputSchema.optional(),
   bankAccountCombinationId: z.uuid().optional(),
   settlementAccountCombinationId: z.uuid().optional(),
   settlementMethod: settlementMethodSchema.optional(),
@@ -191,6 +218,11 @@ export const recordSettlementSchema = z.object({
   description: z.string().trim().min(1).max(500),
   allocations: z.array(settlementAllocationInputSchema).min(1).max(200),
   idempotencyKey: idempotencyKeySchema,
+}).strict().superRefine(validateSettlementFunding);
+
+export const resolvedSettlementSchema = z.object({
+  ...recordSettlementSchema.shape,
+  fx: fxSnapshotSchema,
 }).strict().superRefine(validateSettlementFunding);
 
 export const voidSettlementSchema = z.object({
@@ -339,6 +371,7 @@ export const subledgerSourceSnapshotSchema = z.discriminatedUnion("kind", [
 
 export type BusinessDocumentInput = z.infer<typeof businessDocumentInputSchema>;
 export type BusinessDocumentSnapshot = z.infer<typeof businessDocumentSnapshotSchema>;
+export type ResolvedSettlementInput = z.infer<typeof resolvedSettlementSchema>;
 export type SettlementDocumentSnapshot = z.infer<typeof settlementDocumentSnapshotSchema>;
 export type SubledgerSourceSnapshot = z.infer<typeof subledgerSourceSnapshotSchema>;
 

@@ -2,6 +2,7 @@ import "server-only";
 
 import { z } from "zod";
 import { PERMISSIONS } from "@/modules/identity/permissions";
+import { mutationContext } from "@/modules/workspace/write-policy";
 import {
   accountCombinationConfigurationSchema,
   addSegmentValue,
@@ -91,7 +92,14 @@ export const SETUP_MCP_TOOLS: readonly McpToolDefinition[] = [
     invoke: (args, runtime) => loadTenantPartyDirectory(runtime.sessionPrincipal, args.search, args.page),
   }),
   defineMcpTool({
-    policy: { name: "finlynq_setup_create_party", group: "SETUP", access: "WRITE", permission: PERMISSIONS.manageParties },
+    policy: {
+      name: "finlynq_setup_create_party",
+      group: "SETUP",
+      access: "WRITE",
+      permission: PERMISSIONS.manageParties,
+      actionClass: "PARTY",
+      mfaRequirement: "NOT_REQUIRED",
+    },
     title: "Create customer or supplier",
     description: "Create an encrypted, idempotent party and optionally its first customer/supplier account and address. Party numbers and account numbers are organization-scoped business identifiers.",
     inputSchema: createPartySchema,
@@ -235,7 +243,13 @@ export const SETUP_MCP_TOOLS: readonly McpToolDefinition[] = [
     invoke: (args, runtime) => {
       const possible = [PERMISSIONS.closePeriod, PERMISSIONS.reopenPeriod, PERMISSIONS.sealPeriod];
       if (!possible.some((permission) => runtime.snapshot.permissions.has(permission))) throw new Error("A fiscal-period control permission is required");
-      return transitionFiscalPeriod({ context: mcpMutationContext(runtime.principal, runtime.requestId, args.reason), periodId: args.periodId, expectedVersion: args.expectedVersion, toState: args.toState, idempotencyKey: args.idempotencyKey });
+      return transitionFiscalPeriod({
+        context: mutationContext(runtime.sessionPrincipal, runtime.requestId, { reason: args.reason, sourceSurface: "MCP" }),
+        periodId: args.periodId,
+        expectedVersion: args.expectedVersion,
+        toState: args.toState,
+        idempotencyKey: args.idempotencyKey,
+      });
     },
   }),
   defineMcpTool({

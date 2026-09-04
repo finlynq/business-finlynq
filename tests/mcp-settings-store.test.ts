@@ -174,6 +174,30 @@ describe("MCP settings authorization persistence", () => {
     );
   });
 
+  it("approves ordinary supplier creation without attaching browser MFA delegation", async () => {
+    mocks.hasRecentStepUp.mockReturnValue(false);
+    mocks.query
+      .mockResolvedValueOnce({ rows: [{ tool_name: "finlynq_setup_create_party" }] })
+      .mockResolvedValueOnce({ rows: [{ id: approvalId }] });
+
+    await expect(decideMcpApproval(principal, {
+      approvalId,
+      decision: "APPROVED",
+    })).resolves.toBe(true);
+
+    expect(mocks.query).toHaveBeenLastCalledWith(
+      expect.stringContaining("mfa_session_id = $5"),
+      [
+        "APPROVED",
+        principal.organizationId,
+        principal.userId,
+        approvalId,
+        null,
+        null,
+      ],
+    );
+  });
+
   it("never attaches MFA delegation to rejection and refuses missing or expired approvals", async () => {
     mocks.query
       .mockResolvedValueOnce({ rows: [{ tool_name: "finlynq_setup_configure_currency" }] })

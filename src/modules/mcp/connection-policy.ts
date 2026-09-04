@@ -15,6 +15,8 @@ import {
 } from "./protocol";
 
 export type McpToolAccess = "READ" | "WRITE";
+export type McpActionClass = "PARTY";
+export type McpMfaRequirement = "NOT_REQUIRED" | "REQUIRED";
 
 export type McpToolPolicy = Readonly<{
   name: string;
@@ -22,6 +24,8 @@ export type McpToolPolicy = Readonly<{
   access: McpToolAccess;
   permission?: Permission;
   permissionsAny?: readonly Permission[];
+  actionClass?: McpActionClass;
+  mfaRequirement?: McpMfaRequirement;
 }>;
 
 export type McpAuthorizationSnapshot = Readonly<{
@@ -140,7 +144,39 @@ export function intersectMcpScopes(tokenScopes: readonly string[], connectionSco
 }
 
 export function mcpToolNameRequiresStepUp(toolName: string): boolean {
+  if (toolName === "finlynq_setup_create_party") return false;
   return toolName.startsWith("finlynq_setup_") || toolName === "finlynq_daily_transition_bank_reconciliation";
+}
+
+export function mcpToolRequiresStepUp(tool: McpToolPolicy): boolean {
+  if (tool.mfaRequirement === "NOT_REQUIRED") {
+    return !(tool.name === "finlynq_setup_create_party" && tool.actionClass === "PARTY");
+  }
+  if (tool.mfaRequirement === "REQUIRED") return true;
+  return mcpToolNameRequiresStepUp(tool.name);
+}
+
+export function mcpToolAuthorizationMetadata(
+  snapshot: McpAuthorizationSnapshot,
+  tool: McpToolPolicy,
+): Readonly<Record<string, string | boolean>> {
+  if (tool.access !== "WRITE") return {};
+  const mode = effectiveToolMode(snapshot, tool);
+  return {
+    "finlynq/approvalRequirement": mode === "CONFIRM_WRITES" ? "PER_ACTION" : "NOT_REQUIRED",
+    ...(tool.actionClass ? { "finlynq/actionClass": tool.actionClass } : {}),
+    ...(tool.mfaRequirement ? {
+      "finlynq/mfaRequirement": tool.mfaRequirement,
+      "finlynq/mfaDecision": tool.mfaRequirement === "NOT_REQUIRED"
+        ? "NOT_REQUIRED"
+        : mode === "CONFIRM_WRITES"
+          ? "REQUIRED_AT_APPROVAL"
+          : snapshot.directWriteStepUpExpiresAt &&
+              snapshot.directWriteStepUpExpiresAt.getTime() > Date.now()
+            ? "SATISFIED"
+            : "STEP_UP_REQUIRED",
+    } : {}),
+  };
 }
 
 export function effectiveToolMode(
@@ -193,7 +229,7 @@ export async function authorizeMcpWrite(
   requestUrl?: string,
 ): Promise<McpWriteAuthorization> {
   const mode = effectiveToolMode(snapshot, tool);
-  const requiresStepUp = mcpToolNameRequiresStepUp(tool.name);
+  const requiresStepUp = mcpToolRequiresStepUp(tool);
   if (mode === "ALLOW_WRITES") {
     if (!requiresStepUp) return { allowed: true };
     if (!snapshot.directWriteSessionId || !snapshot.directWriteStepUpExpiresAt ||

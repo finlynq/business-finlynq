@@ -298,11 +298,193 @@ describe("AR/AP service command boundary", () => {
     );
   });
 
+  it("returns FX_RATE_UNAVAILABLE before persisting an AUTO draft without a direct rate", async () => {
+    const autoDraft = {
+      ...draftCommand,
+      sourceNumber: "INV-USD-NO-RATE",
+      currency: "USD",
+      fx: undefined,
+      idempotencyKey: "invoice-usd-no-rate",
+    };
+    const query = vi.fn(async (statement: string) => {
+      if (statement.includes("pg_advisory_xact_lock")) return { rows: [] };
+      if (statement.includes("FROM source_documents") && statement.includes("idempotency_key")) {
+        return { rows: [] };
+      }
+      if (statement.includes("FROM source_documents") && statement.includes("ORDER BY version DESC")) {
+        return { rows: [] };
+      }
+      if (statement.includes("FROM ledgers ledger")) {
+        return { rows: [{
+          functional_currency: "CAD",
+          period_state: "OPEN",
+          starts_on: "2026-08-01",
+          ends_on: "2026-08-31",
+          party_role: "CUSTOMER",
+          control_account_id: "10000000-0000-4000-8000-000000000015",
+          party_currency: "USD",
+        }] };
+      }
+      if (statement.includes("FROM currency_exchange_rates rate")) return { rows: [] };
+      throw new Error(`Unexpected unavailable FX SQL: ${statement}`);
+    });
+    transactionMocks.withTenantTransaction.mockImplementation(async (
+      _context: unknown,
+      work: (client: PoolClient) => Promise<unknown>,
+    ) => work({ query } as unknown as PoolClient));
+
+    await expect(createBusinessDocumentDraft(autoDraft)).rejects.toMatchObject({
+      code: "FX_RATE_UNAVAILABLE",
+      transactionCurrency: "USD",
+      functionalCurrency: "CAD",
+      asOfDate: autoDraft.accountingDate,
+    });
+    expect(query.mock.calls.some(([statement]) => statement.includes("INSERT INTO"))).toBe(false);
+  });
+
+  it("resolves and freezes a stored direct FX rate when a supplier bill omits FX", async () => {
+    const controlAccountId = "10000000-0000-4000-8000-000000000015";
+    const rateId = "10000000-0000-4000-8000-000000000016";
+    const autoDraft = {
+      ...draftCommand,
+      kind: "SUPPLIER_BILL" as const,
+      sourceNumber: "BILL-USD-AUTO-1",
+      currency: "USD",
+      fx: undefined,
+      taxAccountCombinationId: undefined,
+      description: "USD supplier services",
+      lines: [{
+        description: "USD supplier services",
+        accountCombinationId: settlement.realizedFxLossAccountCombinationId,
+        netAmount: "21.77",
+        tax: {
+          packKey: "generic.unsupported",
+          category: "OUT_OF_SCOPE" as const,
+          destinationCountry: "CA",
+          destinationRegion: "ON",
+          evidenceReference: "Foreign supplier invoice with no Canadian tax",
+        },
+      }],
+      idempotencyKey: "bill-usd-auto-1",
+    };
+    const query = vi.fn(async (statement: string, parameters?: readonly unknown[]) => {
+      if (statement.includes("pg_advisory_xact_lock")) return { rows: [] };
+      if (statement.includes("FROM source_documents") && statement.includes("idempotency_key")) {
+        return { rows: [] };
+      }
+      if (statement.includes("FROM source_documents") && statement.includes("ORDER BY version DESC")) {
+        return { rows: [] };
+      }
+      if (statement.includes("FROM ledgers ledger")) {
+        return { rows: [{
+          functional_currency: "CAD",
+          period_state: "OPEN",
+          starts_on: "2026-08-01",
+          ends_on: "2026-08-31",
+          party_role: "SUPPLIER",
+          control_account_id: controlAccountId,
+          party_currency: "USD",
+        }] };
+      }
+      if (statement.includes("FROM currency_exchange_rates rate")) {
+        expect(parameters).toEqual([context.organizationId, "USD", "CAD", autoDraft.accountingDate]);
+        return { rows: [{
+          id: rateId,
+          source_currency: "USD",
+          target_currency: "CAD",
+          rate: "1.370000000000000000",
+          effective_at: "2026-08-26T16:30:00.000Z",
+          source: "Approved daily close",
+          created_at: "2026-08-26T17:00:00.000Z",
+          resolved_at: "2026-08-27T09:15:00.000Z",
+        }] };
+      }
+      if (statement.includes("FROM account_combinations combination")) {
+        return { rows: [
+          {
+            id: autoDraft.controlAccountCombinationId,
+            account_id: controlAccountId,
+            account_class: "LIABILITY",
+            control_kind: "AP",
+          },
+          {
+            id: autoDraft.lines[0].accountCombinationId,
+            account_id: "10000000-0000-4000-8000-000000000017",
+            account_class: "EXPENSE",
+            control_kind: "NONE",
+          },
+        ] };
+      }
+      if (statement.includes("FROM tax_pack_versions")) {
+        return { rows: [{
+          id: "c187ece1-a853-49b5-98a0-69f68b45463a",
+          pack_key: "generic.unsupported",
+          version: "2026.08.27",
+          effective_from: "2000-01-01",
+          effective_to: null,
+        }] };
+      }
+      if (statement.includes("INSERT INTO source_documents")) {
+        return { rows: [{
+          id: parameters?.[0],
+          organization_id: parameters?.[1],
+          legal_entity_id: parameters?.[2],
+          owner_module: parameters?.[3],
+          source_type: parameters?.[4],
+          source_number: parameters?.[5],
+          version: parameters?.[6],
+          status: parameters?.[7],
+          snapshot: JSON.parse(String(parameters?.[8])),
+          content_hash: parameters?.[9],
+          command_hash: parameters?.[11],
+          supersedes_source_document_id: parameters?.[12],
+          void_reason: parameters?.[14],
+          created_by: parameters?.[13],
+          created_at: "2026-08-27T09:15:00.000Z",
+        }] };
+      }
+      throw new Error(`Unexpected AUTO FX draft SQL: ${statement}`);
+    });
+    transactionMocks.withTenantTransaction.mockImplementation(async (
+      _context: unknown,
+      work: (client: PoolClient) => Promise<unknown>,
+    ) => work({ query } as unknown as PoolClient));
+
+    const result = await createBusinessDocumentDraft(autoDraft);
+
+    expect(result).toMatchObject({
+      idempotentReplay: false,
+      document: {
+        ownerModule: "payables",
+        status: "DRAFT",
+        snapshot: {
+          currency: "USD",
+          functionalCurrency: "CAD",
+          grossTotal: "21.77",
+          grossFunctional: "29.82",
+          fx: {
+            rate: "1.37",
+            source: "Approved daily close",
+            effectiveAt: "2026-08-26T16:30:00.000Z",
+            provenance: {
+              mode: "ORGANIZATION_RATE",
+              asOfDate: autoDraft.accountingDate,
+              organizationRateId: rateId,
+              policyKey: "STORED_DIRECT_LATEST_EFFECTIVE_UTC_DATE",
+              policyVersion: 1,
+            },
+          },
+        },
+      },
+    });
+  });
+
   it("persists a multi-item settlement and its journal lines with one batch insert each", async () => {
     const secondOpenItemId = "10000000-0000-4000-8000-000000000014";
     const controlAccountId = "10000000-0000-4000-8000-000000000015";
     const batchedSettlement = {
       ...settlement,
+      fx: undefined,
       allocations: [
         { openItemId: settlement.allocations[0].openItemId, transactionAmount: "50.00" },
         { openItemId: secondOpenItemId, transactionAmount: "50.00" },
@@ -440,7 +622,19 @@ describe("AR/AP service command boundary", () => {
       batchedSettlement.controlAccountCombinationId,
     ]);
     expect(transactionMocks.postJournalInTransaction).toHaveBeenCalledTimes(1);
-    expect(result).toMatchObject({ idempotentReplay: false, journalNumber: 812 });
+    expect(result).toMatchObject({
+      idempotentReplay: false,
+      journalNumber: 812,
+      document: {
+        snapshot: {
+          fx: {
+            rate: "1",
+            source: "FUNCTIONAL",
+            provenance: { mode: "FUNCTIONAL", asOfDate: batchedSettlement.settlementDate },
+          },
+        },
+      },
+    });
   });
 
   it("persists every issued-document tax decision in one batch and keeps its journal line linkage", async () => {
