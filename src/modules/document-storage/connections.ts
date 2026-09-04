@@ -8,6 +8,8 @@ import { assertPermission } from "@/modules/subledger/ar-ap-access";
 import { PERMISSIONS } from "@/modules/identity/permissions";
 import { connectStorageSchema, providerSchema, safeFilenamePart, type StorageProvider } from "./model";
 import { CloudDrive, exchangeStorageToken, providerConfiguration, StorageError } from "./provider";
+import { storageAccessPolicy } from "./access-policy";
+import { assertStorageRoot } from "./boundaries";
 import { activeKeyVersion, assertStorageWrite, connectionLocation, decryptStorageValue, encryptStorageValue, loadConnection, realStorageContext, type ConnectionRow } from "./store";
 
 const hash = (value: string) => createHash("sha256").update(value).digest("hex");
@@ -22,7 +24,9 @@ export async function startStorageConnection(principal: SessionPrincipal, input:
     if (command.connectionId) {
       connection = await loadConnection(client, context, command.connectionId, "admin", false);
       if (connection.provider !== command.provider || connection.legal_entity_id !== command.legalEntityId || connection.owner_module !== command.module) throw new StorageError("STORAGE_CONNECTION_CHANGED", "Reconnect using the existing provider, company, and module.");
+      if (!storageAccessPolicy(command.provider).newConnections && !connection.config_ciphertext) throw new StorageError("STORAGE_AUTHORIZATION_UNSUPPORTED", storageAccessPolicy(command.provider).limitation);
     } else {
+      if (!storageAccessPolicy(command.provider).newConnections) throw new StorageError("STORAGE_AUTHORIZATION_UNSUPPORTED", storageAccessPolicy(command.provider).limitation);
       const entity = await client.query("SELECT id FROM legal_entities WHERE organization_id=$1 AND id=$2 AND active", [context.organizationId, command.legalEntityId]);
       if (!entity.rows[0]) throw new StorageError("STORAGE_ENTITY_INVALID", "Select an active company in this organization.");
       await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))", [`storage-setup:${context.organizationId}`]);
@@ -57,6 +61,8 @@ export async function finishStorageConnection(principal: SessionPrincipal, provi
     if (!row) throw new StorageError("STORAGE_OAUTH_EXPIRED", "The connection request expired. Start again from Document storage.");
     const connection = await loadConnection(client, context, row.connection_id, "admin", false);
     if (connection.provider !== provider) throw new StorageError("STORAGE_OAUTH_PROVIDER", "The connection provider does not match.");
+    // Also enforce policy on handoffs started before the current release.
+    if (!storageAccessPolicy(provider).newConnections && !connection.config_ciphertext) throw new StorageError("STORAGE_AUTHORIZATION_UNSUPPORTED", storageAccessPolicy(provider).limitation);
     return { connectionId: connection.id, verifier: z.string().parse(await decryptStorageValue(client, row, "document_storage_oauth", "verifier_ciphertext", row.verifier_ciphertext)) };
   });
   const credentials = await exchangeStorageToken(provider, { code, verifier: handoff.verifier });
@@ -65,10 +71,12 @@ export async function finishStorageConnection(principal: SessionPrincipal, provi
     const row = await loadConnection(client, context, handoff.connectionId, "admin", false);
     if (row.oauth_state_hash !== hash(state)) throw new StorageError("STORAGE_OAUTH_EXPIRED", "This connection request was revoked or superseded. Start a new connection request.");
     const existing = row.config_ciphertext ? await connectionLocation(client, row) : undefined;
+    if (!storageAccessPolicy(provider).newConnections && !existing) throw new StorageError("STORAGE_AUTHORIZATION_UNSUPPORTED", storageAccessPolicy(provider).limitation);
     const location = await new CloudDrive(provider, credentials.accessToken).provision(`FinLynQ-${safeFilenamePart(row.label, 45)}-${row.id}`, existing);
+    await assertStorageRoot(new CloudDrive(provider, credentials.accessToken, location.driveId), location);
     const configCiphertext = await encryptStorageValue(client, row, "document_storage_connections", "config_ciphertext", location);
     const credentialCiphertext = await encryptStorageValue(client, row, "document_storage_connections", "credentials_ciphertext", credentials);
-    await client.query("UPDATE document_storage_connections SET active=true,config_ciphertext=$3,credentials_ciphertext=$4,oauth_state_hash=NULL WHERE organization_id=$1 AND id=$2", [context.organizationId, row.id, configCiphertext, credentialCiphertext]);
+    await client.query("UPDATE document_storage_connections SET active=true,config_ciphertext=$3,credentials_ciphertext=$4,oauth_state_hash=NULL,sync_cursor=NULL WHERE organization_id=$1 AND id=$2", [context.organizationId, row.id, configCiphertext, credentialCiphertext]);
     return { connectionId: row.id };
   });
 }
@@ -87,7 +95,7 @@ export async function listStorageConnections(context: TenantTransactionContext) 
     return Promise.all(rows.map(async (row) => {
       const location = row.config_ciphertext ? await connectionLocation(client, row) : null;
       return { id: row.id, label: row.label, provider: row.provider, module: row.owner_module, legalEntityId: row.legal_entity_id,
-        active: row.active, lastSyncedAt: row.last_synced_at?.toISOString() ?? null, inboxUrl: location?.inboxUrl ?? null, archiveUrl: location?.archiveUrl ?? null };
+        active: row.active, access: storageAccessPolicy(row.provider), lastSyncedAt: row.last_synced_at?.toISOString() ?? null, inboxUrl: location?.inboxUrl ?? null, archiveUrl: location?.archiveUrl ?? null };
     }));
   });
 }

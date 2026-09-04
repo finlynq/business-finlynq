@@ -12,6 +12,7 @@ import { acquireDocumentIdentityLock, currentSourceDocument } from "@/modules/su
 import { archiveName, claimInboxSchema, completeInboxSchema, listInboxSchema, readInboxSchema, reviewInboxSchema, retryFilingSchema, syncInboxSchema } from "./model";
 import { assertStorageWrite, connectedDrive, encryptStorageValue, loadConnection, realStorageContext } from "./store";
 import { StorageError } from "./provider";
+import { assertDirectChild, assertStorageFolder } from "./boundaries";
 import { insertCloudEvidence, validatedCloudBytes } from "./evidence";
 import { documentPage } from "./content";
 import { assertClaim, discoverFile, itemMetadata, itemProcessing, loadInboxItem, type InboxRow } from "./inbox-store";
@@ -22,7 +23,10 @@ export async function syncDocumentInbox(context: TenantTransactionContext, input
     await assertStorageWrite(client, context);
     const connection = await loadConnection(client, context, command.connectionId, "manage");
     const { drive, location } = await connectedDrive(client, connection);
+    await assertStorageFolder(drive, location, location.inboxId, "inbox");
     const page = await drive.children(location.inboxId, connection.sync_cursor);
+    await assertStorageFolder(drive, location, location.inboxId, "inbox");
+    for (const file of page.files) assertDirectChild(file, location.inboxId);
     const items = [];
     for (const file of page.files) {
       const row = await discoverFile(client, context, connection, file);
@@ -62,6 +66,7 @@ export async function readInboxDocument(context: TenantTransactionContext, input
     const { drive, location } = await connectedDrive(client, connection);
     const file = await drive.file(row.provider_file_id);
     if (file.version !== row.content_version || file.parentId !== location.inboxId) throw new StorageError("STORAGE_CONTENT_CHANGED", "The inbox document changed or moved. Sync before reading it again.");
+    await assertStorageFolder(drive, location, location.inboxId, "inbox");
     const verified = await validatedCloudBytes(drive, file);
     try {
       const duplicates = (await client.query<{ id: string; source_document_id: string | null }>("SELECT id,source_document_id FROM document_inbox_items WHERE organization_id=$1 AND sha256=$2 AND id<>$3 AND completion_hash IS NOT NULL LIMIT 20", [context.organizationId, verified.sha256, row.id])).rows;
@@ -106,6 +111,7 @@ export async function completeInboxDocument(context: TenantTransactionContext, i
     const { drive, location } = await connectedDrive(client, connection);
     const file = await drive.file(row.provider_file_id);
     if (file.version !== row.content_version || file.parentId !== location.inboxId) throw new StorageError("STORAGE_CONTENT_CHANGED", "The source changed or moved. Sync and read it again.");
+    await assertStorageFolder(drive, location, location.inboxId, "inbox");
     const verified = await validatedCloudBytes(drive, file);
     try {
       if (verified.sha256 !== command.sha256) throw new StorageError("STORAGE_CONTENT_CHANGED", "The document checksum does not match the content you read.");
@@ -171,18 +177,32 @@ export async function retryDocumentFiling(context: TenantTransactionContext, inp
       if (!processing.name || !processing.folders) throw new Error("Archive destination is missing");
       const { drive, location } = await connectedDrive(client, connection);
       let destination = location.archiveId;
-      for (const segment of processing.folders) destination = await drive.folder(destination, segment);
+      await assertStorageFolder(drive, location, destination, "archive");
+      for (const segment of processing.folders) {
+        if (!segment || /[\\/\x00-\x1f]/.test(segment) || segment === "." || segment === "..") throw new StorageError("STORAGE_FOLDER_BOUNDARY", "The saved archive path is invalid.");
+        const child = await drive.folder(destination, segment);
+        const folder = await drive.file(child);
+        assertDirectChild(folder, destination);
+        await assertStorageFolder(drive, location, child, "archive");
+        destination = child;
+      }
       const file = await drive.file(row.provider_file_id);
       if (file.parentId !== location.inboxId && !(file.parentId === destination && file.name === processing.name)) throw new StorageError("STORAGE_FILE_MOVED", "The document was moved outside its expected inbox/archive location. Review it in the connected drive.");
       const verified = await validatedCloudBytes(drive, file);
       try {
         if (verified.sha256 !== row.sha256) throw new StorageError("STORAGE_CONTENT_CHANGED", "The original document changed after ingestion. Restore it before retrying filing.");
         let filed = file;
+        await assertStorageFolder(drive, location, file.parentId, file.parentId === location.inboxId ? "inbox" : "archive");
+        await assertStorageFolder(drive, location, destination, "archive");
         if (file.parentId !== destination || file.name !== processing.name) filed = await drive.move(verified.file, destination, processing.name);
+        assertDirectChild(filed, destination);
+        if (filed.id !== file.id || filed.name !== processing.name) throw new StorageError("STORAGE_CONTENT_CHANGED", "The provider did not return the expected archived document.");
         // Detect changes racing the provider move, including providers without conditional rename.
         const after = await drive.download(filed.id);
         try { if (canonicalHashBytes(after) !== row.sha256) throw new StorageError("STORAGE_CONTENT_CHANGED", "The archived document changed during filing. Review the source."); }
         finally { after.fill(0); }
+        assertDirectChild(await drive.file(filed.id), destination);
+        await assertStorageFolder(drive, location, destination, "archive");
         const stored = await encryptStorageValue(client, row, "document_inbox_items", "processing_ciphertext", { ...processing, destinationId: destination, reason: undefined });
         const updated = (await client.query<InboxRow>("UPDATE document_inbox_items SET status='FILED',content_version=$3,processing_ciphertext=$4 WHERE organization_id=$1 AND id=$2 RETURNING *", [context.organizationId, row.id, filed.version, stored])).rows[0];
         return { item: await itemMetadata(client, updated), filingPending: false };

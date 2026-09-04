@@ -28,7 +28,7 @@ validate_revision() {
 }
 
 [[ "$(id -u)" == 0 ]] || fail "run this command as root"
-for command_name in awk bash chmod chown curl date docker env flock git grep id install jq \
+for command_name in awk bash chmod chown curl date docker env flock git grep id install jq sha256sum \
   mktemp mv readlink rm runuser sed sleep sort stat sync uniq; do
   command -v "$command_name" >/dev/null 2>&1 \
     || fail "required command is unavailable: $command_name"
@@ -316,6 +316,41 @@ verify_compose_boundary() {
   done
 }
 
+document_provider_configuration_matches() {
+  local container="$1" rendered="$2" provider setting expected actual source target mounts \
+    expected_digest actual_digest
+  mounts="$(docker inspect --format '{{json .Mounts}}' "$container")" || return 1
+  for provider in GOOGLE MICROSOFT; do
+    for setting in "DOCUMENT_${provider}_CLIENT_ID" "DOCUMENT_${provider}_CLIENT_SECRET_FILE"; do
+      expected="$(jq -r --arg setting "$setting" '.services.app.environment[$setting] // ""' <<<"$rendered")"
+      actual="$(docker inspect --format '{{json .Config.Env}}' "$container" \
+        | jq -r --arg prefix "$setting=" '.[] | select(startswith($prefix)) | ltrimstr($prefix)')" || return 1
+      [[ "$actual" == "$expected" ]] || return 1
+    done
+    target="$(jq -r --arg setting "DOCUMENT_${provider}_CLIENT_SECRET_FILE" '.services.app.environment[$setting] // ""' <<<"$rendered")"
+    # Recovery to a revision predating cloud storage has no provider mounts.
+    if [[ -z "$target" ]] && jq -e --arg id "DOCUMENT_${provider}_CLIENT_ID" --arg secret "DOCUMENT_${provider}_CLIENT_SECRET_FILE" \
+      '.services.app.environment | (has($id) or has($secret)) | not' <<<"$rendered" >/dev/null; then
+      continue
+    fi
+    [[ -n "$target" ]] || return 1
+    source="$(jq -r --arg target "${target##*/}" \
+      '. as $config | .services.app.secrets[] | select((.target // .source) == $target) | $config.secrets[.source].file' <<<"$rendered")"
+    [[ -f "$source" && ! -L "$source" ]] || return 1
+    jq -e --arg source "$source" --arg target "$target" \
+      '[.[] | select(.Source == $source and .Destination == $target and .RW == false)] | length == 1' \
+      <<<"$mounts" >/dev/null || return 1
+    # Detect secret rotation, including atomic replacement of a bind-mounted
+    # file at the same path. Values and digests never enter deployment logs.
+    expected_digest="$(sha256sum -- "$source")" || return 1
+    expected_digest="${expected_digest%% *}"
+    actual_digest="$(docker exec "$container" node -e \
+      'process.stdout.write(require("node:crypto").createHash("sha256").update(require("node:fs").readFileSync(process.argv[1])).digest("hex"))' \
+      "$target" 2>/dev/null)" || return 1
+    [[ "$actual_digest" == "$expected_digest" ]] || return 1
+  done
+}
+
 release_is_accepted() {
   local expected_revision="$1" app_container app_environment actual expected detailed_health \
     public_health rendered hostname require_public setting
@@ -329,6 +364,7 @@ release_is_accepted() {
   [[ "$(docker inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' \
     "$app_container")" == "$expected_revision" ]] || return 1
   rendered="$(compose config --format json)" || return 1
+  document_provider_configuration_matches "$app_container" "$rendered" || return 1
   app_environment="$(docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' \
     "$app_container")" || return 1
   for setting in DEMO_LOGIN_ENABLED DEMO_WRITES_ENABLED ACCOUNT_LOGIN_ENABLED \
@@ -615,6 +651,14 @@ compose build \
 
 deployment_stage=live-apply
 compose up --detach --wait --no-build app
+
+# Compose detects client-ID and mount-path changes. A secret replaced at the
+# same path can retain the old bind mount, so recreate only the app if needed.
+document_app_container="$(compose ps --quiet app)"
+document_rendered="$(compose config --format json)"
+if ! document_provider_configuration_matches "$document_app_container" "$document_rendered"; then
+  compose up --detach --wait --no-deps --no-build --force-recreate app
+fi
 
 if [[ "$(read_environment_value ACCOUNT_LOGIN_ENABLED)" == true ]]; then
   compose --profile auth-email up --detach --wait --no-deps --no-build auth_email_worker

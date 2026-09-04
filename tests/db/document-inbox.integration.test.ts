@@ -8,12 +8,12 @@ import { encryptStorageValue } from "@/modules/document-storage/store";
 import { claimInboxDocument, completeInboxDocument, listDocumentInbox, readInboxDocument, retryDocumentFiling, reviewInboxDocument, syncDocumentInbox } from "@/modules/document-storage/inbox";
 import { downloadDocumentEvidence } from "@/modules/subledger/evidence-service";
 import { uploadInboxDocument } from "@/modules/document-storage/upload";
-import { disconnectStorage, finishStorageConnection, startStorageConnection } from "@/modules/document-storage/connections";
+import { disconnectStorage, finishStorageConnection, listStorageConnections, startStorageConnection } from "@/modules/document-storage/connections";
 import type { SessionPrincipal } from "@/modules/identity/session";
-import type { CloudFile } from "@/modules/document-storage/provider";
+import { exchangeStorageToken, StorageError, type CloudFile } from "@/modules/document-storage/provider";
 
 const cloud = vi.hoisted(() => ({ files: new Map<string, CloudFile>(), bytes: new Map<string, Buffer>(), moveFailsOnce: false, moves: 0,
-  scanFails: false, provisionCalls: 0, uploadFailsOnce: false, uploads: 0 }));
+  scanFails: false, provisionCalls: 0, uploadFailsOnce: false, uploads: 0, movedDuringDownload: "", injectedChild: "" }));
 vi.mock("@/security/evidence-scanner", () => ({ scanEvidence: vi.fn(async () => {
   if (cloud.scanFails) throw new Error("Evidence rejected by malware scanning");
   return { version: "ClamAV inbox-test", scannedAt: new Date().toISOString() };
@@ -23,8 +23,11 @@ vi.mock("@/modules/document-storage/provider", async (original) => {
   return { ...actual, exchangeStorageToken: vi.fn(async () => ({ accessToken: "access", refreshToken: "refresh", expiresAt: Date.now() + 3600000 })),
     CloudDrive: class {
       async file(id: string) { const file = cloud.files.get(id); if (!file) throw new actual.StorageError("STORAGE_MISSING", "Cloud file missing"); return { ...file }; }
-      async children(folder: string) { return { files: [...cloud.files.values()].filter((file) => file.parentId === folder).map((file) => ({ ...file })), cursor: null }; }
-      async download(id: string) { return Buffer.from(cloud.bytes.get(id)!); }
+      async children(folder: string) { return { files: [...cloud.files.values()].filter((file) => file.parentId === folder || file.id === cloud.injectedChild).map((file) => ({ ...file })), cursor: null }; }
+      async download(id: string) {
+        if (cloud.movedDuringDownload === id) cloud.files.set(id, { ...cloud.files.get(id)!, parentId: "outside" });
+        return Buffer.from(cloud.bytes.get(id)!);
+      }
       async findUpload(folder: string, stem: string) { return [...cloud.files.values()].find((file) => file.parentId === folder && file.name.startsWith(stem + ".")) ?? null; }
       async upload(folder: string, name: string, mimeType: string, bytes: Buffer) {
         cloud.uploads += 1; const id = randomUUID(); const file = { id, name, mimeType, size: bytes.length, version: "v1", parentId: folder, folder: false };
@@ -32,7 +35,11 @@ vi.mock("@/modules/document-storage/provider", async (original) => {
         if (cloud.uploadFailsOnce) { cloud.uploadFailsOnce = false; throw new Error("Simulated lost upload response"); }
         return file;
       }
-      async folder(parent: string, name: string) { return `${parent}/${name}`; }
+      async folder(parent: string, name: string) {
+        const id = `${parent}/${name}`;
+        if (!cloud.files.has(id)) cloud.files.set(id, { id, name, parentId: parent, folder: true, mimeType: "folder", size: 0, version: "v1" });
+        return id;
+      }
       async move(file: CloudFile, folder: string, name: string) {
         cloud.moves += 1; const result = { ...file, parentId: folder, name, version: file.version + "-moved" }; cloud.files.set(file.id, result);
         if (cloud.moveFailsOnce) { cloud.moveFailsOnce = false; throw new Error("Simulated lost provider response"); }
@@ -71,6 +78,7 @@ run("cloud inbox PostgreSQL lifecycle", () => {
   const owner = new Pool({ connectionString: process.env.TEST_DATABASE_URL });
   let itemId: string; const claimId = randomUUID(); let complete: Parameters<typeof completeInboxDocument>[1];
   beforeAll(async () => {
+    for (const [id, parentId] of [["root", "drive-root"], ["inbox", "root"], ["archive", "root"]]) cloud.files.set(id, { id, parentId, name: id, folder: true, mimeType: "folder", size: 0, version: "v1" });
     vi.stubEnv("BUSINESS_WRITES_ENABLED", "true");
     vi.stubEnv("DOCUMENT_GOOGLE_CLIENT_ID", "test-client"); vi.stubEnv("DOCUMENT_GOOGLE_CLIENT_SECRET", "test-secret"); vi.stubEnv("DOCUMENT_GOOGLE_CLIENT_SECRET_FILE", ""); vi.stubEnv("APP_ORIGIN", "http://localhost:3000");
     await owner.query("INSERT INTO organizations(id,slug,display_name,active,is_demo,organization_mode,writes_enabled_at) VALUES ($1,$2,'Inbox test',true,false,'REAL',now()),($3,$4,'Other inbox tenant',true,false,'REAL',now())", [ids.org, `inbox-${ids.org}`, ids.other, `inbox-${ids.other}`]);
@@ -171,20 +179,102 @@ run("cloud inbox PostgreSQL lifecycle", () => {
     const record = (await owner.query("SELECT metadata_ciphertext,upload_hash FROM document_inbox_items WHERE id=$1", [saved.item.id])).rows[0];
     expect(record.metadata_ciphertext).not.toContain(command.contentBase64); expect(record.upload_hash).toMatch(/^[a-f0-9]{64}$/);
   });
+  it("rejects new broad Google grants while retaining legacy connection metadata", async () => {
+    const command = { provider: "GOOGLE_DRIVE" as const, legalEntityId: ids.entity, module: "payables" as const, label: "Another inbox", sharedWithOrganization: true as const, accessAcknowledged: true as const };
+    const before = (await owner.query("SELECT count(*)::int AS n FROM document_storage_connections WHERE organization_id=$1", [ids.org])).rows[0].n;
+    await expect(startStorageConnection(principal, command)).rejects.toMatchObject({ code: "STORAGE_AUTHORIZATION_UNSUPPORTED" });
+    expect((await owner.query("SELECT count(*)::int AS n FROM document_storage_connections WHERE organization_id=$1", [ids.org])).rows[0].n).toBe(before);
+    expect((await listStorageConnections(requestContext()))[0].access.mode).toBe("GOOGLE_LEGACY_DRIVE");
+  });
+  it("rejects unexpected children before recording metadata and discovers later external drops", async () => {
+    const outside = addFile("outside.png"); cloud.files.set(outside, { ...cloud.files.get(outside)!, parentId: "outside" });
+    cloud.injectedChild = outside;
+    try { await expect(syncDocumentInbox(requestContext(), { connectionId: ids.connection })).rejects.toThrow(/outside/); }
+    finally { cloud.injectedChild = ""; }
+    expect((await owner.query("SELECT id FROM document_inbox_items WHERE provider_file_id=$1", [outside])).rows).toEqual([]);
+    const late = await discover("added-directly-in-drive.png"); expect(late.status).toBe("PENDING");
+  });
+  it("rejects a source moved during reading even if its contents and version stay the same", async () => {
+    const item = await discover("moved-during-read.png"); const claim = randomUUID();
+    await claimInboxDocument(requestContext(), { itemId: item.id, claimId: claim });
+    const id = (await owner.query("SELECT provider_file_id FROM document_inbox_items WHERE id=$1", [item.id])).rows[0].provider_file_id;
+    cloud.movedDuringDownload = id;
+    try { await expect(readInboxDocument(requestContext(), { itemId: item.id, claimId: claim })).rejects.toThrow(/moved/); }
+    finally { cloud.movedDuringDownload = ""; }
+  });
+  it("preserves old attachment access while denying moved originals and other organizations", async () => {
+    const row = (await owner.query("SELECT asset_id,source_document_id,provider_file_id FROM document_inbox_items WHERE id=$1", [itemId])).rows[0];
+    const input = { context: requestContext(), assetId: row.asset_id, sourceDocumentId: row.source_document_id };
+    const file = cloud.files.get(row.provider_file_id)!; const inbox = cloud.files.get("inbox")!;
+    cloud.files.delete("inbox");
+    try { expect((await downloadDocumentEvidence(input)).bytes).toEqual(png); }
+    finally { cloud.files.set("inbox", inbox); }
+    cloud.files.set(row.provider_file_id, { ...file, parentId: "outside" });
+    try { await expect(downloadDocumentEvidence(input)).rejects.toThrow(); }
+    finally { cloud.files.set(row.provider_file_id, file); }
+    const other = { ...requestContext(), organizationId: ids.other };
+    expect(await listStorageConnections(other)).toEqual([]);
+    await expect(syncDocumentInbox(other, { connectionId: ids.connection })).rejects.toThrow();
+    await expect(downloadDocumentEvidence({ ...input, context: other })).rejects.toThrow();
+    await expect(disconnectStorage(other, ids.connection)).rejects.toThrow();
+    await expect(startStorageConnection({ ...principal, organizationId: ids.other }, { provider: "GOOGLE_DRIVE", legalEntityId: ids.entity, module: "payables", label: "Purchases", connectionId: ids.connection, sharedWithOrganization: true, accessAcknowledged: true })).rejects.toThrow();
+  });
+  it("rejects moved inboxes and missing archives without creating replacement locations", async () => {
+    const inbox = cloud.files.get("inbox")!; cloud.files.set("inbox", { ...inbox, parentId: "outside" });
+    try { await expect(syncDocumentInbox(requestContext(), { connectionId: ids.connection })).rejects.toThrow(/outside/); }
+    finally { cloud.files.set("inbox", inbox); }
+    const row = (await owner.query("SELECT asset_id,source_document_id FROM document_inbox_items WHERE id=$1", [itemId])).rows[0];
+    const archive = cloud.files.get("archive")!; cloud.files.delete("archive");
+    try { await expect(downloadDocumentEvidence({ context: requestContext(), assetId: row.asset_id, sourceDocumentId: row.source_document_id })).rejects.toThrow(/missing/i); }
+    finally { cloud.files.set("archive", archive); }
+  });
+  it("renews expired credentials and surfaces revocation without changing folder identity", async () => {
+    async function expire() {
+      await withTenantTransaction(requestContext(), async (client) => {
+        const value = await encryptStorageValue(client, { id: ids.connection, organization_id: ids.org, key_version: 1 }, "document_storage_connections", "credentials_ciphertext", { accessToken: "expired-test", refreshToken: "test-refresh", expiresAt: 0 });
+        await client.query("UPDATE document_storage_connections SET credentials_ciphertext=$2 WHERE id=$1", [ids.connection, value]);
+      });
+    }
+    await expire(); await syncDocumentInbox(requestContext(), { connectionId: ids.connection });
+    expect(exchangeStorageToken).toHaveBeenCalledWith("GOOGLE_DRIVE", { refreshToken: "test-refresh" });
+    await expire(); vi.mocked(exchangeStorageToken).mockRejectedValueOnce(new StorageError("STORAGE_RECONNECT", "Authorization revoked; reconnect the original account"));
+    await expect(syncDocumentInbox(requestContext(), { connectionId: ids.connection })).rejects.toMatchObject({ code: "STORAGE_RECONNECT" });
+    expect((await listStorageConnections(requestContext()))[0].inboxUrl).toContain("/inbox");
+    await syncDocumentInbox(requestContext(), { connectionId: ids.connection });
+  });
   it("completes a valid browser handoff for the original cloud account", async () => {
-    const started = await startStorageConnection(principal, { provider: "GOOGLE_DRIVE", legalEntityId: ids.entity, module: "payables", label: "Purchases", connectionId: ids.connection, sharedWithOrganization: true });
+    await withTenantTransaction(requestContext(), (client) => client.query("UPDATE document_storage_connections SET sync_cursor='old-cursor' WHERE id=$1", [ids.connection]));
+    const started = await startStorageConnection(principal, { provider: "GOOGLE_DRIVE", legalEntityId: ids.entity, module: "payables", label: "Purchases", connectionId: ids.connection, sharedWithOrganization: true, accessAcknowledged: true });
     const state = new URL(started.authorizationUrl).searchParams.get("state")!;
     expect((await finishStorageConnection(principal, "GOOGLE_DRIVE", state, "code")).connectionId).toBe(ids.connection);
+    expect((await owner.query("SELECT sync_cursor FROM document_storage_connections WHERE id=$1", [ids.connection])).rows[0].sync_cursor).toBeNull();
     await expect(finishStorageConnection(principal, "GOOGLE_DRIVE", state, "code")).rejects.toThrow(/expired/);
     expect(cloud.provisionCalls).toBe(1); cloud.provisionCalls = 0;
   });
   it("binds OAuth state to the session and invalidates it on disconnect", async () => {
-    const started = await startStorageConnection(principal, { provider: "GOOGLE_DRIVE", legalEntityId: ids.entity, module: "payables", label: "Purchases", connectionId: ids.connection, sharedWithOrganization: true });
+    const started = await startStorageConnection(principal, { provider: "GOOGLE_DRIVE", legalEntityId: ids.entity, module: "payables", label: "Purchases", connectionId: ids.connection, sharedWithOrganization: true, accessAcknowledged: true });
     const state = new URL(started.authorizationUrl).searchParams.get("state")!;
     await expect(finishStorageConnection({ ...principal, sessionId: ids.secondSession }, "GOOGLE_DRIVE", state, "code")).rejects.toThrow(/expired/);
     await disconnectStorage(requestContext(), ids.connection);
     await expect(finishStorageConnection(principal, "GOOGLE_DRIVE", state, "code")).rejects.toThrow(/expired|revoked/);
     expect(cloud.provisionCalls).toBe(0);
     await expect(syncDocumentInbox(requestContext(), { connectionId: ids.connection })).rejects.toThrow(/unavailable/);
+  });
+  it("rejects an in-flight new Google handoff from the previous authorization policy", async () => {
+    const connectionId = randomUUID(); const state = randomBytes(32).toString("base64url");
+    const stateHash = createHash("sha256").update(state).digest("hex");
+    await withTenantTransaction(requestContext(), async (client) => {
+      await client.query(`INSERT INTO document_storage_connections(id,organization_id,legal_entity_id,owner_module,provider,label,key_version,created_by,oauth_state_hash)
+        VALUES ($1,$2,$3,'payables','GOOGLE_DRIVE','Pending old handoff',1,$4,$5)`, [connectionId, ids.org, ids.entity, ids.actor, stateHash]);
+      const oauth = { id: randomUUID(), organization_id: ids.org, key_version: 1 };
+      const verifier = await encryptStorageValue(client, oauth, "document_storage_oauth", "verifier_ciphertext", "test-verifier");
+      await client.query(`INSERT INTO document_storage_oauth(id,organization_id,connection_id,actor_id,session_id,state_hash,verifier_ciphertext,key_version,expires_at)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,1,now()+interval '10 minutes')`, [oauth.id, ids.org, connectionId, ids.actor, ids.session, stateHash, verifier]);
+    });
+    vi.mocked(exchangeStorageToken).mockClear();
+    await expect(finishStorageConnection(principal, "GOOGLE_DRIVE", state, "test-code")).rejects.toMatchObject({ code: "STORAGE_AUTHORIZATION_UNSUPPORTED" });
+    expect(exchangeStorageToken).not.toHaveBeenCalled();
+    expect(cloud.provisionCalls).toBe(0);
+    expect((await owner.query("SELECT config_ciphertext,credentials_ciphertext,active FROM document_storage_connections WHERE id=$1", [connectionId])).rows[0]).toEqual({ config_ciphertext: null, credentials_ciphertext: null, active: false });
   });
 });

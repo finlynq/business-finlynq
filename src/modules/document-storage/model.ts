@@ -10,6 +10,7 @@ export const connectStorageSchema = z.object({
   provider: providerSchema, legalEntityId: z.uuid(), module: moduleSchema,
   label: z.string().trim().min(1).max(100), connectionId: z.uuid().optional(),
   sharedWithOrganization: z.literal(true),
+  accessAcknowledged: z.literal(true),
 }).strict();
 export const syncInboxSchema = z.object({ connectionId: z.uuid() }).strict();
 export const uploadInboxSchema = uploadEvidenceSchema.omit({ module: true }).extend({ connectionId: z.uuid() });

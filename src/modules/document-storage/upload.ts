@@ -9,6 +9,7 @@ import { assertStorageWrite, connectedDrive, encryptStorageValue, loadConnection
 import { discoverFile, itemMetadata, type InboxRow } from "./inbox-store";
 import { validatedCloudBytes } from "./evidence";
 import { StorageError } from "./provider";
+import { assertDirectChild, assertStorageFolder } from "./boundaries";
 
 export async function uploadInboxDocument(context: TenantTransactionContext, input: z.input<typeof uploadInboxSchema>) {
   const command = uploadInboxSchema.parse(input);
@@ -29,9 +30,11 @@ export async function uploadInboxDocument(context: TenantTransactionContext, inp
         return { item: await itemMetadata(client, replay), idempotentReplay: true };
       }
       const { drive, location } = await connectedDrive(client, connection);
+      await assertStorageFolder(drive, location, location.inboxId, "inbox");
       const stem = `Upload-${uploadKey}`;
       let file = await drive.findUpload(location.inboxId, stem);
       if (file) {
+        assertDirectChild(file, location.inboxId);
         const existing = await validatedCloudBytes(drive, file);
         try {
           if (existing.sha256 !== command.sha256 || file.mimeType !== command.mimeType || file.size !== command.byteSize) throw new StorageError("STORAGE_UPLOAD_CONFLICT", "The cloud inbox already contains different content for this upload key.");
@@ -40,6 +43,8 @@ export async function uploadInboxDocument(context: TenantTransactionContext, inp
         const extension = { "application/pdf": "pdf", "image/png": "png", "image/jpeg": "jpg" }[command.mimeType];
         file = await drive.upload(location.inboxId, `${stem}.${extension}`, command.mimeType, bytes);
       }
+      assertDirectChild(file, location.inboxId);
+      await assertStorageFolder(drive, location, location.inboxId, "inbox");
       const row = await discoverFile(client, context, connection, file);
       if (!row) throw new Error("The provider did not create a document");
       const metadata = await encryptStorageValue(client, row, "document_inbox_items", "metadata_ciphertext", { name: command.filename });

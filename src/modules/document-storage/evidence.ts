@@ -10,6 +10,7 @@ import { MAX_EVIDENCE_BYTES, uploadEvidenceSchema } from "@/modules/subledger/ev
 import type { EvidenceRow } from "@/modules/subledger/evidence-store";
 import { connectedDrive, loadConnection, type ConnectionRow } from "./store";
 import { CloudDrive, StorageError, type CloudFile } from "./provider";
+import { assertStoredFile } from "./boundaries";
 
 export function supportedCloudFile(file: CloudFile) {
   return !file.folder && file.size > 0 && file.size <= MAX_EVIDENCE_BYTES && uploadEvidenceSchema.shape.mimeType.safeParse(file.mimeType).success;
@@ -24,7 +25,7 @@ export async function validatedCloudBytes(drive: CloudDrive, file: CloudFile) {
     verified.fill(0);
     const scan = await scanEvidence(bytes);
     const latest = await drive.file(file.id);
-    if (latest.version !== file.version || latest.size !== file.size) throw new StorageError("STORAGE_CONTENT_CHANGED", "The document changed during processing. Sync and read it again.");
+    if (latest.id !== file.id || latest.parentId !== file.parentId || latest.mimeType !== file.mimeType || latest.version !== file.version || latest.size !== file.size) throw new StorageError("STORAGE_CONTENT_CHANGED", "The document changed or moved during processing. Sync and read it again.");
     return { bytes, sha256, scan, file: latest };
   } catch (error) { bytes.fill(0); throw error; }
 }
@@ -45,10 +46,15 @@ export async function downloadCloudEvidence(client: PoolClient, context: TenantT
   if (!row.storage_connection_id || !row.provider_file_id) throw new Error("External evidence reference is missing");
   const connection = await loadConnection(client, context, row.storage_connection_id, "read");
   if (connection.owner_module !== row.owner_module) throw new Error("Evidence storage module does not match");
-  const { drive } = await connectedDrive(client, connection);
+  const { drive, location } = await connectedDrive(client, connection);
+  const file = await drive.file(row.provider_file_id);
+  await assertStoredFile(drive, location, file);
   const bytes = await drive.download(row.provider_file_id);
-  if (bytes.length !== row.byte_size || createHash("sha256").update(bytes).digest("hex") !== row.sha256) {
-    bytes.fill(0); throw new StorageError("STORAGE_CONTENT_CHANGED", "The stored attachment has changed in the cloud. Its original integrity could not be verified.");
-  }
-  return bytes;
+  try {
+    if (bytes.length !== row.byte_size || createHash("sha256").update(bytes).digest("hex") !== row.sha256) throw new StorageError("STORAGE_CONTENT_CHANGED", "The stored attachment has changed in the cloud. Its original integrity could not be verified.");
+    const latest = await drive.file(row.provider_file_id);
+    await assertStoredFile(drive, location, latest);
+    if (latest.parentId !== file.parentId || latest.version !== file.version) throw new StorageError("STORAGE_CONTENT_CHANGED", "The attachment moved or changed during download. Retry after checking it in your drive.");
+    return bytes;
+  } catch (error) { bytes.fill(0); throw error; }
 }

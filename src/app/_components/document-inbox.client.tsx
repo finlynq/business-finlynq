@@ -3,11 +3,20 @@ import { useState, type FormEvent } from "react";
 import type { listStorageConnections } from "@/modules/document-storage/connections";
 import type { listDocumentInbox } from "@/modules/document-storage/inbox";
 import type { StorageProvider } from "@/modules/document-storage/model";
+import { storageAccessPolicy } from "@/modules/document-storage/access-policy";
 
 type Connection = Awaited<ReturnType<typeof listStorageConnections>>[number];
 type Inbox = Awaited<ReturnType<typeof listDocumentInbox>>;
 const providerLabel = (provider: string) => provider === "GOOGLE_DRIVE" ? "Google Drive" : "OneDrive";
 const statusLabel: Record<string, string> = { PENDING: "Ready to process", CLAIMED: "Being processed", NEEDS_REVIEW: "Needs review", READY_TO_FILE: "Ready to file", FILED: "Filed", FILING_FAILED: "Filing needs attention" };
+const connectionErrors: Readonly<Record<string, string>> = {
+  failed: "The connection was not completed. Start again and grant the requested access.",
+  "original-account": "Reconnect the original cloud account. Existing attachment locations cannot be replaced with another account.",
+  "folder-unavailable": "The saved connection folder is missing or outside its authorized location. Restore it in your drive and reconnect the original account.",
+  "authorization-expired": "The authorization request expired or access was revoked. Start a fresh connection request with the original account.",
+  "unsupported-access": "New Google connections are unavailable because Google does not provide the required folder-only authorization for automatic inbox discovery.",
+  "excessive-access": "Microsoft returned broader file access than this integration supports. Remove the previous FinLynQ app grant in Microsoft and reconnect with app-folder access only. Removing the grant may affect your other FinLynQ connections.",
+};
 export function DocumentInbox({ initialConnections, initialInbox, entities, permissions, providers, initialOutcome }: {
   initialOutcome?: string;
   initialConnections: Connection[]; initialInbox: Inbox; entities: { id: string; display_name: string }[];
@@ -15,9 +24,10 @@ export function DocumentInbox({ initialConnections, initialInbox, entities, perm
 }) {
   const [connections, setConnections] = useState(initialConnections);
   const [inbox, setInbox] = useState(initialInbox);
-  const [busy, setBusy] = useState(false); const [message, setMessage] = useState(initialOutcome === "connected" ? "Storage connected. Open the inbox folder to add your documents." : ""); const [error, setError] = useState(initialOutcome === "failed" ? "The connection was not completed. Start again and grant the requested access." : "");
+  const [busy, setBusy] = useState(false); const [message, setMessage] = useState(initialOutcome === "connected" ? "Storage connected. Open the inbox folder to add your documents." : ""); const [error, setError] = useState(initialOutcome && Object.hasOwn(connectionErrors, initialOutcome) ? connectionErrors[initialOutcome] : "");
   const [filter, setFilter] = useState(""); const [connectionFilter, setConnectionFilter] = useState("");
-  const [provider, setProvider] = useState<StorageProvider>(providers.find((p) => p.configured)?.provider ?? "GOOGLE_DRIVE");
+  const [provider, setProvider] = useState<StorageProvider>("ONEDRIVE");
+  const [reconnectConsent, setReconnectConsent] = useState<Record<string, boolean>>({});
   const canManage = (connection: Connection) => permissions[connection.module];
   async function request(action: string, input: unknown) {
     const response = await fetch("/api/document-storage", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action, input }) });
@@ -39,7 +49,7 @@ export function DocumentInbox({ initialConnections, initialInbox, entities, perm
   async function connect(event: FormEvent<HTMLFormElement>) {
     event.preventDefault(); const data = new FormData(event.currentTarget);
     await perform(async () => {
-      const result = await request("connect", { provider, legalEntityId: data.get("entity"), module: data.get("module"), label: data.get("label"), sharedWithOrganization: data.get("shared") === "on" });
+      const result = await request("connect", { provider, legalEntityId: data.get("entity"), module: data.get("module"), label: data.get("label"), sharedWithOrganization: data.get("shared") === "on", accessAcknowledged: data.get("access") === "on" });
       window.location.assign(result.authorizationUrl);
     });
   }
@@ -67,16 +77,22 @@ export function DocumentInbox({ initialConnections, initialInbox, entities, perm
         <label><span>Company</span><select name="entity" required>{entities.map((entity) => <option key={entity.id} value={entity.id}>{entity.display_name}</option>)}</select></label>
         <label><span>Documents for</span><select name="module"><option value="payables">Purchases and expenses</option><option value="receivables">Sales invoices</option></select></label>
         <label><span>Connection name</span><input name="label" required maxLength={100} placeholder="Company purchases" /></label>
-        <p className="panel-note full-field">{provider === "GOOGLE_DRIVE" ? "Google requires broad Drive access to discover files you add outside FinLynQ. FinLynQ processes only its configured folders." : "OneDrive access is limited to FinLynQ’s application folder."}</p>
+        <p className="panel-note full-field">{storageAccessPolicy(provider).newConnections ? storageAccessPolicy(provider).description : storageAccessPolicy(provider).limitation}</p>
+        {storageAccessPolicy(provider).newConnections && <>
+          <p className="panel-note full-field">{storageAccessPolicy(provider).limitation} FinLynQ creates a separate connection folder containing Inbox and Archive. Add documents directly to Inbox; files already elsewhere stay where they are. Processing moves only completed originals into Archive, organized by year, month, and document type.</p>
+          <label className="full-field document-sharing-consent"><input type="checkbox" name="access" required /><span>I understand the app-folder access and authorize this Inbox/Archive workflow.</span></label>
+        </>}
         <label className="full-field document-sharing-consent"><input type="checkbox" name="shared" required /><span>I authorize colleagues with access to this company’s selected accounting module to read and process files in this inbox.</span></label>
-        <button className="primary-button" disabled={busy || !entities.length || !providers.find((p) => p.provider === provider)?.configured}>Connect {providerLabel(provider)}</button>
-        {!providers.find((p) => p.provider === provider)?.configured && <p className="panel-note">This provider has not been enabled by the operator yet.</p>}
+        <button className="primary-button" disabled={busy || !entities.length || !storageAccessPolicy(provider).newConnections || !providers.find((p) => p.provider === provider)?.configured}>Connect {providerLabel(provider)}</button>
+        {storageAccessPolicy(provider).newConnections && !providers.find((p) => p.provider === provider)?.configured && <p className="panel-note">FinLynQ’s connection to {providerLabel(provider)} is not enabled yet. Once available, you can sign in with your own account here.</p>}
       </form>
     </section>}
     <section className="panel"><div className="panel-heading"><h2>Connected folders</h2></div>
       {!connections.length && <p>No storage connections yet. An organization administrator can connect a drive above.</p>}
       {connections.map((connection) => <div className="document-connection" key={connection.id}>
         <h3>{connection.label} · {providerLabel(connection.provider)}</h3><p>{entities.find((entity) => entity.id === connection.legalEntityId)?.display_name} · {connection.module === "payables" ? "Purchases" : "Sales"} · {connection.active ? "Connected" : "Disconnected"}</p>
+        <p className="panel-note">{connection.access.description}</p>
+        {permissions.admin && <label className="document-sharing-consent"><input type="checkbox" checked={Boolean(reconnectConsent[connection.id])} onChange={(event) => setReconnectConsent({ ...reconnectConsent, [connection.id]: event.target.checked })} /><span>When reconnecting, I authorize the access described above and continued sharing with this company’s accounting module. Use the original account; the saved folder locations will be retained.</span></label>}
         <div className="document-actions">
           {connection.inboxUrl && <a className="secondary-button" href={connection.inboxUrl} target="_blank" rel="noopener noreferrer">Open inbox folder</a>}
           {connection.archiveUrl && <a className="secondary-button" href={connection.archiveUrl} target="_blank" rel="noopener noreferrer">Open archive</a>}
@@ -85,7 +101,7 @@ export function DocumentInbox({ initialConnections, initialInbox, entities, perm
             <label className="secondary-button">Upload document<input type="file" accept=".pdf,.png,.jpg,.jpeg" disabled={busy} onChange={(event) => { const file = event.currentTarget.files?.[0]; event.currentTarget.value = ""; if (file) void upload(connection.id, file); }} /></label>
           </>}
           {permissions.admin && <>
-            <button className="secondary-button" disabled={busy || !providers.find((p) => p.provider === connection.provider)?.configured} onClick={() => void perform(async () => { const result = await request("connect", { provider: connection.provider, legalEntityId: connection.legalEntityId, module: connection.module, label: connection.label, connectionId: connection.id, sharedWithOrganization: true }); window.location.assign(result.authorizationUrl); })}>Reconnect</button>
+            <button className="secondary-button" disabled={busy || !reconnectConsent[connection.id] || !providers.find((p) => p.provider === connection.provider)?.configured} onClick={() => void perform(async () => { const result = await request("connect", { provider: connection.provider, legalEntityId: connection.legalEntityId, module: connection.module, label: connection.label, connectionId: connection.id, sharedWithOrganization: true, accessAcknowledged: reconnectConsent[connection.id] }); window.location.assign(result.authorizationUrl); })}>Reconnect</button>
             {connection.active && <button className="secondary-button" disabled={busy} onClick={() => void perform(async () => { await request("disconnect", { connectionId: connection.id }); await refresh(); setMessage("Disconnected. Files remain in the cloud account."); })}>Disconnect</button>}
           </>}
         </div><p className="panel-note">Last complete sync: {connection.lastSyncedAt ? new Date(connection.lastSyncedAt).toLocaleString() : "Not yet synced"}</p>
