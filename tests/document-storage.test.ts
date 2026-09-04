@@ -65,6 +65,21 @@ describe("provider network boundaries", () => {
       expect(fetcher.mock.calls[1][1].redirect).toBe("error");
     }
   });
+  it("does not expose a signed download URL when its transport fails", async () => {
+    const location = "https://my.microsoftpersonalcontent.com/download?token=signed-secret";
+    const fetcher = vi.fn().mockResolvedValueOnce(new Response(null, { status: 302, headers: { location } }))
+      .mockRejectedValueOnce(new Error(`Request failed for ${location}`));
+    vi.stubGlobal("fetch", fetcher);
+    const error = await new CloudDrive("ONEDRIVE", "graph-secret", "drive").download("file").catch((caught: unknown) => caught);
+    expect(error).toMatchObject({ code: "STORAGE_PROVIDER_FAILED", message: "The storage provider could not complete this request. Retry later." });
+    expect(String(error)).not.toContain("signed-secret");
+  });
+  it("bounds the redirected response", async () => {
+    const fetcher = vi.fn().mockResolvedValueOnce(new Response(null, { status: 302, headers: { location: "https://my.microsoftpersonalcontent.com/download?token=secret" } }))
+      .mockResolvedValueOnce(new Response("oversize", { headers: { "content-length": "999999999" } }));
+    vi.stubGlobal("fetch", fetcher);
+    await expect(new CloudDrive("ONEDRIVE", "graph-secret", "drive").download("file")).rejects.toMatchObject({ code: "STORAGE_TOO_LARGE" });
+  });
   it("blocks malformed, private, and lookalike download redirects", async () => {
     const locations = [null, "not a URL", "http://127.0.0.1/secrets", "https://onedrive.com.evil.example/secrets", "https://evilonedrive.com/secrets", "https://user@onedrive.com/secrets", "https://onedrive.com:8443/secrets", "https://onedrive.com/secrets#fragment"];
     const drive = new CloudDrive("ONEDRIVE", "secret", "drive");

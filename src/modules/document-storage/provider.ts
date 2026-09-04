@@ -113,7 +113,7 @@ const graphFileSchema = z.object({ id, name: z.string().max(1000), size: z.numbe
   parentReference: z.object({ id: z.string().optional(), driveId: z.string().optional() }).optional(), deleted: z.unknown().optional(), remoteItem: z.unknown().optional() });
 const googleFields = "id,name,mimeType,size,md5Checksum,version,parents,trashed";
 const graphFields = "id,name,size,eTag,cTag,file,folder,parentReference,deleted,remoteItem";
-const microsoftDownloadDomainFamilies = ["sharepoint.com", "1drv.com", "storage.live.com", "onedrive.com", "livefilestore.com"];
+const microsoftDownloadDomainFamilies = ["sharepoint.com", "files.1drv.com", "storage.live.com", "onedrive.com", "livefilestore.com"];
 // Personal OneDrive currently returns this exact host; do not widen it to the parent domain.
 const microsoftDownloadExactHosts = new Set(["my.microsoftpersonalcontent.com"]);
 function microsoftDownloadUrl(location: string | null): URL | null {
@@ -251,9 +251,14 @@ export class CloudDrive {
     const url = microsoftDownloadUrl(response.headers.get("location"));
     await response.body?.cancel();
     if (!url) throw new StorageError("STORAGE_DOWNLOAD_HOST", "The provider returned an unsupported download location.");
-    const download = await fetch(url, { redirect: "error", cache: "no-store", signal: AbortSignal.timeout(20000) });
-    if (!download.ok) await jsonResponse(download);
-    return boundedResponse(download, MAX_EVIDENCE_BYTES);
+    try {
+      const download = await fetch(url, { redirect: "error", cache: "no-store", signal: AbortSignal.timeout(20000) });
+      if (!download.ok) await jsonResponse(download);
+      return await boundedResponse(download, MAX_EVIDENCE_BYTES);
+    } catch (error) {
+      if (error instanceof StorageError) throw error;
+      throw new StorageError("STORAGE_PROVIDER_FAILED", "The storage provider could not complete this request. Retry later.");
+    }
   }
   async findUpload(folderId: string, stem: string): Promise<CloudFile | null> {
     if (!/^Upload-[a-f0-9]{64}$/.test(stem)) throw new Error("Invalid upload identifier");
