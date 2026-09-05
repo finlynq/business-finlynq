@@ -47,6 +47,10 @@ import {
 import { oauthPublicOrigin } from "./protocol";
 import { mcpMutationContext } from "./oauth-store";
 import { defineMcpTool, type McpToolDefinition } from "./tool-types";
+import {
+  configureOrganizationFxProviderPolicy,
+  organizationFxProviderPolicyConfigurationSchema,
+} from "@/modules/fx/provider-policy";
 
 const emptySchema = z.object({}).strict();
 const partyAccountSchema = z.object({
@@ -80,7 +84,7 @@ export const SETUP_MCP_TOOLS: readonly McpToolDefinition[] = [
   defineMcpTool({
     policy: { name: "finlynq_setup_get_configuration", group: "SETUP", access: "READ", permission: PERMISSIONS.readOrganizationSettings },
     title: "Get accounting configuration",
-    description: "Return organization currencies, FX rates, legal entities, ledgers, tax registrations, segments, values, chart accounts, account combinations, and posting policies. Use this before any setup write.",
+    description: "Return organization currencies, FX rates, FX provider policy, legal entities, ledgers, tax registrations, segments, values, chart accounts, account combinations, and posting policies. Use this before any setup write.",
     inputSchema: emptySchema,
     invoke: (_args, runtime) => loadAccountingConfiguration(runtime.sessionPrincipal),
   }),
@@ -169,6 +173,24 @@ export const SETUP_MCP_TOOLS: readonly McpToolDefinition[] = [
     description: "Record a positive date-time-effective organization FX rate with an explicit source. Existing journal FX snapshots are immutable.",
     inputSchema: currencyRateConfigurationSchema,
     invoke: (args, runtime) => recordCurrencyRate({ principal: runtime.sessionPrincipal, requestId: runtime.requestId, ...args }),
+  }),
+  defineMcpTool({
+    policy: {
+      name: "finlynq_setup_configure_fx_provider_policy",
+      group: "SETUP",
+      access: "WRITE",
+      permission: PERMISSIONS.manageOrganizationSettings,
+      mfaRequirement: "REQUIRED",
+    },
+    title: "Configure FX provider policy",
+    description: "Append a new organization FX provider-policy version. STORED_ONLY preserves database-only resolution. YAHOO_FINANCE_EXPERIMENTAL also requires explicit confirmation that the organization is licensed and authorized to use Yahoo Finance data; operator activation is independent, and this tool performs no market-data request.",
+    inputSchema: organizationFxProviderPolicyConfigurationSchema,
+    invoke: (args, runtime) => configureOrganizationFxProviderPolicy({
+      principal: runtime.sessionPrincipal,
+      requestId: runtime.requestId,
+      sourceSurface: "MCP",
+      ...args,
+    }),
   }),
   defineMcpTool({
     policy: { name: "finlynq_setup_create_tax_registration", group: "SETUP", access: "WRITE", permission: PERMISSIONS.manageOrganizationSettings },

@@ -93,19 +93,54 @@ export const fxInputSchema = z.object({
 }).strict();
 
 const fxProvenanceSchema = z.object({
-  mode: z.enum(["FUNCTIONAL", "ORGANIZATION_RATE", "EXPLICIT"]),
+  mode: z.enum(["FUNCTIONAL", "ORGANIZATION_RATE", "PROVIDER_RATE", "EXPLICIT"]),
   asOfDate: z.iso.date(),
   resolvedAt: z.iso.datetime({ offset: true }),
   policyKey: z.string().trim().min(1).max(100),
   policyVersion: z.number().int().positive(),
   organizationRateId: z.uuid().optional(),
   rateRecordedAt: z.iso.datetime({ offset: true }).optional(),
+  providerKey: z.literal("YAHOO_FINANCE_EXPERIMENTAL").optional(),
+  providerSymbol: z.string().regex(/^[A-Z]{3}(?:[A-Z]{3})?=X$/).optional(),
+  providerObservedAt: z.iso.datetime({ offset: true }).optional(),
+  providerRetrievedAt: z.iso.datetime({ offset: true }).optional(),
+  providerResponseSha256: z.string().regex(/^[a-f0-9]{64}$/).optional(),
+  providerMaxLookbackDays: z.number().int().min(1).max(7).optional(),
 }).strict().superRefine((value, context) => {
   const stored = value.mode === "ORGANIZATION_RATE";
-  if (stored !== Boolean(value.organizationRateId) || stored !== Boolean(value.rateRecordedAt)) {
+  const storedEvidence = Boolean(value.organizationRateId) && Boolean(value.rateRecordedAt);
+  if (stored !== storedEvidence
+      || (!stored && (value.organizationRateId !== undefined || value.rateRecordedAt !== undefined))) {
     context.addIssue({
       code: "custom",
       message: "Stored organization FX provenance requires its rate identity and recorded time",
+    });
+  }
+
+  const provider = value.mode === "PROVIDER_RATE";
+  const providerEvidence = value.providerKey !== undefined
+    && value.providerSymbol !== undefined
+    && value.providerObservedAt !== undefined
+    && value.providerRetrievedAt !== undefined
+    && value.providerResponseSha256 !== undefined
+    && value.providerMaxLookbackDays !== undefined;
+  if (provider !== providerEvidence || (provider && value.providerRetrievedAt !== value.resolvedAt)) {
+    context.addIssue({
+      code: "custom",
+      message: "Provider FX provenance requires a complete immutable observation and retrieval record",
+    });
+  }
+  if (!provider && (
+    value.providerKey !== undefined
+    || value.providerSymbol !== undefined
+    || value.providerObservedAt !== undefined
+    || value.providerRetrievedAt !== undefined
+    || value.providerResponseSha256 !== undefined
+    || value.providerMaxLookbackDays !== undefined
+  )) {
+    context.addIssue({
+      code: "custom",
+      message: "Provider FX evidence is only valid for provider-resolved rates",
     });
   }
 });

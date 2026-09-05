@@ -1,6 +1,7 @@
 import {
   bigint,
   boolean,
+  check,
   date,
   foreignKey,
   index,
@@ -13,6 +14,7 @@ import {
   uniqueIndex,
   uuid,
 } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
 import { organizations } from "./identity";
 
 export const accountingProfile = pgEnum("accounting_profile", [
@@ -101,6 +103,56 @@ export const currencyExchangeRates = pgTable(
       table.source,
     ),
     uniqueIndex("currency_exchange_rates_org_id_unique").on(table.organizationId, table.id),
+  ],
+);
+
+export const organizationFxProviderPolicyVersions = pgTable(
+  "organization_fx_provider_policy_versions",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    organizationId: uuid("organization_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "restrict" }),
+    version: integer("version").notNull(),
+    providerMode: text("provider_mode").notNull(),
+    maxLookbackDays: integer("max_lookback_days").notNull(),
+    licensedAndAuthorizedUseAcknowledged: boolean("licensed_and_authorized_use_acknowledged")
+      .notNull()
+      .default(false),
+    reason: text("reason").notNull(),
+    createdBy: uuid("created_by").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("organization_fx_provider_policy_versions_org_version_unique").on(
+      table.organizationId,
+      table.version,
+    ),
+    uniqueIndex("organization_fx_provider_policy_versions_org_id_unique").on(
+      table.organizationId,
+      table.id,
+    ),
+    check(
+      "organization_fx_provider_policy_versions_version_check",
+      sql`${table.version} > 0`,
+    ),
+    check(
+      "organization_fx_provider_policy_versions_provider_check",
+      sql`${table.providerMode} IN ('STORED_ONLY', 'YAHOO_FINANCE_EXPERIMENTAL')`,
+    ),
+    check(
+      "organization_fx_provider_policy_versions_lookback_check",
+      sql`${table.maxLookbackDays} BETWEEN 1 AND 7`,
+    ),
+    check(
+      "organization_fx_provider_policy_versions_acknowledgement_check",
+      sql`(${table.providerMode} = 'STORED_ONLY' AND NOT ${table.licensedAndAuthorizedUseAcknowledged})
+        OR (${table.providerMode} = 'YAHOO_FINANCE_EXPERIMENTAL' AND ${table.licensedAndAuthorizedUseAcknowledged})`,
+    ),
+    check(
+      "organization_fx_provider_policy_versions_reason_check",
+      sql`char_length(btrim(${table.reason})) BETWEEN 8 AND 500`,
+    ),
   ],
 );
 

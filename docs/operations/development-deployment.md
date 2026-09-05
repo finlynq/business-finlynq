@@ -86,6 +86,43 @@ sudo systemctl start business-finlynq-development-deployment.service
 
 The installer refuses provider secrets with unsafe ownership, mode, symlink status, or line structure. The opt-in atomically enables demo and real-account login, signup, email delivery, Turnstile, business writes, bank feeds, and public acceptance. The development deployer compares the running container with the reviewed Compose environment, so a gate or provider-metadata change forces recreation even when the Git revision is unchanged.
 
+## Experimental Yahoo FX gate
+
+Yahoo FX is independent of `--enable-all-features` and defaults off. It uses an
+undocumented Finance chart route whose availability and data rights are not
+established by a Yahoo consumer subscription. Read the
+[FX rate provider runbook](fx-rate-providers.md) and complete its operator
+licensing, retention, display, and attribution review before enabling it.
+
+Enable the operator gate in development and apply the configuration immediately:
+
+```bash
+sudo bash deploy/development/install-development.sh \
+  --enable-yahoo-fx-experimental \
+  --enable
+sudo systemctl start business-finlynq-development-deployment.service
+```
+
+This sets only the deployment-wide `YAHOO_FX_ENABLED` gate. Each organization
+continues to use `STORED_ONLY` until one of its administrators explicitly
+acknowledges and selects `YAHOO_FINANCE_EXPERIMENTAL`. Both gates must be active
+before FinLynQ makes a request. Stored organization rates always have priority.
+
+Disable provider calls and recreate the app at the current reviewed revision:
+
+```bash
+sudo bash deploy/development/install-development.sh \
+  --disable-yahoo-fx \
+  --enable
+sudo systemctl start business-finlynq-development-deployment.service
+```
+
+Disabling the operator gate preserves organization policy, stored rates, and
+immutable historical snapshots. Production remains off by default and has no
+activation procedure in this guide. Provider tests in ordinary CI use mocks;
+optional live checks are non-production, explicitly authorized, and never a
+release-gate dependency.
+
 ## Direct-to-development acceptance and automatic recovery
 
 Every signalled candidate is installed directly on the development stack and validated against `https://dev.business.finlynq.com`; there is no second shadow stack. Public browser acceptance is attempted twice before the candidate is rejected. The PostgreSQL volume remains mounted throughout deployment and recovery.

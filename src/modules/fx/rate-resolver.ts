@@ -2,11 +2,25 @@ import "server-only";
 
 import type { PoolClient } from "pg";
 import { exact } from "@/kernel/money";
+import { readOrganizationFxProviderPolicy } from "@/modules/fx/provider-policy";
+import {
+  fetchYahooFxChartRate,
+  yahooDirectFxSymbol,
+  YahooFxChartError,
+  type YahooFxChartErrorCode,
+  type YahooFxChartObservation,
+} from "@/modules/fx/yahoo-chart-adapter";
 
 export const STORED_DIRECT_FX_POLICY = Object.freeze({
   key: "STORED_DIRECT_LATEST_EFFECTIVE_UTC_DATE",
   version: 1,
 });
+
+export const YAHOO_DIRECT_FX_POLICY = Object.freeze({
+  key: "YAHOO_FINANCE_EXPERIMENTAL_DIRECT_DAILY_CLOSE",
+});
+
+const UTC_DAY_MS = 24 * 60 * 60 * 1_000;
 
 type ExplicitFx = Readonly<{
   rate: string;
@@ -21,14 +35,30 @@ export type ResolvedFx = Readonly<{
   effectiveAt: string;
   quoteConvention: "FUNCTIONAL_UNITS_PER_TRANSACTION_UNIT";
   provenance: Readonly<{
-    mode: "FUNCTIONAL" | "ORGANIZATION_RATE" | "EXPLICIT";
+    mode: "FUNCTIONAL" | "ORGANIZATION_RATE" | "PROVIDER_RATE" | "EXPLICIT";
     asOfDate: string;
     resolvedAt: string;
     policyKey: string;
     policyVersion: number;
     organizationRateId?: string;
     rateRecordedAt?: string;
+    providerKey?: "YAHOO_FINANCE_EXPERIMENTAL";
+    providerSymbol?: string;
+    providerObservedAt?: string;
+    providerRetrievedAt?: string;
+    providerResponseSha256?: string;
+    providerMaxLookbackDays?: number;
   }>;
+}>;
+
+export type FxRateResolverDependencies = Readonly<{
+  yahooFxEnabled?: boolean;
+  fetchYahooFxRate?: (input: Readonly<{
+    enabled: boolean;
+    sourceCurrency: string;
+    targetCurrency: string;
+    asOfDate: string;
+  }>) => Promise<YahooFxChartObservation>;
 }>;
 
 type StoredRateRow = Readonly<{
@@ -48,25 +78,66 @@ function timestamp(value: Date | string, field: string): string {
   return parsed.toISOString();
 }
 
-function provenance(
-  mode: ResolvedFx["provenance"]["mode"],
+function coreProvenance(
+  mode: "FUNCTIONAL" | "EXPLICIT",
   asOfDate: string,
   resolvedAt: string,
-  stored?: Pick<StoredRateRow, "id" | "created_at">,
 ): ResolvedFx["provenance"] {
   return {
     mode,
     asOfDate,
     resolvedAt,
-    policyKey: mode === "ORGANIZATION_RATE"
-      ? STORED_DIRECT_FX_POLICY.key
-      : mode === "FUNCTIONAL" ? "FUNCTIONAL_IDENTITY" : "CALLER_EXPLICIT",
+    policyKey: mode === "FUNCTIONAL" ? "FUNCTIONAL_IDENTITY" : "CALLER_EXPLICIT",
     policyVersion: 1,
-    ...(stored ? {
-      organizationRateId: stored.id,
-      rateRecordedAt: timestamp(stored.created_at, "recorded time"),
-    } : {}),
   };
+}
+
+function storedProvenance(
+  asOfDate: string,
+  resolvedAt: string,
+  stored: Pick<StoredRateRow, "id" | "created_at">,
+): ResolvedFx["provenance"] {
+  return {
+    mode: "ORGANIZATION_RATE",
+    asOfDate,
+    resolvedAt,
+    policyKey: STORED_DIRECT_FX_POLICY.key,
+    policyVersion: STORED_DIRECT_FX_POLICY.version,
+    organizationRateId: stored.id,
+    rateRecordedAt: timestamp(stored.created_at, "recorded time"),
+  };
+}
+
+function canonicalTimestamp(value: string): boolean {
+  const parsed = new Date(value);
+  return !Number.isNaN(parsed.valueOf()) && parsed.toISOString() === value;
+}
+
+function validProviderObservation(
+  observation: YahooFxChartObservation,
+  transactionCurrency: string,
+  functionalCurrency: string,
+  asOfDate: string,
+  maxLookbackDays: number,
+): boolean {
+  const asOfStart = Date.parse(`${asOfDate}T00:00:00.000Z`);
+  const observedAt = Date.parse(observation.observedAt);
+  if (!Number.isFinite(asOfStart)
+      || !Number.isFinite(observedAt)
+      || !Number.isInteger(maxLookbackDays)
+      || maxLookbackDays < 1
+      || maxLookbackDays > 7
+      || !canonicalTimestamp(observation.observedAt)
+      || !canonicalTimestamp(observation.retrievedAt)
+      || observation.symbol !== yahooDirectFxSymbol(transactionCurrency, functionalCurrency)
+      || !/^[a-f0-9]{64}$/.test(observation.rawBodySha256)) return false;
+  try {
+    if (!exact(observation.rate).greaterThan(0)) return false;
+  } catch {
+    return false;
+  }
+  return observedAt >= asOfStart - (maxLookbackDays * UTC_DAY_MS)
+    && observedAt < asOfStart + UTC_DAY_MS;
 }
 
 export class FxRateUnavailableError extends Error {
@@ -76,9 +147,10 @@ export class FxRateUnavailableError extends Error {
     readonly transactionCurrency: string,
     readonly functionalCurrency: string,
     readonly asOfDate: string,
+    readonly providerFailureCode?: YahooFxChartErrorCode,
   ) {
     super(
-      `No approved stored ${transactionCurrency}/${functionalCurrency} FX rate is effective on or before ${asOfDate}. Record a direct organization rate or provide explicit FX evidence.`,
+      `No approved ${transactionCurrency}/${functionalCurrency} FX rate is available for ${asOfDate}. Record a direct organization rate, provide explicit FX evidence, or configure an available provider.`,
     );
     this.name = "FxRateUnavailableError";
   }
@@ -93,6 +165,7 @@ export async function resolveFx(
     asOfDate: string;
     explicitFx?: ExplicitFx;
   }>,
+  dependencies: FxRateResolverDependencies = {},
 ): Promise<ResolvedFx> {
   const transactionCurrency = input.transactionCurrency.trim().toUpperCase();
   const functionalCurrency = input.functionalCurrency.trim().toUpperCase();
@@ -104,7 +177,7 @@ export async function resolveFx(
       rate: exact(input.explicitFx.rate).toFixed(),
       quoteConvention: input.explicitFx.quoteConvention
         ?? "FUNCTIONAL_UNITS_PER_TRANSACTION_UNIT",
-      provenance: provenance("EXPLICIT", input.asOfDate, resolvedAt),
+      provenance: coreProvenance("EXPLICIT", input.asOfDate, resolvedAt),
     };
   }
 
@@ -114,7 +187,7 @@ export async function resolveFx(
       source: "FUNCTIONAL",
       effectiveAt: `${input.asOfDate}T00:00:00.000Z`,
       quoteConvention: "FUNCTIONAL_UNITS_PER_TRANSACTION_UNIT",
-      provenance: provenance("FUNCTIONAL", input.asOfDate, resolvedAt),
+      provenance: coreProvenance("FUNCTIONAL", input.asOfDate, resolvedAt),
     };
   }
 
@@ -140,20 +213,93 @@ export async function resolveFx(
     [input.organizationId, transactionCurrency, functionalCurrency, input.asOfDate],
   );
   const stored = result.rows[0];
-  if (!stored || stored.source_currency !== transactionCurrency
-      || stored.target_currency !== functionalCurrency) {
+  if (stored) {
+    if (stored.source_currency !== transactionCurrency
+        || stored.target_currency !== functionalCurrency) {
+      throw new FxRateUnavailableError(transactionCurrency, functionalCurrency, input.asOfDate);
+    }
+    return {
+      rate: exact(stored.rate).toFixed(),
+      source: stored.source,
+      effectiveAt: timestamp(stored.effective_at, "effective time"),
+      quoteConvention: "FUNCTIONAL_UNITS_PER_TRANSACTION_UNIT",
+      provenance: storedProvenance(
+        input.asOfDate,
+        timestamp(stored.resolved_at, "resolution time"),
+        stored,
+      ),
+    };
+  }
+
+  const policy = await readOrganizationFxProviderPolicy(client, input.organizationId);
+  if (policy.providerMode !== "YAHOO_FINANCE_EXPERIMENTAL"
+      || !policy.licensedAndAuthorizedUseAcknowledged) {
     throw new FxRateUnavailableError(transactionCurrency, functionalCurrency, input.asOfDate);
   }
-  return {
-    rate: exact(stored.rate).toFixed(),
-    source: stored.source,
-    effectiveAt: timestamp(stored.effective_at, "effective time"),
-    quoteConvention: "FUNCTIONAL_UNITS_PER_TRANSACTION_UNIT",
-    provenance: provenance(
-      "ORGANIZATION_RATE",
+
+  const yahooEnabled = dependencies.yahooFxEnabled
+    ?? process.env.YAHOO_FX_ENABLED === "true";
+  if (!yahooEnabled) {
+    throw new FxRateUnavailableError(
+      transactionCurrency,
+      functionalCurrency,
       input.asOfDate,
-      timestamp(stored.resolved_at, "resolution time"),
-      stored,
-    ),
+      "YAHOO_FX_DISABLED",
+    );
+  }
+
+  let providerRate: YahooFxChartObservation;
+  try {
+    const fetchRate = dependencies.fetchYahooFxRate ?? ((request) => (
+      fetchYahooFxChartRate(request)
+    ));
+    providerRate = await fetchRate({
+      enabled: true,
+      sourceCurrency: transactionCurrency,
+      targetCurrency: functionalCurrency,
+      asOfDate: input.asOfDate,
+    });
+  } catch (error) {
+    throw new FxRateUnavailableError(
+      transactionCurrency,
+      functionalCurrency,
+      input.asOfDate,
+      error instanceof YahooFxChartError ? error.code : "YAHOO_FX_NETWORK_ERROR",
+    );
+  }
+
+  if (!Number.isInteger(policy.version) || policy.version <= 0 || !validProviderObservation(
+    providerRate,
+    transactionCurrency,
+    functionalCurrency,
+    input.asOfDate,
+    policy.maxLookbackDays,
+  )) {
+    throw new FxRateUnavailableError(
+      transactionCurrency,
+      functionalCurrency,
+      input.asOfDate,
+      "YAHOO_FX_OBSERVATION_UNAVAILABLE",
+    );
+  }
+
+  return {
+    rate: exact(providerRate.rate).toDecimalPlaces(18).toFixed(),
+    source: "Yahoo Finance / ICE Data Services",
+    effectiveAt: providerRate.observedAt,
+    quoteConvention: "FUNCTIONAL_UNITS_PER_TRANSACTION_UNIT",
+    provenance: {
+      mode: "PROVIDER_RATE",
+      asOfDate: input.asOfDate,
+      resolvedAt: providerRate.retrievedAt,
+      policyKey: YAHOO_DIRECT_FX_POLICY.key,
+      policyVersion: policy.version,
+      providerKey: "YAHOO_FINANCE_EXPERIMENTAL",
+      providerSymbol: providerRate.symbol,
+      providerObservedAt: providerRate.observedAt,
+      providerRetrievedAt: providerRate.retrievedAt,
+      providerResponseSha256: providerRate.rawBodySha256,
+      providerMaxLookbackDays: policy.maxLookbackDays,
+    },
   };
 }

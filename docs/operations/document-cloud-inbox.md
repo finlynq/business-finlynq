@@ -35,7 +35,7 @@ For any future selected-root model, first define whether the selected folder its
 
 ## Enable supported providers
 
-Use the [development setup guide](document-cloud-inbox-development-setup.md) for exact dev values. The app includes Poppler for in-memory PDF reading and requires a working ClamAV scanner. Existing migrations through `0044_storage_oauth_revocation` and runtime grants are unchanged by this update.
+Use the [development setup guide](document-cloud-inbox-development-setup.md) for exact dev values. The app includes Poppler for in-memory PDF reading and requires a working ClamAV scanner. Document-storage migrations run through `0044_storage_oauth_revocation`; the separate FX provider policy is added by `0045_organization_fx_provider_policy`.
 
 | Provider | Configuration | Authorization use |
 | --- | --- | --- |
@@ -71,24 +71,22 @@ Completion uses the existing accounting validation, tax/FX rules, source history
 
 ## Foreign-currency drafts
 
-Invoice and settlement requests may omit `fx`. FinLynQ then selects the latest
-enabled, organization-owned direct rate from transaction currency to functional
-currency whose UTC effective date is on or before the accounting date (or the
-settlement date for receipts and payments). Ties are resolved by effective time,
-recorded time, and rate ID. The selected rate ID, source, effective time, lookup
-time, and resolver policy version are frozen in the immutable document snapshot.
-Replaying the same idempotency key returns that snapshot even if a newer rate is
-recorded later.
+Invoice and settlement requests may omit `fx`. FinLynQ selects the latest
+eligible, organization-owned direct rate first. Organizations default to
+`STORED_ONLY`; an experimental Yahoo lookup is considered only when both the
+organization administrator and the deployment operator have explicitly enabled
+it. Yahoo observations must be for the exact transaction-to-functional pair and
+the requested UTC date or within the organization's configured lookback of one
+to seven calendar days. FinLynQ does not invert, triangulate, use hardcoded
+rates, or accept an unbounded stale provider fallback.
 
-This release does not fetch rates from the internet, invert a pair, calculate a
-cross-rate, or guess. If no eligible direct rate exists, completion fails with
+If no eligible direct rate exists, completion fails with
 `FX_RATE_UNAVAILABLE` before it creates a draft, links evidence, or moves the
-cloud file. An organization administrator must record an approved direct rate
-through Accounting settings or `finlynq_setup_record_fx_rate`, or the caller may
-use the existing explicit FX evidence path. Provider ingestion, staleness rules,
-manual-override authorization, and an `FX_PENDING` draft state remain separate
-product work.
-
+cloud file. The selected rate and its resolver/provider provenance are frozen in
+the immutable document snapshot, and idempotent replay returns the same
+snapshot. See the [FX rate provider runbook](fx-rate-providers.md) for the
+authorization gates, exact evidence contract, provider limitations, and
+development activation procedure.
 
 ## Recovery and retention
 

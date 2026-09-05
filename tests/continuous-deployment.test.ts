@@ -107,6 +107,9 @@ describe("continuous deployment safety boundary", () => {
     expect(installDevelopment).toContain("SIGNUP_TURNSTILE_ENABLED=false");
     expect(installDevelopment).toContain("BUSINESS_WRITES_ENABLED=true");
     expect(installDevelopment).toContain("BANK_FEEDS_ENABLED=false");
+    expect(installDevelopment).toContain("YAHOO_FX_ENABLED=false");
+    expect(installDevelopment).toContain("--enable-yahoo-fx-experimental");
+    expect(installDevelopment).toContain("--disable-yahoo-fx");
   });
 
   it("enables every development feature only with isolated provider secrets", () => {
@@ -124,6 +127,7 @@ describe("continuous deployment safety boundary", () => {
     expect(installDevelopment).toContain('values[keys[key_index]] = "true"');
     expect(installDevelopment).not.toContain("for (index =");
     expect(deployDevelopment).toContain("SIGNUP_TURNSTILE_SITE_KEY");
+    expect(deployDevelopment).toContain("YAHOO_FX_ENABLED");
     expect(deployDevelopment).toContain('[[ "$actual" == "$expected" ]] || return 1');
   });
 

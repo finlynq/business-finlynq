@@ -326,6 +326,7 @@ describe("AR/AP service command boundary", () => {
         }] };
       }
       if (statement.includes("FROM currency_exchange_rates rate")) return { rows: [] };
+      if (statement.includes("FROM organization_fx_provider_policy_versions")) return { rows: [] };
       throw new Error(`Unexpected unavailable FX SQL: ${statement}`);
     });
     transactionMocks.withTenantTransaction.mockImplementation(async (

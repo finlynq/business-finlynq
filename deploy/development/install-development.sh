@@ -23,6 +23,7 @@ fail() {
 
 enable_timer=false
 enable_all_features=false
+yahoo_fx_mode=""
 auth_email_from=""
 auth_email_reply_to=""
 turnstile_site_key=""
@@ -34,6 +35,14 @@ while (( $# > 0 )); do
       ;;
     --enable-all-features)
       enable_all_features=true
+      shift
+      ;;
+    --enable-yahoo-fx-experimental)
+      yahoo_fx_mode="true"
+      shift
+      ;;
+    --disable-yahoo-fx)
+      yahoo_fx_mode="false"
       shift
       ;;
     --auth-email-from)
@@ -139,6 +148,7 @@ if [[ ! -e "$compose_environment" ]]; then
     printf 'SIGNUP_TURNSTILE_ENABLED=false\n'
     printf 'BUSINESS_WRITES_ENABLED=true\n'
     printf 'BANK_FEEDS_ENABLED=false\n'
+    printf 'YAHOO_FX_ENABLED=false\n'
     printf 'DEVELOPMENT_REQUIRE_PUBLIC_ACCEPTANCE=false\n'
     printf 'BUSINESS_FINLYNQ_IMAGE_REVISION=%s\n' "$initial_revision"
   } >"$environment_temporary"
@@ -253,6 +263,30 @@ if [[ "$enable_all_features" == true ]]; then
   mv -f -- "$feature_environment_temporary" "$compose_environment"
   sync -f -- "$compose_environment"
   printf 'Development account, write, bot-protection, and bank-feed gates enabled.\n'
+fi
+
+if [[ -n "$yahoo_fx_mode" ]]; then
+  yahoo_environment_temporary="$(mktemp "$configuration_directory/.compose.env.yahoo-fx.XXXXXX")"
+  awk -F= -v selected="$yahoo_fx_mode" '
+    BEGIN { key = "YAHOO_FX_ENABLED" }
+    {
+      if ($1 == key) {
+        if (seen++) exit 42
+        print key "=" selected
+        next
+      }
+      print
+    }
+    END { if (!seen) print key "=" selected }
+  ' "$compose_environment" >"$yahoo_environment_temporary"     || {
+      rm -f -- "$yahoo_environment_temporary"
+      fail "could not update the development Yahoo FX gate"
+    }
+  chown root:deploy "$yahoo_environment_temporary"
+  chmod 0600 "$yahoo_environment_temporary"
+  mv -f -- "$yahoo_environment_temporary" "$compose_environment"
+  sync -f -- "$compose_environment"
+  printf 'Development Yahoo FX experimental gate set to %s.\n' "$yahoo_fx_mode"
 fi
 
 if ! docker network inspect "$development_edge_network" >/dev/null 2>&1; then

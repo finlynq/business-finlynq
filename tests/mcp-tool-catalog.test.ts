@@ -87,9 +87,51 @@ describe("remote MCP advertised tool catalog", () => {
       const { tool, schema } = advertisedSchema(name);
       expect(schema.properties).toHaveProperty("fx");
       expect(schema.required ?? []).not.toContain("fx");
-      expect(tool.description).toContain("FinLynQ select");
+      expect(tool.description).toContain("stored");
+      expect(tool.description).toContain("provider");
       expect(tool.description).toContain("FX_RATE_UNAVAILABLE");
     }
+  });
+
+  it("advertises a high-assurance, tenant-policy-only FX provider setup tool", () => {
+    const { tool, schema } = advertisedSchema("finlynq_setup_configure_fx_provider_policy");
+    expect(tool.policy).toMatchObject({
+      group: "SETUP",
+      access: "WRITE",
+      permission: "organization.settings.manage",
+      mfaRequirement: "REQUIRED",
+    });
+    expect(Object.keys(schema.properties ?? {}).sort()).toEqual([
+      "expectedVersion",
+      "licensedAndAuthorizedUseAcknowledged",
+      "maxLookbackDays",
+      "providerMode",
+      "reason",
+    ]);
+    expect([...(schema.required ?? [])].sort()).toEqual([
+      "expectedVersion",
+      "licensedAndAuthorizedUseAcknowledged",
+      "maxLookbackDays",
+      "providerMode",
+      "reason",
+    ]);
+    expect(tool.description).toContain("STORED_ONLY");
+    expect(tool.description).toContain("licensed and authorized");
+    expect(tool.description).toContain("performs no market-data request");
+    expect(tool.inputSchema.safeParse({
+      expectedVersion: 0,
+      providerMode: "YAHOO_FINANCE_EXPERIMENTAL",
+      maxLookbackDays: 5,
+      licensedAndAuthorizedUseAcknowledged: true,
+      reason: "Approve the controlled FX source",
+    }).success).toBe(true);
+    expect(tool.inputSchema.safeParse({
+      expectedVersion: 0,
+      providerMode: "YAHOO_FINANCE_EXPERIMENTAL",
+      maxLookbackDays: 5,
+      licensedAndAuthorizedUseAcknowledged: false,
+      reason: "Attempt an unacknowledged source",
+    }).success).toBe(false);
   });
 
   it("advertises the compatible supplier-settlement schema and guidance", () => {

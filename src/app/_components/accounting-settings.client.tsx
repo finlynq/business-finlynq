@@ -191,6 +191,14 @@ export function AccountingSettings({
   const [rate, setRate] = useState("");
   const [rateEffectiveAt, setRateEffectiveAt] = useState(localDateTimeDefault);
   const [rateProvider, setRateProvider] = useState("Manual rate");
+  const [fxProviderMode, setFxProviderMode] = useState(configuration.fxProviderPolicy.providerMode);
+  const [fxProviderMaxLookbackDays, setFxProviderMaxLookbackDays] = useState(
+    configuration.fxProviderPolicy.maxLookbackDays,
+  );
+  const [
+    fxProviderLicensedAndAuthorizedUseAcknowledged,
+    setFxProviderLicensedAndAuthorizedUseAcknowledged,
+  ] = useState(configuration.fxProviderPolicy.licensedAndAuthorizedUseAcknowledged);
   const [segmentDrafts, setSegmentDrafts] = useState(() => Object.fromEntries(
     configuration.segments.map((segment) => [segment.key, {
       displayName: segment.displayName,
@@ -754,6 +762,102 @@ export function AccountingSettings({
         <div className="currency-toggle-grid">{configuration.currencies.map((currency) => (
           <label className="currency-toggle" key={currency.code}><input type="checkbox" checked={currency.enabled} disabled={!configuration.canManageSettings || currency.functional || busy !== null} onChange={(event) => void mutate(`currency-${currency.code}`, "/api/accounting/configuration/currencies", "PATCH", { currencyCode: currency.code, enabled: event.target.checked, reason }, `${currency.code} was ${event.target.checked ? "enabled" : "disabled"}.`)} /><span><strong>{currency.code}</strong><small>{currency.minorUnits} decimal places{currency.functional ? " · functional currency" : ""}</small></span></label>
         ))}</div>
+        <div className="close-form" aria-labelledby="fx-provider-policy-title">
+          <h3 id="fx-provider-policy-title">FX provider policy</h3>
+          <p className="panel-note">
+            <strong>Current:</strong> {configuration.fxProviderPolicy.providerMode === "STORED_ONLY"
+              ? "Stored organization rates only"
+              : "Yahoo Finance experimental"} · version {configuration.fxProviderPolicy.version}
+            {configuration.fxProviderPolicy.configuredAt
+              ? ` · configured ${new Date(configuration.fxProviderPolicy.configuredAt).toLocaleString()}`
+              : " · safe default"}
+          </p>
+          <p className="panel-note">
+            Stored only keeps all resolution inside FinLynQ. The experimental option records an
+            organization preference and lookback limit; availability also requires operator
+            activation. Saving this policy does not fetch market data or alter existing drafts,
+            posted journals, or stored rate evidence.
+          </p>
+          {configuration.canManageSettings && (
+            <form onSubmit={(event) => {
+              event.preventDefault();
+              void mutate(
+                "fx-provider-policy",
+                "/api/accounting/configuration/fx-provider-policy",
+                "PATCH",
+                {
+                  expectedVersion: configuration.fxProviderPolicy.version,
+                  providerMode: fxProviderMode,
+                  maxLookbackDays: fxProviderMaxLookbackDays,
+                  licensedAndAuthorizedUseAcknowledged:
+                    fxProviderMode === "YAHOO_FINANCE_EXPERIMENTAL"
+                      && fxProviderLicensedAndAuthorizedUseAcknowledged,
+                  reason,
+                },
+                "The organization FX provider policy was versioned without changing existing rate evidence.",
+              );
+            }}>
+              <div className="form-grid form-grid-three">
+                <label>
+                  <span>Rate policy</span>
+                  <select
+                    value={fxProviderMode}
+                    onChange={(event) => {
+                      setFxProviderMode(event.target.value as typeof fxProviderMode);
+                      setFxProviderLicensedAndAuthorizedUseAcknowledged(false);
+                    }}
+                  >
+                    <option value="STORED_ONLY">Stored organization rates only</option>
+                    <option value="YAHOO_FINANCE_EXPERIMENTAL">Yahoo Finance experimental</option>
+                  </select>
+                </label>
+                <label>
+                  <span>Maximum calendar-day lookback</span>
+                  <input
+                    type="number"
+                    min={1}
+                    max={7}
+                    value={fxProviderMaxLookbackDays}
+                    disabled={fxProviderMode === "STORED_ONLY"}
+                    onChange={(event) => setFxProviderMaxLookbackDays(Number(event.target.value))}
+                    required
+                  />
+                </label>
+              </div>
+              {fxProviderMode === "YAHOO_FINANCE_EXPERIMENTAL" && (
+                <label className="currency-toggle">
+                  <input
+                    type="checkbox"
+                    checked={fxProviderLicensedAndAuthorizedUseAcknowledged}
+                    onChange={(event) => setFxProviderLicensedAndAuthorizedUseAcknowledged(
+                      event.target.checked,
+                    )}
+                    required
+                  />
+                  <span>
+                    <strong>Licensed and authorized use</strong>
+                    <small>
+                      I confirm that this organization is licensed and authorized to use Yahoo
+                      Finance data for this accounting workflow.
+                    </small>
+                  </span>
+                </label>
+              )}
+              <div className="form-actions">
+                <button
+                  className="primary-button"
+                  type="submit"
+                  disabled={busy !== null || (
+                    fxProviderMode === "YAHOO_FINANCE_EXPERIMENTAL"
+                    && !fxProviderLicensedAndAuthorizedUseAcknowledged
+                  )}
+                >
+                  {busy === "fx-provider-policy" ? "Saving…" : "Save FX provider policy"}
+                </button>
+              </div>
+            </form>
+          )}
+        </div>
         {configuration.canManageSettings && enabledCurrencies.length >= 2 && (
           <form className="close-form" onSubmit={(event) => {
             event.preventDefault();

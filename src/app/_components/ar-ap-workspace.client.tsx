@@ -58,6 +58,7 @@ type BusinessDraft = Readonly<{
   accountingDate: string;
   dueOn: string;
   currency: string;
+  fxMode: "AUTO" | "EXPLICIT";
   fxRate: string;
   fxSource: string;
   fxEffectiveAt: string;
@@ -77,6 +78,7 @@ type SettlementDraft = Readonly<{
   accountingDate: string;
   settlementDate: string;
   currency: string;
+  fxMode: "AUTO" | "EXPLICIT";
   fxRate: string;
   fxSource: string;
   fxEffectiveAt: string;
@@ -172,6 +174,7 @@ function defaultDocumentDraft(
       accountingDate: snapshot.accountingDate,
       dueOn: snapshot.dueOn,
       currency: snapshot.currency,
+      fxMode: "EXPLICIT",
       fxRate: snapshot.fx.rate,
       fxSource: snapshot.fx.source,
       fxEffectiveAt: snapshot.fx.effectiveAt,
@@ -221,6 +224,7 @@ function defaultDocumentDraft(
     accountingDate: documentDate,
     dueOn: addDays(documentDate, 30),
     currency,
+    fxMode: "AUTO",
     fxRate: fxEvidence.rate,
     fxSource: fxEvidence.source,
     fxEffectiveAt: fxEvidence.effectiveAt,
@@ -283,6 +287,7 @@ function defaultSettlementDraft(
     accountingDate: date,
     settlementDate: date,
     currency,
+    fxMode: "AUTO",
     fxRate: fxEvidence.rate,
     fxSource: fxEvidence.source,
     fxEffectiveAt: fxEvidence.effectiveAt,
@@ -557,7 +562,7 @@ function FxRateSuggestionSelect({
       <small>
         {suggestions.length
           ? "Selecting a saved rate copies its value, source, and effective time into the immutable document evidence. Manual edits are preserved until you explicitly choose another suggestion or change the entity/currency."
-          : `No saved ${transactionCurrency}/${functionalCurrency} rate is effective by ${asOfDate}; enter and identify the evidence manually.`}
+          : `No saved ${transactionCurrency}/${functionalCurrency} rate is effective by ${asOfDate}. Automatic mode may use the configured provider; explicit mode requires identified evidence.`}
       </small>
     </label>
   );
@@ -707,6 +712,7 @@ export function ArApWorkspace({
       accountingDate: date,
       dueOn: addDays(date, 30),
       currency,
+      fxMode: "AUTO",
       fxRate: fxEvidence.rate,
       fxSource: fxEvidence.source,
       fxEffectiveAt: fxEvidence.effectiveAt,
@@ -737,6 +743,7 @@ export function ArApWorkspace({
         ...draft,
         partyAccountId,
         currency,
+        fxMode: "AUTO",
         fxRate: fxEvidence.rate,
         fxSource: fxEvidence.source,
         fxEffectiveAt: fxEvidence.effectiveAt,
@@ -756,6 +763,7 @@ export function ArApWorkspace({
       return {
         ...draft,
         currency,
+        fxMode: "AUTO",
         fxRate: fxEvidence.rate,
         fxSource: fxEvidence.source,
         fxEffectiveAt: fxEvidence.effectiveAt,
@@ -795,12 +803,14 @@ export function ArApWorkspace({
       periodId: documentDraft.periodId,
       dueOn: documentDraft.dueOn,
       currency: documentDraft.currency,
-      fx: {
-        rate: documentDraft.fxRate,
-        source: documentDraft.fxSource,
-        effectiveAt: documentDraft.fxEffectiveAt,
-        quoteConvention: "FUNCTIONAL_UNITS_PER_TRANSACTION_UNIT" as const,
-      },
+      ...(documentDraft.fxMode === "EXPLICIT" ? {
+        fx: {
+          rate: documentDraft.fxRate,
+          source: documentDraft.fxSource,
+          effectiveAt: documentDraft.fxEffectiveAt,
+          quoteConvention: "FUNCTIONAL_UNITS_PER_TRANSACTION_UNIT" as const,
+        },
+      } : {}),
       description: documentDraft.description,
       lines: documentDraft.lines.map((line) => ({
         description: line.description,
@@ -880,6 +890,7 @@ export function ArApWorkspace({
       accountingDate: date,
       settlementDate: date,
       currency,
+      fxMode: "AUTO",
       fxRate: fxEvidence.rate,
       fxSource: fxEvidence.source,
       fxEffectiveAt: fxEvidence.effectiveAt,
@@ -908,6 +919,7 @@ export function ArApWorkspace({
         ...draft,
         partyAccountId,
         currency,
+        fxMode: "AUTO",
         fxRate: fxEvidence.rate,
         fxSource: fxEvidence.source,
         fxEffectiveAt: fxEvidence.effectiveAt,
@@ -928,6 +940,7 @@ export function ArApWorkspace({
       return {
         ...draft,
         currency,
+        fxMode: "AUTO",
         fxRate: fxEvidence.rate,
         fxSource: fxEvidence.source,
         fxEffectiveAt: fxEvidence.effectiveAt,
@@ -959,12 +972,14 @@ export function ArApWorkspace({
         settlementDate: settlementDraft.settlementDate,
         currency: settlementDraft.currency,
         amount: settlementTotal,
-        fx: {
-          rate: settlementDraft.fxRate,
-          source: settlementDraft.fxSource,
-          effectiveAt: settlementDraft.fxEffectiveAt,
-          quoteConvention: "FUNCTIONAL_UNITS_PER_TRANSACTION_UNIT",
-        },
+        ...(settlementDraft.fxMode === "EXPLICIT" ? {
+          fx: {
+            rate: settlementDraft.fxRate,
+            source: settlementDraft.fxSource,
+            effectiveAt: settlementDraft.fxEffectiveAt,
+            quoteConvention: "FUNCTIONAL_UNITS_PER_TRANSACTION_UNIT",
+          },
+        } : {}),
         settlementAccountCombinationId: settlementDraft.bankAccountCombinationId,
         settlementMethod: settlementDraft.settlementMethod,
         realizedFxGainAccountCombinationId: settlementDraft.realizedFxGainAccountCombinationId,
@@ -1118,6 +1133,25 @@ export function ArApWorkspace({
                   {workspace.currencies.map((currency) => <option key={currency.code} value={currency.code}>{currency.code}</option>)}
                 </select>
               </label>
+              {documentDraft.currency !== documentEntity.functionalCurrency && (
+                <label className="full-field">
+                  <span>FX handling</span>
+                  <select
+                    value={documentDraft.fxMode}
+                    onChange={(event) => setDocumentDraft((draft) => ({
+                      ...draft,
+                      fxMode: event.target.value as "AUTO" | "EXPLICIT",
+                    }))}
+                  >
+                    <option value="AUTO">Automatic organization policy</option>
+                    <option value="EXPLICIT">Choose or enter rate evidence</option>
+                  </select>
+                  <small>
+                    Automatic mode asks FinLynQ to resolve and freeze the rate. It fails without
+                    writing the draft when no permitted observation is available.
+                  </small>
+                </label>
+              )}
               <FxRateSuggestionSelect
                 rates={workspace.fxRates ?? []}
                 transactionCurrency={documentDraft.currency}
@@ -1130,6 +1164,7 @@ export function ArApWorkspace({
                 }}
                 onSelect={(suggestion) => setDocumentDraft((draft) => ({
                   ...draft,
+                  fxMode: "EXPLICIT",
                   fxRate: suggestion.rate,
                   fxSource: suggestion.source,
                   fxEffectiveAt: suggestion.effectiveAt,
@@ -1137,16 +1172,16 @@ export function ArApWorkspace({
               />
               <label className="full-field">
                 <span>FX rate</span>
-                <input inputMode="decimal" value={documentDraft.fxRate} onChange={(event) => setDocumentDraft((draft) => ({ ...draft, fxRate: event.target.value }))} disabled={documentDraft.currency === documentEntity.functionalCurrency} required />
+                <input inputMode="decimal" value={documentDraft.fxRate} onChange={(event) => setDocumentDraft((draft) => ({ ...draft, fxRate: event.target.value }))} disabled={documentDraft.currency === documentEntity.functionalCurrency || documentDraft.fxMode === "AUTO"} required={documentDraft.fxMode === "EXPLICIT"} />
                 <small>{documentEntity.functionalCurrency} per {documentDraft.currency}; immutable when saved.</small>
               </label>
               <label className="full-field">
                 <span>FX source</span>
-                <input value={documentDraft.fxSource} onChange={(event) => setDocumentDraft((draft) => ({ ...draft, fxSource: event.target.value }))} maxLength={100} required />
+                <input value={documentDraft.fxSource} onChange={(event) => setDocumentDraft((draft) => ({ ...draft, fxSource: event.target.value }))} maxLength={100} disabled={documentDraft.fxMode === "AUTO"} required={documentDraft.fxMode === "EXPLICIT"} />
               </label>
               <label className="full-field">
                 <span>FX effective time</span>
-                <input value={documentDraft.fxEffectiveAt} readOnly />
+                <input value={documentDraft.fxMode === "AUTO" ? "Resolved when saved" : documentDraft.fxEffectiveAt} readOnly />
                 <small>UTC snapshot tied to the selected document date.</small>
               </label>
             </div>
@@ -1280,6 +1315,25 @@ export function ArApWorkspace({
                   {workspace.currencies.map((currency) => <option key={currency.code} value={currency.code}>{currency.code}</option>)}
                 </select>
               </label>
+              {settlementDraft.currency !== settlementEntity.functionalCurrency && (
+                <label className="full-field">
+                  <span>FX handling</span>
+                  <select
+                    value={settlementDraft.fxMode}
+                    onChange={(event) => setSettlementDraft((draft) => ({
+                      ...draft,
+                      fxMode: event.target.value as "AUTO" | "EXPLICIT",
+                    }))}
+                  >
+                    <option value="AUTO">Automatic organization policy</option>
+                    <option value="EXPLICIT">Choose or enter rate evidence</option>
+                  </select>
+                  <small>
+                    Automatic mode resolves a permitted observation for the settlement date and
+                    freezes it before the posting is created.
+                  </small>
+                </label>
+              )}
               <FxRateSuggestionSelect
                 rates={workspace.fxRates ?? []}
                 transactionCurrency={settlementDraft.currency}
@@ -1292,6 +1346,7 @@ export function ArApWorkspace({
                 }}
                 onSelect={(suggestion) => setSettlementDraft((draft) => ({
                   ...draft,
+                  fxMode: "EXPLICIT",
                   fxRate: suggestion.rate,
                   fxSource: suggestion.source,
                   fxEffectiveAt: suggestion.effectiveAt,
@@ -1299,11 +1354,11 @@ export function ArApWorkspace({
               />
               <label className="full-field">
                 <span>FX rate</span>
-                <input inputMode="decimal" value={settlementDraft.fxRate} onChange={(event) => setSettlementDraft((draft) => ({ ...draft, fxRate: event.target.value }))} disabled={settlementDraft.currency === settlementEntity.functionalCurrency} required />
+                <input inputMode="decimal" value={settlementDraft.fxRate} onChange={(event) => setSettlementDraft((draft) => ({ ...draft, fxRate: event.target.value }))} disabled={settlementDraft.currency === settlementEntity.functionalCurrency || settlementDraft.fxMode === "AUTO"} required={settlementDraft.fxMode === "EXPLICIT"} />
                 <small>{settlementEntity.functionalCurrency} per {settlementDraft.currency}.</small>
               </label>
-              <label className="full-field"><span>FX source</span><input value={settlementDraft.fxSource} onChange={(event) => setSettlementDraft((draft) => ({ ...draft, fxSource: event.target.value }))} maxLength={100} required /></label>
-              <label className="full-field"><span>FX effective time</span><input value={settlementDraft.fxEffectiveAt} readOnly /><small>UTC snapshot tied to the settlement date.</small></label>
+              <label className="full-field"><span>FX source</span><input value={settlementDraft.fxSource} onChange={(event) => setSettlementDraft((draft) => ({ ...draft, fxSource: event.target.value }))} maxLength={100} disabled={settlementDraft.fxMode === "AUTO"} required={settlementDraft.fxMode === "EXPLICIT"} /></label>
+              <label className="full-field"><span>FX effective time</span><input value={settlementDraft.fxMode === "AUTO" ? "Resolved when saved" : settlementDraft.fxEffectiveAt} readOnly /><small>UTC snapshot tied to the settlement date.</small></label>
               <label className="full-field"><span>Total allocated</span><input value={displayExactMoney(settlementDraft.currency, settlementTotal)} readOnly /></label>
             </div>
             <label className="full-field"><span>Description</span><input value={settlementDraft.description} onChange={(event) => setSettlementDraft((draft) => ({ ...draft, description: event.target.value }))} maxLength={500} required /></label>

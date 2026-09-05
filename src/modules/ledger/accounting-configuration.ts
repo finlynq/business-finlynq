@@ -24,6 +24,10 @@ import {
 import { withWorkspaceTenantRead } from "@/modules/workspace/tenant-read";
 import { supportedCurrencies } from "@/kernel/money";
 import { createCommandFingerprint } from "@/kernel/command-fingerprint";
+import {
+  readOrganizationFxProviderPolicy,
+  type OrganizationFxProviderPolicy,
+} from "@/modules/fx/provider-policy";
 import { presentAccountKey } from "./account-key-display";
 import {
   accountSegmentKeys,
@@ -280,6 +284,7 @@ export type AccountingConfigurationDto = Readonly<{
   canManageSegments: boolean;
   canManagePostingPolicy: boolean;
   requiresMfaStepUp: boolean;
+  fxProviderPolicy: OrganizationFxProviderPolicy;
   currencies: readonly Readonly<{
     code: string;
     minorUnits: number;
@@ -416,6 +421,7 @@ export async function loadAccountingConfiguration(
       segmentValueResult,
       accountResult,
       combinationResult,
+      fxProviderPolicy,
     ] = await Promise.all([
       client.query<{
         code: string; minor_units: number; enabled: boolean; functional: boolean;
@@ -643,6 +649,7 @@ export async function loadAccountingConfiguration(
          LIMIT 5000`,
         [principal.organizationId],
       ),
+      readOrganizationFxProviderPolicy(client, principal.organizationId),
     ]);
 
     const taxRegistrations: AccountingConfigurationDto["taxRegistrations"][number][] = [];
@@ -752,6 +759,7 @@ export async function loadAccountingConfiguration(
       canManageSegments: writable && canManageSegments,
       canManagePostingPolicy: writable && canManagePostingPolicy,
       requiresMfaStepUp: principal.sessionMode === "real" && !hasRecentStepUp(principal),
+      fxProviderPolicy,
       currencies: currencyResult.rows.map((row) => ({
         code: row.code,
         minorUnits: row.minor_units,

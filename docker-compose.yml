@@ -452,6 +452,7 @@ services:
       DOCUMENT_MICROSOFT_CLIENT_ID: ${DOCUMENT_MICROSOFT_CLIENT_ID:-}
       DOCUMENT_MICROSOFT_CLIENT_SECRET_FILE: /run/secrets/business_finlynq_document_microsoft_secret
       BANK_FEEDS_ENABLED: ${BANK_FEEDS_ENABLED:-false}
+      YAHOO_FX_ENABLED: ${YAHOO_FX_ENABLED:-false}
       BUSINESS_FINLYNQ_IMAGE_REVISION: ${BUSINESS_FINLYNQ_IMAGE_REVISION:-unknown}
       ORGANIZATION_ROOT_KEK_FILE: /run/secrets/business_finlynq_root_kek
       IDENTITY_SECRET_FILE: /run/secrets/business_finlynq_identity_secret
@@ -1338,6 +1339,7 @@ services:
       AUTH_EMAIL_DELIVERY_ENABLED: "false"
       BUSINESS_WRITES_ENABLED: "false"
       BANK_FEEDS_ENABLED: "false"
+      YAHOO_FX_ENABLED: "false"
       BUSINESS_FINLYNQ_IMAGE_REVISION: ${BUSINESS_FINLYNQ_IMAGE_REVISION:-unknown}
       ORGANIZATION_ROOT_KEK_FILE: /run/secrets/business_finlynq_root_kek
       IDENTITY_SECRET_FILE: /run/secrets/business_finlynq_identity_secret
