@@ -459,11 +459,11 @@ BEGIN
     AND combination.active
     AND account.active
     AND account.postable
-    AND account.class = CASE NEW.account_kind
+    AND account.class = (CASE NEW.account_kind
       WHEN 'CASH' THEN 'ASSET'
       WHEN 'CREDIT_CARD' THEN 'LIABILITY'
       ELSE NULL
-    END
+    END)::account_class
     AND account.control_kind = 'NONE'
     AND ledger.active
     AND entity.active

@@ -98,6 +98,7 @@ describe("bank statement import migration contract", () => {
     expect(migration).toContain("AND NOT initial_simplefin_classification");
     expect(migration).toContain("WHEN 'CASH' THEN 'ASSET'");
     expect(migration).toContain("WHEN 'CREDIT_CARD' THEN 'LIABILITY'");
+    expect(migration).toMatch(/account\.class = \(CASE NEW\.account_kind[\s\S]+END\)::account_class/);
     expect(migration).toContain("CREATE TRIGGER bank_mapped_account_insert_permission_guard");
     expect(migration).toContain("CREATE FUNCTION app.audit_bank_external_account_mapping_event()");
     expect(migration).toContain("'fromAccountKind', OLD.account_kind");
