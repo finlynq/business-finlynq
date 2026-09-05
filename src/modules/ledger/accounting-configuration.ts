@@ -24,6 +24,7 @@ import {
 import { withWorkspaceTenantRead } from "@/modules/workspace/tenant-read";
 import { supportedCurrencies } from "@/kernel/money";
 import { createCommandFingerprint } from "@/kernel/command-fingerprint";
+import { demoAccountingDate } from "@/modules/demo/accounting-clock";
 import {
   readOrganizationFxProviderPolicy,
   type OrganizationFxProviderPolicy,
@@ -280,6 +281,7 @@ export type AccountingCombinationSegmentValueDto = Readonly<{
 }>;
 
 export type AccountingConfigurationDto = Readonly<{
+  evaluatedAccountingDate: string;
   canManageSettings: boolean;
   canManageSegments: boolean;
   canManagePostingPolicy: boolean;
@@ -346,6 +348,12 @@ export type AccountingConfigurationDto = Readonly<{
     canonicalKey: string;
     displayKey: string;
     active: boolean;
+    accountActive: boolean;
+    postable: boolean;
+    controlKind: "NONE" | "AR" | "AP";
+    validFrom: string;
+    validTo: string | null;
+    validOnAccountingDate: boolean;
     used: boolean;
     lastUsedAt: string | null;
   }>[];
@@ -386,7 +394,15 @@ function readContext(principal: SessionPrincipal) {
 
 export async function loadAccountingConfiguration(
   principal: SessionPrincipal,
+  accountingDate?: string,
 ): Promise<AccountingConfigurationDto> {
+  const evaluatedAccountingDate = accountingDate
+    ?? (principal.sessionMode === "demo"
+      ? demoAccountingDate()
+      : new Date().toISOString().slice(0, 10));
+  if (!z.iso.date().safeParse(evaluatedAccountingDate).success) {
+    throw new Error("Accounting context requires an ISO accounting date");
+  }
   return withWorkspaceTenantRead(readContext(principal), "/app/settings/accounting", async (client) => {
     const [canManageSettings, canManageSegments, canManagePostingPolicy, canReadTax] = await Promise.all([
       actorHasActivePermission(client, {
@@ -584,7 +600,9 @@ export async function loadAccountingConfiguration(
         custom_6_id: string | null; custom_6_code: string | null; custom_6_name: string | null;
         custom_7_id: string | null; custom_7_code: string | null; custom_7_name: string | null;
         custom_8_id: string | null; custom_8_code: string | null; custom_8_name: string | null;
-        canonical_key: string; active: boolean; used: boolean; last_used_at: string | null;
+        canonical_key: string; active: boolean; account_active: boolean; postable: boolean;
+        control_kind: "NONE" | "AR" | "AP"; valid_from: string; valid_to: string | null;
+        used: boolean; last_used_at: string | null;
       }>(
         `SELECT combination.id, combination.entity_id AS legal_entity_id,
            entity.code AS entity_code, combination.ledger_id, ledger.code AS ledger_code,
@@ -610,7 +628,9 @@ export async function loadAccountingConfiguration(
              coalesce(custom3.code, '0000'), coalesce(custom4.code, '0000'),
              coalesce(custom5.code, '0000'), coalesce(custom6.code, '0000'),
              coalesce(custom7.code, '0000'), coalesce(custom8.code, '0000')) AS canonical_key,
-           combination.active,
+           combination.active, account.active AS account_active,
+           account.postable, account.control_kind,
+           account.valid_from::text, account.valid_to::text,
            EXISTS (
              SELECT 1 FROM journal_lines line
              WHERE line.organization_id = combination.organization_id
@@ -749,12 +769,21 @@ export async function loadAccountingConfiguration(
           canonicalKey: presentation.canonicalKey,
           displayKey: presentation.displayKey,
           active: row.active,
+          accountActive: row.account_active,
+          postable: row.postable,
+          controlKind: row.control_kind,
+          validFrom: row.valid_from,
+          validTo: row.valid_to,
+          validOnAccountingDate: row.active && row.account_active && row.postable
+            && row.valid_from <= evaluatedAccountingDate
+            && (row.valid_to === null || row.valid_to >= evaluatedAccountingDate),
           used: row.used || row.last_used_at !== null,
           lastUsedAt: row.last_used_at,
         };
       });
 
     return {
+      evaluatedAccountingDate,
       canManageSettings: writable && canManageSettings,
       canManageSegments: writable && canManageSegments,
       canManagePostingPolicy: writable && canManagePostingPolicy,

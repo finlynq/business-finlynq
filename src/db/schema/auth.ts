@@ -1,6 +1,7 @@
 import {
   bigint,
   boolean,
+  check,
   foreignKey,
   index,
   integer,
@@ -119,6 +120,47 @@ export const authSessions = pgTable(
     uniqueIndex("auth_sessions_token_hash_unique").on(table.tokenHash),
     index("auth_sessions_user_active_idx").on(table.userId, table.revokedAt, table.expiresAt),
     index("auth_sessions_demo_claim_idx").on(table.demoClaimId, table.revokedAt, table.expiresAt),
+  ],
+);
+
+export const authTrustedBrowsers = pgTable(
+  "auth_trusted_browsers",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    tokenHash: text("token_hash").notNull(),
+    userId: uuid("user_id").notNull().references(() => users.id, { onDelete: "restrict" }),
+    organizationId: uuid("organization_id").notNull().references(() => organizations.id, { onDelete: "restrict" }),
+    membershipId: uuid("membership_id").notNull().references(() => organizationMemberships.id, { onDelete: "restrict" }),
+    userAgentHash: text("user_agent_hash").notNull(),
+    browserLabel: text("browser_label").notNull(),
+    securityEpoch: integer("security_epoch").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    lastUsedAt: timestamp("last_used_at", { withTimezone: true }),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    revokedAt: timestamp("revoked_at", { withTimezone: true }),
+    revokedReason: text("revoked_reason"),
+    version: integer("version").notNull().default(1),
+  },
+  (table) => [
+    uniqueIndex("auth_trusted_browsers_token_hash_unique").on(table.tokenHash),
+    index("auth_trusted_browsers_user_active_idx").on(
+      table.userId,
+      table.organizationId,
+      table.revokedAt,
+      table.expiresAt,
+    ),
+    foreignKey({
+      columns: [table.organizationId, table.membershipId],
+      foreignColumns: [organizationMemberships.organizationId, organizationMemberships.id],
+      name: "auth_trusted_browsers_membership_fk",
+    }).onDelete("restrict"),
+    check("auth_trusted_browsers_token_hash_check", sql`${table.tokenHash} ~ '^[0-9a-f]{64}$'`),
+    check("auth_trusted_browsers_user_agent_hash_check", sql`${table.userAgentHash} ~ '^[0-9a-f]{64}$'`),
+    check("auth_trusted_browsers_label_check", sql`length(${table.browserLabel}) BETWEEN 1 AND 160 AND ${table.browserLabel} !~ '[[:cntrl:]]'`),
+    check("auth_trusted_browsers_security_epoch_check", sql`${table.securityEpoch} > 0`),
+    check("auth_trusted_browsers_expiry_check", sql`${table.expiresAt} > ${table.createdAt}`),
+    check("auth_trusted_browsers_version_check", sql`${table.version} > 0`),
+    check("auth_trusted_browsers_revocation_check", sql`(${table.revokedAt} IS NULL AND ${table.revokedReason} IS NULL) OR (${table.revokedAt} IS NOT NULL AND ${table.revokedReason} IS NOT NULL)`),
   ],
 );
 

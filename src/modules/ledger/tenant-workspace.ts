@@ -185,6 +185,7 @@ const partyAddressPayloadSchema = z.object({
 });
 
 export type ManualJournalOptionsDto = Readonly<{
+  evaluatedAccountingDate: string;
   readOnly: boolean;
   entities: readonly Readonly<{
     id: string;
@@ -202,6 +203,9 @@ export type ManualJournalOptionsDto = Readonly<{
       combinationId: string;
       code: string;
       displayName: string;
+      validFrom: string;
+      validTo: string | null;
+      validOnAccountingDate: boolean;
     }>[];
   }>[];
 }>;
@@ -1061,7 +1065,15 @@ export async function loadTenantPartyDirectory(
 
 export async function loadManualJournalOptions(
   principal: SessionPrincipal,
+  accountingDate?: string,
 ): Promise<ManualJournalOptionsDto> {
+  const evaluatedAccountingDate = accountingDate
+    ?? (principal.sessionMode === "demo"
+      ? demoAccountingDate()
+      : new Date().toISOString().slice(0, 10));
+  if (!z.iso.date().safeParse(evaluatedAccountingDate).success) {
+    throw new Error("Accounting context requires an ISO accounting date");
+  }
   return withWorkspaceTenantRead(readContext(principal), "/app/journals/new", async (client) => {
     await assertActiveSessionMembership(client, principal);
     const canReadLedger = await actorHasActivePermission(client, {
@@ -1108,9 +1120,12 @@ export async function loadManualJournalOptions(
       combination_id: string;
       account_code: string;
       account_name: string;
+      valid_from: string;
+      valid_to: string | null;
     }>(
       `SELECT entity.id AS entity_id, combination.id AS combination_id,
-         account.code AS account_code, account.display_name AS account_name
+         account.code AS account_code, account.display_name AS account_name,
+         account.valid_from::text, account.valid_to::text
        FROM legal_entities entity
        JOIN ledgers ledger
          ON ledger.organization_id = entity.organization_id
@@ -1135,7 +1150,14 @@ export async function loadManualJournalOptions(
       ledgerId: string;
       currency: string;
       periods: Map<string, { id: string; label: string; startsOn: string; endsOn: string; state: "OPEN" | "ADJUSTMENT_ONLY" }>;
-      accounts: Map<string, { combinationId: string; code: string; displayName: string }>;
+      accounts: Map<string, {
+        combinationId: string;
+        code: string;
+        displayName: string;
+        validFrom: string;
+        validTo: string | null;
+        validOnAccountingDate: boolean;
+      }>;
     }>();
     for (const row of entityPeriods.rows) {
       let entity = entities.get(row.entity_id);
@@ -1167,9 +1189,14 @@ export async function loadManualJournalOptions(
         combinationId: row.combination_id,
         code: row.account_code,
         displayName: row.account_name,
+        validFrom: row.valid_from,
+        validTo: row.valid_to,
+        validOnAccountingDate: row.valid_from <= evaluatedAccountingDate
+          && (row.valid_to === null || row.valid_to >= evaluatedAccountingDate),
       });
     }
     return {
+      evaluatedAccountingDate,
       readOnly: !canDraft,
       entities: [...entities.values()].map((entity) => ({
         id: entity.id,

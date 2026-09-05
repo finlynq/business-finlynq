@@ -3,7 +3,7 @@ import {
   parseEncryptedField,
 } from "../../src/security/organization-encryption";
 
-type BankingPlaintextKind = "access-url" | "opaque-id" | "display-name" | "json-object";
+type BankingPlaintextKind = "bank-credential" | "opaque-id" | "display-name" | "json-object";
 
 export type RestoredBankingFieldSpecification = Readonly<{
   tableName: string;
@@ -17,7 +17,7 @@ export const RESTORED_BANKING_FIELD_SPECIFICATIONS: readonly RestoredBankingFiel
     tableName: "bank_connections",
     columnName: "credentials_ciphertext",
     keyVersionColumn: "credentials_key_version",
-    plaintextKind: "access-url",
+    plaintextKind: "bank-credential",
   },
   {
     tableName: "bank_external_accounts",
@@ -40,6 +40,18 @@ export const RESTORED_BANKING_FIELD_SPECIFICATIONS: readonly RestoredBankingFiel
   {
     tableName: "bank_observation_versions",
     columnName: "details_ciphertext",
+    keyVersionColumn: "key_version",
+    plaintextKind: "json-object",
+  },
+  {
+    tableName: "bank_statement_imports",
+    columnName: "extraction_ciphertext",
+    keyVersionColumn: "key_version",
+    plaintextKind: "json-object",
+  },
+  {
+    tableName: "bank_statement_import_rows",
+    columnName: "row_ciphertext",
     keyVersionColumn: "key_version",
     plaintextKind: "json-object",
   },
@@ -77,6 +89,7 @@ export type RestoredBankingCiphertextRow = Readonly<{
   table_name: string;
   column_name: string;
   ciphertext: string;
+  provider: string | null;
 }>;
 
 export function restoredBankingCiphertextBatchQuery(
@@ -89,7 +102,8 @@ export function restoredBankingCiphertextBatchQuery(
     ${specification.keyVersionColumn}::int AS key_version,
     '${specification.tableName}'::text AS table_name,
     '${specification.columnName}'::text AS column_name,
-    ${specification.columnName} AS ciphertext
+    ${specification.columnName} AS ciphertext,
+    ${specification.tableName === "bank_connections" ? "provider" : "NULL::text"} AS provider
   FROM ${specification.tableName}
   WHERE ($1::uuid IS NULL OR (organization_id, id) > ($1::uuid, $2::uuid))
   ORDER BY organization_id, id
@@ -112,7 +126,11 @@ function assertJsonObject(value: string): void {
   }
 }
 
-function assertPlaintext(kind: BankingPlaintextKind, value: string): void {
+function assertPlaintext(
+  kind: BankingPlaintextKind,
+  value: string,
+  provider: string | null,
+): void {
   if (!value || /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(value)) {
     throw new Error("Decrypted banking text is empty or contains control characters");
   }
@@ -120,24 +138,30 @@ function assertPlaintext(kind: BankingPlaintextKind, value: string): void {
     assertJsonObject(value);
     return;
   }
-  if (kind === "access-url") {
-    try {
-      const accessUrl = new URL(value);
-      if (accessUrl.protocol !== "https:" || !accessUrl.username || !accessUrl.password) {
-        throw new Error("invalid access URL");
+  if (kind === "bank-credential") {
+    // FILE_IMPORT never has a provider credential. Its exact encrypted marker
+    // is accepted only on the retained local connection and is never parsed as
+    // a SimpleFIN URL.
+    if (provider === "FILE_IMPORT" && value === "document-inbox-local-v1") return;
+    if (provider === "SIMPLEFIN") {
+      try {
+        const accessUrl = new URL(value);
+        if (accessUrl.protocol !== "https:" || !accessUrl.username || !accessUrl.password) {
+          throw new Error("invalid access URL");
+        }
+        return;
+      } catch {
+        // The public demo deliberately stores a non-routable encrypted marker
+        // in its disabled synthetic connection instead of a provider credential.
       }
-      return;
-    } catch {
-      // The public demo deliberately stores a non-routable encrypted marker in
-      // its disabled synthetic connection instead of a provider credential.
+      try {
+        const synthetic = JSON.parse(value) as Record<string, unknown>;
+        if (synthetic.synthetic === true && synthetic.outboundProviderCallsAllowed === false) return;
+      } catch {
+        // Report one sanitized credential-format failure below.
+      }
     }
-    try {
-      const synthetic = JSON.parse(value) as Record<string, unknown>;
-      if (synthetic.synthetic === true && synthetic.outboundProviderCallsAllowed === false) return;
-    } catch {
-      // Report one sanitized credential-format failure below.
-    }
-    throw new Error("Decrypted bank credential is neither a valid HTTPS access URL nor a disabled demo marker");
+    throw new Error("Decrypted bank credential does not match its registered provider format");
   }
 }
 
@@ -167,7 +191,7 @@ export function verifyRestoredBankingCiphertexts(
       recordId: row.record_id,
       keyVersion: row.key_version,
     });
-    assertPlaintext(specification.plaintextKind, plaintext);
+    assertPlaintext(specification.plaintextKind, plaintext, row.provider);
     verifiedCount += 1;
   }
   return verifiedCount;

@@ -44,6 +44,7 @@ import { createMutationRoute } from "@/app/api/_shared/subledger-mutation-route"
 import { POST as confirmDemoStepUp } from "@/app/api/auth/demo-step-up/route";
 import { PUT as selectWorkspaceEntity } from "@/app/api/workspace/entity-context/route";
 import { FxRateUnavailableError } from "@/modules/fx/rate-resolver";
+import { AccountCombinationValidationError } from "@/modules/subledger/validation-errors";
 
 const principal = {
   sessionId: "10000000-0000-4000-8000-000000000001",
@@ -188,6 +189,61 @@ describe("mutation route setup failure boundaries", () => {
     await expectRedactedFailure(await selectWorkspaceEntity(request("PUT")), logging, 503);
     expect(logging).toHaveBeenCalledOnce();
     logging.mockRestore();
+  });
+
+  it("returns tenant-safe structured account-combination failures", async () => {
+    const failure = new AccountCombinationValidationError([{
+      field: "lines[1].accountCombinationId",
+      lineNumber: 2,
+      combinationId: "50000000-0000-4000-8000-000000000001",
+      accountCode: "6100",
+      accountName: "Office expense",
+      active: true,
+      combinationActive: true,
+      accountActive: true,
+      postable: true,
+      validFrom: "2026-01-01",
+      validTo: null,
+      ledgerMismatch: false,
+      entityMismatch: false,
+      evaluatedAccountingDate: "2025-12-15",
+      failureCodes: ["FUTURE_DATED"],
+      remediation: "Select a valid combination.",
+    }]);
+    const logging = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const route = createMutationRoute({
+      schema: z.object({}).strict(),
+      operation: "test.account-combination",
+      rateAction: "create",
+      maximumBytes: 1_024,
+      invalidMessage: "Invalid accounting request.",
+      failureMessage: "The accounting request failed safely.",
+      invoke: async () => {
+        throw failure;
+      },
+    });
+
+    try {
+      const response = await route(request());
+      expect(response.status).toBe(409);
+      expect(await response.json()).toMatchObject({
+        error: expect.stringContaining("account combinations"),
+        code: "ACCOUNT_COMBINATION_INVALID",
+        remediation: expect.stringContaining("do not change the accounting date"),
+        accountCombinationFailures: [{
+          field: "lines[1].accountCombinationId",
+          lineNumber: 2,
+          accountCode: "6100",
+          validFrom: "2026-01-01",
+          evaluatedAccountingDate: "2025-12-15",
+          failureCodes: ["FUTURE_DATED"],
+        }],
+        requestId: expect.stringMatching(/^[0-9a-f-]{36}$/i),
+      });
+      expect(JSON.stringify(logging.mock.calls)).not.toMatch(/6100|Office expense/);
+    } finally {
+      logging.mockRestore();
+    }
   });
 
   it("returns and logs only reviewed FX failure codes for browser mutations", async () => {

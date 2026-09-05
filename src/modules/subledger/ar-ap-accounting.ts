@@ -14,6 +14,12 @@ import type {
   EntityTaxRegistrationRow,
   TaxPackVersionRow,
 } from "./ar-ap-types";
+import {
+  ACCOUNT_COMBINATION_REMEDIATION,
+  AccountCombinationValidationError,
+  type AccountCombinationFailure,
+  type AccountCombinationFailureCode,
+} from "./validation-errors";
 
 export async function loadAccountingSetup(
   client: PoolClient,
@@ -82,6 +88,90 @@ export function assertRoutineSetup(
   }
 }
 
+type AccountCombinationDetailRow = Readonly<{
+  id: string;
+  ledger_id: string;
+  entity_id: string;
+  combination_active: boolean;
+  account_id: string;
+  account_code: string | null;
+  account_name: string | null;
+  account_active: boolean | null;
+  account_postable: boolean | null;
+  valid_from: string | null;
+  valid_to: string | null;
+  account_class: AccountCombinationRow["account_class"] | null;
+  control_kind: AccountCombinationRow["control_kind"] | null;
+}>;
+
+export type AccountCombinationValidationReference = Readonly<{
+  field: string;
+  lineNumber?: number;
+  combinationId: string;
+  expectedAccountId?: string;
+  expectedAccountClasses?: readonly AccountCombinationRow["account_class"][];
+  expectedControlKinds?: readonly AccountCombinationRow["control_kind"][];
+}>;
+
+function accountCombinationFailure(
+  reference: AccountCombinationValidationReference,
+  row: AccountCombinationDetailRow | undefined,
+  input: Readonly<{
+    ledgerId: string;
+    legalEntityId: string;
+    accountingDate: string;
+  }>,
+): AccountCombinationFailure | null {
+  const failureCodes: AccountCombinationFailureCode[] = [];
+  if (!row) {
+    failureCodes.push("NOT_FOUND_OR_UNAUTHORIZED");
+  } else {
+    if (row.ledger_id !== input.ledgerId) failureCodes.push("WRONG_LEDGER");
+    if (row.entity_id !== input.legalEntityId) failureCodes.push("WRONG_ENTITY");
+    if (!row.combination_active) failureCodes.push("COMBINATION_INACTIVE");
+    if (row.account_active !== true) failureCodes.push("ACCOUNT_INACTIVE");
+    if (row.account_postable !== true) failureCodes.push("ACCOUNT_NOT_POSTABLE");
+    if (row.valid_from !== null && row.valid_from > input.accountingDate) {
+      failureCodes.push("FUTURE_DATED");
+    }
+    if (row.valid_to !== null && row.valid_to < input.accountingDate) {
+      failureCodes.push("EXPIRED");
+    }
+    if (reference.expectedControlKinds
+        && (row.control_kind === null
+          || !reference.expectedControlKinds.includes(row.control_kind))) {
+      failureCodes.push("WRONG_CONTROL_KIND");
+    }
+    if (reference.expectedAccountClasses
+        && (row.account_class === null
+          || !reference.expectedAccountClasses.includes(row.account_class))) {
+      failureCodes.push("WRONG_ACCOUNT_CLASS");
+    }
+    if (reference.expectedAccountId && row.account_id !== reference.expectedAccountId) {
+      failureCodes.push("PARTY_CONTROL_ACCOUNT_MISMATCH");
+    }
+  }
+  if (failureCodes.length === 0) return null;
+  return {
+    field: reference.field,
+    ...(reference.lineNumber === undefined ? {} : { lineNumber: reference.lineNumber }),
+    combinationId: reference.combinationId,
+    accountCode: row?.account_code ?? null,
+    accountName: row?.account_name ?? null,
+    active: row ? row.combination_active && row.account_active === true : null,
+    combinationActive: row?.combination_active ?? null,
+    accountActive: row?.account_active ?? null,
+    postable: row?.account_postable ?? null,
+    validFrom: row?.valid_from ?? null,
+    validTo: row?.valid_to ?? null,
+    ledgerMismatch: row ? row.ledger_id !== input.ledgerId : null,
+    entityMismatch: row ? row.entity_id !== input.legalEntityId : null,
+    evaluatedAccountingDate: input.accountingDate,
+    failureCodes,
+    remediation: ACCOUNT_COMBINATION_REMEDIATION,
+  };
+}
+
 export async function loadAccountCombinations(
   client: PoolClient,
   input: Readonly<{
@@ -89,37 +179,43 @@ export async function loadAccountCombinations(
     ledgerId: string;
     legalEntityId: string;
     accountingDate: string;
-    ids: readonly string[];
+    ids?: readonly string[];
+    references?: readonly AccountCombinationValidationReference[];
   }>,
 ): Promise<Map<string, AccountCombinationRow>> {
-  const uniqueIds = [...new Set(input.ids)];
-  const result = await client.query<AccountCombinationRow>(
-    `SELECT combination.id, account.id AS account_id,
+  const references = input.references
+    ?? (input.ids ?? []).map((combinationId) => ({
+      field: "accountCombinationIds",
+      combinationId,
+    }));
+  const uniqueIds = [...new Set(references.map((reference) => reference.combinationId))];
+  const result = await client.query<AccountCombinationDetailRow>(
+    `SELECT combination.id, combination.ledger_id, combination.entity_id,
+       combination.active AS combination_active, combination.account_id,
+       account.code AS account_code, account.display_name AS account_name,
+       account.active AS account_active, account.postable AS account_postable,
+       account.valid_from::text, account.valid_to::text,
        account.class AS account_class, account.control_kind
      FROM account_combinations combination
-     JOIN gl_accounts account
+     LEFT JOIN gl_accounts account
        ON account.organization_id = combination.organization_id
-      AND account.ledger_id = combination.ledger_id
       AND account.id = combination.account_id
      WHERE combination.organization_id = $1
-       AND combination.ledger_id = $2
-       AND combination.entity_id = $3
-       AND combination.id = ANY($4::uuid[])
-       AND combination.active AND account.active AND account.postable
-       AND account.valid_from <= $5::date
-       AND (account.valid_to IS NULL OR account.valid_to >= $5::date)`,
-    [
-      input.organizationId,
-      input.ledgerId,
-      input.legalEntityId,
-      uniqueIds,
-      input.accountingDate,
-    ],
+       AND combination.id = ANY($2::uuid[])
+     ORDER BY combination.id`,
+    [input.organizationId, uniqueIds],
   );
-  if (result.rows.length !== uniqueIds.length) {
-    throw new Error("One or more account combinations are inactive, out of date, or outside the tenant ledger");
-  }
-  return new Map(result.rows.map((row) => [row.id, row]));
+  const detailById = new Map(result.rows.map((row) => [row.id, row]));
+  const failures = references
+    .map((reference) => accountCombinationFailure(reference, detailById.get(reference.combinationId), input))
+    .filter((failure): failure is AccountCombinationFailure => failure !== null);
+  if (failures.length > 0) throw new AccountCombinationValidationError(failures);
+  return new Map(result.rows.map((row) => [row.id, {
+    id: row.id,
+    account_id: row.account_id,
+    account_class: row.account_class!,
+    control_kind: row.control_kind!,
+  }]));
 }
 
 function assertBusinessAccountMappings(
@@ -302,18 +398,50 @@ export async function validateDraftConfiguration(
   if (setup.functional_currency !== snapshot.functionalCurrency) {
     throw new Error("Document functional-currency snapshot does not match its ledger");
   }
-  const combinationIds = [
-    snapshot.controlAccountCombinationId,
-    ...snapshot.lines.map((line) => line.accountCombinationId),
-    ...(snapshot.taxAccountCombinationId ? [snapshot.taxAccountCombinationId] : []),
-    ...(snapshot.fxRoundingAccountCombinationId ? [snapshot.fxRoundingAccountCombinationId] : []),
+  const taxTreatments = new Set(snapshot.lines.flatMap((line) =>
+    line.taxDecision.components.map((component) => component.treatment)));
+  const taxAccountClasses: readonly AccountCombinationRow["account_class"][] | undefined =
+    snapshot.kind === "SALES_INVOICE"
+      ? ["LIABILITY"]
+      : taxTreatments.has("SELF_ASSESSED_PAYABLE")
+        ? ["LIABILITY"]
+        : taxTreatments.has("RECOVERABLE")
+          ? ["ASSET", "EXPENSE"]
+          : undefined;
+  const references: AccountCombinationValidationReference[] = [
+    {
+      field: "controlAccountCombinationId",
+      combinationId: snapshot.controlAccountCombinationId,
+      expectedAccountId: setup.control_account_id,
+      expectedControlKinds: [policy.controlKind],
+    },
+    ...snapshot.lines.map((line) => ({
+      field: "lines[" + (line.lineNumber - 1) + "].accountCombinationId",
+      lineNumber: line.lineNumber,
+      combinationId: line.accountCombinationId,
+      expectedControlKinds: ["NONE" as const],
+      expectedAccountClasses: snapshot.kind === "SALES_INVOICE"
+        ? ["REVENUE" as const]
+        : ["EXPENSE" as const, "ASSET" as const],
+    })),
+    ...(snapshot.taxAccountCombinationId ? [{
+      field: "taxAccountCombinationId",
+      combinationId: snapshot.taxAccountCombinationId,
+      expectedControlKinds: ["NONE" as const],
+      ...(taxAccountClasses ? { expectedAccountClasses: taxAccountClasses } : {}),
+    }] : []),
+    ...(snapshot.fxRoundingAccountCombinationId ? [{
+      field: "fxRoundingAccountCombinationId",
+      combinationId: snapshot.fxRoundingAccountCombinationId,
+      expectedControlKinds: ["NONE" as const],
+    }] : []),
   ];
   const combinations = await loadAccountCombinations(client, {
     organizationId: context.organizationId,
     ledgerId: snapshot.ledgerId,
     legalEntityId: snapshot.legalEntityId,
     accountingDate: snapshot.accountingDate,
-    ids: combinationIds,
+    references,
   });
   assertBusinessAccountMappings(snapshot, setup, combinations);
   await assertBusinessDocumentTaxRegistrationBindings(client, context, snapshot);

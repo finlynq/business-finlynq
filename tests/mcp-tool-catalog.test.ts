@@ -45,6 +45,10 @@ const evidenceContracts = {
     access: "WRITE",
     fields: ["assetId", "expectedVersion", "idempotencyKey", "kind", "purpose", "reason", "sourceNumber"],
   },
+  finlynq_daily_download_bank_statement_evidence: {
+    access: "READ",
+    fields: ["assetId", "statementImportId"],
+  },
   finlynq_daily_download_document_evidence: {
     access: "READ",
     fields: ["assetId", "sourceDocumentId"],
@@ -68,7 +72,7 @@ describe("remote MCP advertised tool catalog", () => {
     expect(new Set(names).size).toBe(names.length);
   });
 
-  it("advertises all four immutable evidence operations with their complete schemas", () => {
+  it("advertises all immutable evidence operations with their complete schemas", () => {
     for (const [name, expected] of Object.entries(evidenceContracts)) {
       const { tool, schema } = advertisedSchema(name);
       expect(tool.policy).toMatchObject({ group: "DAILY", access: expected.access });
@@ -90,6 +94,26 @@ describe("remote MCP advertised tool catalog", () => {
       expect(tool.description).toContain("stored");
       expect(tool.description).toContain("provider");
       expect(tool.description).toContain("FX_RATE_UNAVAILABLE");
+    }
+  });
+
+  it("advertises signed supplier adjustments and date-evaluated account context", () => {
+    const supplier = advertisedSchema("finlynq_daily_create_supplier_bill");
+    const lines = supplier.schema.properties?.lines as {
+      items?: { properties?: Record<string, { enum?: string[] }> };
+    };
+    expect(lines.items?.properties?.lineType?.enum).toEqual(["STANDARD", "ADJUSTMENT"]);
+    expect(supplier.tool.description).toContain("negative lines");
+    expect(supplier.tool.description).toContain("Net credits");
+
+    for (const name of [
+      "finlynq_daily_get_accounting_context",
+      "finlynq_setup_get_configuration",
+    ]) {
+      const { tool, schema } = advertisedSchema(name);
+      expect(schema.properties).toHaveProperty("accountingDate");
+      expect(schema.required ?? []).not.toContain("accountingDate");
+      expect(tool.description).toContain("accounting date");
     }
   });
 

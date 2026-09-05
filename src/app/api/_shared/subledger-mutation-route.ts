@@ -4,6 +4,7 @@ import { demoSessionLeaseLostResponse } from "@/app/api/_shared/demo-session-err
 import { logRouteFailure } from "@/app/api/_shared/route-failure-log";
 import type { TenantTransactionContext } from "@/db/transaction";
 import { safeFxRateUnavailableDetails } from "@/modules/fx/error-transport";
+import { safeSubledgerValidationDetails } from "@/modules/subledger/validation-errors";
 import { validateSameOriginMutation } from "@/modules/identity/request-security";
 import {
   requestPrincipal,
@@ -179,9 +180,18 @@ export function createMutationRoute<TBody, TResult extends MutationResult, TPara
         const expiredSession = demoSessionLeaseLostResponse(error);
         if (expiredSession) return expiredSession;
         const fxFailure = safeFxRateUnavailableDetails(error);
+        const subledgerFailure = safeSubledgerValidationDetails(error);
+        const { message: subledgerMessage, ...subledgerDetails } = subledgerFailure ?? {
+          message: undefined,
+        };
         logRouteFailure("subledger-mutation", requestId, error);
         return NextResponse.json(
-          { error: options.failureMessage, ...fxFailure, requestId },
+          {
+            error: subledgerMessage ?? options.failureMessage,
+            ...fxFailure,
+            ...subledgerDetails,
+            requestId,
+          },
           { status: 409, headers: noStoreHeaders },
         );
       }

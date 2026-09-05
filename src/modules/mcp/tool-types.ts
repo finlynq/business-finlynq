@@ -4,9 +4,12 @@ import {
   SAFE_FX_RATE_UNAVAILABLE_MESSAGE,
   safeFxRateUnavailableDetails,
 } from "@/modules/fx/error-transport";
+import { safeSubledgerValidationDetails } from "@/modules/subledger/validation-errors";
+import type { AccountCombinationFailure } from "@/modules/subledger/validation-errors";
 import type { McpAuthorizationSnapshot, McpToolPolicy } from "./connection-policy";
 import { authorizeMcpWrite, isMcpToolVisible, mcpToolAuthorizationMetadata } from "./connection-policy";
 import { beginMcpExecution, finishMcpExecution } from "./execution-store";
+import { isRetryableOperationError, MCP_RETRY_AFTER_SECONDS } from "./retryable";
 import { mcpSessionPrincipal, type McpConnectionPrincipal } from "./oauth-store";
 
 export type McpToolRuntime = Readonly<{
@@ -98,8 +101,30 @@ function toolError(error: unknown): Readonly<{
   code: string;
   message: string;
   providerFailureCode?: string;
+  retryAfterSeconds?: number;
+  remediation?: string;
+  lineNumber?: number;
+  accountCombinationFailures?: readonly AccountCombinationFailure[];
 }> {
-  const candidate = error && typeof error === "object" ? error as { code?: unknown; message?: unknown } : null;
+  const candidate = error && typeof error === "object"
+    ? error as { code?: unknown; message?: unknown; retryAfterSeconds?: unknown }
+    : null;
+  if (isRetryableOperationError(error)) {
+    const suppliedRetry = typeof candidate?.retryAfterSeconds === "number"
+      && Number.isInteger(candidate.retryAfterSeconds)
+      && candidate.retryAfterSeconds >= 1
+      && candidate.retryAfterSeconds <= 30
+      ? candidate.retryAfterSeconds
+      : MCP_RETRY_AFTER_SECONDS;
+    return {
+      code: "MCP_RETRYABLE",
+      message: `A temporary concurrency condition prevented this operation. Retry after ${suppliedRetry} second${suppliedRetry === 1 ? "" : "s"}.`,
+      retryAfterSeconds: suppliedRetry,
+    };
+  }
+  if (candidate?.code === "MCP_AUDIT_INTEGRITY") {
+    return { code: "MCP_AUDIT_INTEGRITY", message: "The MCP execution audit record failed its integrity check" };
+  }
   if (typeof candidate?.code === "string" && /^[0-9A-Z]{5}$/.test(candidate.code)) {
     return { code: "MCP_DATABASE_REJECTED", message: "The accounting operation was rejected by an integrity or concurrency control" };
   }
@@ -107,17 +132,28 @@ function toolError(error: unknown): Readonly<{
     ? candidate.code
     : "MCP_OPERATION_FAILED";
   const fxFailure = safeFxRateUnavailableDetails(error);
+  const subledgerFailure = safeSubledgerValidationDetails(error);
   const rawMessage = fxFailure
     ? SAFE_FX_RATE_UNAVAILABLE_MESSAGE
-    : typeof candidate?.message === "string"
-      ? candidate.message
-      : "The accounting operation could not be completed";
+    : subledgerFailure?.message
+      ?? (typeof candidate?.message === "string"
+        ? candidate.message
+        : "The accounting operation could not be completed");
   return {
-    code,
+    code: subledgerFailure?.code ?? code,
     message: rawMessage.replace(/[\r\n]+/g, " ").slice(0, 700),
     ...(fxFailure?.providerFailureCode
       ? { providerFailureCode: fxFailure.providerFailureCode }
       : {}),
+    ...(subledgerFailure ? {
+      remediation: subledgerFailure.remediation,
+      ...(subledgerFailure.lineNumber === undefined
+        ? {}
+        : { lineNumber: subledgerFailure.lineNumber }),
+      ...(subledgerFailure.accountCombinationFailures
+        ? { accountCombinationFailures: subledgerFailure.accountCombinationFailures }
+        : {}),
+    } : {}),
   };
 }
 
@@ -185,11 +221,21 @@ export function registerMcpTools(
         await finishMcpExecution(snapshot, execution, { status: "SUCCEEDED", approvalId, result });
         return definition.formatResult ? definition.formatResult(result) : successResult(result);
       } catch (error) {
+        const failure = toolError(error);
+        if (failure.code === "MCP_RETRYABLE") {
+          console.warn(JSON.stringify({
+            event: "mcp.tool.retryable",
+            tool: definition.policy.name,
+            requestId: execution?.requestId ?? "unavailable",
+            errorCode: failure.code,
+            retryAfterSeconds: failure.retryAfterSeconds,
+          }));
+        }
         if (execution) {
           try {
             await finishMcpExecution(snapshot, execution, {
               status: "FAILED",
-              errorCode: toolError(error).code,
+              errorCode: failure.code,
             });
           } catch {
             // Preserve the domain failure. Accounting writes also carry the

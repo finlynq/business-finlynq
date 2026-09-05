@@ -53,6 +53,9 @@ import { mcpMutationContext } from "./oauth-store";
 import { defineMcpTool, type McpToolDefinition, type McpToolRuntime } from "./tool-types";
 
 const emptySchema = z.object({}).strict();
+const accountingContextSchema = z.object({
+  accountingDate: z.iso.date().optional(),
+}).strict();
 const exactAmountSchema = z.string().trim().regex(/^\d+(?:\.\d{1,9})?$/);
 const journalLineSchema = z.object({
   accountCombinationId: z.uuid(),
@@ -243,9 +246,12 @@ export const DAILY_MCP_TOOLS: readonly McpToolDefinition[] = [
   defineMcpTool({
     policy: { name: "finlynq_daily_get_accounting_context", group: "DAILY", access: "READ", permission: PERMISSIONS.readMcpLedger },
     title: "Get accounting entry context",
-    description: "Use before creating a journal. Returns allowed entities, ledgers, open periods, functional currencies, and postable account-combination IDs for the connected organization.",
-    inputSchema: emptySchema,
-    invoke: (_args, runtime) => loadManualJournalOptions(runtime.sessionPrincipal),
+    description: "Use before creating a journal or AR/AP document. Returns allowed entities, ledgers, open periods, functional currencies, and tenant-owned account combinations with effective dates and validity on the requested accounting date.",
+    inputSchema: accountingContextSchema,
+    invoke: (args, runtime) => loadManualJournalOptions(
+      runtime.sessionPrincipal,
+      args.accountingDate,
+    ),
   }),
   defineMcpTool({
     policy: { name: "finlynq_daily_list_journals", group: "DAILY", access: "READ", permission: PERMISSIONS.readMcpLedger },
@@ -331,8 +337,8 @@ export const DAILY_MCP_TOOLS: readonly McpToolDefinition[] = [
   editDocumentTool({ name: "finlynq_daily_edit_sales_invoice", title: "Edit sales invoice draft", description: "Create a new immutable version of an existing sales-invoice draft. The exact current version is required. Set fxResolutionMode to PRESERVE and omit fx to carry the full current provenance when currency and accounting date are unchanged. Set RESOLVE and omit fx to run the organization's stored-first provider policy again. Set EXPLICIT and supply fx rate, source, and effective time for a client override; no permitted automatic observation fails with FX_RATE_UNAVAILABLE before persistence.", kind: "SALES_INVOICE", permission: PERMISSIONS.manageReceivables }),
   issueDocumentTool({ name: "finlynq_daily_issue_sales_invoice", title: "Issue sales invoice", description: "Issue and post the exact current sales-invoice draft, creating its tax evidence, journal, subledger event, and customer open item atomically.", kind: "SALES_INVOICE", permission: PERMISSIONS.postReceivables }),
   voidDocumentTool({ name: "finlynq_daily_void_sales_invoice", title: "Void sales invoice", description: "Void an issued sales invoice by creating immutable document and journal reversals in the selected open period.", kind: "SALES_INVOICE", permission: PERMISSIONS.voidReceivables }),
-  createDocumentTool({ name: "finlynq_daily_create_supplier_bill", title: "Create supplier bill draft", description: "Create an idempotent supplier-bill draft with exact invoice facts. Omit fx to resolve automatically: FinLynQ uses an eligible tenant-owned stored direct rate first, then the organization's selected provider source. Bank of Canada and ECB use official reference rates; Yahoo also requires its operator gate. If no permitted observation exists, the tool fails with FX_RATE_UNAVAILABLE before persistence. Supply explicit fx rate, source, and effective time to override automatic resolution for this bill.", kind: "SUPPLIER_BILL", permission: PERMISSIONS.managePayables }),
-  editDocumentTool({ name: "finlynq_daily_edit_supplier_bill", title: "Edit supplier bill draft", description: "Create a new immutable version of an existing supplier-bill draft. The exact current version is required. Set fxResolutionMode to PRESERVE and omit fx to carry the full current provenance when currency and accounting date are unchanged. Set RESOLVE and omit fx to run the organization's stored-first provider policy again. Set EXPLICIT and supply fx rate, source, and effective time for a client override; no permitted automatic observation fails with FX_RATE_UNAVAILABLE before persistence.", kind: "SUPPLIER_BILL", permission: PERMISSIONS.managePayables }),
+  createDocumentTool({ name: "finlynq_daily_create_supplier_bill", title: "Create supplier bill draft", description: "Create an idempotent supplier-bill draft with exact invoice facts. Positive bills may include negative lines only when lineType is ADJUSTMENT; tax is reversed line by line. Net credits and zero-gross bills are rejected with an explicit remediation. Omit fx to resolve automatically: FinLynQ uses an eligible tenant-owned stored direct rate first, then the organization's selected provider source. Bank of Canada and ECB use official reference rates; Yahoo also requires its operator gate. If no permitted observation exists, the tool fails with FX_RATE_UNAVAILABLE before persistence. Supply explicit fx rate, source, and effective time to override automatic resolution for this bill.", kind: "SUPPLIER_BILL", permission: PERMISSIONS.managePayables }),
+  editDocumentTool({ name: "finlynq_daily_edit_supplier_bill", title: "Edit supplier bill draft", description: "Create a new immutable version of an existing supplier-bill draft. Positive bills may include negative lines only when lineType is ADJUSTMENT; tax is reversed line by line. Net credits and zero-gross bills are rejected with an explicit remediation. The exact current version is required. Set fxResolutionMode to PRESERVE and omit fx to carry the full current provenance when currency and accounting date are unchanged. Set RESOLVE and omit fx to run the organization's stored-first provider policy again. Set EXPLICIT and supply fx rate, source, and effective time for a client override; no permitted automatic observation fails with FX_RATE_UNAVAILABLE before persistence.", kind: "SUPPLIER_BILL", permission: PERMISSIONS.managePayables }),
   issueDocumentTool({ name: "finlynq_daily_issue_supplier_bill", title: "Issue supplier bill", description: "Issue and post the exact current supplier-bill draft, creating its tax evidence, journal, subledger event, and supplier open item atomically.", kind: "SUPPLIER_BILL", permission: PERMISSIONS.postPayables }),
   voidDocumentTool({ name: "finlynq_daily_void_supplier_bill", title: "Void supplier bill", description: "Void an issued supplier bill by creating immutable document and journal reversals in the selected open period.", kind: "SUPPLIER_BILL", permission: PERMISSIONS.voidPayables }),
   settlementTool({ name: "finlynq_daily_record_customer_receipt", title: "Record customer receipt", description: "Record an actual customer receipt and allocate it to specific receivable open items. Omit fx for stored-first automatic resolution under the organization's provider policy; no permitted observation fails with FX_RATE_UNAVAILABLE before persistence. Supply explicit fx rate, source, and effective time to override automatic resolution for this transaction. This records settlement evidence; it does not initiate a bank payment.", kind: "CUSTOMER_RECEIPT", permission: PERMISSIONS.settleReceivables }),

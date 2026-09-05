@@ -29,13 +29,17 @@ export async function assertStorageFolder(drive: CloudDrive, location: StorageLo
     if (!current || current === location.rootId || seen.has(current)) throw outside();
     seen.add(current);
     const folder = await drive.file(current);
-    if (!folder.folder) throw outside();
-    if ((area !== "archive" && current === location.inboxId) || (area !== "inbox" && current === location.archiveId)) {
+    if (!folder.folder || folder.shortcut) throw outside();
+    if (current === location.inboxId) {
+      if (area === "archive") throw outside();
       assertDirectChild(folder, location.rootId);
       return;
     }
-    // The inbox is a flat queue; only Archive has a generated subtree.
-    if (area === "inbox" || current === location.inboxId || current === location.archiveId) throw outside();
+    if (current === location.archiveId) {
+      if (area === "inbox") throw outside();
+      assertDirectChild(folder, location.rootId);
+      return;
+    }
     current = folder.parentId;
   }
   throw outside();

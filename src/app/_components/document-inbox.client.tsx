@@ -55,12 +55,19 @@ export function DocumentInbox({ initialConnections, initialInbox, entities, perm
   }
   async function upload(connectionId: string, file: File) {
     await perform(async () => {
-      if (!file.size || file.size > 2 * 1024 * 1024 || !["application/pdf", "image/png", "image/jpeg"].includes(file.type)) throw new Error("Choose a PDF, PNG, or JPEG of up to 2 MiB.");
+      const fileExtension = /\.([A-Za-z0-9]+)$/.exec(file.name)?.[1].toLowerCase() ?? "";
+      const fallbackMimeType: Record<string, string> = {
+        pdf: "application/pdf", png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg",
+        csv: "text/csv", tsv: "text/tab-separated-values", txt: "text/plain",
+        xls: "application/vnd.ms-excel", xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      };
+      const mimeType = file.type || fallbackMimeType[fileExtension];
+      if (!file.size || file.size > 2 * 1024 * 1024 || !fallbackMimeType[fileExtension] || !mimeType) throw new Error("Choose a PDF, PNG, JPEG, CSV, TSV, TXT, XLS, or XLSX file of up to 2 MiB.");
       const buffer = await file.arrayBuffer(); const bytes = new Uint8Array(buffer);
       const sha256 = Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", buffer))).map((v) => v.toString(16).padStart(2, "0")).join("");
       const nameHash = Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(file.name)))).map((v) => v.toString(16).padStart(2, "0")).join("");
       let binary = ""; for (let i = 0; i < bytes.length; i += 8192) binary += String.fromCharCode(...bytes.subarray(i, i + 8192));
-      await request("upload", { connectionId, filename: file.name, mimeType: file.type, byteSize: file.size, sha256, contentBase64: btoa(binary), idempotencyKey: `browser:${nameHash}:${sha256}` });
+      await request("upload", { connectionId, filename: file.name, mimeType, byteSize: file.size, sha256, contentBase64: btoa(binary), idempotencyKey: `browser:${nameHash}:${sha256}` });
       await refresh(); setMessage("Uploaded to your cloud inbox. Ask your connected AI client to process it.");
     });
   }
@@ -98,7 +105,7 @@ export function DocumentInbox({ initialConnections, initialInbox, entities, perm
           {connection.archiveUrl && <a className="secondary-button" href={connection.archiveUrl} target="_blank" rel="noopener noreferrer">Open archive</a>}
           {connection.active && canManage(connection) && <>
             <button className="secondary-button" disabled={busy} onClick={() => void perform(async () => { const result = await request("sync", { connectionId: connection.id }); await refresh(); setMessage(result.hasMore ? "More files are available. Sync again to continue." : "Inbox sync complete."); })}>Sync inbox</button>
-            <label className="secondary-button">Upload document<input type="file" accept=".pdf,.png,.jpg,.jpeg" disabled={busy} onChange={(event) => { const file = event.currentTarget.files?.[0]; event.currentTarget.value = ""; if (file) void upload(connection.id, file); }} /></label>
+            <label className="secondary-button">Upload document<input type="file" accept=".pdf,.png,.jpg,.jpeg,.csv,.tsv,.txt,.xls,.xlsx" disabled={busy} onChange={(event) => { const file = event.currentTarget.files?.[0]; event.currentTarget.value = ""; if (file) void upload(connection.id, file); }} /></label>
           </>}
           {permissions.admin && <>
             <button className="secondary-button" disabled={busy || !reconnectConsent[connection.id] || !providers.find((p) => p.provider === connection.provider)?.configured} onClick={() => void perform(async () => { const result = await request("connect", { provider: connection.provider, legalEntityId: connection.legalEntityId, module: connection.module, label: connection.label, connectionId: connection.id, sharedWithOrganization: true, accessAcknowledged: reconnectConsent[connection.id] }); window.location.assign(result.authorizationUrl); })}>Reconnect</button>
@@ -113,7 +120,7 @@ export function DocumentInbox({ initialConnections, initialInbox, entities, perm
         <label>Inbox <select aria-label="Document inbox filter" value={connectionFilter} disabled={busy} onChange={(event) => { setConnectionFilter(event.target.value); void perform(() => refresh(filter, event.target.value)); }}><option value="">All inboxes</option>{connections.map((c) => <option value={c.id} key={c.id}>{c.label}</option>)}</select></label>
       </div>
       <div className="table-scroll"><table><thead><tr><th>Document</th><th>Status</th><th>Details</th><th>Action</th></tr></thead><tbody>
-        {inbox.items.map((item) => <tr key={item.id}><td>{item.canonicalName ?? item.filename}<p className="panel-note">{item.canonicalName ? item.filename : `${Math.ceil(item.byteSize / 1024)} KB`}</p></td><td>{statusLabel[item.status]}{item.leaseUntil && item.status === "CLAIMED" && <p className="panel-note">Claim until {new Date(item.leaseUntil).toLocaleTimeString()}</p>}</td><td>{item.reason ?? (item.sourceDocumentId ? "Linked to an accounting draft" : "")}</td><td>
+        {inbox.items.map((item) => <tr key={item.id}><td>{item.canonicalName ?? item.filename}<p className="panel-note">{item.canonicalName ? item.filename : `${Math.ceil(item.byteSize / 1024)} KB`}{item.sourcePath !== item.filename ? ` · ${item.sourcePath}` : ""}</p></td><td>{statusLabel[item.status]}{item.leaseUntil && item.status === "CLAIMED" && <p className="panel-note">Claim until {new Date(item.leaseUntil).toLocaleTimeString()}</p>}</td><td>{item.reason ?? (item.sourceDocumentId ? "Linked to an accounting draft" : "")}</td><td>
           {permissions[item.module] && (item.status === "FILING_FAILED" || item.status === "READY_TO_FILE") && <button className="secondary-button" disabled={busy} onClick={() => void perform(async () => { await request("retry", { itemId: item.id }); await refresh(); setMessage("Document filed."); })}>Retry filing</button>}
           {item.status === "NEEDS_REVIEW" && <span className="panel-note">Ask your AI client to review this item.</span>}
         </td></tr>)}

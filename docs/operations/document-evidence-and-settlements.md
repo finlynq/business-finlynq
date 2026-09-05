@@ -1,5 +1,9 @@
 # Supplier settlements and source-document evidence
 
+For signed supplier-bill adjustments, date-effective account diagnostics, and
+the supported financed-purchase composition, see
+[supplier-bill-adjustments-and-financing.md](supplier-bill-adjustments-and-financing.md).
+
 ## Non-cash supplier settlements
 
 Use `finlynq_daily_record_supplier_payment` for bank or non-cash settlements.
@@ -65,12 +69,56 @@ issuing and voiding preserve immutable evidence. Up to 20 assets can be linked
 to a version. Retrying a command with the same key and exact arguments does not
 duplicate assets or links. Changed arguments with a reused key are rejected.
 
+Bank-statement originals use the statement-specific
+`finlynq_daily_download_bank_statement_evidence` tool and browser URL described
+in the [bank statement import guide](bank-statement-import.md). They require
+`banking.read` and an exact retained import/completion-to-asset association;
+they are never authorized from an arbitrary asset ID.
+
 All write tools obey MCP connection policy/approval and live module manage
-permissions. Download requires live module read permission, tenant ownership,
-and a link on the exact requested source version. Filenames and bytes are
+permissions. Source-document download requires live module read permission,
+tenant ownership, and a link on the exact requested source version. Filenames and bytes are
 encrypted with the organization DEK and record/column-bound AES-GCM; historical
 key versions remain usable for retained evidence. Plaintext filenames and file
 contents are redacted from MCP execution/approval summaries.
+
+### Concurrent downloads and retry guidance
+
+Cloud evidence authorization and immutable source-version linkage are checked in
+a short tenant transaction. Provider metadata and content requests then run
+without holding a database transaction or the shared storage-connection row.
+FinLynQ verifies the stored byte count and SHA-256, rechecks folder boundaries,
+and reauthorizes the organization, live role, active connection, and exact
+source-version link after the provider transfer and before returning bytes. A
+role revocation, disconnect, moved file, changed version, or checksum mismatch
+therefore still fails closed.
+
+Independent invoice and receipt downloads, repeated reads of one asset, and
+reads by separate authorized users can run concurrently. The only serialized
+read path is renewal of an expired provider credential. It takes a bounded
+500 ms row-lock wait so rotated refresh tokens cannot race. Lock contention
+returns `MCP_RETRYABLE` with `retryAfterSeconds` between 1 and 30 through MCP,
+or HTTP 503 with `EVIDENCE_RETRYABLE`, `Retry-After`, and the same bounded value
+through the browser. Retry a download with the same `assetId` and
+`sourceDocumentId`; do not change either identifier.
+
+MCP execution audit rows use a server-generated UUID for both the primary key
+and correlated `mcp-tool:<uuid>` request identifier. Begin/finalize writes use
+a 500 ms per-attempt lock limit and retry a small bounded set of transient
+PostgreSQL failures. Repeating the same
+internal finalize operation verifies and reuses its existing terminal state,
+so an ambiguous commit does not create a second audit row or overwrite a
+conflicting outcome. Constraint and audit-integrity failures remain
+non-retryable as `MCP_DATABASE_REJECTED` and `MCP_AUDIT_INTEGRITY`, respectively.
+
+Retry logs contain only the event name, allowlisted tool/operation, generated
+request ID, stable error code, and bounded delay. Signed provider URLs,
+credentials, filenames, document bytes, and database messages are excluded.
+Use the response `X-Request-Id` for browser correlation. Live acceptance should
+run parallel invoice/receipt downloads against each configured provider,
+repeat one asset, include two authorized users, and confirm a cross-organization
+request remains denied. Mocked provider and disposable-PostgreSQL tests do not
+replace that live-provider check.
 
 ## Refresh ChatGPT after MCP catalog changes
 

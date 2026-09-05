@@ -8,6 +8,8 @@ export function LoginForm({ next, initialMessage, accountLoginEnabled }: { next:
   const [error, setError] = useState(initialMessage ?? "");
   const [busy, setBusy] = useState(false);
   const [mfaRequired, setMfaRequired] = useState(false);
+  const [trustedBrowserAllowed, setTrustedBrowserAllowed] = useState(false);
+  const [trustedBrowserDurationDays, setTrustedBrowserDurationDays] = useState(30);
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -19,10 +21,28 @@ export function LoginForm({ next, initialMessage, accountLoginEnabled }: { next:
       const response = await fetch("/api/auth/login", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email: form.get("email"), password: form.get("password"), otp: form.get("otp") || undefined, next }),
+        body: JSON.stringify({
+          email: form.get("email"),
+          password: form.get("password"),
+          otp: form.get("otp") || undefined,
+          trustBrowser: form.get("trustBrowser") === "on",
+          next,
+        }),
       });
-      const result = await response.json() as { error?: string; next?: string; mfaRequired?: boolean };
-      if (result.mfaRequired) setMfaRequired(true);
+      const result = await response.json() as {
+        error?: string;
+        next?: string;
+        mfaRequired?: boolean;
+        trustedBrowserAllowed?: boolean;
+        trustedBrowserDurationDays?: number;
+      };
+      if (result.mfaRequired) {
+        setMfaRequired(true);
+        setTrustedBrowserAllowed(result.trustedBrowserAllowed === true);
+        if ([7, 30, 90].includes(result.trustedBrowserDurationDays ?? 0)) {
+          setTrustedBrowserDurationDays(result.trustedBrowserDurationDays!);
+        }
+      }
       if (!response.ok || !result.next) throw new Error(result.error || "Sign-in failed.");
       window.location.assign(result.next);
     } catch (caught) {
@@ -40,6 +60,15 @@ export function LoginForm({ next, initialMessage, accountLoginEnabled }: { next:
             <label><span>Email address</span><input name="email" type="email" autoComplete="username" inputMode="email" required maxLength={254} /></label>
             <label><span>Password</span><input name="password" type="password" autoComplete="current-password" required maxLength={128} /></label>
             {mfaRequired && <label><span>Authenticator code</span><input name="otp" type="text" autoComplete="one-time-code" inputMode="numeric" pattern="[0-9]{6}" minLength={6} maxLength={6} required /><small>Enter the current six-digit code.</small></label>}
+            {mfaRequired && trustedBrowserAllowed && (
+              <label className={styles.checkboxLabel}>
+                <input name="trustBrowser" type="checkbox" />
+                <span>
+                  <strong>Trust this browser for {trustedBrowserDurationDays} days</strong><br />
+                  Future sign-ins here still require your password. Clearing cookies, private browsing, expiry, or revocation requires an authenticator code again. Sensitive actions continue to require a fresh MFA step-up.
+                </span>
+              </label>
+            )}
             <div className={styles.formRow}><span>Sessions expire after inactivity.</span><Link href="/forgot-password">Forgot password?</Link></div>
             <button className={styles.submitButton} type="submit" disabled={busy}>{busy ? "Signing in…" : "Sign in"}</button>
           </form>

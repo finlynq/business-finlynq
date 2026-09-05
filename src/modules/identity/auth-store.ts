@@ -14,6 +14,8 @@ export type LoginIdentity = Readonly<{
   organization_name: string;
   membership_id: string;
   role_label: string;
+  trusted_browser_enabled: boolean;
+  trusted_browser_duration_days: number;
 }>;
 
 export type StoredPrincipal = Readonly<{
@@ -58,6 +60,20 @@ export type SessionMfaStatus = Readonly<{
   mfa_required: boolean;
   active_factor: boolean;
   pending_enrollment: boolean;
+}>;
+
+export type TrustedBrowserRecord = Readonly<{
+  id: string;
+  browser_label: string;
+  created_at: Date;
+  last_used_at: Date | null;
+  expires_at: Date;
+}>;
+
+export type TrustedBrowserSessionIssuance = Readonly<{
+  sessionId: string;
+  trustedBrowserId: string;
+  trustedBrowserExpiresAt: Date;
 }>;
 
 export type ClaimedEmail = Readonly<{
@@ -118,7 +134,7 @@ export function consumeMfaEnrollmentLimits(setupTokenHash: string): Promise<Rate
 }
 
 export async function lookupLogin(emailHash: string): Promise<LoginIdentity[]> {
-  const result = await queryDatabase<LoginIdentity>("SELECT * FROM app.auth_lookup_login_v2($1)", [emailHash]);
+  const result = await queryDatabase<LoginIdentity>("SELECT * FROM app.auth_lookup_login_v3($1)", [emailHash]);
   return result.rows;
 }
 
@@ -147,6 +163,79 @@ export async function issueMfaUserSession(input: {
       input.replacedDemoSessionTokenHash ?? null],
   );
   return result.rows[0]?.session_id ?? null;
+}
+
+export async function issueMfaUserSessionWithTrust(input: {
+  userId: string; organizationId: string; membershipId: string; factorId: string; totpCounter: number;
+  tokenHash: string; trustedBrowserTokenHash: string; ipHash: string; userAgentHash: string;
+  browserLabel: string; requestId: string; replacedDemoSessionTokenHash?: string | null;
+}): Promise<TrustedBrowserSessionIssuance | null> {
+  const result = await queryDatabase<{
+    session_id: string | null;
+    trusted_browser_id: string | null;
+    trusted_browser_expires_at: Date | null;
+  }>(
+    `WITH issued AS MATERIALIZED (
+       SELECT * FROM app.auth_issue_mfa_user_session_trusted($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+     ), demo_replacement AS MATERIALIZED (
+       SELECT app.auth_revoke_session($12,$11) AS revoked
+       FROM issued
+       WHERE issued.session_id IS NOT NULL
+         AND $12::text IS NOT NULL
+     )
+     SELECT issued.session_id, issued.trusted_browser_id,
+            issued.trusted_browser_expires_at
+     FROM issued
+     LEFT JOIN demo_replacement ON true`,
+    [input.userId, input.organizationId, input.membershipId, input.factorId,
+      input.totpCounter, input.tokenHash, input.trustedBrowserTokenHash,
+      input.ipHash, input.userAgentHash, input.browserLabel, input.requestId,
+      input.replacedDemoSessionTokenHash ?? null],
+  );
+  const row = result.rows[0];
+  if (!row?.session_id || !row.trusted_browser_id || !row.trusted_browser_expires_at) return null;
+  return {
+    sessionId: row.session_id,
+    trustedBrowserId: row.trusted_browser_id,
+    trustedBrowserExpiresAt: new Date(row.trusted_browser_expires_at),
+  };
+}
+
+export async function issueTrustedBrowserUserSession(input: {
+  userId: string; organizationId: string; membershipId: string;
+  trustedBrowserTokenHash: string; replacementTrustedBrowserTokenHash: string;
+  sessionTokenHash: string; ipHash: string; userAgentHash: string; requestId: string;
+  replacedDemoSessionTokenHash?: string | null;
+}): Promise<TrustedBrowserSessionIssuance | null> {
+  const result = await queryDatabase<{
+    session_id: string | null;
+    trusted_browser_id: string | null;
+    trusted_browser_expires_at: Date | null;
+  }>(
+    `WITH issued AS MATERIALIZED (
+       SELECT * FROM app.auth_issue_trusted_browser_user_session($1,$2,$3,$4,$5,$6,$7,$8,$9)
+     ), demo_replacement AS MATERIALIZED (
+       SELECT app.auth_revoke_session($10,$9) AS revoked
+       FROM issued
+       WHERE issued.session_id IS NOT NULL
+         AND $10::text IS NOT NULL
+     )
+     SELECT issued.session_id, issued.trusted_browser_id,
+            issued.trusted_browser_expires_at
+     FROM issued
+     LEFT JOIN demo_replacement ON true`,
+    [input.userId, input.organizationId, input.membershipId,
+      input.trustedBrowserTokenHash, input.replacementTrustedBrowserTokenHash,
+      input.sessionTokenHash, input.ipHash, input.userAgentHash, input.requestId,
+      input.replacedDemoSessionTokenHash ?? null],
+  );
+  const row = result.rows[0];
+  if (!row?.session_id || !row.trusted_browser_id || !row.trusted_browser_expires_at) return null;
+  return {
+    sessionId: row.session_id,
+    trustedBrowserId: row.trusted_browser_id,
+    trustedBrowserExpiresAt: new Date(row.trusted_browser_expires_at),
+  };
 }
 
 export async function issuePasswordUserSession(input: {
@@ -215,6 +304,47 @@ export async function resolveStoredSession(tokenHash: string, userAgentHash: str
 export async function revokeStoredSession(tokenHash: string, requestId: string): Promise<boolean> {
   const result = await queryDatabase<{ revoked: boolean }>("SELECT app.auth_revoke_session($1, $2) AS revoked", [tokenHash, requestId]);
   return result.rows[0]?.revoked ?? false;
+}
+
+export async function trustedBrowsersForSession(
+  sessionId: string,
+  requestId: string,
+): Promise<readonly TrustedBrowserRecord[]> {
+  const result = await queryDatabase<TrustedBrowserRecord>(
+    "SELECT * FROM app.auth_trusted_browsers_for_session($1,$2)",
+    [sessionId, requestId],
+  );
+  return result.rows;
+}
+
+export async function revokeTrustedBrowser(input: {
+  sessionId: string; trustedBrowserId: string; requestId: string;
+}): Promise<boolean> {
+  const result = await queryDatabase<{ revoked: boolean }>(
+    "SELECT app.auth_revoke_trusted_browser($1,$2,$3) AS revoked",
+    [input.sessionId, input.trustedBrowserId, input.requestId],
+  );
+  return result.rows[0]?.revoked ?? false;
+}
+
+export async function revokeAllTrustedBrowsers(input: {
+  sessionId: string; requestId: string;
+}): Promise<number> {
+  const result = await queryDatabase<{ revoked_count: string }>(
+    "SELECT app.auth_revoke_all_trusted_browsers($1,$2)::text AS revoked_count",
+    [input.sessionId, input.requestId],
+  );
+  return Number(result.rows[0]?.revoked_count ?? "0");
+}
+
+export async function logoutAllSessions(input: {
+  sessionId: string; requestId: string;
+}): Promise<number> {
+  const result = await queryDatabase<{ revoked_count: string }>(
+    "SELECT app.auth_logout_all_sessions($1,$2)::text AS revoked_count",
+    [input.sessionId, input.requestId],
+  );
+  return Number(result.rows[0]?.revoked_count ?? "0");
 }
 
 export async function queuePasswordReset(input: {

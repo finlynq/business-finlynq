@@ -31,6 +31,7 @@ describe("runtime role reconciliation contract", () => {
     for (const table of [
       "bank_connections", "bank_connection_credential_events", "bank_external_accounts", "bank_sync_runs",
       "bank_observations", "bank_observation_versions", "bank_balance_anchors",
+      "bank_statement_imports", "bank_statement_import_rows",
       "bank_reconciliation_sessions", "bank_reconciliation_voids", "bank_match_allocations",
       "bank_match_allocation_voids", "bank_rules", "bank_rule_runs",
       "bank_draft_proposals",

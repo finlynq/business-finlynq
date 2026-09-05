@@ -13,6 +13,7 @@ const workspace: OrganizationAdministrationDto = {
   displayName: "Northstar Demo Group",
   settingsVersion: 2,
   isDemo: true,
+  trustedBrowserPolicy: { enabled: false, durationDays: 30 },
   permissions: {
     canManageSettings: true,
     canReadMembers: true,
@@ -48,6 +49,9 @@ describe("organization settings UI", () => {
   it("exposes standard profile, invitation, fixed-role, and access controls in demo", () => {
     const markup = renderToStaticMarkup(<OrganizationSettings workspace={workspace} />);
     expect(markup).toContain("Business profile");
+    expect(markup).toContain("Trusted-browser MFA policy");
+    expect(markup).toContain("Allow users to trust a private browser");
+    expect(markup).toContain("30 days");
     expect(markup).toContain("Create synthetic invitation");
     expect(markup).toContain("No email is sent");
     expect(markup).toContain("Members &amp; fixed roles");

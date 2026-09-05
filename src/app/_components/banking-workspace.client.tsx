@@ -29,6 +29,44 @@ function displayAmount(amount: string, currency: string): string {
   return formatExactCurrencyAmount(amount, currency);
 }
 
+type BankingAccount = BankingWorkspaceDto["accounts"][number];
+type BankMappingCandidate = BankingWorkspaceDto["cashAccounts"][number];
+
+export function isFirstSimpleFinMapping(
+  workspace: Pick<BankingWorkspaceDto, "connections">,
+  account: BankingAccount,
+): boolean {
+  return account.accountCombinationId === null
+    && workspace.connections.some((connection) => (
+      connection.id === account.connectionId && connection.provider === "SIMPLEFIN"
+    ));
+}
+
+export function bankMappingCandidates(
+  workspace: Pick<BankingWorkspaceDto, "connections" | "cashAccounts">,
+  account: BankingAccount,
+): readonly BankMappingCandidate[] {
+  if (isFirstSimpleFinMapping(workspace, account)) return workspace.cashAccounts;
+  const expectedClass = account.accountKind === "CREDIT_CARD" ? "LIABILITY" : "ASSET";
+  return workspace.cashAccounts.filter((candidate) => candidate.accountClass === expectedClass);
+}
+
+export function parseBankMappingSelection(selection: string): Readonly<{
+  legalEntityId: string;
+  ledgerId: string;
+  cashAccountCombinationId: string;
+  accountKind: "CASH" | "CREDIT_CARD";
+}> | null {
+  const [legalEntityId, ledgerId, cashAccountCombinationId, accountClass, ...extra] = selection.split("|");
+  if (!legalEntityId || !ledgerId || !cashAccountCombinationId || extra.length > 0) return null;
+  const accountKind = accountClass === "ASSET"
+    ? "CASH" as const
+    : accountClass === "LIABILITY" ? "CREDIT_CARD" as const : null;
+  return accountKind
+    ? { legalEntityId, ledgerId, cashAccountCombinationId, accountKind }
+    : null;
+}
+
 function Feedback({ message, error }: { message: string; error: boolean }) {
   if (!message) return null;
   return <p role={error ? "alert" : "status"} className={`${styles.feedback} ${error ? styles.error : ""}`}>{message}</p>;
@@ -101,19 +139,20 @@ function ConnectionView({ workspace }: { workspace: BankingWorkspaceDto }) {
   }
 
   async function mapAccount(accountId: string, selection: string) {
-    const [legalEntityId, ledgerId, cashAccountCombinationId] = selection.split("|");
-    if (!legalEntityId || !ledgerId || !cashAccountCombinationId) return;
+    const mapping = parseBankMappingSelection(selection);
+    if (!mapping) return;
     setBusy(true); setMessage(""); setError(false);
     try {
-      await mutation(`/api/banking/accounts/${accountId}/mapping`, "PUT", { legalEntityId, ledgerId, cashAccountCombinationId });
-      setMessage("The bank account was mapped to the selected company cash account.");
+      await mutation(`/api/banking/accounts/${accountId}/mapping`, "PUT", mapping);
+      setMessage("The banking account was mapped to the selected company ledger account.");
       router.refresh();
     } catch (caught) {
       setError(true); setMessage(caught instanceof Error ? caught.message : "Mapping failed.");
     } finally { setBusy(false); }
   }
 
-  const canConnect = workspace.feedEnabled && workspace.permissions.connect && workspace.connections.length === 0;
+  const hasSimpleFin = workspace.connections.some((connection) => connection.provider === "SIMPLEFIN");
+  const canConnect = workspace.feedEnabled && workspace.permissions.connect && !hasSimpleFin;
   return <div className={styles.stack}>
     <Feedback message={message} error={error} />
     {canConnect && <section className="panel" aria-labelledby="simplefin-connect-title">
@@ -135,22 +174,23 @@ function ConnectionView({ workspace }: { workspace: BankingWorkspaceDto }) {
         <div><span>Last successful sync</span><strong>{displayDate(connection.lastSyncedAt)}</strong></div>
         <div><span>Latest safe error code</span><strong>{connection.lastErrorCode ?? "None"}</strong></div>
       </div>
-      {workspace.permissions.sync && <div className="panel-actions"><button className="primary-button" type="button" onClick={() => { void sync(connection.id); }} disabled={busy || connection.status !== "ACTIVE"}>{busy ? "Working…" : "Sync last 90 days"}</button></div>}
-      {workspace.permissions.connect && !workspace.isDemo && <form className={styles.form} onSubmit={(event) => { void reauthorize(event, connection.id); }}>
+      {connection.provider === "SIMPLEFIN" && workspace.permissions.sync && <div className="panel-actions"><button className="primary-button" type="button" onClick={() => { void sync(connection.id); }} disabled={busy || connection.status !== "ACTIVE"}>{busy ? "Working…" : "Sync last 90 days"}</button></div>}
+      {connection.provider === "SIMPLEFIN" && workspace.permissions.connect && !workspace.isDemo && <form className={styles.form} onSubmit={(event) => { void reauthorize(event, connection.id); }}>
         {workspace.feedEnabled && <label><span>{connection.status === "ACTIVE" ? "Replace credential with a new one-time setup token" : "Reauthorize with a new one-time setup token"}</span><input name="setupToken" type="password" minLength={20} maxLength={4096} required autoComplete="off" spellCheck={false} /></label>}
         <div className={styles.actions}>{workspace.feedEnabled && <button className="secondary-button" disabled={busy}>{connection.status === "ACTIVE" ? "Rotate encrypted credential" : "Reauthorize connection"}</button>}{connection.status !== "DISABLED" && <button className="secondary-button" type="button" disabled={busy} onClick={() => { void disable(connection.id); }}>Disable feed</button>}</div>
         <small>Credential replacement and disabling require a recent authenticator step-up. The provider row, imported evidence, and append-only credential-version record are retained.</small>
       </form>}
+      {connection.provider === "FILE_IMPORT" && <p className={styles.secretNote}>Created automatically for reviewed document-inbox statement imports. It has no external credential and cannot synchronize a provider.</p>}
     </section>)}
 
     {workspace.accounts.length > 0 && <section className="panel" aria-labelledby="bank-accounts-title">
       <div className="panel-heading"><div><p className="eyebrow">Explicit ledger mapping</p><h2 id="bank-accounts-title">Connected accounts</h2></div><span className="attention-count">{workspace.accounts.length}</span></div>
       <div className="table-scroll" tabIndex={0}>
-        <table><thead><tr><th>Bank account</th><th>Currency / balance</th><th>Company cash account</th><th>Observations</th></tr></thead>
+        <table><thead><tr><th>Banking account</th><th>Currency / balance</th><th>Company ledger account</th><th>Observations</th></tr></thead>
           <tbody>{workspace.accounts.map((account) => <tr key={account.id}>
-            <td><strong>{account.displayName}</strong><small>{account.active ? "Active" : "Inactive"}</small></td>
+            <td><strong>{account.displayName}</strong><small>{isFirstSimpleFinMapping(workspace, account) ? "Choose Cash or Credit card when mapping" : account.accountKind === "CREDIT_CARD" ? "Credit card" : "Cash"} · {account.active ? "Active" : "Inactive"}</small></td>
             <td><strong>{account.latestBalance === null ? account.currencyCode : displayAmount(account.latestBalance, account.currencyCode)}</strong><small>{account.latestBalanceAt ? `As of ${displayDate(account.latestBalanceAt)}` : "No balance anchor"}</small></td>
-            <td>{account.accountCombinationId ? <><strong>{account.entityCode} · {account.accountCode}</strong><small>{account.accountName}</small></> : workspace.permissions.reconcilePrepare ? <div className={styles.rowAction}><select aria-label={`Cash account for ${account.displayName}`} defaultValue="" onChange={(event) => { void mapAccount(account.id, event.target.value); }} disabled={busy}><option value="">Choose a company cash account…</option>{workspace.cashAccounts.map((cash) => <option key={cash.id} value={`${cash.legalEntityId}|${cash.ledgerId}|${cash.id}`}>{cash.entityCode} · {cash.accountCode} · {cash.accountName} · ledger {cash.currencyCode}</option>)}</select></div> : <span>Not mapped</span>}</td>
+            <td>{account.accountCombinationId ? <><strong>{account.entityCode} · {account.accountCode}</strong><small>{account.accountName}</small></> : workspace.permissions.reconcilePrepare ? <div className={styles.rowAction}><select aria-label={`Ledger account for ${account.displayName}`} defaultValue="" onChange={(event) => { void mapAccount(account.id, event.target.value); }} disabled={busy}><option value="">Choose a company ledger account…</option>{bankMappingCandidates(workspace, account).map((candidate) => <option key={candidate.id} value={`${candidate.legalEntityId}|${candidate.ledgerId}|${candidate.id}|${candidate.accountClass}`}>{candidate.accountClass === "LIABILITY" ? "Credit card" : "Cash"} · {candidate.entityCode} · {candidate.accountCode} · {candidate.accountName} · ledger {candidate.currencyCode}</option>)}</select></div> : <span>Not mapped</span>}</td>
             <td>{account.observationCount}</td>
           </tr>)}</tbody></table>
       </div>

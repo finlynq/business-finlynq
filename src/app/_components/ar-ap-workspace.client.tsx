@@ -11,7 +11,11 @@ import type {
   SubledgerWorkspaceDocumentDto,
   SubledgerWorkspaceDto,
 } from "@/modules/subledger/workspace";
-import type { SettlementDocumentSnapshot } from "@/modules/subledger/document-model";
+import type {
+  BusinessDocumentSnapshot,
+  SettlementDocumentSnapshot,
+} from "@/modules/subledger/document-model";
+import type { AccountCombinationFailure } from "@/modules/subledger/validation-errors";
 import {
   displayExactMoney,
   exactAllocationTotal,
@@ -33,7 +37,7 @@ import { EmptyState, StatusPill } from "./ui";
 import { RegisterPaginationNav } from "./register-pagination";
 import styles from "./ar-ap-register.module.css";
 
-type TaxCategory =
+export type TaxCategory =
   | "STANDARD"
   | "ZERO_RATED"
   | "EXEMPT"
@@ -41,12 +45,15 @@ type TaxCategory =
   | "MARKETPLACE_COLLECTED"
   | "OUT_OF_SCOPE";
 
-type DocumentLineDraft = Readonly<{
+export type DocumentLineDraft = Readonly<{
   key: string;
   description: string;
   accountCombinationId: string;
   netAmount: string;
+  lineType: "STANDARD" | "ADJUSTMENT";
   category: TaxCategory;
+  recoverablePercent: string;
+  evidenceReference: string;
 }>;
 
 type BusinessDraft = Readonly<{
@@ -66,8 +73,6 @@ type BusinessDraft = Readonly<{
   taxAccountCombinationId: string;
   fxRoundingAccountCombinationId: string;
   description: string;
-  recoverablePercent: string;
-  evidenceReference: string;
   lines: readonly DocumentLineDraft[];
 }>;
 
@@ -131,7 +136,24 @@ export function businessDraftFxMutationFields(
   };
 }
 
-type ApiError = Readonly<{ error?: string }>;
+type ApiError = Readonly<{
+  error?: string;
+  code?: string;
+  remediation?: string;
+  lineNumber?: number;
+  accountCombinationFailures?: readonly AccountCombinationFailure[];
+}>;
+
+export function subledgerMutationErrorMessage(result: ApiError): string {
+  const message = result.error ?? "The accounting operation could not be completed";
+  const failures = result.accountCombinationFailures?.map((failure) =>
+    failure.field + " (" + failure.failureCodes.join(", ") + ")").join("; ");
+  return [
+    message,
+    failures ? "Invalid combinations: " + failures + "." : "",
+    result.remediation ?? "",
+  ].filter(Boolean).join(" ");
+}
 
 function randomKey(prefix: string): string {
   return `${prefix}:${globalThis.crypto.randomUUID()}`;
@@ -219,6 +241,41 @@ export function businessDraftCanPreserveFx(
     && document.snapshot.accountingDate === draft.accountingDate;
 }
 
+export function businessDocumentLineDraftsFromSnapshot(
+  snapshot: Pick<BusinessDocumentSnapshot, "kind" | "lines">,
+): readonly DocumentLineDraft[] {
+  return snapshot.lines.map((line) => ({
+    key: line.lineNumber.toString(),
+    description: line.description,
+    accountCombinationId: line.accountCombinationId,
+    netAmount: line.netAmount,
+    lineType: line.lineType ?? "STANDARD",
+    category: line.tax.category,
+    recoverablePercent: snapshot.kind === "SUPPLIER_BILL"
+      ? line.tax.recoverablePercent ?? "100"
+      : "",
+    evidenceReference: line.tax.evidenceReference ?? "",
+  }));
+}
+
+export function businessDocumentLineTaxMutationFields(
+  line: Pick<DocumentLineDraft, "recoverablePercent" | "evidenceReference">,
+  ownerModule: "receivables" | "payables",
+): Readonly<{ evidenceReference?: string; recoverablePercent?: string }> {
+  return {
+    ...(line.evidenceReference ? { evidenceReference: line.evidenceReference } : {}),
+    ...(ownerModule === "payables" && line.recoverablePercent
+      ? { recoverablePercent: line.recoverablePercent }
+      : {}),
+  };
+}
+
+function taxEvidenceReferenceRequired(packKey: string, category: TaxCategory): boolean {
+  return category === "RESALE"
+    || category === "MARKETPLACE_COLLECTED"
+    || (packKey === "generic.unsupported" && category !== "STANDARD");
+}
+
 function defaultDocumentDraft(
   workspace: SubledgerWorkspaceDto,
   document?: SubledgerWorkspaceDocumentDto,
@@ -242,15 +299,7 @@ function defaultDocumentDraft(
       taxAccountCombinationId: snapshot.taxAccountCombinationId ?? "",
       fxRoundingAccountCombinationId: snapshot.fxRoundingAccountCombinationId ?? "",
       description: snapshot.description,
-      recoverablePercent: snapshot.lines[0]?.tax.recoverablePercent ?? "100",
-      evidenceReference: snapshot.lines[0]?.tax.evidenceReference ?? "",
-      lines: snapshot.lines.map((line) => ({
-        key: line.lineNumber.toString(),
-        description: line.description,
-        accountCombinationId: line.accountCombinationId,
-        netAmount: line.netAmount,
-        category: line.tax.category,
-      })),
+      lines: businessDocumentLineDraftsFromSnapshot(snapshot),
     };
   }
 
@@ -292,8 +341,6 @@ function defaultDocumentDraft(
     taxAccountCombinationId: preferredAccount(entity?.taxAccounts ?? [], taxCode),
     fxRoundingAccountCombinationId: preferredAccount(entity?.roundingAccounts ?? [], "7190"),
     description: "",
-    recoverablePercent: workspace.ownerModule === "payables" ? "100" : "",
-    evidenceReference: "",
     lines: [{
       key: randomKey("line"),
       description: "",
@@ -302,7 +349,10 @@ function defaultDocumentDraft(
         workspace.ownerModule === "receivables" ? "4100" : "6100",
       ),
       netAmount: "",
+      lineType: "STANDARD",
       category: "STANDARD",
+      recoverablePercent: workspace.ownerModule === "payables" ? "100" : "",
+      evidenceReference: "",
     }],
   };
 }
@@ -379,7 +429,7 @@ async function mutate(url: string, method: "POST" | "PATCH", body: unknown): Pro
     body: JSON.stringify(body),
   });
   const result = await response.json().catch(() => ({})) as ApiError;
-  if (!response.ok) throw new Error(result.error ?? "The accounting operation could not be completed");
+  if (!response.ok) throw new Error(subledgerMutationErrorMessage(result));
 }
 
 function focusPanel(id = "subledger-composer"): void {
@@ -488,10 +538,11 @@ export function DocumentDetails({
           <div className="table-scroll" tabIndex={0}>
             <table className={styles.detailTable}>
               <caption className="sr-only">{documentLabel} accounting and tax lines</caption>
-              <thead><tr><th scope="col">Line</th><th scope="col">Description</th><th scope="col">Account</th><th scope="col">Tax treatment</th><th scope="col">Net</th><th scope="col">Tax</th></tr></thead>
+              <thead><tr><th scope="col">Line</th><th scope="col">Type</th><th scope="col">Description</th><th scope="col">Account</th><th scope="col">Tax treatment</th><th scope="col">Net</th><th scope="col">Tax</th></tr></thead>
               <tbody>{businessSnapshot.lines.map((line) => (
                 <tr key={line.lineNumber}>
                   <td>{line.lineNumber}</td>
+                  <td>{line.lineType === "ADJUSTMENT" ? "Adjustment / credit" : "Standard"}</td>
                   <td>{line.description}</td>
                   <td>{accountLabel(entity, line.accountCombinationId)}</td>
                   <td>{line.tax.category.replaceAll("_", " ")}</td>
@@ -912,6 +963,7 @@ export function ArApWorkspace({
         description: line.description,
         accountCombinationId: line.accountCombinationId,
         netAmount: line.netAmount,
+        lineType: line.lineType,
         tax: {
           packKey: tax.packKey,
           category: line.category,
@@ -920,12 +972,7 @@ export function ArApWorkspace({
           ...(tax.destinationCity ? { destinationCity: tax.destinationCity } : {}),
           ...(tax.locationCode ? { locationCode: tax.locationCode } : {}),
           ...(tax.registrationReference ? { registrationId: tax.registrationReference } : {}),
-          ...(documentDraft.evidenceReference
-            ? { evidenceReference: documentDraft.evidenceReference }
-            : {}),
-          ...(workspace.ownerModule === "payables" && documentDraft.recoverablePercent
-            ? { recoverablePercent: documentDraft.recoverablePercent }
-            : {}),
+          ...businessDocumentLineTaxMutationFields(line, workspace.ownerModule),
         },
       })),
       idempotencyKey: globalThis.crypto.randomUUID(),
@@ -1331,7 +1378,12 @@ export function ArApWorkspace({
                   description: "",
                   accountCombinationId: draft.lines[0]?.accountCombinationId ?? documentEntity.lineAccounts[0]?.combinationId ?? "",
                   netAmount: "",
+                  lineType: "STANDARD",
                   category: "STANDARD",
+                  recoverablePercent: workspace.ownerModule === "payables"
+                    ? draft.lines.at(-1)?.recoverablePercent ?? "100"
+                    : "",
+                  evidenceReference: "",
                 }],
               }))}>＋ Add line</button>
             </div>
@@ -1344,6 +1396,16 @@ export function ArApWorkspace({
                     <input value={line.description} onChange={(event) => updateLine(line.key, { description: event.target.value })} maxLength={500} required />
                   </label>
                   <AccountSelect label={workspace.ownerModule === "receivables" ? "Revenue account" : "Expense / asset account"} value={line.accountCombinationId} accounts={documentEntity.lineAccounts} onChange={(value) => updateLine(line.key, { accountCombinationId: value })} />
+                  {workspace.ownerModule === "payables" && (
+                    <label className="full-field">
+                      <span>Line type</span>
+                      <select value={line.lineType} onChange={(event) => updateLine(line.key, { lineType: event.target.value as "STANDARD" | "ADJUSTMENT" })}>
+                        <option value="STANDARD">Standard charge</option>
+                        <option value="ADJUSTMENT">Adjustment / credit</option>
+                      </select>
+                      <small>Negative amounts require Adjustment / credit and reverse their own tax.</small>
+                    </label>
+                  )}
                   <label className="full-field">
                     <span>Net amount</span>
                     <input inputMode="decimal" value={line.netAmount} onChange={(event) => updateLine(line.key, { netAmount: event.target.value })} placeholder="0.00" required />
@@ -1356,6 +1418,17 @@ export function ArApWorkspace({
                       <option value="OUT_OF_SCOPE">Out of scope</option>
                     </select>
                   </label>
+                  {workspace.ownerModule === "payables" && (
+                    <label className="full-field">
+                      <span>Recoverable tax %</span>
+                      <input inputMode="decimal" value={line.recoverablePercent} onChange={(event) => updateLine(line.key, { recoverablePercent: event.target.value })} />
+                    </label>
+                  )}
+                  <label className="full-field">
+                    <span>Tax evidence reference</span>
+                    <input value={line.evidenceReference} onChange={(event) => updateLine(line.key, { evidenceReference: event.target.value })} maxLength={200} required={taxEvidenceReferenceRequired(documentEntity.tax.packKey, line.category)} />
+                    <small>Optional line-specific invoice, exemption, resale, or marketplace evidence reference.</small>
+                  </label>
                   <button className="icon-button remove-line" type="button" aria-label={`Remove line ${index + 1}`} onClick={() => setDocumentDraft((draft) => ({ ...draft, lines: draft.lines.filter((candidate) => candidate.key !== line.key) }))} disabled={documentDraft.lines.length === 1}>×</button>
                 </fieldset>
               ))}
@@ -1364,27 +1437,11 @@ export function ArApWorkspace({
             <div className="form-grid form-grid-three">
               <AccountSelect label={workspace.ownerModule === "receivables" ? "Tax payable account" : "Recoverable, expense, or use-tax payable account"} value={documentDraft.taxAccountCombinationId} accounts={documentEntity.taxAccounts} onChange={(value) => setDocumentDraft((draft) => ({ ...draft, taxAccountCombinationId: value }))} />
               <AccountSelect label="FX rounding account" value={documentDraft.fxRoundingAccountCombinationId} accounts={documentEntity.roundingAccounts} onChange={(value) => setDocumentDraft((draft) => ({ ...draft, fxRoundingAccountCombinationId: value }))} required={false} />
-              {workspace.ownerModule === "payables" ? (
-                <label className="full-field">
-                  <span>Recoverable tax %</span>
-                  <input inputMode="decimal" value={documentDraft.recoverablePercent} onChange={(event) => setDocumentDraft((draft) => ({ ...draft, recoverablePercent: event.target.value }))} />
-                </label>
-              ) : (
-                <label className="full-field">
-                  <span>Tax jurisdiction</span>
-                  <input value={`${documentEntity.tax.destinationCountry}-${documentEntity.tax.destinationRegion} · ${documentEntity.tax.packKey}`} readOnly />
-                </label>
-              )}
-            </div>
-            {documentDraft.lines.some((line) =>
-              line.category === "RESALE" ||
-              line.category === "MARKETPLACE_COLLECTED" ||
-              (documentEntity.tax.packKey === "generic.unsupported" && line.category !== "STANDARD")) && (
               <label className="full-field">
-                <span>Tax evidence reference</span>
-                <input value={documentDraft.evidenceReference} onChange={(event) => setDocumentDraft((draft) => ({ ...draft, evidenceReference: event.target.value }))} maxLength={200} required />
+                <span>Tax jurisdiction</span>
+                <input value={`${documentEntity.tax.destinationCountry}-${documentEntity.tax.destinationRegion} · ${documentEntity.tax.packKey}`} readOnly />
               </label>
-            )}
+            </div>
             <p className="form-footnote">
               Tax pack {documentEntity.tax.packKey} is snapshotted line by line. FX source and effective time are stored immutably with every version.
               {documentEntity.tax.packKey === "generic.unsupported" && " Standard transactions remain in manual review until a jurisdiction pack is installed; an evidenced out-of-scope treatment may be recorded explicitly."}

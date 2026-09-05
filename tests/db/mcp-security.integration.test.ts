@@ -1,6 +1,8 @@
 import { randomUUID } from "node:crypto";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { Pool, type PoolClient } from "pg";
+import { beginMcpExecution, finishMcpExecution } from "@/modules/mcp/execution-store";
+import type { McpAuthorizationSnapshot } from "@/modules/mcp/connection-policy";
 
 const ownerUrl = process.env.TEST_DATABASE_URL;
 const appUrl = process.env.TEST_APP_DATABASE_URL;
@@ -100,13 +102,98 @@ runDatabaseTests("remote MCP PostgreSQL boundary", () => {
         [ids.org],
       );
       expect(visible.rows.map((row) => row.id)).toEqual([ids.ownConnection]);
+      await client.query("SAVEPOINT forged_connection");
       await expect(client.query(
         `INSERT INTO mcp_connections (
            organization_id, user_id, membership_id, client_id, client_name, scopes
          ) VALUES ($1,$2,$3,$4,'Forged client',ARRAY['mcp:daily:read'])`,
         [ids.org, ids.otherActor, ids.otherMembership, ids.clientId],
       )).rejects.toThrow(/row-level security/i);
+      await client.query("ROLLBACK TO SAVEPOINT forged_connection");
     });
+  });
+
+  it("records concurrent read executions with collision-safe IDs and idempotent finalization", async () => {
+    const snapshot: McpAuthorizationSnapshot = {
+      principal: {
+        connectionId: ids.ownConnection,
+        organizationId: ids.org,
+        userId: ids.actor,
+        membershipId: ids.membership,
+        organizationName: "MCP integration organization",
+        roleLabel: "MCP test",
+        clientId: ids.clientId,
+        clientName: "Own client",
+        scopes: ["mcp:daily:read"],
+        resource: "https://finlynq.test/mcp",
+        dailyMode: "READ_ONLY",
+        setupMode: "OFF",
+        toolOverrides: {},
+        tokenExpiresAt: new Date(Date.now() + 60_000),
+        organizationWritesEnabled: true,
+      },
+      permissions: new Set(),
+      dailyMode: "READ_ONLY",
+      setupMode: "OFF",
+      toolOverrides: {},
+      directWriteSessionId: null,
+      directWriteStepUpExpiresAt: null,
+      connectionVersion: 1,
+    };
+    const tool = { name: "finlynq_daily_download_document_evidence", group: "DAILY" as const, access: "READ" as const };
+    const executions = await Promise.all(Array.from({ length: 24 }, (_, index) => (
+      beginMcpExecution(snapshot, tool, { assetId: randomUUID(), sourceDocumentId: randomUUID(), index })
+    )));
+    expect(new Set(executions.map((execution) => execution.id)).size).toBe(executions.length);
+    expect(new Set(executions.map((execution) => execution.requestId)).size).toBe(executions.length);
+    expect(executions.every((execution) => execution.requestId === `mcp-tool:${execution.id}`)).toBe(true);
+
+    await Promise.all(executions.flatMap((execution) => [
+      finishMcpExecution(snapshot, execution, { status: "SUCCEEDED", result: { assetId: "[redacted]" } }),
+      finishMcpExecution(snapshot, execution, { status: "SUCCEEDED", result: { assetId: "[redacted]" } }),
+    ]));
+    const rows = await owner.query<{ status: string; request_id: string }>(
+      "SELECT status,request_id FROM mcp_tool_executions WHERE organization_id=$1 AND connection_id=$2 AND tool_name=$3",
+      [ids.org, ids.ownConnection, tool.name],
+    );
+    expect(rows.rows).toHaveLength(executions.length);
+    expect(rows.rows.every((row) => row.status === "SUCCEEDED")).toBe(true);
+
+    const contended = await beginMcpExecution(snapshot, tool, {
+      assetId: randomUUID(),
+      sourceDocumentId: randomUUID(),
+      contention: true,
+    });
+    const terminal = { status: "SUCCEEDED" as const, result: { assetId: "[redacted]" } };
+    const blocker = await owner.connect();
+    const warning = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    try {
+      await blocker.query("BEGIN");
+      await blocker.query("SELECT id FROM mcp_tool_executions WHERE id=$1 FOR UPDATE", [contended.id]);
+      await expect(finishMcpExecution(snapshot, contended, terminal)).rejects.toMatchObject({
+        code: "MCP_RETRYABLE",
+        retryAfterSeconds: 1,
+      });
+      expect((await blocker.query<{ status: string }>(
+        "SELECT status FROM mcp_tool_executions WHERE id=$1",
+        [contended.id],
+      )).rows[0]?.status).toBe("STARTED");
+      const logged = warning.mock.calls.flat().join(" ");
+      expect(logged).toContain(contended.requestId);
+      expect(logged).not.toMatch(/lock timeout|mcp_tool_executions/i);
+    } finally {
+      warning.mockRestore();
+      await blocker.query("ROLLBACK");
+      blocker.release();
+    }
+    await Promise.all([
+      finishMcpExecution(snapshot, contended, terminal),
+      finishMcpExecution(snapshot, contended, terminal),
+    ]);
+    expect((await owner.query<{ status: string }>(
+      "SELECT status FROM mcp_tool_executions WHERE id=$1",
+      [contended.id],
+    )).rows[0]?.status).toBe("SUCCEEDED");
   });
 
   it("does not expose identity rows and returns only active-user status", async () => {

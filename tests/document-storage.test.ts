@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { archiveName, completeInboxSchema } from "@/modules/document-storage/model";
+import { archiveName, completeInboxSchema, syncInboxSchema, uploadInboxSchema } from "@/modules/document-storage/model";
 import { boundedResponse, CloudDrive, exchangeStorageToken } from "@/modules/document-storage/provider";
 import { assertClaim, type InboxRow } from "@/modules/document-storage/inbox-store";
 import { formatInboxPage, INBOX_MCP_TOOLS } from "@/modules/mcp/inbox-tools";
@@ -20,12 +20,32 @@ describe("cloud document contracts", () => {
     expect(result.name).toMatch(/^2026-09-01__Bank__FLQ-.*\.jpg$/);
     expect(result.folders.at(-1)).toBe("Statements");
   });
+  it("keeps structured originals in the same deterministic archive hierarchy", () => {
+    const itemId = randomUUID();
+    const csv = archiveName({ documentType: "STATEMENT", documentDate: "2026-09-01", counterparty: "Bank" }, itemId, "text/csv");
+    const xlsx = archiveName({ documentType: "OTHER", documentDate: "2026-09-01", counterparty: "Client" }, itemId, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+    expect(csv.name).toMatch(/\.csv$/);
+    expect(xlsx.name).toMatch(/\.xlsx$/);
+    expect(csv.folders.at(-1)).toBe("Statements");
+  });
+  it("accepts structured inbox upload aliases and supports explicit traversal restart", () => {
+    const common = { connectionId: randomUUID(), filename: "transactions.csv", mimeType: "application/vnd.ms-excel" as const,
+      byteSize: 3, sha256: "a".repeat(64), contentBase64: "YSxi", idempotencyKey: "upload-1" };
+    expect(uploadInboxSchema.safeParse(common).success).toBe(true);
+    expect(uploadInboxSchema.safeParse({ ...common, mimeType: "text/html" }).success).toBe(false);
+    expect(syncInboxSchema.parse({ connectionId: common.connectionId })).toMatchObject({ restart: false });
+    expect(syncInboxSchema.parse({ connectionId: common.connectionId, restart: true })).toMatchObject({ restart: true });
+  });
   it("rejects arbitrary destinations and incomplete currency/amount pairs", () => {
     const base = { itemId: randomUUID(), claimId: randomUUID(), sha256: "a".repeat(64), reason: "File statement", action: { type: "ARCHIVE_ONLY" },
       metadata: { documentType: "STATEMENT", documentDate: "2026-09-01", counterparty: "Bank" } };
     expect(completeInboxSchema.safeParse(base).success).toBe(true);
     expect(completeInboxSchema.safeParse({ ...base, destination: "https://evil.example" }).success).toBe(false);
-    expect(completeInboxSchema.safeParse({ ...base, metadata: { ...base.metadata, currency: "CAD" } }).success).toBe(false);
+    expect(completeInboxSchema.safeParse({ ...base, metadata: { ...base.metadata, currency: "CAD" } }).success).toBe(true);
+    expect(completeInboxSchema.safeParse({ ...base, metadata: {
+      documentType: "RECEIPT", documentDate: "2026-09-01", counterparty: "Shop", currency: "CAD",
+    } }).success).toBe(false);
+    expect(completeInboxSchema.safeParse({ ...base, metadata: { ...base.metadata, total: "10.00" } }).success).toBe(false);
   });
   it("requires the live claim to belong to the same user and connection", () => {
     const context = { organizationId: randomUUID(), actorId: randomUUID(), sessionId: randomUUID(), requestId: "test", authMethod: "oauth", sourceSurface: "MCP" as const };
@@ -40,6 +60,14 @@ describe("cloud document contracts", () => {
     expect(result.content?.[1]).toEqual({ type: "image", mimeType: "image/png", data: "aW1hZ2U=" });
     expect(JSON.stringify(result.structuredContent)).not.toContain("aW1hZ2U=");
     expect(INBOX_MCP_TOOLS.filter((t) => /sync|claim|complete|retry|upload|review/.test(t.policy.name)).every((t) => t.policy.access === "WRITE")).toBe(true);
+  });
+  it("returns structured previews as text-only MCP content", () => {
+    const result = formatInboxPage({ item: { id: "item" }, sha256: "hash", page: 1, pageCount: 1,
+      possibleDuplicates: [], instruction: "untrusted data", mimeType: "text/csv", text: "a\tb",
+      contentKind: "DELIMITED_TEXT", preview: { delimiter: "COMMA" }, routingTarget: "BANKING_IMPORT_REVIEW" });
+    expect(result.content).toHaveLength(1);
+    expect(result.content?.[0]).toMatchObject({ type: "text" });
+    expect(result.structuredContent).toMatchObject({ result: { preview: { delimiter: "COMMA" }, routingTarget: "BANKING_IMPORT_REVIEW" } });
   });
 });
 describe("provider network boundaries", () => {
@@ -95,6 +123,28 @@ describe("provider network boundaries", () => {
     const drive = new CloudDrive("ONEDRIVE", "secret", "drive");
     await expect(drive.children("inbox", "https://graph.microsoft.com/v1.0/me/messages")).rejects.toThrow(/sync/);
     expect(fetcher).not.toHaveBeenCalled();
+  });
+  it("marks Microsoft remote items as non-followable shortcuts", async () => {
+    const remoteItem = {
+      id: "remote", name: "Shared invoice.pdf", size: 10, eTag: "v1",
+      parentReference: { id: "inbox", driveId: "drive" }, remoteItem: { id: "outside" },
+    };
+    const fetcher = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ value: [remoteItem] })))
+      .mockResolvedValueOnce(new Response(JSON.stringify(remoteItem)));
+    vi.stubGlobal("fetch", fetcher);
+    const drive = new CloudDrive("ONEDRIVE", "secret", "drive");
+    await expect(drive.children("inbox")).resolves.toMatchObject({
+      files: [expect.objectContaining({ id: "remote", shortcut: true })],
+    });
+    await expect(drive.file("remote")).rejects.toMatchObject({ code: "STORAGE_FOLDER_BOUNDARY" });
+  });
+  it("classifies provider throttling without exposing its response", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("provider details", { status: 429 })));
+    await expect(new CloudDrive("GOOGLE_DRIVE", "secret").file("file")).rejects.toMatchObject({
+      code: "STORAGE_THROTTLED",
+      message: "The storage provider is throttling requests. Retry this sync later.",
+    });
   });
   it("does not expose provider error bodies", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response('secret access_token=abc', { status: 403 })));

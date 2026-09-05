@@ -13,6 +13,7 @@ import {
   revokeOrganizationMemberSessionsRecord,
   setOrganizationMemberActiveRecord,
   updateOrganizationSettingsRecord,
+  updateOrganizationTrustedBrowserPolicyRecord,
 } from "@/modules/identity/member-access-store";
 import {
   createOpaqueToken,
@@ -67,6 +68,10 @@ export type OrganizationAdministrationDto = Readonly<{
   displayName: string;
   settingsVersion: number;
   isDemo: boolean;
+  trustedBrowserPolicy: Readonly<{
+    enabled: boolean;
+    durationDays: 7 | 30 | 90;
+  }>;
   permissions: Readonly<{
     canManageSettings: boolean;
     canReadMembers: boolean;
@@ -198,6 +203,10 @@ export async function loadOrganizationAdministration(
     displayName: settings.display_name,
     settingsVersion: settings.settings_version,
     isDemo: settings.is_demo,
+    trustedBrowserPolicy: {
+      enabled: settings.trusted_browser_enabled,
+      durationDays: settings.trusted_browser_duration_days as 7 | 30 | 90,
+    },
     permissions: {
       canManageSettings: canWrite && settings.can_manage_settings,
       canReadMembers: settings.can_read_members,
@@ -222,6 +231,26 @@ export async function updateOrganizationProfile(input: Readonly<{
   const version = await updateOrganizationSettingsRecord(
     context(input.principal, input.requestId, input.reason),
     { displayName: input.displayName, expectedVersion: input.expectedVersion },
+  );
+  return { version };
+}
+
+export async function updateOrganizationTrustedBrowserPolicy(input: Readonly<{
+  principal: SessionPrincipal;
+  requestId: string;
+  enabled: boolean;
+  durationDays: 7 | 30 | 90;
+  expectedVersion: number;
+  reason: string;
+}>): Promise<Readonly<{ version: number }>> {
+  assertMutationSession(input.principal);
+  const version = await updateOrganizationTrustedBrowserPolicyRecord(
+    context(input.principal, input.requestId, input.reason),
+    {
+      enabled: input.enabled,
+      durationDays: input.durationDays,
+      expectedVersion: input.expectedVersion,
+    },
   );
   return { version };
 }

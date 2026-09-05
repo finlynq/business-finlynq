@@ -149,6 +149,8 @@ if [[ ! -e "$compose_environment" ]]; then
     printf 'BUSINESS_WRITES_ENABLED=true\n'
     printf 'BANK_FEEDS_ENABLED=false\n'
     printf 'YAHOO_FX_ENABLED=false\n'
+    printf 'DOCUMENT_INBOX_MAX_DEPTH=8\n'
+    printf 'DOCUMENT_INBOX_MAX_PROVIDER_CALLS=10\n'
     printf 'DEVELOPMENT_REQUIRE_PUBLIC_ACCEPTANCE=false\n'
     printf 'BUSINESS_FINLYNQ_IMAGE_REVISION=%s\n' "$initial_revision"
   } >"$environment_temporary"

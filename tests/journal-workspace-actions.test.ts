@@ -143,12 +143,16 @@ const mocks = vi.hoisted(() => {
       combination_id: "30000000-0000-4000-8000-000000000021",
       account_code: "1000",
       account_name: "Cash",
+      valid_from: "2026-01-01",
+      valid_to: null,
     },
     {
       entity_id: "30000000-0000-4000-8000-000000000020",
       combination_id: "30000000-0000-4000-8000-000000000022",
       account_code: "6100",
       account_name: "Office expense",
+      valid_from: "2026-09-01",
+      valid_to: null,
     },
   ];
   const client = {
@@ -239,9 +243,10 @@ describe("tenant journal action capabilities", () => {
   });
 
   it("loads manual-journal periods and accounts without a periods-by-accounts cartesian query", async () => {
-    const options = await loadManualJournalOptions(principal);
+    const options = await loadManualJournalOptions(principal, "2026-08-27");
 
     expect(options).toEqual({
+      evaluatedAccountingDate: "2026-08-27",
       readOnly: false,
       entities: [{
         id: "30000000-0000-4000-8000-000000000020",
@@ -265,8 +270,22 @@ describe("tenant journal action capabilities", () => {
           },
         ],
         accounts: [
-          { combinationId: "30000000-0000-4000-8000-000000000021", code: "1000", displayName: "Cash" },
-          { combinationId: "30000000-0000-4000-8000-000000000022", code: "6100", displayName: "Office expense" },
+          {
+            combinationId: "30000000-0000-4000-8000-000000000021",
+            code: "1000",
+            displayName: "Cash",
+            validFrom: "2026-01-01",
+            validTo: null,
+            validOnAccountingDate: true,
+          },
+          {
+            combinationId: "30000000-0000-4000-8000-000000000022",
+            code: "6100",
+            displayName: "Office expense",
+            validFrom: "2026-09-01",
+            validTo: null,
+            validOnAccountingDate: false,
+          },
         ],
       }],
     });

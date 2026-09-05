@@ -17,7 +17,7 @@ const recordId = "20000000-0000-4000-8000-000000000001";
 const keyVersion = 3;
 
 function plaintextFor(kind: string): string {
-  if (kind === "access-url") return "https://simplefin-user:simplefin-pass@example.com/simplefin";
+  if (kind === "bank-credential") return "https://simplefin-user:simplefin-pass@example.com/simplefin";
   if (kind === "json-object") return JSON.stringify({ verified: true });
   return "restored-provider-value";
 }
@@ -45,6 +45,7 @@ function encryptedRow(
     table_name: specification.tableName,
     column_name: specification.columnName,
     ciphertext,
+    provider: specification.tableName === "bank_connections" ? "SIMPLEFIN" : null,
     ...overrides,
   };
 }
@@ -61,6 +62,9 @@ describe("restored banking secret verification", () => {
         const query = restoredBankingCiphertextBatchQuery(specification);
         expect(query).toContain(`FROM ${specification.tableName}`);
         expect(query).toContain(`${specification.columnName} AS ciphertext`);
+        expect(query).toContain(
+          `${specification.tableName === "bank_connections" ? "provider" : "NULL::text"} AS provider`,
+        );
         expect(query).toContain("ORDER BY organization_id, id");
         expect(query).toContain("LIMIT $3");
       }
@@ -109,6 +113,92 @@ describe("restored banking secret verification", () => {
     }
   });
 
+  it("accepts the exact encrypted FILE_IMPORT marker without parsing it as a SimpleFIN URL", () => {
+    const dek = generateOrganizationDek();
+    try {
+      const specification = RESTORED_BANKING_FIELD_SPECIFICATIONS[0]!;
+      expect(specification.plaintextKind).toBe("bank-credential");
+      const ciphertext = serializeEncryptedField(encryptField("document-inbox-local-v1", dek, {
+        organizationId,
+        table: specification.tableName,
+        column: specification.columnName,
+        recordId,
+        keyVersion,
+      }));
+      const row: RestoredBankingCiphertextRow = {
+        organization_id: organizationId,
+        record_id: recordId,
+        key_version: keyVersion,
+        table_name: specification.tableName,
+        column_name: specification.columnName,
+        ciphertext,
+        provider: "FILE_IMPORT",
+      };
+      const deks = new Map([[restoredOrganizationKeyMapKey(organizationId, keyVersion), dek]]);
+      expect(verifyRestoredBankingCiphertexts([row], deks)).toBe(1);
+    } finally {
+      dek.fill(0);
+    }
+  });
+
+  it("rejects an unrecognized non-routable banking credential marker", () => {
+    const dek = generateOrganizationDek();
+    try {
+      const specification = RESTORED_BANKING_FIELD_SPECIFICATIONS[0]!;
+      const ciphertext = serializeEncryptedField(encryptField("document-inbox-local-v2", dek, {
+        organizationId,
+        table: specification.tableName,
+        column: specification.columnName,
+        recordId,
+        keyVersion,
+      }));
+      const row: RestoredBankingCiphertextRow = {
+        organization_id: organizationId,
+        record_id: recordId,
+        key_version: keyVersion,
+        table_name: specification.tableName,
+        column_name: specification.columnName,
+        ciphertext,
+        provider: "FILE_IMPORT",
+      };
+      const deks = new Map([[restoredOrganizationKeyMapKey(organizationId, keyVersion), dek]]);
+      expect(() => verifyRestoredBankingCiphertexts([row], deks)).toThrow(
+        "does not match its registered provider format",
+      );
+    } finally {
+      dek.fill(0);
+    }
+  });
+
+  it("rejects the FILE_IMPORT marker on a SimpleFIN credential row", () => {
+    const dek = generateOrganizationDek();
+    try {
+      const specification = RESTORED_BANKING_FIELD_SPECIFICATIONS[0]!;
+      const ciphertext = serializeEncryptedField(encryptField("document-inbox-local-v1", dek, {
+        organizationId,
+        table: specification.tableName,
+        column: specification.columnName,
+        recordId,
+        keyVersion,
+      }));
+      const row: RestoredBankingCiphertextRow = {
+        organization_id: organizationId,
+        record_id: recordId,
+        key_version: keyVersion,
+        table_name: specification.tableName,
+        column_name: specification.columnName,
+        ciphertext,
+        provider: "SIMPLEFIN",
+      };
+      const deks = new Map([[restoredOrganizationKeyMapKey(organizationId, keyVersion), dek]]);
+      expect(() => verifyRestoredBankingCiphertexts([row], deks)).toThrow(
+        "does not match its registered provider format",
+      );
+    } finally {
+      dek.fill(0);
+    }
+  });
+
   it("accepts the encrypted non-routable marker used by disabled demo connections", () => {
     const dek = generateOrganizationDek();
     try {
@@ -130,6 +220,7 @@ describe("restored banking secret verification", () => {
         table_name: specification.tableName,
         column_name: specification.columnName,
         ciphertext,
+        provider: "SIMPLEFIN",
       };
       const deks = new Map([[restoredOrganizationKeyMapKey(organizationId, keyVersion), dek]]);
       expect(verifyRestoredBankingCiphertexts([row], deks)).toBe(1);
@@ -158,6 +249,7 @@ describe("restored banking secret verification", () => {
         table_name: specification.tableName,
         column_name: specification.columnName,
         ciphertext,
+        provider: null,
       };
       const deks = new Map([[restoredOrganizationKeyMapKey(organizationId, keyVersion), dek]]);
       expect(() => verifyRestoredBankingCiphertexts([row], deks)).toThrow("not an object");

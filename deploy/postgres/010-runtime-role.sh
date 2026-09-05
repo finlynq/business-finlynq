@@ -257,6 +257,7 @@ BEGIN
     'tax_determination_snapshots',
     'bank_connections', 'bank_connection_credential_events', 'bank_external_accounts', 'bank_sync_runs',
     'bank_observations', 'bank_observation_versions', 'bank_balance_anchors',
+    'bank_statement_imports', 'bank_statement_import_rows',
     'bank_reconciliation_sessions', 'bank_reconciliation_voids', 'bank_match_allocations',
     'bank_match_allocation_voids', 'bank_rules', 'bank_rule_runs',
     'bank_draft_proposals', 'mcp_oauth_clients', 'mcp_connections',
@@ -293,6 +294,7 @@ BEGIN
     'tax_determination_snapshots',
     'bank_connection_credential_events',
     'bank_observations', 'bank_observation_versions', 'bank_balance_anchors',
+    'bank_statement_imports', 'bank_statement_import_rows',
     'bank_reconciliation_voids', 'bank_match_allocations', 'bank_match_allocation_voids', 'bank_rules',
     'bank_rule_runs', 'bank_draft_proposals', 'mcp_oauth_clients'
   ] LOOP
@@ -338,11 +340,14 @@ BEGIN
     'app.auth_consume_rate_limit(text,text,integer,integer)',
     'app.auth_lookup_login(text)',
     'app.auth_lookup_login_v2(text)',
+    'app.auth_lookup_login_v3(text)',
     'app.auth_issue_demo_session(text,text,text,text,text,text)',
     'app.auth_demo_session_lease_valid(uuid)',
     'app.auth_mark_demo_step_up(uuid,text)',
     'app.shared_demo_operations_state()',
     'app.auth_issue_mfa_user_session(uuid,uuid,uuid,uuid,bigint,text,text,text,text)',
+    'app.auth_issue_mfa_user_session_trusted(uuid,uuid,uuid,uuid,bigint,text,text,text,text,text,text)',
+    'app.auth_issue_trusted_browser_user_session(uuid,uuid,uuid,text,text,text,text,text,text)',
     'app.auth_issue_password_user_session(uuid,uuid,uuid,text,text,text,text)',
     'app.auth_resolve_session(text,text)',
     'app.auth_resolve_session_v2(text,text)',
@@ -350,6 +355,10 @@ BEGIN
     'app.auth_platform_administrator_authorization(uuid,uuid)',
     'app.platform_administration_overview(uuid,uuid)',
     'app.auth_revoke_session(text,text)',
+    'app.auth_trusted_browsers_for_session(uuid,text)',
+    'app.auth_revoke_trusted_browser(uuid,uuid,text)',
+    'app.auth_revoke_all_trusted_browsers(uuid,text)',
+    'app.auth_logout_all_sessions(uuid,text)',
     'app.auth_queue_password_reset(text,text,text,uuid,text,text)',
     'app.auth_finish_password_reset(text,text,text)',
     'app.auth_record_login_failure(text)',
@@ -381,6 +390,8 @@ BEGIN
     'app.auth_consume_recovery_approval_limits(uuid,uuid)',
     'app.auth_consume_mfa_enrollment_limits(text)',
     'app.organization_settings_read()',
+    'app.organization_settings_read_v2()',
+    'app.organization_update_trusted_browser_policy(boolean,integer,integer)',
     'app.organization_members_read()',
     'app.organization_update_settings(text,integer)',
     'app.organization_invite_member(uuid,uuid,uuid,uuid,text,text,text,uuid,text,uuid,text)',
@@ -388,7 +399,8 @@ BEGIN
     'app.organization_cancel_invitation(uuid,integer)',
     'app.organization_assign_member_role(uuid,uuid,integer)',
     'app.organization_set_member_active(uuid,integer,boolean)',
-    'app.organization_revoke_member_sessions(uuid)'
+    'app.organization_revoke_member_sessions(uuid)',
+    'app.organization_revoke_member_sessions_and_trust(uuid)'
   ] LOOP
     IF to_regprocedure(selected_signature) IS NOT NULL THEN
       EXECUTE format('GRANT EXECUTE ON FUNCTION %s TO business_finlynq_app', selected_signature);

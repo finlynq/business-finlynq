@@ -78,6 +78,10 @@ export function RealJournalDraftForm({
 
   const entity = options.entities.find((candidate) => candidate.id === entityId) ?? initialEntity;
   const currency = entity?.currency ?? "";
+  const validAccounts = entity?.accounts.filter((account) =>
+    account.validFrom <= accountingDate
+      && (account.validTo === null || account.validTo >= accountingDate)) ?? [];
+  const validAccountIds = new Set(validAccounts.map((account) => account.combinationId));
   const totals = useMemo(() => lines.reduce(
     (sum, line) => ({
       debit: sum.debit.plus(money(line.debit) ?? exact(0)),
@@ -127,8 +131,9 @@ export function RealJournalDraftForm({
       setMessage({ kind: "error", text: "Choose an entity and period, then provide the accounting date and business purpose." });
       return;
     }
-    if (lines.some((line) => !line.accountCombinationId || money(line.debit) === null || money(line.credit) === null)) {
-      setMessage({ kind: "error", text: "Each line needs an account and valid exact-decimal debit and credit values." });
+    if (lines.some((line) => !validAccountIds.has(line.accountCombinationId)
+        || money(line.debit) === null || money(line.credit) === null)) {
+      setMessage({ kind: "error", text: "Each line needs an active, postable account valid on the accounting date and exact-decimal debit and credit values." });
       return;
     }
     if (totals.debit.isZero() || !totals.debit.equals(totals.credit)) {
@@ -252,8 +257,8 @@ export function RealJournalDraftForm({
               <span>Account</span>
               <select value={line.accountCombinationId} onChange={(event) => updateLine(line.id, "accountCombinationId", event.target.value)}>
                 <option value="">Select an account</option>
-                {entity.accounts.map((account) => (
-                  <option key={account.combinationId} value={account.combinationId}>{account.code} · {account.displayName}</option>
+                {validAccounts.map((account) => (
+                  <option key={account.combinationId} value={account.combinationId}>{account.code} · {account.displayName} · valid {account.validFrom}{account.validTo ? " to " + account.validTo : ""}</option>
                 ))}
               </select>
             </label>
@@ -285,7 +290,7 @@ export function RealJournalDraftForm({
         </p>
       )}
       <div className="form-actions">
-        <button type="submit" className="primary-button" disabled={options.readOnly || busy || entity.periods.length === 0 || entity.accounts.length < 2}>
+        <button type="submit" className="primary-button" disabled={options.readOnly || busy || entity.periods.length === 0 || validAccounts.length < 2}>
           {busy ? "Saving…" : "Save journal"}
         </button>
       </div>

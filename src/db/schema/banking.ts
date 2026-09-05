@@ -21,6 +21,8 @@ import {
   legalEntities,
   ledgers,
 } from "./ledger";
+import { documentEvidenceAssets } from "./evidence";
+import { documentInboxItems } from "./document-storage";
 
 export const bankConnections = pgTable(
   "bank_connections",
@@ -87,6 +89,7 @@ export const bankExternalAccounts = pgTable(
     displayNameCiphertext: text("display_name_ciphertext").notNull(),
     keyVersion: integer("key_version").notNull(),
     currencyCode: text("currency_code").notNull().references(() => currencyDefinitions.code, { onDelete: "restrict" }),
+    accountKind: text("account_kind").notNull().default("CASH"),
     legalEntityId: uuid("legal_entity_id"),
     ledgerId: uuid("ledger_id"),
     cashAccountCombinationId: uuid("cash_account_combination_id"),
@@ -109,6 +112,7 @@ export const bankExternalAccounts = pgTable(
       table.currencyCode,
     ),
     index("bank_external_accounts_org_mapping_idx").on(table.organizationId, table.legalEntityId, table.active),
+    check("bank_external_accounts_kind_check", sql.raw("account_kind IN ('CASH', 'CREDIT_CARD')")),
     foreignKey({ columns: [table.organizationId, table.connectionId], foreignColumns: [bankConnections.organizationId, bankConnections.id], name: "bank_external_accounts_org_connection_fk" }).onDelete("restrict"),
     foreignKey({ columns: [table.organizationId, table.legalEntityId], foreignColumns: [legalEntities.organizationId, legalEntities.id], name: "bank_external_accounts_org_entity_fk" }).onDelete("restrict"),
     foreignKey({ columns: [table.organizationId, table.ledgerId], foreignColumns: [ledgers.organizationId, ledgers.id], name: "bank_external_accounts_org_ledger_fk" }).onDelete("restrict"),
@@ -212,6 +216,75 @@ export const bankBalanceAnchors = pgTable(
     uniqueIndex("bank_balance_anchors_org_id_unique").on(table.organizationId, table.id),
     foreignKey({ columns: [table.organizationId, table.externalAccountId, table.currencyCode], foreignColumns: [bankExternalAccounts.organizationId, bankExternalAccounts.id, bankExternalAccounts.currencyCode], name: "bank_balance_anchors_org_account_currency_fk" }).onDelete("restrict"),
     foreignKey({ columns: [table.organizationId, table.syncRunId], foreignColumns: [bankSyncRuns.organizationId, bankSyncRuns.id], name: "bank_balance_anchors_org_run_fk" }).onDelete("restrict"),
+  ],
+);
+
+export const bankStatementImports = pgTable(
+  "bank_statement_imports",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    organizationId: uuid("organization_id").notNull().references(() => organizations.id, { onDelete: "restrict" }),
+    inboxItemId: uuid("inbox_item_id").notNull(),
+    evidenceAssetId: uuid("evidence_asset_id").notNull(),
+    externalAccountId: uuid("external_account_id").notNull(),
+    syncRunId: uuid("sync_run_id").notNull(),
+    reconciliationSessionId: uuid("reconciliation_session_id"),
+    sourceSha256: text("source_sha256").notNull(),
+    extractionVersion: text("extraction_version").notNull(),
+    extractionCiphertext: text("extraction_ciphertext").notNull(),
+    keyVersion: integer("key_version").notNull(),
+    previewHash: text("preview_hash").notNull(),
+    statementStartOn: date("statement_start_on").notNull(),
+    statementEndOn: date("statement_end_on").notNull(),
+    openingBalance: numeric("opening_balance", { precision: 38, scale: 9 }).notNull(),
+    closingBalance: numeric("closing_balance", { precision: 38, scale: 9 }).notNull(),
+    currencyCode: text("currency_code").notNull().references(() => currencyDefinitions.code, { onDelete: "restrict" }),
+    includedRowCount: integer("included_row_count").notNull(),
+    excludedRowCount: integer("excluded_row_count").notNull(),
+    duplicateRowCount: integer("duplicate_row_count").notNull().default(0),
+    createdBy: uuid("created_by").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("bank_statement_imports_org_id_unique").on(table.organizationId, table.id),
+    uniqueIndex("bank_statement_imports_org_inbox_unique").on(table.organizationId, table.inboxItemId),
+    uniqueIndex("bank_statement_imports_account_source_unique").on(table.externalAccountId, table.sourceSha256),
+    index("bank_statement_imports_org_period_idx").on(table.organizationId, table.statementEndOn.desc(), table.id),
+    check("bank_statement_imports_sha_check", sql.raw("source_sha256 ~ '^[a-f0-9]{64}$'")),
+    check("bank_statement_imports_preview_hash_check", sql.raw("preview_hash ~ '^[a-f0-9]{64}$'")),
+    check("bank_statement_imports_period_check", sql.raw("statement_start_on <= statement_end_on")),
+    check("bank_statement_imports_row_counts_check", sql.raw("included_row_count > 0 AND excluded_row_count >= 0 AND duplicate_row_count >= 0 AND duplicate_row_count <= included_row_count")),
+    foreignKey({ columns: [table.organizationId, table.inboxItemId], foreignColumns: [documentInboxItems.organizationId, documentInboxItems.id], name: "bank_statement_imports_org_inbox_fk" }).onDelete("restrict"),
+    foreignKey({ columns: [table.organizationId, table.evidenceAssetId], foreignColumns: [documentEvidenceAssets.organizationId, documentEvidenceAssets.id], name: "bank_statement_imports_org_evidence_fk" }).onDelete("restrict"),
+    foreignKey({ columns: [table.organizationId, table.externalAccountId, table.currencyCode], foreignColumns: [bankExternalAccounts.organizationId, bankExternalAccounts.id, bankExternalAccounts.currencyCode], name: "bank_statement_imports_org_account_currency_fk" }).onDelete("restrict"),
+    foreignKey({ columns: [table.organizationId, table.syncRunId], foreignColumns: [bankSyncRuns.organizationId, bankSyncRuns.id], name: "bank_statement_imports_org_run_fk" }).onDelete("restrict"),
+    foreignKey({ columns: [table.organizationId, table.reconciliationSessionId], foreignColumns: [bankReconciliationSessions.organizationId, bankReconciliationSessions.id], name: "bank_statement_imports_org_reconciliation_fk" }).onDelete("restrict"),
+  ],
+);
+
+export const bankStatementImportRows = pgTable(
+  "bank_statement_import_rows",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    organizationId: uuid("organization_id").notNull().references(() => organizations.id, { onDelete: "restrict" }),
+    statementImportId: uuid("statement_import_id").notNull(),
+    sourceRowNumber: integer("source_row_number").notNull(),
+    rowFingerprint: text("row_fingerprint").notNull(),
+    disposition: text("disposition").notNull(),
+    observationVersionId: uuid("observation_version_id"),
+    rowCiphertext: text("row_ciphertext").notNull(),
+    keyVersion: integer("key_version").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("bank_statement_import_rows_org_id_unique").on(table.organizationId, table.id),
+    uniqueIndex("bank_statement_import_rows_source_row_unique").on(table.statementImportId, table.sourceRowNumber),
+    index("bank_statement_import_rows_fingerprint_idx").on(table.organizationId, table.rowFingerprint),
+    check("bank_statement_import_rows_fingerprint_check", sql.raw("row_fingerprint ~ '^[a-f0-9]{64}$'")),
+    check("bank_statement_import_rows_disposition_check", sql.raw("disposition IN ('IMPORTED', 'DUPLICATE', 'EXCLUDED')")),
+    check("bank_statement_import_rows_observation_check", sql.raw("(disposition = 'EXCLUDED') = (observation_version_id IS NULL)")),
+    foreignKey({ columns: [table.organizationId, table.statementImportId], foreignColumns: [bankStatementImports.organizationId, bankStatementImports.id], name: "bank_statement_import_rows_org_import_fk" }).onDelete("restrict"),
+    foreignKey({ columns: [table.organizationId, table.observationVersionId], foreignColumns: [bankObservationVersions.organizationId, bankObservationVersions.id], name: "bank_statement_import_rows_org_observation_version_fk" }).onDelete("restrict"),
   ],
 );
 

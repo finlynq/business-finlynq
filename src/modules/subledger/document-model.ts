@@ -11,10 +11,15 @@ import {
 import { decideTax } from "@/modules/tax/engine";
 import type { TaxDecision, TaxDirection, TaxFacts } from "@/modules/tax/types";
 import { settlementMethodSchema, validateSettlementFunding } from "./settlement-funding";
+import { BusinessDocumentValidationError } from "./validation-errors";
 
 const positiveAmountSchema = z.string().trim().regex(/^\d+(?:\.\d{1,9})?$/).refine(
   (value) => exact(value).greaterThan(0),
   "Amount must be greater than zero",
+);
+const signedNonZeroAmountSchema = z.string().trim().regex(/^-?\d+(?:\.\d{1,9})?$/).refine(
+  (value) => !exact(value).isZero(),
+  "Amount must not be zero",
 );
 const positiveRateSchema = z.string().trim().regex(/^\d+(?:\.\d{1,18})?$/).refine(
   (value) => exact(value).greaterThan(0),
@@ -413,7 +418,8 @@ export const taxInputSchema = z.object({
 export const businessDocumentLineInputSchema = z.object({
   description: z.string().trim().min(1).max(500),
   accountCombinationId: z.uuid(),
-  netAmount: positiveAmountSchema,
+  netAmount: signedNonZeroAmountSchema,
+  lineType: z.enum(["STANDARD", "ADJUSTMENT"]).optional(),
   tax: taxInputSchema,
 }).strict();
 
@@ -595,6 +601,8 @@ const businessDocumentSnapshotLineSchema = z.object({
   description: z.string(),
   accountCombinationId: z.uuid(),
   netAmount: z.string(),
+  // Absent only on snapshots written before signed supplier adjustments.
+  lineType: z.enum(["STANDARD", "ADJUSTMENT"]).optional(),
   tax: taxInputSchema,
   taxDecision: taxDecisionSchema,
   taxDecisionHash: z.string().regex(/^[a-f0-9]{64}$/),
@@ -656,7 +664,41 @@ export const businessDocumentSnapshotSchema = z.object({
   grossTotal: z.string(),
   grossFunctional: z.string(),
   evidence: evidenceReferencesSchema.optional(),
-}).strict().superRefine(validateSnapshotProviderPair);
+}).strict().superRefine((value, context) => {
+  validateSnapshotProviderPair(value, context);
+  for (const line of value.lines) {
+    if (exact(line.netAmount).isNegative()) {
+      if (value.kind === "SALES_INVOICE") {
+        context.addIssue({
+          code: "custom",
+          path: ["lines", line.lineNumber - 1, "netAmount"],
+          message: "Sales-invoice lines must remain positive",
+        });
+      } else if (line.lineType !== "ADJUSTMENT") {
+        context.addIssue({
+          code: "custom",
+          path: ["lines", line.lineNumber - 1, "lineType"],
+          message: "A negative supplier-bill line must be marked ADJUSTMENT",
+        });
+      }
+    }
+  }
+  if (exact(value.grossTotal).isZero()) {
+    context.addIssue({
+      code: "custom",
+      path: ["grossTotal"],
+      message: "Zero-gross AR/AP documents are not supported",
+    });
+  } else if (exact(value.grossTotal).isNegative()) {
+    context.addIssue({
+      code: "custom",
+      path: ["grossTotal"],
+      message: value.kind === "SUPPLIER_BILL"
+        ? "A net supplier credit cannot be represented as a supplier bill"
+        : "A net customer credit cannot be represented as a sales invoice",
+    });
+  }
+});
 
 export const settlementSnapshotAllocationSchema = z.object({
   openItemId: z.uuid(),
@@ -758,13 +800,18 @@ function assertTaxDecisionAccountingShape(
   decision: TaxDecision,
   direction: TaxDirection,
   currency: string,
+  taxableBasis: string,
 ): void {
-  if (!isQuantizedMoney(decision.totalTax, currency) || exact(decision.totalTax).isNegative()) {
+  const negativeBasis = exact(taxableBasis).isNegative();
+  const invalidSign = (amount: string) => negativeBasis
+    ? exact(amount).greaterThan(0)
+    : exact(amount).lessThan(0);
+  if (!isQuantizedMoney(decision.totalTax, currency) || invalidSign(decision.totalTax)) {
     throw new Error("Tax pack returned an invalid transaction-currency tax amount");
   }
   for (const component of decision.components) {
-    if (!isQuantizedMoney(component.amount, currency) || exact(component.amount).isNegative()) {
-      throw new Error(`Tax component ${component.key} returned an invalid amount`);
+    if (!isQuantizedMoney(component.amount, currency) || invalidSign(component.amount)) {
+      throw new Error("Tax component " + component.key + " returned an invalid amount");
     }
   }
   const recognized = sumExact(
@@ -809,16 +856,34 @@ export function buildBusinessDocumentSnapshot(
 
   const policy = DOCUMENT_KIND_POLICY[input.kind];
   const lines = input.lines.map((line, index) => {
+    const lineNumber = index + 1;
     if (!isQuantizedMoney(line.netAmount, input.currency)) {
-      throw new Error(`Line ${index + 1} exceeds ${input.currency} precision`);
+      throw new Error("Line " + lineNumber + " exceeds " + input.currency + " precision");
+    }
+    if (exact(line.netAmount).isNegative()) {
+      if (input.kind === "SALES_INVOICE") {
+        throw new BusinessDocumentValidationError(
+          "NEGATIVE_SALES_LINE_UNSUPPORTED",
+          "Line " + lineNumber + " is negative, but sales-invoice lines must remain positive.",
+          lineNumber,
+        );
+      }
+      if (line.lineType !== "ADJUSTMENT") {
+        throw new BusinessDocumentValidationError(
+          "SIGNED_LINE_REQUIRES_ADJUSTMENT",
+          "Line " + lineNumber + " is negative and must be marked as an ADJUSTMENT.",
+          lineNumber,
+        );
+      }
     }
     const decision = decideTax(line.tax.packKey, buildTaxFacts(policy.direction, line, input));
-    assertTaxDecisionAccountingShape(decision, policy.direction, input.currency);
+    assertTaxDecisionAccountingShape(decision, policy.direction, input.currency, line.netAmount);
     return {
-      lineNumber: index + 1,
+      lineNumber,
       description: line.description,
       accountCombinationId: line.accountCombinationId,
       netAmount: moneyString(line.netAmount, input.currency),
+      lineType: line.lineType,
       tax: line.tax,
       taxDecision: decision,
       taxDecisionHash: canonicalHash(decision),
@@ -833,6 +898,20 @@ export function buildBusinessDocumentSnapshot(
       .filter((component) => component.treatment === "SELF_ASSESSED_PAYABLE")
       .map((component) => component.amount)));
   const grossTotal = subtotal.plus(taxTotal).minus(selfAssessedTaxTotal);
+  if (grossTotal.isZero()) {
+    throw new BusinessDocumentValidationError(
+      "ZERO_GROSS_UNSUPPORTED",
+      "The document has a zero gross total; FinLynQ does not create zero-gross AR/AP open items.",
+    );
+  }
+  if (grossTotal.isNegative()) {
+    throw new BusinessDocumentValidationError(
+      "SUPPLIER_CREDIT_NOTE_REQUIRED",
+      input.kind === "SUPPLIER_BILL"
+        ? "The document is a net supplier credit and cannot be saved as a supplier bill."
+        : "The document is a net customer credit and cannot be saved as a sales invoice.",
+    );
+  }
   const taxMappingRequired = lines.some((line) => line.taxDecision.components.some(
     (component) => component.treatment === "PAYABLE" ||
       component.treatment === "RECOVERABLE" ||

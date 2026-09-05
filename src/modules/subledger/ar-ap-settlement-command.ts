@@ -119,17 +119,46 @@ export async function recordCustomerReceiptOrSupplierPayment(
     if (command.currency === setup.functional_currency && !exact(command.fx.rate).equals(1)) {
       throw new Error("Functional-currency settlements require an FX rate of exactly 1");
     }
+    const funding = resolveSettlementFunding(command);
+    const expectedControlKind = policy.partyRole === "CUSTOMER" ? "AR" as const : "AP" as const;
+    const fundingField = funding.method === "BANK"
+      ? "bankAccountCombinationId"
+      : "settlementAccountCombinationId";
     const combinations = await loadAccountCombinations(client, {
       organizationId: unparsedCommand.context.organizationId,
       ledgerId: command.ledgerId,
       legalEntityId: command.legalEntityId,
       accountingDate: command.accountingDate,
-      ids: [
-        command.controlAccountCombinationId,
-        resolveSettlementFunding(command).accountCombinationId,
-        command.realizedFxGainAccountCombinationId,
-        command.realizedFxLossAccountCombinationId,
-        ...(command.fxRoundingAccountCombinationId ? [command.fxRoundingAccountCombinationId] : []),
+      references: [
+        {
+          field: "controlAccountCombinationId",
+          combinationId: command.controlAccountCombinationId,
+          expectedAccountId: setup.control_account_id,
+          expectedControlKinds: [expectedControlKind],
+        },
+        {
+          field: fundingField,
+          combinationId: funding.accountCombinationId,
+          expectedControlKinds: ["NONE"],
+          expectedAccountClasses: [funding.accountClass],
+        },
+        {
+          field: "realizedFxGainAccountCombinationId",
+          combinationId: command.realizedFxGainAccountCombinationId,
+          expectedControlKinds: ["NONE"],
+          expectedAccountClasses: ["REVENUE"],
+        },
+        {
+          field: "realizedFxLossAccountCombinationId",
+          combinationId: command.realizedFxLossAccountCombinationId,
+          expectedControlKinds: ["NONE"],
+          expectedAccountClasses: ["EXPENSE"],
+        },
+        ...(command.fxRoundingAccountCombinationId ? [{
+          field: "fxRoundingAccountCombinationId",
+          combinationId: command.fxRoundingAccountCombinationId,
+          expectedControlKinds: ["NONE" as const],
+        }] : []),
       ],
     });
     assertSettlementMappings(command, setup, combinations);

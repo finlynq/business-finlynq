@@ -590,9 +590,9 @@ export function AccountingSettings({
         )}
 
         <div className="table-scroll" tabIndex={0} aria-label="Account combinations">
-          <table><thead><tr><th>Entity & account</th><th>Displayed key</th><th>Canonical key</th><th>Status</th><th>Usage</th></tr></thead><tbody>{configuration.accountCombinations.length ? configuration.accountCombinations.map((combination) => (
-            <tr key={combination.id}><td><strong>{combination.entityCode} · {combination.accountCode}</strong><small>{combination.accountName}</small></td><td><code>{combination.displayKey}</code></td><td><code>{combination.canonicalKey}</code></td><td><span className={`status-pill ${combination.active ? "status-success" : "status-neutral"}`}>{combination.active ? "Active" : "Historical"}</span></td><td>{combination.used ? "Protected after use" : "Unused — replaceable"}{combination.lastUsedAt && <small>Last used {new Date(combination.lastUsedAt).toLocaleDateString()}</small>}</td></tr>
-          )) : <tr><td colSpan={5}>No account combinations are configured.</td></tr>}</tbody></table>
+          <table><thead><tr><th>Entity & account</th><th>Displayed key</th><th>Canonical key</th><th>Status</th><th>Effective dates</th><th>Usage</th></tr></thead><tbody>{configuration.accountCombinations.length ? configuration.accountCombinations.map((combination) => (
+            <tr key={combination.id}><td><strong>{combination.entityCode} · {combination.accountCode}</strong><small>{combination.accountName} · {combination.controlKind}</small></td><td><code>{combination.displayKey}</code></td><td><code>{combination.canonicalKey}</code></td><td><span className={"status-pill " + (combination.validOnAccountingDate ? "status-success" : "status-neutral")}>{combination.validOnAccountingDate ? "Valid on " + configuration.evaluatedAccountingDate : combination.active && combination.accountActive && combination.postable ? "Not valid on " + configuration.evaluatedAccountingDate : "Inactive / non-postable"}</span></td><td>{combination.validFrom}–{combination.validTo ?? "open-ended"}</td><td>{combination.used ? "Protected after use" : "Unused — replaceable"}{combination.lastUsedAt && <small>Last used {new Date(combination.lastUsedAt).toLocaleDateString()}</small>}</td></tr>
+          )) : <tr><td colSpan={6}>No account combinations are configured.</td></tr>}</tbody></table>
         </div>
       </section>
 

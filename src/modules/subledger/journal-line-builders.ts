@@ -74,6 +74,40 @@ export function transactionLine(input: Readonly<{
   };
 }
 
+function signedTransactionLine(input: Readonly<{
+  naturalSide: "DEBIT" | "CREDIT";
+  accountCombinationId: string;
+  signedTransactionAmount: string | ReturnType<typeof exact>;
+  transactionCurrency: string;
+  fxRate: string | ReturnType<typeof exact>;
+  functionalCurrency: string;
+  fxRateSource: string;
+  fxRateEffectiveAt: string;
+  partyAccountId?: string;
+  subledgerEventId?: string;
+  taxSnapshotId?: string;
+  memo: string;
+}>): JournalLineInput {
+  const amount = exact(input.signedTransactionAmount);
+  const side = amount.isNegative()
+    ? input.naturalSide === "DEBIT" ? "CREDIT" : "DEBIT"
+    : input.naturalSide;
+  return transactionLine({
+    side,
+    accountCombinationId: input.accountCombinationId,
+    transactionAmount: amount.abs(),
+    transactionCurrency: input.transactionCurrency,
+    fxRate: input.fxRate,
+    functionalCurrency: input.functionalCurrency,
+    fxRateSource: input.fxRateSource,
+    fxRateEffectiveAt: input.fxRateEffectiveAt,
+    partyAccountId: input.partyAccountId,
+    subledgerEventId: input.subledgerEventId,
+    taxSnapshotId: input.taxSnapshotId,
+    memo: input.memo,
+  });
+}
+
 export function balanceJournalLines(
   lines: readonly JournalLineInput[],
   input: Readonly<{
@@ -161,50 +195,50 @@ export function buildIssueJournalLines(
         }));
       }
     } else {
-      lines.push(transactionLine({
-        side: "DEBIT",
+      lines.push(signedTransactionLine({
+        naturalSide: "DEBIT",
         accountCombinationId: sourceLine.accountCombinationId,
-        transactionAmount: exact(sourceLine.netAmount).plus(nonrecoverable).plus(selfAssessedPayable),
+        signedTransactionAmount: exact(sourceLine.netAmount).plus(nonrecoverable).plus(selfAssessedPayable),
         transactionCurrency: snapshot.currency,
         fxRate: snapshot.fx.rate,
         functionalCurrency: snapshot.functionalCurrency,
         fxRateSource: snapshot.fx.source,
         fxRateEffectiveAt: snapshot.fx.effectiveAt,
-        taxSnapshotId: nonrecoverable.plus(selfAssessedPayable).greaterThan(0)
+        taxSnapshotId: !nonrecoverable.plus(selfAssessedPayable).isZero()
           ? taxSnapshotId
           : undefined,
         memo: sourceLine.description,
       }));
-      if (recoverable.greaterThan(0)) {
+      if (!recoverable.isZero()) {
         if (!snapshot.taxAccountCombinationId) throw new Error("Recoverable tax account mapping is missing");
-        lines.push(transactionLine({
-          side: "DEBIT",
+        lines.push(signedTransactionLine({
+          naturalSide: "DEBIT",
           accountCombinationId: snapshot.taxAccountCombinationId,
-          transactionAmount: recoverable,
+          signedTransactionAmount: recoverable,
           transactionCurrency: snapshot.currency,
           fxRate: snapshot.fx.rate,
           functionalCurrency: snapshot.functionalCurrency,
           fxRateSource: snapshot.fx.source,
           fxRateEffectiveAt: snapshot.fx.effectiveAt,
           taxSnapshotId,
-          memo: `${sourceLine.description} recoverable tax`,
+          memo: sourceLine.description + " recoverable tax",
         }));
       }
-      if (selfAssessedPayable.greaterThan(0)) {
+      if (!selfAssessedPayable.isZero()) {
         if (!snapshot.taxAccountCombinationId) {
           throw new Error("Self-assessed use-tax payable account mapping is missing");
         }
-        lines.push(transactionLine({
-          side: "CREDIT",
+        lines.push(signedTransactionLine({
+          naturalSide: "CREDIT",
           accountCombinationId: snapshot.taxAccountCombinationId,
-          transactionAmount: selfAssessedPayable,
+          signedTransactionAmount: selfAssessedPayable,
           transactionCurrency: snapshot.currency,
           fxRate: snapshot.fx.rate,
           functionalCurrency: snapshot.functionalCurrency,
           fxRateSource: snapshot.fx.source,
           fxRateEffectiveAt: snapshot.fx.effectiveAt,
           taxSnapshotId,
-          memo: `${sourceLine.description} self-assessed use tax payable`,
+          memo: sourceLine.description + " self-assessed use tax payable",
         }));
       }
     }

@@ -1,6 +1,18 @@
 import "server-only";
 import { spawn } from "node:child_process";
 import { StorageError } from "./provider";
+import type { InboxDocumentFormat } from "./file-types";
+import { structuredDocumentPreview } from "./structured-content";
+
+export type DocumentPageResult = {
+  mimeType: string;
+  imageBase64?: string;
+  text: string;
+  pageCount: number;
+  contentKind?: "DELIMITED_TEXT" | "WORKBOOK";
+  preview?: unknown;
+  routingTarget?: "BANKING_IMPORT_REVIEW";
+};
 
 /** Poppler uses stdin/stdout only: no invoice or rendered page is written to disk. */
 export function runDocumentFilter(command: "pdftotext" | "pdftoppm" | "pdfinfo", args: string[], input: Buffer, maximumBytes: number): Promise<Buffer> {
@@ -25,7 +37,12 @@ export function runDocumentFilter(command: "pdftotext" | "pdftoppm" | "pdfinfo",
     child.stdin.end(input);
   });
 }
-export async function documentPage(bytes: Buffer, mimeType: string, page: number) {
+export function documentPage(bytes: Buffer, mimeType: string, page: number): Promise<DocumentPageResult & { imageBase64: string }>;
+export function documentPage(bytes: Buffer, mimeType: string, page: number, format: InboxDocumentFormat): Promise<DocumentPageResult>;
+export async function documentPage(bytes: Buffer, mimeType: string, page: number, format?: InboxDocumentFormat): Promise<DocumentPageResult> {
+  if (format && ["CSV", "TSV", "TEXT", "XLS", "XLSX"].includes(format)) {
+    return structuredDocumentPreview(bytes, format, mimeType, page);
+  }
   if (mimeType !== "application/pdf") {
     if (page !== 1) throw new StorageError("STORAGE_PAGE_INVALID", "Images have one page.");
     return { mimeType, imageBase64: bytes.toString("base64"), text: "", pageCount: 1 };

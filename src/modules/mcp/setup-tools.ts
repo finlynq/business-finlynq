@@ -53,6 +53,9 @@ import {
 } from "@/modules/fx/provider-policy";
 
 const emptySchema = z.object({}).strict();
+const accountingConfigurationContextSchema = z.object({
+  accountingDate: z.iso.date().optional(),
+}).strict();
 const partyAccountSchema = z.object({
   legalEntityId: z.uuid(),
   ledgerId: z.uuid(),
@@ -84,9 +87,12 @@ export const SETUP_MCP_TOOLS: readonly McpToolDefinition[] = [
   defineMcpTool({
     policy: { name: "finlynq_setup_get_configuration", group: "SETUP", access: "READ", permission: PERMISSIONS.readOrganizationSettings },
     title: "Get accounting configuration",
-    description: "Return organization currencies, FX rates, FX provider policy, legal entities, ledgers, tax registrations, segments, values, chart accounts, account combinations, and posting policies. Use this before any setup write.",
-    inputSchema: emptySchema,
-    invoke: (_args, runtime) => loadAccountingConfiguration(runtime.sessionPrincipal),
+    description: "Return organization currencies, FX rates, FX provider policy, legal entities, ledgers, tax registrations, segments, values, chart accounts, account combinations, and posting policies. Supply the intended accounting date to receive each combination's effective dates and validOnAccountingDate result before a write.",
+    inputSchema: accountingConfigurationContextSchema,
+    invoke: (args, runtime) => loadAccountingConfiguration(
+      runtime.sessionPrincipal,
+      args.accountingDate,
+    ),
   }),
   defineMcpTool({
     policy: { name: "finlynq_setup_list_parties", group: "SETUP", access: "READ", permission: PERMISSIONS.readParties },

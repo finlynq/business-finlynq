@@ -7,7 +7,14 @@ import { withTenantTransaction, type TenantTransactionContext } from "@/db/trans
 import { loadActiveOrganizationKey } from "@/security/organization-key-store";
 import { encryptField, serializeEncryptedField } from "@/security/organization-encryption";
 import { scanEvidence } from "@/security/evidence-scanner";
-import { downloadCloudEvidence } from "@/modules/document-storage/evidence";
+import { PERMISSIONS } from "@/modules/identity/permissions";
+import { itemProcessing, type InboxRow } from "@/modules/document-storage/inbox-store";
+import {
+  authorizeCloudEvidenceDownload,
+  downloadCloudEvidence,
+  reauthorizeCloudEvidenceDownload,
+  resolveCloudEvidenceDownload,
+} from "@/modules/document-storage/evidence";
 import { assertTenantWritesEnabled, assertWritableOrganization } from "@/modules/workspace/write-policy";
 import { assertPermission, permissionForOwner, withoutContext } from "./ar-ap-access";
 import { acquireDocumentIdentityLock, acquireIdempotencyLock, assertIdempotentSource,
@@ -130,29 +137,178 @@ export async function changeEvidenceInTransaction(
 export const attachDocumentEvidence = (command: Context & z.input<typeof attachEvidenceSchema>) => changeEvidence(command, "attach");
 export const detachDocumentEvidence = (command: Context & z.input<typeof detachEvidenceSchema>) => changeEvidence(command, "detach");
 
+async function authorizedEvidenceRow(
+  client: PoolClient,
+  context: TenantTransactionContext,
+  assetId: string,
+  sourceDocumentId: string,
+) {
+  const result = await client.query<EvidenceRow>(
+    `SELECT ${EVIDENCE_METADATA_COLUMNS}, content_ciphertext FROM document_evidence_assets
+     WHERE organization_id = $1 AND id = $2`, [context.organizationId, assetId]);
+  const row = result.rows[0];
+  if (!row) throw new Error("Evidence is unavailable");
+  await assertPermission(client, context, permissionForOwner(row.owner_module, "read"));
+  // Recheck the exact immutable source version, including historical versions.
+  const source = await client.query<{ id: string; source_number: string; version: number; snapshot: unknown }>(
+    "SELECT id, source_number, version, snapshot FROM source_documents WHERE organization_id = $1 AND owner_module = $2 AND id = $3",
+    [context.organizationId, row.owner_module, sourceDocumentId]);
+  const document = source.rows[0];
+  const snapshot = document ? businessDocumentSnapshotSchema.parse(document.snapshot) : null;
+  if (!snapshot?.evidence?.some((ref) => ref.assetId === assetId)) {
+    throw new Error("Evidence is unavailable for this source version");
+  }
+  return { row, document, snapshot };
+}
+
 export async function downloadDocumentEvidence(command: Context & { assetId: string; sourceDocumentId: string }) {
   const assetId = z.uuid().parse(command.assetId);
   const sourceDocumentId = z.uuid().parse(command.sourceDocumentId);
-  return withTenantTransaction(command.context, async (client) => {
-    const result = await client.query<EvidenceRow>(
-      `SELECT ${EVIDENCE_METADATA_COLUMNS}, content_ciphertext FROM document_evidence_assets
-       WHERE organization_id = $1 AND id = $2`, [command.context.organizationId, assetId]);
-    const row = result.rows[0];
-    if (!row) throw new Error("Evidence is unavailable");
-    await assertPermission(client, command.context, permissionForOwner(row.owner_module, "read"));
-    // Recheck the exact immutable source version, including historical versions.
-    const source = await client.query<{ id: string; source_number: string; version: number; snapshot: unknown }>(
-      "SELECT id, source_number, version, snapshot FROM source_documents WHERE organization_id = $1 AND owner_module = $2 AND id = $3",
-      [command.context.organizationId, row.owner_module, sourceDocumentId]);
-    const document = source.rows[0];
-    const snapshot = document ? businessDocumentSnapshotSchema.parse(document.snapshot) : null;
-    if (!snapshot?.evidence?.some((ref) => ref.assetId === assetId)) throw new Error("Evidence is unavailable for this source version");
+  const prepared = await withTenantTransaction(command.context, async (client) => {
+    const { row, document, snapshot } = await authorizedEvidenceRow(
+      client,
+      command.context,
+      assetId,
+      sourceDocumentId,
+    );
     const metadata = await loadDocumentEvidence(client, {
       organizationId: command.context.organizationId, ownerModule: row.owner_module,
       id: document.id, sourceNumber: document.source_number, version: document.version,
-      evidence: snapshot.evidence.filter((ref) => ref.assetId === assetId),
+      evidence: snapshot.evidence?.filter((ref) => ref.assetId === assetId),
     });
-    return { metadata: metadata[0], bytes: row.storage_backend === "CLOUD"
-      ? await downloadCloudEvidence(client, command.context, row) : await decryptEvidenceContent(client, row) };
+    if (row.storage_backend !== "CLOUD") {
+      return { kind: "database" as const, metadata: metadata[0], bytes: await decryptEvidenceContent(client, row) };
+    }
+    return {
+      kind: "cloud" as const,
+      row,
+      metadata: metadata[0],
+      cloudAccess: await authorizeCloudEvidenceDownload(client, command.context, row),
+    };
   });
+
+  if (prepared.kind === "database") return { metadata: prepared.metadata, bytes: prepared.bytes };
+  // Expired credential refresh, when needed, is coordinated in short
+  // transactions but performs its provider exchange after the claim commits.
+  const cloudAccess = await resolveCloudEvidenceDownload(command.context, prepared.cloudAccess);
+  const bytes = await downloadCloudEvidence(cloudAccess, prepared.row);
+  try {
+    // Provider I/O runs without a database transaction or connection-row lock.
+    // Reauthorize after it completes so a mid-download role revocation,
+    // disconnect, or source-link change still fails closed before bytes leave.
+    await withTenantTransaction(command.context, async (client) => {
+      const { row } = await authorizedEvidenceRow(client, command.context, assetId, sourceDocumentId);
+      await reauthorizeCloudEvidenceDownload(client, command.context, row);
+    });
+    return { metadata: prepared.metadata, bytes };
+  } catch (error) {
+    bytes.fill(0);
+    throw error;
+  }
+}
+
+async function authorizedBankStatementEvidenceRow(
+  client: PoolClient,
+  context: TenantTransactionContext,
+  assetId: string,
+  statementImportId: string,
+) {
+  await assertPermission(client, context, PERMISSIONS.readBanking);
+  const result = await client.query<EvidenceRow>(
+    `SELECT ${EVIDENCE_METADATA_COLUMNS}, content_ciphertext
+     FROM document_evidence_assets
+     WHERE organization_id = $1 AND id = $2`,
+    [context.organizationId, assetId],
+  );
+  const row = result.rows[0];
+  if (!row) throw new Error("Evidence is unavailable");
+
+  const statementImport = await client.query<{ evidence_asset_id: string }>(
+    `SELECT evidence_asset_id
+     FROM bank_statement_imports
+     WHERE organization_id = $1 AND id = $2`,
+    [context.organizationId, statementImportId],
+  );
+  if (!statementImport.rows[0]) throw new Error("Evidence is unavailable");
+  if (statementImport.rows[0].evidence_asset_id === assetId) return row;
+
+  // A repeated source does not create another accounting import or observation.
+  // Its newly archived original remains linked through the tenant-encrypted,
+  // immutable completion outcome on that exact completed inbox item.
+  const associated = await client.query<InboxRow>(
+    `SELECT *
+     FROM document_inbox_items
+     WHERE organization_id = $1 AND asset_id = $2
+       AND completion_hash IS NOT NULL
+       AND status IN ('READY_TO_FILE', 'FILING_FAILED', 'FILED')
+     LIMIT 1`,
+    [context.organizationId, assetId],
+  );
+  const processing = associated.rows[0]
+    ? await itemProcessing(client, associated.rows[0])
+    : null;
+  if (
+    !processing?.statementImport
+    || processing.statementImport.statementImportId !== statementImportId
+    || processing.statementImport.evidenceAssetId !== assetId
+    || !processing.statementImport.duplicateSource
+  ) {
+    throw new Error("Evidence is unavailable");
+  }
+  return row;
+}
+
+export async function downloadBankStatementEvidence(
+  command: Context & { assetId: string; statementImportId: string },
+) {
+  const assetId = z.uuid().parse(command.assetId);
+  const statementImportId = z.uuid().parse(command.statementImportId);
+  const prepared = await withTenantTransaction(command.context, async (client) => {
+    const row = await authorizedBankStatementEvidenceRow(
+      client,
+      command.context,
+      assetId,
+      statementImportId,
+    );
+    const metadata = await evidenceMetadata(client, row);
+    if (row.storage_backend !== "CLOUD") {
+      return {
+        kind: "database" as const,
+        metadata,
+        bytes: await decryptEvidenceContent(client, row),
+      };
+    }
+    return {
+      kind: "cloud" as const,
+      row,
+      metadata,
+      cloudAccess: await authorizeCloudEvidenceDownload(
+        client,
+        command.context,
+        row,
+        "banking",
+      ),
+    };
+  });
+
+  if (prepared.kind === "database") {
+    return { metadata: prepared.metadata, bytes: prepared.bytes };
+  }
+  const cloudAccess = await resolveCloudEvidenceDownload(command.context, prepared.cloudAccess);
+  const bytes = await downloadCloudEvidence(cloudAccess, prepared.row);
+  try {
+    await withTenantTransaction(command.context, async (client) => {
+      const row = await authorizedBankStatementEvidenceRow(
+        client,
+        command.context,
+        assetId,
+        statementImportId,
+      );
+      await reauthorizeCloudEvidenceDownload(client, command.context, row, "banking");
+    });
+    return { metadata: prepared.metadata, bytes };
+  } catch (error) {
+    bytes.fill(0);
+    throw error;
+  }
 }

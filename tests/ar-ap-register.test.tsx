@@ -11,6 +11,8 @@ vi.mock("next/navigation", () => ({
 
 import {
   ArApWorkspace,
+  businessDocumentLineDraftsFromSnapshot,
+  businessDocumentLineTaxMutationFields,
   businessDraftCanPreserveFx,
   businessDraftFxMutationFields,
   DocumentDetails,
@@ -112,6 +114,54 @@ describe("scalable AR/AP transaction register", () => {
       currency: "USD",
       accountingDate: "2026-08-27",
     })).toBe(true);
+  });
+
+  it("round-trips distinct supplier-line tax recovery and evidence provenance", () => {
+    const lines = businessDocumentLineDraftsFromSnapshot({
+      kind: "SUPPLIER_BILL",
+      lines: [
+        {
+          lineNumber: 1,
+          description: "Current service",
+          accountCombinationId: "10000000-0000-4000-8000-000000000011",
+          netAmount: "200.00",
+          lineType: "STANDARD",
+          tax: {
+            packKey: "ca.on.hst",
+            category: "STANDARD",
+            destinationCountry: "CA",
+            destinationRegion: "ON",
+            recoverablePercent: "100",
+            evidenceReference: "invoice-line-current",
+          },
+          taxDecision: {},
+          taxDecisionHash: "a".repeat(64),
+        },
+        {
+          lineNumber: 2,
+          description: "Prior-period credit",
+          accountCombinationId: "10000000-0000-4000-8000-000000000012",
+          netAmount: "-21.75",
+          lineType: "ADJUSTMENT",
+          tax: {
+            packKey: "ca.on.hst",
+            category: "STANDARD",
+            destinationCountry: "CA",
+            destinationRegion: "ON",
+            recoverablePercent: "50",
+            evidenceReference: "credit-note-line-prior",
+          },
+          taxDecision: {},
+          taxDecisionHash: "b".repeat(64),
+        },
+      ],
+    } as Parameters<typeof businessDocumentLineDraftsFromSnapshot>[0]);
+
+    expect(lines.map((line) => businessDocumentLineTaxMutationFields(line, "payables"))).toEqual([
+      { recoverablePercent: "100", evidenceReference: "invoice-line-current" },
+      { recoverablePercent: "50", evidenceReference: "credit-note-line-prior" },
+    ]);
+    expect(lines[1]).toMatchObject({ lineType: "ADJUSTMENT", netAmount: "-21.75" });
   });
 
   it("sends fail-closed FX intent from the browser draft editor", () => {

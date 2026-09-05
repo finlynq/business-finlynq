@@ -14,10 +14,24 @@ export const locationSchema = z.object({
 export type StorageLocation = z.infer<typeof locationSchema>;
 export const credentialSchema = z.object({ accessToken: z.string().min(1).max(20000), refreshToken: z.string().min(1).max(20000), expiresAt: z.number() });
 export type StorageCredentials = z.infer<typeof credentialSchema>;
-export type CloudFile = { id: string; name: string; mimeType: string; size: number; version: string; etag?: string; parentId: string; driveId?: string; folder: boolean };
+export type CloudFile = { id: string; name: string; mimeType: string; size: number; version: string; etag?: string; parentId: string; driveId?: string; folder: boolean; shortcut?: boolean };
 
 export class StorageError extends Error {
-  constructor(public readonly code: string, message: string) { super(message); this.name = "StorageError"; }
+  constructor(
+    public readonly code: string,
+    message: string,
+    public readonly retryAfterSeconds?: number,
+  ) { super(message); this.name = "StorageError"; }
+}
+
+export function storageRetryAfterSeconds(error: unknown): number | null {
+  if (!(error instanceof StorageError) || !["STORAGE_RETRYABLE", "STORAGE_THROTTLED"].includes(error.code)) return null;
+  return typeof error.retryAfterSeconds === "number"
+    && Number.isInteger(error.retryAfterSeconds)
+    && error.retryAfterSeconds >= 1
+    && error.retryAfterSeconds <= 30
+    ? error.retryAfterSeconds
+    : 1;
 }
 export async function boundedResponse(response: Response, maximum: number): Promise<Buffer> {
   if (Number(response.headers.get("content-length") ?? 0) > maximum) {
@@ -40,8 +54,8 @@ export async function boundedResponse(response: Response, maximum: number): Prom
 async function jsonResponse(response: Response): Promise<unknown> {
   if (!response.ok) {
     await response.body?.cancel();
-    const code = response.status === 401 || response.status === 403 ? "STORAGE_RECONNECT" : response.status === 404 ? "STORAGE_MISSING" : "STORAGE_PROVIDER_FAILED";
-    throw new StorageError(code, code === "STORAGE_RECONNECT" ? "Reconnect storage or check the account's folder permissions." : code === "STORAGE_MISSING" ? "The cloud file or folder is unavailable." : "The storage provider could not complete this request. Retry later.");
+    const code = response.status === 401 || response.status === 403 ? "STORAGE_RECONNECT" : response.status === 404 ? "STORAGE_MISSING" : response.status === 429 ? "STORAGE_THROTTLED" : "STORAGE_PROVIDER_FAILED";
+    throw new StorageError(code, code === "STORAGE_RECONNECT" ? "Reconnect storage or check the account's folder permissions." : code === "STORAGE_MISSING" ? "The cloud file or folder is unavailable." : code === "STORAGE_THROTTLED" ? "The storage provider is throttling requests. Retry this sync later." : "The storage provider could not complete this request. Retry later.");
   }
   const bytes = await boundedResponse(response, 1024 * 1024);
   try { return JSON.parse(bytes.toString("utf8")); } finally { bytes.fill(0); }
@@ -129,14 +143,15 @@ function googleFile(raw: unknown): CloudFile {
   const f = googleFileSchema.parse(raw);
   if (f.trashed) throw new StorageError("STORAGE_MISSING", "The file is in the trash.");
   return { id: f.id, name: f.name, mimeType: f.mimeType, size: z.number().safe().nonnegative().parse(Number(f.size ?? 0)),
-    version: f.md5Checksum ?? f.version ?? "folder", parentId: f.parents?.[0] ?? "", folder: f.mimeType === "application/vnd.google-apps.folder" };
+    version: f.md5Checksum ?? f.version ?? "folder", parentId: f.parents?.[0] ?? "", folder: f.mimeType === "application/vnd.google-apps.folder",
+    shortcut: f.mimeType === "application/vnd.google-apps.shortcut" };
 }
-function graphFile(raw: unknown): CloudFile {
+function graphFile(raw: unknown, allowShortcut = false): CloudFile {
   const f = graphFileSchema.parse(raw);
   if (f.deleted) throw new StorageError("STORAGE_MISSING", "The file was deleted.");
-  if (f.remoteItem) throw new StorageError("STORAGE_FOLDER_BOUNDARY", "Shared shortcuts and remote drive items cannot be used as connected folders or documents.");
+  if (f.remoteItem && !allowShortcut) throw new StorageError("STORAGE_FOLDER_BOUNDARY", "Shared shortcuts and remote drive items cannot be used as connected folders or documents.");
   return { id: f.id, name: f.name, mimeType: f.file?.mimeType ?? "folder", size: f.size, version: f.cTag ?? f.eTag ?? "folder",
-    etag: f.eTag, parentId: f.parentReference?.id ?? "", driveId: f.parentReference?.driveId, folder: Boolean(f.folder) };
+    etag: f.eTag, parentId: f.parentReference?.id ?? "", driveId: f.parentReference?.driveId, folder: Boolean(f.folder), shortcut: Boolean(f.remoteItem) };
 }
 function escapedQuery(value: string) { return value.replace(/\\/g, "\\\\").replace(/'/g, "\\'"); }
 export class CloudDrive {
@@ -181,7 +196,11 @@ export class CloudDrive {
       next = path + url.search;
     }
     const raw = z.object({ value: z.array(z.unknown()), "@odata.nextLink": z.string().optional() }).parse(await jsonResponse(await this.request(next)));
-    return { files: raw.value.map((file) => this.parseFile(file)), cursor: raw["@odata.nextLink"] ?? null };
+    return { files: raw.value.map((rawFile) => {
+      const file = graphFile(rawFile, true);
+      if (this.driveId && file.driveId !== this.driveId) throw new StorageError("STORAGE_FOLDER_BOUNDARY", "The provider returned an item from a different or unidentified drive.");
+      return file;
+    }), cursor: raw["@odata.nextLink"] ?? null };
   }
   async folder(parentId: string, name: string): Promise<string> {
     if (this.provider === "GOOGLE_DRIVE") {
@@ -263,13 +282,13 @@ export class CloudDrive {
   async findUpload(folderId: string, stem: string): Promise<CloudFile | null> {
     if (!/^Upload-[a-f0-9]{64}$/.test(stem)) throw new Error("Invalid upload identifier");
     if (this.provider === "GOOGLE_DRIVE") {
-      const names = ["pdf", "png", "jpg"].map((ext) => `name = '${stem}.${ext}'`).join(" or ");
+      const names = ["pdf", "png", "jpg", "csv", "tsv", "txt", "xls", "xlsx"].map((ext) => `name = '${stem}.${ext}'`).join(" or ");
       const q = new URLSearchParams({ q: `'${escapedQuery(folderId)}' in parents and trashed=false and (${names})`, fields: `files(${googleFields})`, pageSize: "2" });
       const raw = z.object({ files: z.array(z.unknown()) }).parse(await jsonResponse(await this.request(`/drive/v3/files?${q}`)));
       if (raw.files.length > 1) throw new StorageError("STORAGE_UPLOAD_CONFLICT", "Multiple files match this upload. Review the cloud inbox.");
       return raw.files[0] ? googleFile(raw.files[0]) : null;
     }
-    for (const extension of ["pdf", "png", "jpg"]) {
+    for (const extension of ["pdf", "png", "jpg", "csv", "tsv", "txt", "xls", "xlsx"]) {
       const response = await this.request(`${this.graphPath()}/items/${encodeURIComponent(folderId)}:/${stem}.${extension}`);
       if (response.status === 404) { await response.body?.cancel(); continue; }
       return this.parseFile(await jsonResponse(response));

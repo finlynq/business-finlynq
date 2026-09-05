@@ -6,6 +6,7 @@ const mocks = vi.hoisted(() => ({
   refresh: vi.fn(),
   requireWorkspacePrincipal: vi.fn(),
   mfaStatusForSession: vi.fn(),
+  trustedBrowsersForSession: vi.fn(),
 }));
 
 vi.mock("next/navigation", () => ({
@@ -18,6 +19,7 @@ vi.mock("@/modules/workspace/access", () => ({
 
 vi.mock("@/modules/identity/auth-store", () => ({
   mfaStatusForSession: mocks.mfaStatusForSession,
+  trustedBrowsersForSession: mocks.trustedBrowsersForSession,
 }));
 
 import AccountPage from "@/app/(workspace)/app/account/page";
@@ -46,6 +48,7 @@ const principal: SessionPrincipal = {
 beforeEach(() => {
   vi.clearAllMocks();
   mocks.requireWorkspacePrincipal.mockResolvedValue(principal);
+  mocks.trustedBrowsersForSession.mockResolvedValue([]);
   mocks.mfaStatusForSession.mockResolvedValue({
     mfa_required: true,
     active_factor: true,
@@ -122,6 +125,9 @@ describe("workspace account and entity experience", () => {
     expect(markup).toContain("VERIFIED");
     expect(markup).toContain("ENABLED");
     expect(markup).toContain("Authenticator enrollment");
+    expect(markup).toContain("Trusted browsers");
+    expect(markup).toContain("Sign out all devices");
+    expect(markup).toContain("No active trusted browsers");
     expect(markup).toContain('id="mfa-enrollment"');
     expect(markup).toContain("Authenticator protection is enabled");
     expect(markup).toContain("Verified for this session");

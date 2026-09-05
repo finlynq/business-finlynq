@@ -39,6 +39,8 @@ import {
   type NormalizedBankTransaction,
 } from "./simplefin-transform";
 import { consumeBankingProviderOrganizationRateLimit } from "./rate-limit";
+import { BankingServiceError } from "./banking-error";
+export { BankingServiceError } from "./banking-error";
 
 const decimalSchema = z.string().trim().regex(/^-?\d+(?:\.\d{1,9})?$/).refine((value) => {
   try {
@@ -75,18 +77,6 @@ export const bankRuleActionSchema = z.object({
 
 export type BankRuleCondition = z.output<typeof bankRuleConditionSchema>;
 export type BankRuleAction = z.output<typeof bankRuleActionSchema>;
-
-export class BankingServiceError extends Error {
-  constructor(
-    message: string,
-    public readonly status: number,
-    public readonly code: string,
-    public readonly retryAfterSeconds?: number,
-  ) {
-    super(message);
-    this.name = "BankingServiceError";
-  }
-}
 
 function bankingContext(principal: SessionPrincipal, requestId: string, reason: string) {
   return mutationContext(principal, requestId, { reason, sourceSurface: "IMPORT" });
@@ -925,17 +915,30 @@ export async function mapBankExternalAccount(input: Readonly<{
   legalEntityId: string;
   ledgerId: string;
   cashAccountCombinationId: string;
+  accountKind?: "CASH" | "CREDIT_CARD";
 }>): Promise<Readonly<{ accountId: string; mapped: true }>> {
   assertBankingSession(input.principal);
   return withAuthorizedBankingWrite({
     principal: input.principal,
     requestId: input.requestId,
     permission: PERMISSIONS.prepareBankReconciliation,
-    reason: "Map an observed bank account to a tenant cash account combination",
+    reason: "Map an observed cash or credit-card account to a tenant ledger combination",
   }, async (client) => {
-    const valid = await client.query(
-      `SELECT 1
+    const valid = await client.query<{
+      account_kind: "CASH" | "CREDIT_CARD";
+      legal_entity_id: string | null;
+      ledger_id: string | null;
+      cash_account_combination_id: string | null;
+      provider: string;
+      account_class: string;
+    }>(
+      `SELECT external.account_kind, external.legal_entity_id, external.ledger_id,
+         external.cash_account_combination_id, connection.provider,
+         account.class AS account_class
        FROM bank_external_accounts external
+       JOIN bank_connections connection
+         ON connection.organization_id = external.organization_id
+        AND connection.id = external.connection_id
        JOIN account_combinations combination
          ON combination.organization_id = external.organization_id
         AND combination.id = $5 AND combination.active
@@ -943,25 +946,103 @@ export async function mapBankExternalAccount(input: Readonly<{
          ON account.organization_id = combination.organization_id
         AND account.id = combination.account_id
         AND account.active AND account.postable
-        AND account.class = 'ASSET' AND account.control_kind = 'NONE'
+        AND account.control_kind = 'NONE'
        JOIN ledgers ledger
          ON ledger.organization_id = combination.organization_id
-         AND ledger.id = combination.ledger_id AND ledger.active
+        AND ledger.id = combination.ledger_id AND ledger.active
        WHERE external.organization_id = $1 AND external.id = $2 AND external.active
-         AND combination.entity_id = $3 AND combination.ledger_id = $4`,
+         AND combination.entity_id = $3 AND combination.ledger_id = $4
+       FOR UPDATE OF external`,
       [input.principal.organizationId, input.externalAccountId, input.legalEntityId,
         input.ledgerId, input.cashAccountCombinationId],
     );
-    if (!valid.rows[0]) {
-      throw new BankingServiceError("Choose an active non-control asset account in the selected company ledger.", 400, "INVALID_CASH_MAPPING");
+    const account = valid.rows[0];
+    if (!account) {
+      throw new BankingServiceError("Choose an active postable non-control asset for cash, or liability for a credit-card account, in the selected company ledger.", 400, "INVALID_CASH_MAPPING");
     }
-    await client.query(
-      `UPDATE bank_external_accounts SET
+
+    const requestedKind = input.accountKind ?? account.account_kind;
+    const expectedClass = requestedKind === "CASH" ? "ASSET" : "LIABILITY";
+    if (account.account_class !== expectedClass) {
+      throw new BankingServiceError("Choose an asset for a cash account or a liability for a credit-card account.", 400, "INVALID_CASH_MAPPING");
+    }
+
+    const changesKind = requestedKind !== account.account_kind;
+    if (changesKind) {
+      const firstMapping = account.legal_entity_id === null
+        && account.ledger_id === null
+        && account.cash_account_combination_id === null;
+      if (account.provider !== "SIMPLEFIN" || !firstMapping) {
+        throw new BankingServiceError(
+          "The banking account type can only be selected during the first mapping of an unmapped SimpleFIN account.",
+          409,
+          "ACCOUNT_KIND_CHANGE_NOT_ALLOWED",
+        );
+      }
+      const history = await client.query<{ unsafe_history: boolean }>(
+        `SELECT (
+           EXISTS (
+             SELECT 1 FROM bank_reconciliation_sessions reconciliation
+             WHERE reconciliation.organization_id = $1
+               AND reconciliation.external_account_id = $2
+           ) OR EXISTS (
+             SELECT 1 FROM bank_statement_imports statement_import
+             WHERE statement_import.organization_id = $1
+               AND statement_import.external_account_id = $2
+           )
+         ) AS unsafe_history`,
+        [input.principal.organizationId, input.externalAccountId],
+      );
+      if (history.rows[0]?.unsafe_history !== false) {
+        throw new BankingServiceError(
+          "The banking account type cannot change after statement or reconciliation history exists.",
+          409,
+          "ACCOUNT_KIND_CHANGE_NOT_ALLOWED",
+        );
+      }
+    }
+
+    const updated = await client.query<{ id: string }>(
+      `UPDATE bank_external_accounts external SET
+         account_kind = $6,
          legal_entity_id = $3, ledger_id = $4, cash_account_combination_id = $5
-       WHERE organization_id = $1 AND id = $2`,
+       WHERE external.organization_id = $1 AND external.id = $2 AND external.active
+         AND external.account_kind = $7
+         AND (
+           $6::text = $7::text
+           OR (
+             external.legal_entity_id IS NULL
+             AND external.ledger_id IS NULL
+             AND external.cash_account_combination_id IS NULL
+             AND EXISTS (
+               SELECT 1 FROM bank_connections connection
+               WHERE connection.organization_id = external.organization_id
+                 AND connection.id = external.connection_id
+                 AND connection.provider = 'SIMPLEFIN'
+             )
+             AND NOT EXISTS (
+               SELECT 1 FROM bank_reconciliation_sessions reconciliation
+               WHERE reconciliation.organization_id = external.organization_id
+                 AND reconciliation.external_account_id = external.id
+             )
+             AND NOT EXISTS (
+               SELECT 1 FROM bank_statement_imports statement_import
+               WHERE statement_import.organization_id = external.organization_id
+                 AND statement_import.external_account_id = external.id
+             )
+           )
+         )
+       RETURNING external.id`,
       [input.principal.organizationId, input.externalAccountId, input.legalEntityId,
-        input.ledgerId, input.cashAccountCombinationId],
+        input.ledgerId, input.cashAccountCombinationId, requestedKind, account.account_kind],
     );
+    if (!updated.rows[0]) {
+      throw new BankingServiceError(
+        "The banking account changed while it was being mapped. Reload and review it before trying again.",
+        409,
+        "BANK_ACCOUNT_MAPPING_CHANGED",
+      );
+    }
     return { accountId: input.externalAccountId, mapped: true };
   });
 }

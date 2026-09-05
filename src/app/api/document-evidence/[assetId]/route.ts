@@ -1,10 +1,12 @@
 import { observeRouteHandler } from "@/observability/request-observability";
 import { requestIdFor } from "@/observability/request-correlation";
+import { isRetryableDatabaseError } from "@/db/retryable";
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { requestPrincipal } from "@/modules/identity/session";
 import { mutationContext } from "@/modules/workspace/write-policy";
 import { downloadDocumentEvidence } from "@/modules/subledger/evidence-service";
+import { storageRetryAfterSeconds } from "@/modules/document-storage/provider";
 import { demoSessionLeaseLostResponse } from "@/app/api/_shared/demo-session-error-response";
 
 const headers = { "Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff",
@@ -31,6 +33,23 @@ async function download(request: NextRequest, context: { params: Promise<{ asset
       "Content-Disposition": `attachment; filename="evidence"; filename*=UTF-8''${encodeURIComponent(result.metadata.filename).replace(/['()*]/g, (c) => "%" + c.charCodeAt(0).toString(16))}`,
     } });
   } catch (error) {
+    const retryAfterSeconds = storageRetryAfterSeconds(error) ?? (isRetryableDatabaseError(error) ? 1 : null);
+    if (retryAfterSeconds !== null) {
+      console.warn(JSON.stringify({
+        event: "evidence.download.retryable",
+        requestId: requestIdFor(request),
+        errorCode: "EVIDENCE_RETRYABLE",
+        retryAfterSeconds,
+      }));
+      return NextResponse.json({
+        error: `Evidence is temporarily busy. Retry after ${retryAfterSeconds} second${retryAfterSeconds === 1 ? "" : "s"}.`,
+        code: "EVIDENCE_RETRYABLE",
+        retryAfterSeconds,
+      }, {
+        status: 503,
+        headers: { ...headers, "Retry-After": String(retryAfterSeconds) },
+      });
+    }
     return demoSessionLeaseLostResponse(error)
       ?? NextResponse.json({ error: "Evidence not found or access is no longer available." }, { status: 404, headers });
   }

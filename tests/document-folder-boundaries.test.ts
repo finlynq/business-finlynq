@@ -9,7 +9,7 @@ afterEach(() => { vi.unstubAllGlobals(); vi.unstubAllEnvs(); });
 const location: StorageLocation = { accountId: "account", driveId: "drive", rootId: "connection", inboxId: "inbox", archiveId: "archive", inboxUrl: "https://onedrive.live.com/inbox", archiveUrl: "https://onedrive.live.com/archive" };
 function folder(id: string, parentId: string): CloudFile { return { id, parentId, name: id, mimeType: "folder", size: 0, version: "v1", folder: true }; }
 function fixture() {
-  const items = new Map([folder("connection", "app-root"), folder("inbox", "connection"), folder("archive", "connection"), folder("year", "archive"), folder("other-connection", "app-root"), folder("other-inbox", "other-connection")].map((f) => [f.id, f]));
+  const items = new Map([folder("connection", "app-root"), folder("inbox", "connection"), folder("inbox-year", "inbox"), folder("inbox-month", "inbox-year"), folder("archive", "connection"), folder("year", "archive"), folder("other-connection", "app-root"), folder("other-inbox", "other-connection")].map((f) => [f.id, f]));
   const drive = { provider: "ONEDRIVE", file: vi.fn(async (id: string) => { if (!items.has(id)) throw new Error("Missing folder"); return items.get(id)!; }), appFolder: vi.fn(async () => ({ id: "app-root", driveId: "drive" })) } as unknown as CloudDrive;
   return { items, drive };
 }
@@ -20,6 +20,7 @@ describe("folder boundaries (mocked provider metadata, not live provider validat
     const external = { ...folder("external-file", "inbox"), folder: false };
     expect(() => assertDirectChild(external, "inbox")).not.toThrow();
     await expect(assertStoredFile(drive, location, external)).resolves.toBeUndefined();
+    await expect(assertStoredFile(drive, location, { ...external, parentId: "inbox-month" })).resolves.toBeUndefined();
     await expect(assertStoredFile(drive, location, { ...external, parentId: "year" })).resolves.toBeUndefined();
   });
   it("rejects another connection inside the same provider app-folder grant", async () => {

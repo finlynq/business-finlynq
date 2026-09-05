@@ -284,6 +284,32 @@ describe("AR/AP mutation routes", () => {
     }));
   });
 
+  it("accepts explicit signed supplier adjustment lines at the API boundary", async () => {
+    const response = await createBillDraft(request("/api/payables/bills", "POST", {
+      ...billBody,
+      lines: [
+        billBody.lines[0],
+        {
+          ...billBody.lines[0],
+          description: "Unused-time credit",
+          netAmount: "-21.75",
+          lineType: "ADJUSTMENT",
+        },
+      ],
+    }));
+
+    expect(response.status).toBe(201);
+    expect(mocks.createDraft).toHaveBeenCalledWith(expect.objectContaining({
+      kind: "SUPPLIER_BILL",
+      lines: expect.arrayContaining([
+        expect.objectContaining({
+          netAmount: "-21.75",
+          lineType: "ADJUSTMENT",
+        }),
+      ]),
+    }));
+  });
+
   it("requires edit FX mode and evidence combinations to be explicit", async () => {
     const { fx: _fx, ...invoiceWithoutFx } = invoiceBody;
     void _fx;
