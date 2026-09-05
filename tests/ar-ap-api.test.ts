@@ -36,7 +36,7 @@ const mocks = vi.hoisted(() => {
       subject.sessionMode === "demo" ? "demo-link" : "password"),
     consumeLimit: vi.fn(async () => ({ allowed: true, retryAfterSeconds: 0 })),
     createDraft: vi.fn(async () => ({ document, idempotentReplay: false })),
-    editDraft: vi.fn(async () => ({ document: { ...document, version: 2 }, idempotentReplay: false })),
+    editDraft: vi.fn(async (command: unknown) => { void command; return { document: { ...document, version: 2 }, idempotentReplay: false }; }),
     issueDocument: vi.fn(async () => ({
       document: { ...document, status: "POSTED", version: 2 },
       idempotentReplay: false,
