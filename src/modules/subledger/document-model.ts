@@ -92,6 +92,35 @@ export const fxInputSchema = z.object({
     .default("FUNCTIONAL_UNITS_PER_TRANSACTION_UNIT"),
 }).strict();
 
+const providerFxCalculationSchema = z.enum([
+  "DIRECT_TO_CAD",
+  "INVERSE_FROM_CAD",
+  "CROSS_VIA_CAD",
+  "DIRECT_FROM_EUR",
+  "INVERSE_TO_EUR",
+  "CROSS_VIA_EUR",
+]);
+
+const providerFxFormulaSchema = z.enum([
+  "CAD_PER_SOURCE_UNIT",
+  "1 / CAD_PER_TARGET_UNIT",
+  "CAD_PER_SOURCE_UNIT / CAD_PER_TARGET_UNIT",
+  "TARGET_UNITS_PER_EUR",
+  "1 / SOURCE_UNITS_PER_EUR",
+  "TARGET_UNITS_PER_EUR / SOURCE_UNITS_PER_EUR",
+]);
+
+const providerFxLegSchema = z.object({
+  currency: z.string().trim().toUpperCase().regex(/^[A-Z]{3}$/),
+  rate: positiveRateSchema,
+  rateConvention: z.enum([
+    "CAD_PER_CURRENCY_UNIT",
+    "CURRENCY_UNITS_PER_EUR",
+  ]),
+  observedDate: z.iso.date(),
+  seriesKey: z.string().trim().min(1).max(100),
+}).strict();
+
 const fxProvenanceSchema = z.object({
   mode: z.enum(["FUNCTIONAL", "ORGANIZATION_RATE", "PROVIDER_RATE", "EXPLICIT"]),
   asOfDate: z.iso.date(),
@@ -100,12 +129,21 @@ const fxProvenanceSchema = z.object({
   policyVersion: z.number().int().positive(),
   organizationRateId: z.uuid().optional(),
   rateRecordedAt: z.iso.datetime({ offset: true }).optional(),
-  providerKey: z.literal("YAHOO_FINANCE_EXPERIMENTAL").optional(),
-  providerSymbol: z.string().regex(/^[A-Z]{3}(?:[A-Z]{3})?=X$/).optional(),
+  providerKey: z.enum([
+    "BANK_OF_CANADA",
+    "EUROPEAN_CENTRAL_BANK",
+    "YAHOO_FINANCE_EXPERIMENTAL",
+  ]).optional(),
+  providerSymbol: z.string().trim().min(1).max(200).optional(),
+  providerSourceCurrency: z.string().trim().toUpperCase().regex(/^[A-Z]{3}$/).optional(),
+  providerTargetCurrency: z.string().trim().toUpperCase().regex(/^[A-Z]{3}$/).optional(),
   providerObservedAt: z.iso.datetime({ offset: true }).optional(),
   providerRetrievedAt: z.iso.datetime({ offset: true }).optional(),
   providerResponseSha256: z.string().regex(/^[a-f0-9]{64}$/).optional(),
   providerMaxLookbackDays: z.number().int().min(1).max(7).optional(),
+  providerCalculation: providerFxCalculationSchema.optional(),
+  providerFormula: providerFxFormulaSchema.optional(),
+  providerLegs: z.array(providerFxLegSchema).min(1).max(2).optional(),
 }).strict().superRefine((value, context) => {
   const stored = value.mode === "ORGANIZATION_RATE";
   const storedEvidence = Boolean(value.organizationRateId) && Boolean(value.rateRecordedAt);
@@ -124,19 +162,155 @@ const fxProvenanceSchema = z.object({
     && value.providerRetrievedAt !== undefined
     && value.providerResponseSha256 !== undefined
     && value.providerMaxLookbackDays !== undefined;
-  if (provider !== providerEvidence || (provider && value.providerRetrievedAt !== value.resolvedAt)) {
+  const providerRetrievedAfterResolution = provider
+    && value.providerRetrievedAt !== undefined
+    && Date.parse(value.providerRetrievedAt) > Date.parse(value.resolvedAt);
+  if (provider !== providerEvidence || providerRetrievedAfterResolution) {
     context.addIssue({
       code: "custom",
-      message: "Provider FX provenance requires a complete immutable observation and retrieval record",
+      message: "Provider FX provenance requires complete observation, retrieval, and resolution times",
     });
   }
+  const pairEvidenceComplete = value.providerSourceCurrency !== undefined
+    && value.providerTargetCurrency !== undefined;
+  const pairEvidencePartial = value.providerSourceCurrency !== undefined
+    || value.providerTargetCurrency !== undefined;
+  if (pairEvidencePartial && !pairEvidenceComplete) {
+    context.addIssue({
+      code: "custom",
+      message: "Provider FX currency-pair evidence requires both source and target currencies",
+    });
+  }
+
+  const centralFieldsPresent = value.providerCalculation !== undefined
+    || value.providerFormula !== undefined
+    || value.providerLegs !== undefined;
+  if (provider && value.providerKey === "YAHOO_FINANCE_EXPERIMENTAL") {
+    const yahooSymbolValid = value.providerSymbol !== undefined
+      && /^[A-Z]{3}(?:[A-Z]{3})?=X$/.test(value.providerSymbol);
+    const yahooSource = value.providerSourceCurrency ?? "";
+    const yahooTarget = value.providerTargetCurrency ?? "";
+    const expectedSymbol = pairEvidenceComplete
+      ? yahooSource === "USD"
+        ? yahooTarget + "=X"
+        : yahooSource + yahooTarget + "=X"
+      : value.providerSymbol;
+    if (value.policyKey !== "YAHOO_FINANCE_EXPERIMENTAL_DIRECT_DAILY_CLOSE"
+        || !yahooSymbolValid
+        || centralFieldsPresent
+        || (pairEvidenceComplete && (
+          yahooSource === yahooTarget
+          || value.providerSymbol !== expectedSymbol
+        ))) {
+      context.addIssue({
+        code: "custom",
+        message: "Yahoo FX provenance requires its exact direct symbol and no derived-rate evidence",
+      });
+    }
+  }
+
+  if (provider && value.providerKey === "BANK_OF_CANADA") {
+    const source = value.providerSourceCurrency;
+    const target = value.providerTargetCurrency;
+    const observedDate = value.providerObservedAt?.slice(0, 10);
+    const expected = !source || !target || source === target
+      ? null
+      : target === "CAD"
+        ? {
+            calculation: "DIRECT_TO_CAD",
+            formula: "CAD_PER_SOURCE_UNIT",
+            currencies: [source],
+          }
+        : source === "CAD"
+          ? {
+              calculation: "INVERSE_FROM_CAD",
+              formula: "1 / CAD_PER_TARGET_UNIT",
+              currencies: [target],
+            }
+          : {
+              calculation: "CROSS_VIA_CAD",
+              formula: "CAD_PER_SOURCE_UNIT / CAD_PER_TARGET_UNIT",
+              currencies: [source, target],
+            };
+    const legs = value.providerLegs;
+    const consistent = expected !== null
+      && legs !== undefined
+      && value.policyKey === "BANK_OF_CANADA_DAILY_REFERENCE_RATE"
+      && value.providerCalculation === expected.calculation
+      && value.providerFormula === expected.formula
+      && legs.length === expected.currencies.length
+      && legs.every((leg, index) => (
+        leg.currency === expected.currencies[index]
+        && leg.rateConvention === "CAD_PER_CURRENCY_UNIT"
+        && leg.seriesKey === "FX" + leg.currency + "CAD"
+        && leg.observedDate === observedDate
+      ))
+      && value.providerSymbol === legs.map((leg) => leg.seriesKey).join("+");
+    if (!consistent) {
+      context.addIssue({
+        code: "custom",
+        message: "Bank of Canada provenance must match the CAD calculation, pair, series, and common observation date",
+      });
+    }
+  }
+
+  if (provider && value.providerKey === "EUROPEAN_CENTRAL_BANK") {
+    const source = value.providerSourceCurrency;
+    const target = value.providerTargetCurrency;
+    const observedDate = value.providerObservedAt?.slice(0, 10);
+    const expected = !source || !target || source === target
+      ? null
+      : source === "EUR"
+        ? {
+            calculation: "DIRECT_FROM_EUR",
+            formula: "TARGET_UNITS_PER_EUR",
+            currencies: [target],
+          }
+        : target === "EUR"
+          ? {
+              calculation: "INVERSE_TO_EUR",
+              formula: "1 / SOURCE_UNITS_PER_EUR",
+              currencies: [source],
+            }
+          : {
+              calculation: "CROSS_VIA_EUR",
+              formula: "TARGET_UNITS_PER_EUR / SOURCE_UNITS_PER_EUR",
+              currencies: [source, target],
+            };
+    const legs = value.providerLegs;
+    const consistent = expected !== null
+      && legs !== undefined
+      && value.policyKey === "EUROPEAN_CENTRAL_BANK_REFERENCE_RATE"
+      && value.providerCalculation === expected.calculation
+      && value.providerFormula === expected.formula
+      && legs.length === expected.currencies.length
+      && legs.every((leg, index) => (
+        leg.currency === expected.currencies[index]
+        && leg.rateConvention === "CURRENCY_UNITS_PER_EUR"
+        && leg.seriesKey === "EXR.D." + leg.currency + ".EUR.SP00.A"
+        && leg.observedDate === observedDate
+      ))
+      && value.providerSymbol === legs.map((leg) => leg.seriesKey).join("+");
+    if (!consistent) {
+      context.addIssue({
+        code: "custom",
+        message: "ECB provenance must match the EUR calculation, pair, series, and common observation date",
+      });
+    }
+  }
+
   if (!provider && (
     value.providerKey !== undefined
     || value.providerSymbol !== undefined
+    || value.providerSourceCurrency !== undefined
+    || value.providerTargetCurrency !== undefined
     || value.providerObservedAt !== undefined
     || value.providerRetrievedAt !== undefined
     || value.providerResponseSha256 !== undefined
     || value.providerMaxLookbackDays !== undefined
+    || value.providerCalculation !== undefined
+    || value.providerFormula !== undefined
+    || value.providerLegs !== undefined
   )) {
     context.addIssue({
       code: "custom",
@@ -148,7 +322,74 @@ const fxProvenanceSchema = z.object({
 export const fxSnapshotSchema = fxInputSchema.extend({
   // Optional only so immutable snapshots written before server-side resolution remain readable.
   provenance: fxProvenanceSchema.optional(),
-}).strict();
+}).strict().superRefine((value, context) => {
+  const provenance = value.provenance;
+  if (provenance?.mode === "PROVIDER_RATE" && provenance.providerKey) {
+    const expectedSource = {
+      BANK_OF_CANADA: "Bank of Canada Valet API daily exchange rates",
+      EUROPEAN_CENTRAL_BANK: "Source: ECB statistics. Euro foreign exchange reference rates",
+      YAHOO_FINANCE_EXPERIMENTAL: "Yahoo Finance / ICE Data Services",
+    }[provenance.providerKey];
+    if (value.source !== expectedSource) {
+      context.addIssue({
+        code: "custom",
+        path: ["source"],
+        message: "Provider FX source attribution must match the recorded provider",
+      });
+    }
+  }
+
+  if (provenance?.mode === "PROVIDER_RATE"
+      && provenance.providerObservedAt
+      && provenance.providerRetrievedAt
+      && provenance.providerMaxLookbackDays) {
+    const asOfStart = Date.parse(provenance.asOfDate + "T00:00:00.000Z");
+    const observedAt = Date.parse(provenance.providerObservedAt);
+    const retrievedAt = Date.parse(provenance.providerRetrievedAt);
+    const effectiveAt = Date.parse(value.effectiveAt);
+    const earliestObservation = asOfStart
+      - (provenance.providerMaxLookbackDays * 24 * 60 * 60 * 1_000);
+    if (effectiveAt !== observedAt
+        || observedAt < earliestObservation
+        || observedAt >= asOfStart + (24 * 60 * 60 * 1_000)
+        || retrievedAt < observedAt) {
+      context.addIssue({
+        code: "custom",
+        path: ["provenance"],
+        message: "Provider FX times must match the observation and configured as-of window",
+      });
+    }
+  }
+
+  const legs = provenance?.providerLegs;
+  if (!provenance || !legs || !provenance.providerCalculation) return;
+
+  let calculatedRate;
+  if (provenance.providerCalculation === "DIRECT_TO_CAD"
+      || provenance.providerCalculation === "DIRECT_FROM_EUR") {
+    if (legs.length !== 1) return;
+    calculatedRate = exact(legs[0]!.rate);
+  } else if (provenance.providerCalculation === "INVERSE_FROM_CAD"
+      || provenance.providerCalculation === "INVERSE_TO_EUR") {
+    if (legs.length !== 1) return;
+    calculatedRate = exact(1).div(legs[0]!.rate);
+  } else {
+    if (legs.length !== 2) return;
+    calculatedRate = provenance.providerCalculation === "CROSS_VIA_CAD"
+      ? exact(legs[0]!.rate).div(legs[1]!.rate)
+      : exact(legs[1]!.rate).div(legs[0]!.rate);
+  }
+
+  if (!exact(value.rate).toDecimalPlaces(18).equals(
+    calculatedRate.toDecimalPlaces(18),
+  )) {
+    context.addIssue({
+      code: "custom",
+      path: ["rate"],
+      message: "Central-bank FX rate must equal the disclosed calculation over its source legs",
+    });
+  }
+});
 
 export const taxInputSchema = z.object({
   packKey: z.string().trim().min(1).max(100),
@@ -203,10 +444,35 @@ export const createBusinessDocumentSchema = businessDocumentRequestSchema.extend
   idempotencyKey: idempotencyKeySchema,
 }).strict();
 
+export function validateEditBusinessDocumentFxMode(
+  value: Readonly<{
+    fxResolutionMode?: "RESOLVE" | "PRESERVE" | "EXPLICIT";
+    fx?: unknown;
+  }>,
+  context: z.RefinementCtx,
+): void {
+  if ((value.fxResolutionMode === "RESOLVE" || value.fxResolutionMode === "PRESERVE")
+      && value.fx !== undefined) {
+    context.addIssue({
+      code: "custom",
+      path: ["fx"],
+      message: `${value.fxResolutionMode} FX mode requires fx to be omitted`,
+    });
+  }
+  if (value.fxResolutionMode === "EXPLICIT" && value.fx === undefined) {
+    context.addIssue({
+      code: "custom",
+      path: ["fx"],
+      message: "EXPLICIT FX mode requires rate, source, and effective time",
+    });
+  }
+}
+
 export const editBusinessDocumentSchema = businessDocumentRequestSchema.extend({
   expectedVersion: z.number().int().positive(),
+  fxResolutionMode: z.enum(["RESOLVE", "PRESERVE", "EXPLICIT"]).optional(),
   idempotencyKey: idempotencyKeySchema,
-}).strict();
+}).strict().superRefine(validateEditBusinessDocumentFxMode);
 
 export const issueBusinessDocumentSchema = z.object({
   kind: businessDocumentKindSchema,
@@ -334,6 +600,36 @@ const businessDocumentSnapshotLineSchema = z.object({
   taxDecisionHash: z.string().regex(/^[a-f0-9]{64}$/),
 }).strict();
 
+function validateSnapshotProviderPair(
+  value: Readonly<{
+    accountingDate: string;
+    settlementDate?: string;
+    currency: string;
+    functionalCurrency: string;
+    fx: z.output<typeof fxSnapshotSchema>;
+  }>,
+  context: z.RefinementCtx,
+): void {
+  const provenance = value.fx.provenance;
+  const expectedAsOfDate = value.settlementDate ?? value.accountingDate;
+  if (provenance && provenance.asOfDate !== expectedAsOfDate) {
+    context.addIssue({
+      code: "custom",
+      path: ["fx", "provenance", "asOfDate"],
+      message: "FX provenance as-of date must match the document's FX resolution date",
+    });
+  }
+  if (provenance?.providerSourceCurrency !== undefined
+      && (provenance.providerSourceCurrency !== value.currency
+        || provenance.providerTargetCurrency !== value.functionalCurrency)) {
+    context.addIssue({
+      code: "custom",
+      path: ["fx", "provenance"],
+      message: "Provider FX currency-pair evidence must match the document currencies",
+    });
+  }
+}
+
 export const businessDocumentSnapshotSchema = z.object({
   schemaVersion: z.literal(1),
   kind: businessDocumentKindSchema,
@@ -360,7 +656,7 @@ export const businessDocumentSnapshotSchema = z.object({
   grossTotal: z.string(),
   grossFunctional: z.string(),
   evidence: evidenceReferencesSchema.optional(),
-}).strict();
+}).strict().superRefine(validateSnapshotProviderPair);
 
 export const settlementSnapshotAllocationSchema = z.object({
   openItemId: z.uuid(),
@@ -397,7 +693,9 @@ export const settlementDocumentSnapshotSchema = z.object({
   fxRoundingAccountCombinationId: z.uuid().nullable(),
   description: z.string(),
   allocations: z.array(settlementSnapshotAllocationSchema).min(1),
-}).strict().superRefine(validateSettlementFunding);
+}).strict()
+  .superRefine(validateSettlementFunding)
+  .superRefine(validateSnapshotProviderPair);
 
 export const subledgerSourceSnapshotSchema = z.discriminatedUnion("kind", [
   businessDocumentSnapshotSchema,

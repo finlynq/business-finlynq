@@ -16,6 +16,8 @@ import {
 
 export const fxProviderModes = [
   "STORED_ONLY",
+  "BANK_OF_CANADA",
+  "EUROPEAN_CENTRAL_BANK",
   "YAHOO_FINANCE_EXPERIMENTAL",
 ] as const;
 
@@ -35,7 +37,7 @@ export const organizationFxProviderPolicyConfigurationSchema = z.object({
       path: ["licensedAndAuthorizedUseAcknowledged"],
       message: acknowledgementRequired
         ? "Confirm that the organization is licensed and authorized to use Yahoo Finance data"
-        : "Stored-only policy must not carry a Yahoo Finance authorization acknowledgement",
+        : "Only the Yahoo Finance policy may carry a Yahoo Finance authorization acknowledgement",
     });
   }
 });

@@ -86,6 +86,33 @@ sudo systemctl start business-finlynq-development-deployment.service
 
 The installer refuses provider secrets with unsafe ownership, mode, symlink status, or line structure. The opt-in atomically enables demo and real-account login, signup, email delivery, Turnstile, business writes, bank feeds, and public acceptance. The development deployer compares the running container with the reviewed Compose environment, so a gate or provider-metadata change forces recreation even when the Git revision is unchanged.
 
+## Official central-bank FX modes
+
+`BANK_OF_CANADA` and `EUROPEAN_CENTRAL_BANK` need no provider secret, OAuth
+registration, API key, installer option, or deployment-wide feature flag. They
+become selectable after the reviewed application revision and FX-policy
+migration are deployed. Each organization remains `STORED_ONLY` until one of
+its administrators selects a mode, sets the bounded one-to-seven-calendar-day
+lookback, records a reason, and completes the normal permission and MFA checks.
+
+The application container needs outbound HTTPS access to
+`www.bankofcanada.ca` and `data-api.ecb.europa.eu`. Do not add a general proxy
+fallback or copy provider responses into deployment configuration. Stored
+organization rates retain automatic priority, and an authorized invoice or
+settlement request can supply explicit FX evidence for a rate-sensitive
+transaction.
+
+Ordinary CI uses mocked provider transport. After deployment, validate each
+official source in development with recent direct, inverse, and common-date
+cross cases, plus a weekend/holiday lookback and an unavailable case. Compare
+the saved source legs and formula with the official response and confirm failure
+occurs before any accounting or cloud-file write. Record the revision, mode,
+pair, request date, observation date, and outcome without tokens or full
+responses. Keep production untouched until the revision is deliberately
+promoted through its separate process. See the
+[FX rate provider runbook](fx-rate-providers.md) for the formulas, attribution
+and reuse conditions, source caveats, and complete validation procedure.
+
 ## Experimental Yahoo FX gate
 
 Yahoo FX is independent of `--enable-all-features` and defaults off. It uses an

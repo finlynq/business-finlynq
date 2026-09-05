@@ -3,6 +3,7 @@ import type { z } from "zod";
 import { demoSessionLeaseLostResponse } from "@/app/api/_shared/demo-session-error-response";
 import { logRouteFailure } from "@/app/api/_shared/route-failure-log";
 import type { TenantTransactionContext } from "@/db/transaction";
+import { safeFxRateUnavailableDetails } from "@/modules/fx/error-transport";
 import { validateSameOriginMutation } from "@/modules/identity/request-security";
 import {
   requestPrincipal,
@@ -177,9 +178,10 @@ export function createMutationRoute<TBody, TResult extends MutationResult, TPara
       } catch (error) {
         const expiredSession = demoSessionLeaseLostResponse(error);
         if (expiredSession) return expiredSession;
+        const fxFailure = safeFxRateUnavailableDetails(error);
         logRouteFailure("subledger-mutation", requestId, error);
         return NextResponse.json(
-          { error: options.failureMessage, requestId },
+          { error: options.failureMessage, ...fxFailure, requestId },
           { status: 409, headers: noStoreHeaders },
         );
       }

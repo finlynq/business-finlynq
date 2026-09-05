@@ -79,6 +79,30 @@ describe("FX provider-policy browser API", () => {
     });
   });
 
+  it.each(["BANK_OF_CANADA", "EUROPEAN_CENTRAL_BANK"] as const)(
+    "accepts the %s policy without a Yahoo authorization acknowledgement",
+    async (providerMode) => {
+      const centralBankCommand = {
+        ...command,
+        providerMode,
+        licensedAndAuthorizedUseAcknowledged: false,
+      };
+      mocks.configure.mockResolvedValueOnce({
+        ...result,
+        providerMode,
+        licensedAndAuthorizedUseAcknowledged: false,
+      });
+      const response = await PATCH(request(centralBankCommand));
+      expect(response.status).toBe(200);
+      expect(mocks.configure).toHaveBeenCalledWith({
+        ...centralBankCommand,
+        principal,
+        requestId: expect.any(String),
+        sourceSurface: "API",
+      });
+    },
+  );
+
   it.each([
     { ...command, maxLookbackDays: 0 },
     { ...command, maxLookbackDays: 8 },

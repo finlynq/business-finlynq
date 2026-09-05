@@ -36,7 +36,7 @@ const mocks = vi.hoisted(() => {
       subject.sessionMode === "demo" ? "demo-link" : "password"),
     consumeLimit: vi.fn(async () => ({ allowed: true, retryAfterSeconds: 0 })),
     createDraft: vi.fn(async () => ({ document, idempotentReplay: false })),
-    editDraft: vi.fn(async () => ({ document: { ...document, version: 2 }, idempotentReplay: false })),
+    editDraft: vi.fn(async (_command: unknown) => ({ document: { ...document, version: 2 }, idempotentReplay: false })),
     issueDocument: vi.fn(async () => ({
       document: { ...document, status: "POSTED", version: 2 },
       idempotentReplay: false,
@@ -282,6 +282,47 @@ describe("AR/AP mutation routes", () => {
       kind: "SALES_INVOICE",
       context: expect.objectContaining({ reason: "Customer order was cancelled after posting." }),
     }));
+  });
+
+  it("requires edit FX mode and evidence combinations to be explicit", async () => {
+    const { fx: _fx, ...invoiceWithoutFx } = invoiceBody;
+    void _fx;
+    const preserve = await editInvoiceDraft(request("/api/receivables/invoices", "PATCH", {
+      ...invoiceWithoutFx,
+      expectedVersion: 1,
+      fxResolutionMode: "PRESERVE",
+      idempotencyKey: "invoice-preserve-fx",
+    }));
+    expect(preserve.status).toBe(200);
+    expect(mocks.editDraft).toHaveBeenCalledWith(expect.objectContaining({
+      fxResolutionMode: "PRESERVE",
+      expectedVersion: 1,
+    }));
+    expect(mocks.editDraft.mock.calls.at(-1)?.[0]).not.toHaveProperty("fx");
+
+    mocks.editDraft.mockClear();
+    const preserveWithEvidence = await editInvoiceDraft(request(
+      "/api/receivables/invoices",
+      "PATCH",
+      {
+        ...invoiceBody,
+        expectedVersion: 1,
+        fxResolutionMode: "PRESERVE",
+        idempotencyKey: "invalid-preserve-with-fx",
+      },
+    ));
+    const explicitWithoutEvidence = await editInvoiceDraft(request(
+      "/api/receivables/invoices",
+      "PATCH",
+      {
+        ...invoiceWithoutFx,
+        expectedVersion: 1,
+        fxResolutionMode: "EXPLICIT",
+        idempotencyKey: "invalid-explicit-without-fx",
+      },
+    ));
+    expect([preserveWithEvidence.status, explicitWithoutEvidence.status]).toEqual([400, 400]);
+    expect(mocks.editDraft).not.toHaveBeenCalled();
   });
 
   it("maps receipts, payments, allocations, and their exact reversal commands", async () => {

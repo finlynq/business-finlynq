@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 import type { PoolClient } from "pg";
 import {
+  BANK_OF_CANADA_REFERENCE_FX_POLICY,
+  ECB_REFERENCE_FX_POLICY,
   FxRateUnavailableError,
   STORED_DIRECT_FX_POLICY,
   YAHOO_DIRECT_FX_POLICY,
@@ -27,6 +29,21 @@ function yahooPolicy(maxLookbackDays = 7, version = 4) {
     provider_mode: "YAHOO_FINANCE_EXPERIMENTAL",
     max_lookback_days: maxLookbackDays,
     licensed_and_authorized_use_acknowledged: true,
+    configured_at: "2026-09-01 09:00:00+00",
+  };
+}
+
+function centralBankPolicy(
+  providerMode: "BANK_OF_CANADA" | "EUROPEAN_CENTRAL_BANK",
+  maxLookbackDays = 7,
+  version = 5,
+) {
+  return {
+    id: policyId,
+    version,
+    provider_mode: providerMode,
+    max_lookback_days: maxLookbackDays,
+    licensed_and_authorized_use_acknowledged: false,
     configured_at: "2026-09-01 09:00:00+00",
   };
 }
@@ -125,6 +142,8 @@ describe("server FX resolution", () => {
   it("preserves explicit caller evidence without a database or provider lookup", async () => {
     const { client, query } = mockClient(async () => ({ rows: [] }));
     const fetchYahooFxRate = vi.fn();
+    const fetchBankOfCanadaFxRate = vi.fn();
+    const fetchEcbFxRate = vi.fn();
     const result = await resolveFx(client, {
       organizationId,
       transactionCurrency: "USD",
@@ -135,10 +154,17 @@ describe("server FX resolution", () => {
         source: "Contract rate",
         effectiveAt: "2026-09-04T08:00:00.000Z",
       },
-    }, { yahooFxEnabled: true, fetchYahooFxRate });
+    }, {
+      yahooFxEnabled: true,
+      fetchYahooFxRate,
+      fetchBankOfCanadaFxRate,
+      fetchEcbFxRate,
+    });
 
     expect(query).not.toHaveBeenCalled();
     expect(fetchYahooFxRate).not.toHaveBeenCalled();
+    expect(fetchBankOfCanadaFxRate).not.toHaveBeenCalled();
+    expect(fetchEcbFxRate).not.toHaveBeenCalled();
     expect(result).toMatchObject({
       rate: "1.39",
       source: "Contract rate",
@@ -218,17 +244,22 @@ describe("server FX resolution", () => {
       provenance: {
         mode: "PROVIDER_RATE",
         asOfDate: "2026-09-04",
-        resolvedAt: providerObservation.retrievedAt,
+        resolvedAt: expect.any(String),
         policyKey: YAHOO_DIRECT_FX_POLICY.key,
         policyVersion: 4,
         providerKey: "YAHOO_FINANCE_EXPERIMENTAL",
         providerSymbol: providerObservation.symbol,
+        providerSourceCurrency: "USD",
+        providerTargetCurrency: "CAD",
         providerObservedAt: providerObservation.observedAt,
         providerRetrievedAt: providerObservation.retrievedAt,
         providerResponseSha256: providerObservation.rawBodySha256,
         providerMaxLookbackDays: 3,
       },
     });
+    expect(Date.parse(result.provenance.resolvedAt)).toBeGreaterThanOrEqual(
+      Date.parse(providerObservation.retrievedAt),
+    );
     expect(fxSnapshotSchema.parse(result)).toEqual(result);
   });
 
@@ -318,6 +349,412 @@ describe("server FX resolution", () => {
         policyVersion: 1,
         providerKey: "YAHOO_FINANCE_EXPERIMENTAL",
       },
-    })).toThrow(/complete immutable observation/);
+    })).toThrow(/complete observation, retrieval, and resolution times/);
   });
+
+  it("uses a Bank of Canada cross rate and freezes each CAD source leg and formula", async () => {
+    const { client } = storedMissWithPolicy([
+      centralBankPolicy("BANK_OF_CANADA", 3, 6),
+    ]);
+    const fetchBankOfCanadaFxRate = vi.fn(async () => ({
+      rate: "0.9",
+      observedAt: "2026-09-03T00:00:00.000Z",
+      sourceCurrency: "USD",
+      targetCurrency: "EUR",
+      calculation: "CROSS_VIA_CAD" as const,
+      formula: "CAD_PER_SOURCE_UNIT / CAD_PER_TARGET_UNIT" as const,
+      legs: [
+        {
+          currency: "USD",
+          cadPerUnit: "1.35",
+          observedDate: "2026-09-03",
+          seriesKey: "FXUSDCAD",
+        },
+        {
+          currency: "EUR",
+          cadPerUnit: "1.5",
+          observedDate: "2026-09-03",
+          seriesKey: "FXEURCAD",
+        },
+      ],
+      retrievedAt: "2026-09-04T09:15:00.000Z",
+      rawBodySha256: "b".repeat(64),
+    }));
+
+    const result = await resolveFx(client, {
+      organizationId,
+      transactionCurrency: "USD",
+      functionalCurrency: "EUR",
+      asOfDate: "2026-09-04",
+    }, { fetchBankOfCanadaFxRate });
+
+    expect(fetchBankOfCanadaFxRate).toHaveBeenCalledWith({
+      sourceCurrency: "USD",
+      targetCurrency: "EUR",
+      asOfDate: "2026-09-04",
+    });
+    expect(result).toMatchObject({
+      rate: "0.9",
+      source: "Bank of Canada Valet API daily exchange rates",
+      provenance: {
+        policyKey: BANK_OF_CANADA_REFERENCE_FX_POLICY.key,
+        policyVersion: 6,
+        providerKey: "BANK_OF_CANADA",
+        providerSymbol: "FXUSDCAD+FXEURCAD",
+        providerCalculation: "CROSS_VIA_CAD",
+        providerFormula: "CAD_PER_SOURCE_UNIT / CAD_PER_TARGET_UNIT",
+        providerLegs: [
+          {
+            currency: "USD",
+            rate: "1.35",
+            rateConvention: "CAD_PER_CURRENCY_UNIT",
+            observedDate: "2026-09-03",
+            seriesKey: "FXUSDCAD",
+          },
+          {
+            currency: "EUR",
+            rate: "1.5",
+            rateConvention: "CAD_PER_CURRENCY_UNIT",
+            observedDate: "2026-09-03",
+            seriesKey: "FXEURCAD",
+          },
+        ],
+      },
+    });
+    expect(fxSnapshotSchema.parse(result)).toEqual(result);
+  });
+
+  it("uses an ECB cross rate and freezes each EUR source leg and formula", async () => {
+    const { client } = storedMissWithPolicy([
+      centralBankPolicy("EUROPEAN_CENTRAL_BANK", 4, 7),
+    ]);
+    const fetchEcbFxRate = vi.fn(async () => ({
+      rate: "1.363636363636363636",
+      observedAt: "2026-09-03T00:00:00.000Z",
+      sourceCurrency: "USD",
+      targetCurrency: "CAD",
+      calculation: "CROSS_VIA_EUR" as const,
+      formula: "TARGET_UNITS_PER_EUR / SOURCE_UNITS_PER_EUR" as const,
+      legs: [
+        {
+          currency: "USD",
+          unitsPerEuro: "1.1",
+          observedDate: "2026-09-03",
+          seriesKey: "EXR.D.USD.EUR.SP00.A",
+        },
+        {
+          currency: "CAD",
+          unitsPerEuro: "1.5",
+          observedDate: "2026-09-03",
+          seriesKey: "EXR.D.CAD.EUR.SP00.A",
+        },
+      ],
+      retrievedAt: "2026-09-04T09:15:00.000Z",
+      rawBodySha256: "c".repeat(64),
+    }));
+
+    const result = await resolveFx(client, {
+      organizationId,
+      transactionCurrency: "USD",
+      functionalCurrency: "CAD",
+      asOfDate: "2026-09-04",
+    }, { fetchEcbFxRate });
+
+    expect(result).toMatchObject({
+      rate: "1.363636363636363636",
+      source: "Source: ECB statistics. Euro foreign exchange reference rates",
+      provenance: {
+        policyKey: ECB_REFERENCE_FX_POLICY.key,
+        policyVersion: 7,
+        providerKey: "EUROPEAN_CENTRAL_BANK",
+        providerCalculation: "CROSS_VIA_EUR",
+        providerFormula: "TARGET_UNITS_PER_EUR / SOURCE_UNITS_PER_EUR",
+        providerLegs: [
+          {
+            currency: "USD",
+            rate: "1.1",
+            rateConvention: "CURRENCY_UNITS_PER_EUR",
+          },
+          {
+            currency: "CAD",
+            rate: "1.5",
+            rateConvention: "CURRENCY_UNITS_PER_EUR",
+          },
+        ],
+      },
+    });
+    expect(fxSnapshotSchema.parse(result)).toEqual(result);
+  });
+
+  it("rejects injected central-bank evidence outside the selected pair or lookback", async () => {
+    const { client } = storedMissWithPolicy([
+      centralBankPolicy("BANK_OF_CANADA", 1),
+    ]);
+    const fetchBankOfCanadaFxRate = vi.fn(async () => ({
+      rate: "1.35",
+      observedAt: "2026-09-02T00:00:00.000Z",
+      sourceCurrency: "EUR",
+      targetCurrency: "CAD",
+      calculation: "DIRECT_TO_CAD" as const,
+      formula: "CAD_PER_SOURCE_UNIT" as const,
+      legs: [{
+        currency: "EUR",
+        cadPerUnit: "1.35",
+        observedDate: "2026-09-02",
+        seriesKey: "FXEURCAD",
+      }],
+      retrievedAt: "2026-09-04T09:15:00.000Z",
+      rawBodySha256: "d".repeat(64),
+    }));
+
+    await expect(resolveFx(client, {
+      organizationId,
+      transactionCurrency: "USD",
+      functionalCurrency: "CAD",
+      asOfDate: "2026-09-04",
+    }, { fetchBankOfCanadaFxRate })).rejects.toMatchObject({
+      code: "FX_RATE_UNAVAILABLE",
+      providerFailureCode: "BANK_OF_CANADA_FX_OBSERVATION_UNAVAILABLE",
+    });
+  });
+
+  it("rejects central-bank rates that do not recompute from their frozen legs", async () => {
+    const { client: bankClient } = storedMissWithPolicy([
+      centralBankPolicy("BANK_OF_CANADA"),
+    ]);
+    await expect(resolveFx(bankClient, {
+      organizationId,
+      transactionCurrency: "USD",
+      functionalCurrency: "CAD",
+      asOfDate: "2026-09-04",
+    }, {
+      fetchBankOfCanadaFxRate: vi.fn(async () => ({
+        rate: "9.99",
+        observedAt: "2026-09-03T00:00:00.000Z",
+        sourceCurrency: "USD",
+        targetCurrency: "CAD",
+        calculation: "DIRECT_TO_CAD" as const,
+        formula: "CAD_PER_SOURCE_UNIT" as const,
+        legs: [{
+          currency: "USD",
+          cadPerUnit: "1.35",
+          observedDate: "2026-09-03",
+          seriesKey: "FXUSDCAD",
+        }],
+        retrievedAt: "2026-09-04T09:15:00.000Z",
+        rawBodySha256: "e".repeat(64),
+      })),
+    })).rejects.toMatchObject({
+      providerFailureCode: "BANK_OF_CANADA_FX_OBSERVATION_UNAVAILABLE",
+    });
+
+    const { client: ecbClient } = storedMissWithPolicy([
+      centralBankPolicy("EUROPEAN_CENTRAL_BANK"),
+    ]);
+    await expect(resolveFx(ecbClient, {
+      organizationId,
+      transactionCurrency: "EUR",
+      functionalCurrency: "CAD",
+      asOfDate: "2026-09-04",
+    }, {
+      fetchEcbFxRate: vi.fn(async () => ({
+        rate: "9.99",
+        observedAt: "2026-09-03T00:00:00.000Z",
+        sourceCurrency: "EUR",
+        targetCurrency: "CAD",
+        calculation: "DIRECT_FROM_EUR" as const,
+        formula: "TARGET_UNITS_PER_EUR" as const,
+        legs: [{
+          currency: "CAD",
+          unitsPerEuro: "1.5",
+          observedDate: "2026-09-03",
+          seriesKey: "EXR.D.CAD.EUR.SP00.A",
+        }],
+        retrievedAt: "2026-09-04T09:15:00.000Z",
+        rawBodySha256: "f".repeat(64),
+      })),
+    })).rejects.toMatchObject({
+      providerFailureCode: "ECB_FX_OBSERVATION_UNAVAILABLE",
+    });
+  });
+
+  it("rejects future explicit evidence and non-unit same-currency overrides before lookup", async () => {
+    const { client, query } = mockClient(async () => ({ rows: [] }));
+    await expect(resolveFx(client, {
+      organizationId,
+      transactionCurrency: "CAD",
+      functionalCurrency: "CAD",
+      asOfDate: "2026-09-04",
+      explicitFx: {
+        rate: "1.01",
+        source: "Invalid same-currency override",
+        effectiveAt: "2026-09-04T12:00:00.000Z",
+      },
+    })).rejects.toMatchObject({ code: "FX_RATE_UNAVAILABLE" });
+
+    await expect(resolveFx(client, {
+      organizationId,
+      transactionCurrency: "USD",
+      functionalCurrency: "CAD",
+      asOfDate: "2026-09-04",
+      explicitFx: {
+        rate: "1.35",
+        source: "Future contract rate",
+        effectiveAt: "2026-09-05T00:00:00.000Z",
+      },
+    })).rejects.toMatchObject({ code: "FX_RATE_UNAVAILABLE" });
+    expect(query).not.toHaveBeenCalled();
+  });
+
+  it("keeps unit-rate same-currency requests on canonical functional provenance", async () => {
+    const { client, query } = mockClient(async () => ({ rows: [] }));
+    const result = await resolveFx(client, {
+      organizationId,
+      transactionCurrency: "CAD",
+      functionalCurrency: "CAD",
+      asOfDate: "2026-09-04",
+      explicitFx: {
+        rate: "1.0000",
+        source: "Caller supplied redundant rate",
+        effectiveAt: "2026-09-04T12:00:00.000Z",
+      },
+    });
+    expect(result).toMatchObject({
+      rate: "1",
+      source: "FUNCTIONAL",
+      provenance: { mode: "FUNCTIONAL", policyKey: "FUNCTIONAL_IDENTITY" },
+    });
+    expect(query).not.toHaveBeenCalled();
+  });
+
+  it("maps empty ECB evidence to the stable unavailable result", async () => {
+    const { client } = storedMissWithPolicy([
+      centralBankPolicy("EUROPEAN_CENTRAL_BANK"),
+    ]);
+    await expect(resolveFx(client, {
+      organizationId,
+      transactionCurrency: "EUR",
+      functionalCurrency: "CAD",
+      asOfDate: "2026-09-04",
+    }, {
+      fetchEcbFxRate: vi.fn(async () => ({
+        rate: "1.5",
+        observedAt: "2026-09-03T00:00:00.000Z",
+        sourceCurrency: "EUR",
+        targetCurrency: "CAD",
+        calculation: "DIRECT_FROM_EUR" as const,
+        formula: "TARGET_UNITS_PER_EUR" as const,
+        legs: [],
+        retrievedAt: "2026-09-04T09:15:00.000Z",
+        rawBodySha256: "0".repeat(64),
+      })),
+    })).rejects.toMatchObject({
+      code: "FX_RATE_UNAVAILABLE",
+      providerFailureCode: "ECB_FX_OBSERVATION_UNAVAILABLE",
+    });
+  });
+
+  it("rejects provider-specific conflicts when persisted FX snapshots are parsed", () => {
+    const valid = {
+      rate: "0.9",
+      source: "Bank of Canada Valet API daily exchange rates",
+      effectiveAt: "2026-09-03T00:00:00.000Z",
+      quoteConvention: "FUNCTIONAL_UNITS_PER_TRANSACTION_UNIT" as const,
+      provenance: {
+        mode: "PROVIDER_RATE" as const,
+        asOfDate: "2026-09-04",
+        resolvedAt: "2026-09-04T10:15:00.000Z",
+        policyKey: BANK_OF_CANADA_REFERENCE_FX_POLICY.key,
+        policyVersion: 2,
+        providerKey: "BANK_OF_CANADA" as const,
+        providerSymbol: "FXUSDCAD+FXEURCAD",
+        providerSourceCurrency: "USD",
+        providerTargetCurrency: "EUR",
+        providerObservedAt: "2026-09-03T00:00:00.000Z",
+        providerRetrievedAt: "2026-09-04T09:15:00.000Z",
+        providerResponseSha256: "a".repeat(64),
+        providerMaxLookbackDays: 7,
+        providerCalculation: "CROSS_VIA_CAD" as const,
+        providerFormula: "CAD_PER_SOURCE_UNIT / CAD_PER_TARGET_UNIT" as const,
+        providerLegs: [
+          {
+            currency: "USD",
+            rate: "1.35",
+            rateConvention: "CAD_PER_CURRENCY_UNIT" as const,
+            observedDate: "2026-09-03",
+            seriesKey: "FXUSDCAD",
+          },
+          {
+            currency: "EUR",
+            rate: "1.5",
+            rateConvention: "CAD_PER_CURRENCY_UNIT" as const,
+            observedDate: "2026-09-03",
+            seriesKey: "FXEURCAD",
+          },
+        ],
+      },
+    };
+    expect(fxSnapshotSchema.parse(valid)).toEqual(valid);
+    expect(() => fxSnapshotSchema.parse({
+      ...valid,
+      source: "Yahoo Finance / ICE Data Services",
+    })).toThrow(/source attribution/);
+    expect(() => fxSnapshotSchema.parse({
+      ...valid,
+      provenance: {
+        ...valid.provenance,
+        policyKey: ECB_REFERENCE_FX_POLICY.key,
+      },
+    })).toThrow(/Bank of Canada provenance/);
+    expect(() => fxSnapshotSchema.parse({
+      ...valid,
+      provenance: {
+        ...valid.provenance,
+        resolvedAt: "2026-09-04T08:15:00.000Z",
+      },
+    })).toThrow(/observation, retrieval, and resolution times/);
+    expect(() => fxSnapshotSchema.parse({ ...valid, rate: "0.91" }))
+      .toThrow(/must equal the disclosed calculation/);
+    expect(() => fxSnapshotSchema.parse({
+      ...valid,
+      effectiveAt: "2026-09-02T00:00:00.000Z",
+    })).toThrow(/times must match the observation/);
+    expect(() => fxSnapshotSchema.parse({
+      ...valid,
+      provenance: {
+        ...valid.provenance,
+        providerLegs: valid.provenance.providerLegs.map((leg, index) => (
+          index === 1 ? { ...leg, observedDate: "2026-09-02" } : leg
+        )),
+      },
+    })).toThrow(/common observation date/);
+    expect(() => fxSnapshotSchema.parse({
+      ...valid,
+      provenance: {
+        ...valid.provenance,
+        providerKey: "EUROPEAN_CENTRAL_BANK",
+      },
+    })).toThrow(/ECB provenance/);
+
+    expect(() => fxSnapshotSchema.parse({
+      rate: "1.35",
+      source: "Yahoo Finance / ICE Data Services",
+      effectiveAt: "2026-09-03T16:00:00.000Z",
+      quoteConvention: "FUNCTIONAL_UNITS_PER_TRANSACTION_UNIT",
+      provenance: {
+        mode: "PROVIDER_RATE",
+        asOfDate: "2026-09-04",
+        resolvedAt: "2026-09-04T09:15:00.000Z",
+        policyKey: YAHOO_DIRECT_FX_POLICY.key,
+        policyVersion: 1,
+        providerKey: "YAHOO_FINANCE_EXPERIMENTAL",
+        providerSymbol: "arbitrary-symbol",
+        providerObservedAt: "2026-09-03T16:00:00.000Z",
+        providerRetrievedAt: "2026-09-04T09:15:00.000Z",
+        providerResponseSha256: "a".repeat(64),
+        providerMaxLookbackDays: 7,
+      },
+    })).toThrow();
+  });
+
 });

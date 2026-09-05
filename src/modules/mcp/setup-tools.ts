@@ -183,7 +183,7 @@ export const SETUP_MCP_TOOLS: readonly McpToolDefinition[] = [
       mfaRequirement: "REQUIRED",
     },
     title: "Configure FX provider policy",
-    description: "Append a new organization FX provider-policy version. STORED_ONLY preserves database-only resolution. YAHOO_FINANCE_EXPERIMENTAL also requires explicit confirmation that the organization is licensed and authorized to use Yahoo Finance data; operator activation is independent, and this tool performs no market-data request.",
+    description: "Append a new organization FX provider-policy version. STORED_ONLY preserves database-only resolution. BANK_OF_CANADA and EUROPEAN_CENTRAL_BANK use official reference rates with bounded lookback and auditable inverse or cross calculations. YAHOO_FINANCE_EXPERIMENTAL requires explicit confirmation that the organization is licensed and authorized to use Yahoo Finance data; operator activation is independent. This tool performs no market-data request, and explicit invoice or settlement FX evidence still overrides automatic resolution.",
     inputSchema: organizationFxProviderPolicyConfigurationSchema,
     invoke: (args, runtime) => configureOrganizationFxProviderPolicy({
       principal: runtime.sessionPrincipal,

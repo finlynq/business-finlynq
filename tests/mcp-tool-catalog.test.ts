@@ -116,6 +116,9 @@ describe("remote MCP advertised tool catalog", () => {
       "reason",
     ]);
     expect(tool.description).toContain("STORED_ONLY");
+    expect(tool.description).toContain("BANK_OF_CANADA");
+    expect(tool.description).toContain("EUROPEAN_CENTRAL_BANK");
+    expect(tool.description).toContain("explicit invoice or settlement FX evidence");
     expect(tool.description).toContain("licensed and authorized");
     expect(tool.description).toContain("performs no market-data request");
     expect(tool.inputSchema.safeParse({
@@ -132,6 +135,15 @@ describe("remote MCP advertised tool catalog", () => {
       licensedAndAuthorizedUseAcknowledged: false,
       reason: "Attempt an unacknowledged source",
     }).success).toBe(false);
+    for (const providerMode of ["BANK_OF_CANADA", "EUROPEAN_CENTRAL_BANK"]) {
+      expect(tool.inputSchema.safeParse({
+        expectedVersion: 0,
+        providerMode,
+        maxLookbackDays: 5,
+        licensedAndAuthorizedUseAcknowledged: false,
+        reason: "Select an official reference-rate source",
+      }).success).toBe(true);
+    }
   });
 
   it("advertises the compatible supplier-settlement schema and guidance", () => {

@@ -189,6 +189,59 @@ runDatabaseTests("FX provider-policy PostgreSQL boundary", () => {
     expect(evidence.rows[0]).toEqual({ policies: "1", audits: "1" });
   });
 
+  it("accepts official central-bank modes without a Yahoo acknowledgement", async () => {
+    const bankOfCanada = await asSession({
+      actorId: ids.actor,
+      sessionId: ids.session,
+      requestId: `fx-policy-bank-of-canada-${ids.organization}`,
+      reason: "Select Bank of Canada reference rates",
+    }, async (client) => {
+      const result = await client.query<{
+        policy_version: number;
+        selected_provider_mode: string;
+        selected_licensed_acknowledgement: boolean;
+      }>(
+        "SELECT * FROM app.accounting_set_fx_provider_policy(1,'BANK_OF_CANADA',5,false)",
+      );
+      return result.rows[0];
+    });
+    expect(bankOfCanada).toMatchObject({
+      policy_version: 2,
+      selected_provider_mode: "BANK_OF_CANADA",
+      selected_licensed_acknowledgement: false,
+    });
+
+    await expect(asSession({
+      actorId: ids.actor,
+      sessionId: ids.session,
+      requestId: `fx-policy-ecb-invalid-ack-${ids.organization}`,
+      reason: "Reject Yahoo acknowledgement on ECB",
+    }, (client) => client.query(
+      "SELECT * FROM app.accounting_set_fx_provider_policy(2,'EUROPEAN_CENTRAL_BANK',5,true)",
+    ))).rejects.toMatchObject({ code: "22023" });
+
+    const ecb = await asSession({
+      actorId: ids.actor,
+      sessionId: ids.session,
+      requestId: `fx-policy-ecb-${ids.organization}`,
+      reason: "Select ECB reference rates",
+    }, async (client) => {
+      const result = await client.query<{
+        policy_version: number;
+        selected_provider_mode: string;
+        selected_licensed_acknowledgement: boolean;
+      }>(
+        "SELECT * FROM app.accounting_set_fx_provider_policy(2,'EUROPEAN_CENTRAL_BANK',4,false)",
+      );
+      return result.rows[0];
+    });
+    expect(ecb).toMatchObject({
+      policy_version: 3,
+      selected_provider_mode: "EUROPEAN_CENTRAL_BANK",
+      selected_licensed_acknowledgement: false,
+    });
+  });
+
   it("requires settings permission and licensed-use acknowledgement", async () => {
     await expect(asSession({
       actorId: ids.unauthorizedActor,

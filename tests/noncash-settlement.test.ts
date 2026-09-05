@@ -52,6 +52,59 @@ describe("non-cash supplier funding", () => {
     expect(lines[0]).toMatchObject({ accountCombinationId: id(6), debitFunctional: "0", creditFunctional: "158.20" });
     expect(lines[1]).toMatchObject({ accountCombinationId: id(4), debitFunctional: "158.20", creditFunctional: "0", partyAccountId: id(3), subledgerEventId: id(14) });
   });
+  it("ties FX provenance as-of date to the settlement date", () => {
+    const command = recordSettlementSchema.parse({
+      ...base,
+      currency: "USD",
+      amount: "50.00",
+      fx: { ...base.fx, rate: "1.35", source: "Bank of Canada Valet API daily exchange rates" },
+      allocations: [{ openItemId: id(9), transactionAmount: "50.00" }],
+    });
+    const allocations = calculateSettlementAllocations(command, new Map([[id(9), {
+      ...item,
+      transaction_currency: "USD",
+      original_transaction_amount: "100.00",
+      original_functional_amount: "130.00",
+    }]]), "CAD");
+    const historical = buildSettlementSnapshot(command, "CAD", allocations);
+    const providerSnapshot = {
+      ...historical,
+      fx: {
+        ...historical.fx,
+        effectiveAt: "2026-08-26T00:00:00.000Z",
+        provenance: {
+          mode: "PROVIDER_RATE" as const,
+          asOfDate: "2026-08-27",
+          resolvedAt: "2026-08-27T13:00:00.000Z",
+          policyKey: "BANK_OF_CANADA_DAILY_REFERENCE_RATE",
+          policyVersion: 2,
+          providerKey: "BANK_OF_CANADA" as const,
+          providerSymbol: "FXUSDCAD",
+          providerSourceCurrency: "USD",
+          providerTargetCurrency: "CAD",
+          providerObservedAt: "2026-08-26T00:00:00.000Z",
+          providerRetrievedAt: "2026-08-27T12:00:00.000Z",
+          providerResponseSha256: "d".repeat(64),
+          providerMaxLookbackDays: 7,
+          providerCalculation: "DIRECT_TO_CAD" as const,
+          providerFormula: "CAD_PER_SOURCE_UNIT" as const,
+          providerLegs: [{
+            currency: "USD",
+            rate: "1.35",
+            rateConvention: "CAD_PER_CURRENCY_UNIT" as const,
+            observedDate: "2026-08-26",
+            seriesKey: "FXUSDCAD",
+          }],
+        },
+      },
+    };
+    expect(settlementDocumentSnapshotSchema.parse(providerSnapshot)).toEqual(providerSnapshot);
+    expect(() => settlementDocumentSnapshotSchema.parse({
+      ...providerSnapshot,
+      settlementDate: "2026-08-28",
+    })).toThrow(/as-of date must match/);
+  });
+
   it("retains partial foreign-currency carrying value and realized FX", () => {
     const command = recordSettlementSchema.parse({ ...base, currency: "USD", amount: "50.00",
       fx: { ...base.fx, rate: "1.4", source: "BANK_RATE" },

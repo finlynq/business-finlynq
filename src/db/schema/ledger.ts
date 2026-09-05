@@ -138,7 +138,7 @@ export const organizationFxProviderPolicyVersions = pgTable(
     ),
     check(
       "organization_fx_provider_policy_versions_provider_check",
-      sql`${table.providerMode} IN ('STORED_ONLY', 'YAHOO_FINANCE_EXPERIMENTAL')`,
+      sql`${table.providerMode} IN ('STORED_ONLY', 'BANK_OF_CANADA', 'EUROPEAN_CENTRAL_BANK', 'YAHOO_FINANCE_EXPERIMENTAL')`,
     ),
     check(
       "organization_fx_provider_policy_versions_lookback_check",
@@ -146,8 +146,8 @@ export const organizationFxProviderPolicyVersions = pgTable(
     ),
     check(
       "organization_fx_provider_policy_versions_acknowledgement_check",
-      sql`(${table.providerMode} = 'STORED_ONLY' AND NOT ${table.licensedAndAuthorizedUseAcknowledged})
-        OR (${table.providerMode} = 'YAHOO_FINANCE_EXPERIMENTAL' AND ${table.licensedAndAuthorizedUseAcknowledged})`,
+      sql`(${table.providerMode} = 'YAHOO_FINANCE_EXPERIMENTAL' AND ${table.licensedAndAuthorizedUseAcknowledged})
+        OR (${table.providerMode} <> 'YAHOO_FINANCE_EXPERIMENTAL' AND NOT ${table.licensedAndAuthorizedUseAcknowledged})`,
     ),
     check(
       "organization_fx_provider_policy_versions_reason_check",

@@ -1,4 +1,5 @@
 import { recordRequestObservation, recordRouteFailure } from "@/observability/runtime-metrics";
+import { safeFxRateUnavailableDetails } from "@/modules/fx/error-transport";
 
 export type RouteFailureOperation =
   | "account-login"
@@ -45,8 +46,9 @@ function routeErrorType(error: unknown): RouteErrorType {
 }
 
 /**
- * Route logs are deliberately correlation-only. Never add the exception,
- * message, stack, request body, identity, token, OTP, or plaintext fields.
+ * Route logs contain correlation fields and explicitly reviewed fixed-cardinality
+ * codes only. Never add the exception, message, stack, request body, identity,
+ * token, OTP, or plaintext fields.
  */
 export function logRouteFailure(
   operation: RouteFailureOperation,
@@ -54,11 +56,16 @@ export function logRouteFailure(
   error: unknown,
 ): void {
   recordRouteFailure();
+  const fxFailure = safeFxRateUnavailableDetails(error);
   console.error(JSON.stringify({
     event: "route.failure",
     operation,
     requestId: requestIdPattern.test(requestId) ? requestId : "invalid-request-id",
     errorType: routeErrorType(error),
+    ...(fxFailure ? { errorCode: fxFailure.code } : {}),
+    ...(fxFailure?.providerFailureCode
+      ? { providerFailureCode: fxFailure.providerFailureCode }
+      : {}),
   }));
 }
 

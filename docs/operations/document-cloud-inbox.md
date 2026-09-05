@@ -35,7 +35,7 @@ For any future selected-root model, first define whether the selected folder its
 
 ## Enable supported providers
 
-Use the [development setup guide](document-cloud-inbox-development-setup.md) for exact dev values. The app includes Poppler for in-memory PDF reading and requires a working ClamAV scanner. Document-storage migrations run through `0044_storage_oauth_revocation`; the separate FX provider policy is added by `0045_organization_fx_provider_policy`.
+Use the [development setup guide](document-cloud-inbox-development-setup.md) for exact dev values. The app includes Poppler for in-memory PDF reading and requires a working ClamAV scanner. Document-storage migrations run through `0044_storage_oauth_revocation`; the initial FX provider policy is added by `0045_organization_fx_provider_policy` and its official central-bank modes by `0046_central_bank_fx_providers`.
 
 | Provider | Configuration | Authorization use |
 | --- | --- | --- |
@@ -71,22 +71,41 @@ Completion uses the existing accounting validation, tax/FX rules, source history
 
 ## Foreign-currency drafts
 
-Invoice and settlement requests may omit `fx`. FinLynQ selects the latest
-eligible, organization-owned direct rate first. Organizations default to
-`STORED_ONLY`; an experimental Yahoo lookup is considered only when both the
-organization administrator and the deployment operator have explicitly enabled
-it. Yahoo observations must be for the exact transaction-to-functional pair and
-the requested UTC date or within the organization's configured lookback of one
-to seven calendar days. FinLynQ does not invert, triangulate, use hardcoded
-rates, or accept an unbounded stale provider fallback.
+An authorized invoice or settlement request can supply `fx` when the client
+must use a contract, bank, tax-authority, or other approved rate. The request
+must identify the positive direct rate, its source, and effective time. FinLynQ
+freezes that explicit evidence in the document or settlement snapshot; it does
+not add the rate to organization history or change the organization's automatic
+policy.
 
-If no eligible direct rate exists, completion fails with
-`FX_RATE_UNAVAILABLE` before it creates a draft, links evidence, or moves the
-cloud file. The selected rate and its resolver/provider provenance are frozen in
-the immutable document snapshot, and idempotent replay returns the same
-snapshot. See the [FX rate provider runbook](fx-rate-providers.md) for the
-authorization gates, exact evidence contract, provider limitations, and
-development activation procedure.
+When the request omits `fx`, FinLynQ selects the latest eligible,
+organization-owned direct rate first. Organizations default to `STORED_ONLY`.
+An administrator may instead select `BANK_OF_CANADA`,
+`EUROPEAN_CENTRAL_BANK`, or the separately gated
+`YAHOO_FINANCE_EXPERIMENTAL` for an automatic stored-rate miss.
+
+Bank of Canada observations are CAD per foreign-currency unit. FinLynQ may use
+one published leg directly, invert one leg, or divide two same-date legs for a
+CAD cross. ECB observations are currency units per euro; FinLynQ may use one
+published leg directly, invert one leg, or divide two same-date legs for an EUR
+cross. Yahoo remains an exact-direct-pair experiment and requires both
+organization acknowledgement and the deployment operator gate. Automatic modes
+never fall through to another provider.
+
+All provider observations must be on or before the requested UTC accounting or
+settlement date and within the organization's configured lookback of one to
+seven calendar days. Weekend and holiday resolution uses the newest eligible
+common date; cross legs from different dates are rejected. FinLynQ does not use
+future, hardcoded, estimated, or unbounded stale rates.
+
+If no eligible rate exists, completion fails with `FX_RATE_UNAVAILABLE` before
+it creates a draft, links evidence, allocates a settlement, or moves the cloud
+file. The selected rate, official source legs, formula where applicable, and
+resolver/provider provenance are frozen in the immutable snapshot. Idempotent
+replay returns that same snapshot. Existing historical document and attachment
+evidence remains readable. See the [FX rate provider runbook](fx-rate-providers.md)
+for authorization, attribution and reuse conditions, exact formulas, source
+limitations, and mocked versus live validation.
 
 ## Recovery and retention
 

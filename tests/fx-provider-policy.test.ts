@@ -82,6 +82,18 @@ beforeEach(() => {
 });
 
 describe("organization FX provider policy", () => {
+  it("shows source-specific suitability disclosures before a central-bank policy is saved", () => {
+    const settingsSource = readFileSync(
+      join(process.cwd(), "src/app/_components/accounting-settings.client.tsx"),
+      "utf8",
+    );
+    expect(settingsSource).toContain("Bank of Canada daily exchange rates are indicative");
+    expect(settingsSource).toContain("not a benchmark or transaction quote");
+    expect(settingsSource).toContain("ECB foreign-exchange reference rates are published for information");
+    expect(settingsSource).toContain("discourages their use for transactions");
+    expect(settingsSource).toContain("Use an explicit client-approved rate");
+  });
+
   it("keeps organizations without a policy row on the stored-only default", async () => {
     const query = vi.fn(async () => ({ rows: [] }));
     await expect(readOrganizationFxProviderPolicy(
@@ -101,7 +113,7 @@ describe("organization FX provider policy", () => {
     });
   });
 
-  it("requires exact Yahoo licensed-use acknowledgement and a one-to-seven-day limit", () => {
+  it("requires Yahoo acknowledgement, rejects it for central-bank modes, and enforces lookback", () => {
     const base = {
       expectedVersion: 0,
       maxLookbackDays: 5,
@@ -122,6 +134,18 @@ describe("organization FX provider policy", () => {
       providerMode: "STORED_ONLY",
       licensedAndAuthorizedUseAcknowledged: true,
     }).success).toBe(false);
+    for (const providerMode of ["BANK_OF_CANADA", "EUROPEAN_CENTRAL_BANK"] as const) {
+      expect(organizationFxProviderPolicyConfigurationSchema.safeParse({
+        ...base,
+        providerMode,
+        licensedAndAuthorizedUseAcknowledged: false,
+      }).success).toBe(true);
+      expect(organizationFxProviderPolicyConfigurationSchema.safeParse({
+        ...base,
+        providerMode,
+        licensedAndAuthorizedUseAcknowledged: true,
+      }).success).toBe(false);
+    }
     for (const maxLookbackDays of [0, 8]) {
       expect(organizationFxProviderPolicyConfigurationSchema.safeParse({
         ...base,
@@ -221,6 +245,10 @@ describe("organization FX provider policy", () => {
       join(process.cwd(), "migrations/drizzle/0045_organization_fx_provider_policy.sql"),
       "utf8",
     );
+    const centralBankMigration = readFileSync(
+      join(process.cwd(), "migrations/drizzle/0046_central_bank_fx_providers.sql"),
+      "utf8",
+    );
     const runtimeRole = readFileSync(
       join(process.cwd(), "deploy/postgres/010-runtime-role.sh"),
       "utf8",
@@ -238,6 +266,11 @@ describe("organization FX provider policy", () => {
     expect(migration).toContain("'accounting.fx_provider_policy.changed'");
     expect(migration).toContain("selected_expected_version <> current_version");
     expect(migration).not.toMatch(/INSERT INTO organization_fx_provider_policy_versions[\s\S]*SELECT[\s\S]*FROM organizations/);
+    expect(centralBankMigration).toContain("'BANK_OF_CANADA'");
+    expect(centralBankMigration).toContain("'EUROPEAN_CENTRAL_BANK'");
+    expect(centralBankMigration).toContain("CREATE OR REPLACE FUNCTION app.accounting_set_fx_provider_policy");
+    expect(centralBankMigration).toContain("normalized_provider_mode <> 'YAHOO_FINANCE_EXPERIMENTAL'");
+    expect(centralBankMigration).not.toMatch(/INSERT INTO organization_fx_provider_policy_versions[\s\S]*SELECT[\s\S]*FROM organizations/);
     expect(runtimeRole).toContain("'organization_fx_provider_policy_versions'");
     expect(runtimeRole).toContain("app.accounting_set_fx_provider_policy(integer,text,integer,boolean)");
     expect(settingsUi).toContain("Licensed and authorized use");

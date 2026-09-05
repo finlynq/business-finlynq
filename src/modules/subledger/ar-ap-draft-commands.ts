@@ -27,6 +27,7 @@ import {
 } from "./ar-ap-idempotency";
 import { loadAccountingSetup, validateDraftConfiguration } from "./ar-ap-accounting";
 import { appendSourceDocument, recordFromRow } from "./ar-ap-persistence";
+import { exact } from "@/kernel/money";
 import { resolveFx } from "@/modules/fx/rate-resolver";
 import {
   SOURCE_TYPES_BY_OWNER,
@@ -38,6 +39,62 @@ import {
   type SourceDocumentRow,
   type SubledgerDocumentRecord,
 } from "./ar-ap-types";
+
+type EditableFxEvidence = Readonly<{
+  rate: string;
+  source: string;
+  effectiveAt: string;
+  quoteConvention?: "FUNCTIONAL_UNITS_PER_TRANSACTION_UNIT";
+}>;
+
+export function sameFxEvidenceForEdit(
+  supplied: EditableFxEvidence | undefined,
+  frozen: EditableFxEvidence,
+): boolean {
+  if (!supplied
+      || supplied.source !== frozen.source
+      || (supplied.quoteConvention ?? "FUNCTIONAL_UNITS_PER_TRANSACTION_UNIT")
+        !== (frozen.quoteConvention ?? "FUNCTIONAL_UNITS_PER_TRANSACTION_UNIT")) return false;
+  const suppliedTime = Date.parse(supplied.effectiveAt);
+  const frozenTime = Date.parse(frozen.effectiveAt);
+  try {
+    return Number.isFinite(suppliedTime)
+      && suppliedTime === frozenTime
+      && exact(supplied.rate).equals(frozen.rate);
+  } catch {
+    return false;
+  }
+}
+
+export type EditFxResolutionAction = "PRESERVE" | "RESOLVE" | "EXPLICIT";
+
+export function editFxResolutionAction(
+  mode: EditFxResolutionAction | undefined,
+  supplied: EditableFxEvidence | undefined,
+  frozen: EditableFxEvidence | undefined,
+  priorSnapshotCompatible: boolean,
+): EditFxResolutionAction {
+  if (mode === "PRESERVE") {
+    if (!frozen || !priorSnapshotCompatible) {
+      throw new Error("Preserving FX requires unchanged currency, functional currency, and accounting date");
+    }
+    return "PRESERVE";
+  }
+  if (mode === "RESOLVE") return "RESOLVE";
+  if (mode === "EXPLICIT") {
+    if (!supplied) throw new Error("Explicit FX evidence is required");
+    return "EXPLICIT";
+  }
+
+  if (!supplied) return "RESOLVE";
+  if (frozen && sameFxEvidenceForEdit(supplied, frozen)) {
+    if (!priorSnapshotCompatible) {
+      throw new Error("Current FX evidence cannot be preserved after changing its accounting facts");
+    }
+    return "PRESERVE";
+  }
+  return "EXPLICIT";
+}
 
 export async function listCurrentSubledgerDocuments(
   command: ListCurrentDocumentsCommand,
@@ -250,18 +307,34 @@ export async function editBusinessDocumentDraft(
       idempotencyKey: _idempotencyKey,
       expectedVersion: _expectedVersion,
       fx: suppliedFx,
+      fxResolutionMode,
       ...unresolvedDocumentInput
     } = command;
     void _idempotencyKey;
     void _expectedVersion;
-    const fx = await resolveFx(client, {
-      organizationId: unparsedCommand.context.organizationId,
-      transactionCurrency: command.currency,
-      functionalCurrency: setup.functional_currency,
-      asOfDate: command.accountingDate,
-      explicitFx: suppliedFx,
-    });
     const prior = recordFromRow(current).snapshot;
+    const priorBusiness = prior.kind === "SALES_INVOICE" || prior.kind === "SUPPLIER_BILL"
+      ? prior
+      : null;
+    const priorSnapshotCompatible = priorBusiness !== null
+      && priorBusiness.currency === command.currency
+      && priorBusiness.functionalCurrency === setup.functional_currency
+      && priorBusiness.accountingDate === command.accountingDate;
+    const fxAction = editFxResolutionAction(
+      fxResolutionMode,
+      suppliedFx,
+      priorBusiness?.fx,
+      priorSnapshotCompatible,
+    );
+    const fx = fxAction === "PRESERVE"
+      ? priorBusiness!.fx
+      : await resolveFx(client, {
+          organizationId: unparsedCommand.context.organizationId,
+          transactionCurrency: command.currency,
+          functionalCurrency: setup.functional_currency,
+          asOfDate: command.accountingDate,
+          explicitFx: fxAction === "EXPLICIT" ? suppliedFx : undefined,
+        });
     const snapshot = {
       ...buildBusinessDocumentSnapshot({ ...unresolvedDocumentInput, fx }, setup.functional_currency),
       ...("evidence" in prior ? { evidence: prior.evidence } : {}),

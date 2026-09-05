@@ -43,6 +43,7 @@ import {
 import { createMutationRoute } from "@/app/api/_shared/subledger-mutation-route";
 import { POST as confirmDemoStepUp } from "@/app/api/auth/demo-step-up/route";
 import { PUT as selectWorkspaceEntity } from "@/app/api/workspace/entity-context/route";
+import { FxRateUnavailableError } from "@/modules/fx/rate-resolver";
 
 const principal = {
   sessionId: "10000000-0000-4000-8000-000000000001",
@@ -187,6 +188,56 @@ describe("mutation route setup failure boundaries", () => {
     await expectRedactedFailure(await selectWorkspaceEntity(request("PUT")), logging, 503);
     expect(logging).toHaveBeenCalledOnce();
     logging.mockRestore();
+  });
+
+  it("returns and logs only reviewed FX failure codes for browser mutations", async () => {
+    const failure = new FxRateUnavailableError(
+      "USD",
+      "CAD",
+      "2026-09-04",
+      "ECB_FX_HTTP_ERROR",
+    );
+    Object.assign(failure, {
+      upstreamStatus: 502,
+      upstreamBody: "upstream-sensitive-payload",
+    });
+    const logging = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const route = createMutationRoute({
+      schema: z.object({}).strict(),
+      operation: "test.fx-rate",
+      rateAction: "create",
+      maximumBytes: 1_024,
+      invalidMessage: "Invalid accounting request.",
+      failureMessage: "No permitted FX rate is available.",
+      invoke: async () => {
+        throw failure;
+      },
+    });
+
+    try {
+      const response = await route(request());
+      expect(response.status).toBe(409);
+      expect(await response.json()).toEqual({
+        error: "No permitted FX rate is available.",
+        code: "FX_RATE_UNAVAILABLE",
+        providerFailureCode: "ECB_FX_HTTP_ERROR",
+        requestId: expect.stringMatching(/^[0-9a-f-]{36}$/i),
+      });
+      expect(logging).toHaveBeenCalledOnce();
+      expect(JSON.parse(String(logging.mock.calls[0]?.[0]))).toEqual({
+        event: "route.failure",
+        operation: "subledger-mutation",
+        requestId: expect.stringMatching(/^[0-9a-f-]{36}$/i),
+        errorType: "Error",
+        errorCode: "FX_RATE_UNAVAILABLE",
+        providerFailureCode: "ECB_FX_HTTP_ERROR",
+      });
+      expect(JSON.stringify(logging.mock.calls)).not.toMatch(
+        /upstream-sensitive-payload|upstreamBody|upstreamStatus/,
+      );
+    } finally {
+      logging.mockRestore();
+    }
   });
 });
 

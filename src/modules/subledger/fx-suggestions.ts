@@ -19,6 +19,11 @@ function validTimestamp(value: string): number | null {
   return Number.isFinite(timestamp) ? timestamp : null;
 }
 
+export function utcFxDateCutoff(date: string): string {
+  const timestamp = Date.parse(`${date}T23:59:59.999Z`);
+  return Number.isFinite(timestamp) ? new Date(timestamp).toISOString() : "";
+}
+
 export function applicableOrganizationFxRates(
   rates: readonly OrganizationFxRate[],
   transactionCurrency: string,

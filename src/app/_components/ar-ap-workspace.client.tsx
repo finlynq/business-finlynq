@@ -20,6 +20,7 @@ import {
 import {
   applicableOrganizationFxRates,
   suggestedFxEvidence,
+  utcFxDateCutoff,
   type OrganizationFxRate,
 } from "@/modules/subledger/fx-suggestions";
 import {
@@ -58,7 +59,7 @@ type BusinessDraft = Readonly<{
   accountingDate: string;
   dueOn: string;
   currency: string;
-  fxMode: "AUTO" | "EXPLICIT";
+  fxMode: "AUTO" | "PRESERVE" | "EXPLICIT";
   fxRate: string;
   fxSource: string;
   fxEffectiveAt: string;
@@ -99,6 +100,37 @@ type VoidDraft = Readonly<{
   description: string;
 }>;
 
+export function businessDraftFxMutationFields(
+  draft: Pick<
+    BusinessDraft,
+    "editingVersion" | "fxMode" | "fxRate" | "fxSource" | "fxEffectiveAt"
+  >,
+): Readonly<{
+  fx?: Readonly<{
+    rate: string;
+    source: string;
+    effectiveAt: string;
+    quoteConvention: "FUNCTIONAL_UNITS_PER_TRANSACTION_UNIT";
+  }>;
+  expectedVersion?: number;
+  fxResolutionMode?: "RESOLVE" | "PRESERVE" | "EXPLICIT";
+}> {
+  return {
+    ...(draft.fxMode === "EXPLICIT" ? {
+      fx: {
+        rate: draft.fxRate,
+        source: draft.fxSource,
+        effectiveAt: draft.fxEffectiveAt,
+        quoteConvention: "FUNCTIONAL_UNITS_PER_TRANSACTION_UNIT" as const,
+      },
+    } : {}),
+    ...(draft.editingVersion !== null ? {
+      expectedVersion: draft.editingVersion,
+      fxResolutionMode: draft.fxMode === "AUTO" ? "RESOLVE" as const : draft.fxMode,
+    } : {}),
+  };
+}
+
 type ApiError = Readonly<{ error?: string }>;
 
 function randomKey(prefix: string): string {
@@ -111,8 +143,16 @@ function addDays(date: string, days: number): string {
   return value.toISOString().slice(0, 10);
 }
 
-function mutationTimestamp(date: string): string {
-  return new Date(`${date}T12:00:00.000Z`).toISOString();
+function utcDateTimeInput(timestamp: string): string {
+  if (!timestamp) return "";
+  const parsed = new Date(timestamp);
+  return Number.isNaN(parsed.valueOf()) ? "" : parsed.toISOString().slice(0, 16);
+}
+
+function utcTimestampFromInput(value: string): string {
+  if (!value) return "";
+  const parsed = new Date(value + ":00.000Z");
+  return Number.isNaN(parsed.valueOf()) ? "" : parsed.toISOString();
 }
 
 function suggestedEvidence(
@@ -125,7 +165,7 @@ function suggestedEvidence(
     workspace.fxRates ?? [],
     transactionCurrency,
     functionalCurrency ?? transactionCurrency,
-    mutationTimestamp(date),
+    utcFxDateCutoff(date),
   );
 }
 
@@ -158,6 +198,27 @@ function currentParty(
   return entity?.partyAccounts.find((party) => party.id === partyAccountId);
 }
 
+export function businessDraftCanPreserveFx(
+  workspace: SubledgerWorkspaceDto,
+  draft: Pick<
+    BusinessDraft,
+    "editingVersion" | "sourceNumber" | "legalEntityId" | "currency" | "accountingDate"
+  >,
+): boolean {
+  if (draft.editingVersion === null) return false;
+  const document = workspace.documents.find((candidate) => (
+    candidate.sourceNumber === draft.sourceNumber
+    && candidate.version === draft.editingVersion
+    && candidate.snapshot.kind === workspace.businessKind
+  ));
+  if (!document || (document.snapshot.kind !== "SALES_INVOICE"
+      && document.snapshot.kind !== "SUPPLIER_BILL")) return false;
+  return document.snapshot.currency === draft.currency
+    && document.snapshot.functionalCurrency
+      === currentEntity(workspace, draft.legalEntityId)?.functionalCurrency
+    && document.snapshot.accountingDate === draft.accountingDate;
+}
+
 function defaultDocumentDraft(
   workspace: SubledgerWorkspaceDto,
   document?: SubledgerWorkspaceDocumentDto,
@@ -174,7 +235,7 @@ function defaultDocumentDraft(
       accountingDate: snapshot.accountingDate,
       dueOn: snapshot.dueOn,
       currency: snapshot.currency,
-      fxMode: "EXPLICIT",
+      fxMode: "PRESERVE",
       fxRate: snapshot.fx.rate,
       fxSource: snapshot.fx.source,
       fxEffectiveAt: snapshot.fx.effectiveAt,
@@ -448,6 +509,16 @@ export function DocumentDetails({
               <div><span>FX rate</span><strong>{businessSnapshot.fx.rate} {businessSnapshot.functionalCurrency}/{businessSnapshot.currency}</strong></div>
               <div><span>FX source</span><strong>{businessSnapshot.fx.source}</strong></div>
               <div><span>FX effective time</span><strong>{businessSnapshot.fx.effectiveAt}</strong></div>
+              {businessSnapshot.fx.provenance?.providerCalculation && (
+                <>
+                  <div><span>FinLynQ calculation over provider source legs</span><strong>{businessSnapshot.fx.provenance.providerCalculation.replaceAll("_", " ")}</strong></div>
+                  <div><span>FX formula</span><strong><code>{businessSnapshot.fx.provenance.providerFormula}</code></strong></div>
+                  <div><span>FX source legs</span><strong>{businessSnapshot.fx.provenance.providerLegs?.map((leg) => (
+                    `${leg.seriesKey}: ${leg.rate} ${leg.rateConvention.replaceAll("_", " ")} on ${leg.observedDate}`
+                  )).join(" · ")}</strong></div>
+                  <div><span>Provider response SHA-256</span><strong><code>{businessSnapshot.fx.provenance.providerResponseSha256}</code></strong></div>
+                </>
+              )}
               <div><span>Functional total</span><strong>{displayExactMoney(businessSnapshot.functionalCurrency, businessSnapshot.grossFunctional)}</strong></div>
             </div>
           </details>
@@ -462,6 +533,17 @@ export function DocumentDetails({
             <div><span>Settlement method</span><strong>{SETTLEMENT_METHOD_LABELS[resolveSettlementFunding(settlementSnapshot).method]}</strong></div>
             <div><span>FX rate</span><strong>{settlementSnapshot.fx.rate} {settlementSnapshot.functionalCurrency}/{settlementSnapshot.currency}</strong></div>
             <div><span>FX source</span><strong>{settlementSnapshot.fx.source}</strong></div>
+            <div><span>FX effective time</span><strong>{settlementSnapshot.fx.effectiveAt}</strong></div>
+            {settlementSnapshot.fx.provenance?.providerCalculation && (
+              <>
+                <div><span>FinLynQ calculation over provider source legs</span><strong>{settlementSnapshot.fx.provenance.providerCalculation.replaceAll("_", " ")}</strong></div>
+                <div><span>FX formula</span><strong><code>{settlementSnapshot.fx.provenance.providerFormula}</code></strong></div>
+                <div><span>FX source legs</span><strong>{settlementSnapshot.fx.provenance.providerLegs?.map((leg) => (
+                  `${leg.seriesKey}: ${leg.rate} ${leg.rateConvention.replaceAll("_", " ")} on ${leg.observedDate}`
+                )).join(" · ")}</strong></div>
+                <div><span>Provider response SHA-256</span><strong><code>{settlementSnapshot.fx.provenance.providerResponseSha256}</code></strong></div>
+              </>
+            )}
           </div>
           <div className="table-scroll" tabIndex={0}>
             <table className={styles.detailTable}>
@@ -535,7 +617,7 @@ function FxRateSuggestionSelect({
     rates,
     transactionCurrency,
     functionalCurrency,
-    mutationTimestamp(asOfDate),
+    utcFxDateCutoff(asOfDate),
   );
   const selected = suggestions.find((suggestion) => (
     suggestion.rate === current.rate &&
@@ -590,6 +672,7 @@ export function ArApWorkspace({
 
   const documentEntity = currentEntity(workspace, documentDraft.legalEntityId);
   const documentParty = currentParty(documentEntity, documentDraft.partyAccountId);
+  const preserveFxEligible = businessDraftCanPreserveFx(workspace, documentDraft);
   const settlementEntity = currentEntity(workspace, settlementDraft.legalEntityId);
   const settlementParty = currentParty(settlementEntity, settlementDraft.partyAccountId);
   const settlementItems = workspace.openItems.filter((item) =>
@@ -737,7 +820,7 @@ export function ArApWorkspace({
         workspace,
         currency,
         documentEntity?.functionalCurrency,
-        draft.documentDate,
+        draft.accountingDate,
       );
       return {
         ...draft,
@@ -758,11 +841,31 @@ export function ArApWorkspace({
         workspace,
         currency,
         documentEntity?.functionalCurrency,
-        draft.documentDate,
+        draft.accountingDate,
       );
       return {
         ...draft,
         currency,
+        fxMode: "AUTO",
+        fxRate: fxEvidence.rate,
+        fxSource: fxEvidence.source,
+        fxEffectiveAt: fxEvidence.effectiveAt,
+      };
+    });
+  }
+
+  function chooseDocumentAccountingDate(accountingDate: string): void {
+    setDocumentDraft((draft) => {
+      if (draft.fxMode === "EXPLICIT") return { ...draft, accountingDate };
+      const fxEvidence = suggestedEvidence(
+        workspace,
+        draft.currency,
+        documentEntity?.functionalCurrency,
+        accountingDate,
+      );
+      return {
+        ...draft,
+        accountingDate,
         fxMode: "AUTO",
         fxRate: fxEvidence.rate,
         fxSource: fxEvidence.source,
@@ -803,14 +906,7 @@ export function ArApWorkspace({
       periodId: documentDraft.periodId,
       dueOn: documentDraft.dueOn,
       currency: documentDraft.currency,
-      ...(documentDraft.fxMode === "EXPLICIT" ? {
-        fx: {
-          rate: documentDraft.fxRate,
-          source: documentDraft.fxSource,
-          effectiveAt: documentDraft.fxEffectiveAt,
-          quoteConvention: "FUNCTIONAL_UNITS_PER_TRANSACTION_UNIT" as const,
-        },
-      } : {}),
+      ...businessDraftFxMutationFields(documentDraft),
       description: documentDraft.description,
       lines: documentDraft.lines.map((line) => ({
         description: line.description,
@@ -832,7 +928,6 @@ export function ArApWorkspace({
             : {}),
         },
       })),
-      ...(documentDraft.editingVersion ? { expectedVersion: documentDraft.editingVersion } : {}),
       idempotencyKey: globalThis.crypto.randomUUID(),
     };
     try {
@@ -945,6 +1040,25 @@ export function ArApWorkspace({
         fxSource: fxEvidence.source,
         fxEffectiveAt: fxEvidence.effectiveAt,
         allocations: {},
+      };
+    });
+  }
+
+  function chooseSettlementDate(settlementDate: string): void {
+    setSettlementDraft((draft) => {
+      if (draft.fxMode !== "AUTO") return { ...draft, settlementDate };
+      const fxEvidence = suggestedEvidence(
+        workspace,
+        draft.currency,
+        settlementEntity?.functionalCurrency,
+        settlementDate,
+      );
+      return {
+        ...draft,
+        settlementDate,
+        fxRate: fxEvidence.rate,
+        fxSource: fxEvidence.source,
+        fxEffectiveAt: fxEvidence.effectiveAt,
       };
     });
   }
@@ -1121,7 +1235,7 @@ export function ArApWorkspace({
               </label>
               <label className="full-field">
                 <span>Accounting date</span>
-                <input type="date" value={documentDraft.accountingDate} onChange={(event) => setDocumentDraft((draft) => ({ ...draft, accountingDate: event.target.value }))} required />
+                <input type="date" value={documentDraft.accountingDate} onChange={(event) => chooseDocumentAccountingDate(event.target.value)} required />
               </label>
               <label className="full-field">
                 <span>Due date</span>
@@ -1140,15 +1254,20 @@ export function ArApWorkspace({
                     value={documentDraft.fxMode}
                     onChange={(event) => setDocumentDraft((draft) => ({
                       ...draft,
-                      fxMode: event.target.value as "AUTO" | "EXPLICIT",
+                      fxMode: event.target.value as "AUTO" | "PRESERVE" | "EXPLICIT",
                     }))}
                   >
-                    <option value="AUTO">Automatic organization policy</option>
+                    {preserveFxEligible && (
+                      <option value="PRESERVE">Keep current frozen evidence</option>
+                    )}
+                    <option value="AUTO">Resolve again with organization policy</option>
                     <option value="EXPLICIT">Choose or enter rate evidence</option>
                   </select>
                   <small>
-                    Automatic mode asks FinLynQ to resolve and freeze the rate. It fails without
-                    writing the draft when no permitted observation is available.
+                    Keeping current evidence is available only while currency and accounting
+                    date remain unchanged, and carries its full provenance into the new version.
+                    Resolving again uses the organization policy. Choose explicit evidence to
+                    override it; the entered rate, source, and effective time are frozen.
                   </small>
                 </label>
               )}
@@ -1156,7 +1275,7 @@ export function ArApWorkspace({
                 rates={workspace.fxRates ?? []}
                 transactionCurrency={documentDraft.currency}
                 functionalCurrency={documentEntity.functionalCurrency}
-                asOfDate={documentDraft.documentDate}
+                asOfDate={documentDraft.accountingDate}
                 current={{
                   rate: documentDraft.fxRate,
                   source: documentDraft.fxSource,
@@ -1172,17 +1291,29 @@ export function ArApWorkspace({
               />
               <label className="full-field">
                 <span>FX rate</span>
-                <input inputMode="decimal" value={documentDraft.fxRate} onChange={(event) => setDocumentDraft((draft) => ({ ...draft, fxRate: event.target.value }))} disabled={documentDraft.currency === documentEntity.functionalCurrency || documentDraft.fxMode === "AUTO"} required={documentDraft.fxMode === "EXPLICIT"} />
+                <input inputMode="decimal" value={documentDraft.fxRate} onChange={(event) => setDocumentDraft((draft) => ({ ...draft, fxRate: event.target.value }))} disabled={documentDraft.currency === documentEntity.functionalCurrency || documentDraft.fxMode !== "EXPLICIT"} required={documentDraft.fxMode === "EXPLICIT"} />
                 <small>{documentEntity.functionalCurrency} per {documentDraft.currency}; immutable when saved.</small>
               </label>
               <label className="full-field">
                 <span>FX source</span>
-                <input value={documentDraft.fxSource} onChange={(event) => setDocumentDraft((draft) => ({ ...draft, fxSource: event.target.value }))} maxLength={100} disabled={documentDraft.fxMode === "AUTO"} required={documentDraft.fxMode === "EXPLICIT"} />
+                <input value={documentDraft.fxSource} onChange={(event) => setDocumentDraft((draft) => ({ ...draft, fxSource: event.target.value }))} maxLength={100} disabled={documentDraft.fxMode !== "EXPLICIT"} required={documentDraft.fxMode === "EXPLICIT"} />
               </label>
               <label className="full-field">
                 <span>FX effective time</span>
-                <input value={documentDraft.fxMode === "AUTO" ? "Resolved when saved" : documentDraft.fxEffectiveAt} readOnly />
-                <small>UTC snapshot tied to the selected document date.</small>
+                {documentDraft.fxMode !== "EXPLICIT"
+                  ? <input value={documentDraft.fxMode === "PRESERVE"
+                      ? "Current frozen evidence"
+                      : "Resolved when saved"} readOnly />
+                  : <input
+                      type="datetime-local"
+                      value={utcDateTimeInput(documentDraft.fxEffectiveAt)}
+                      onChange={(event) => setDocumentDraft((draft) => ({
+                        ...draft,
+                        fxEffectiveAt: utcTimestampFromInput(event.target.value),
+                      }))}
+                      required
+                    />}
+                <small>UTC evidence time; it cannot be after the accounting date.</small>
               </label>
             </div>
 
@@ -1308,7 +1439,7 @@ export function ArApWorkspace({
                 </select>
               </label>
               <label className="full-field"><span>Accounting date</span><input type="date" value={settlementDraft.accountingDate} onChange={(event) => setSettlementDraft((draft) => ({ ...draft, accountingDate: event.target.value }))} required /></label>
-              <label className="full-field"><span>Settlement date</span><input type="date" value={settlementDraft.settlementDate} onChange={(event) => setSettlementDraft((draft) => ({ ...draft, settlementDate: event.target.value }))} required /></label>
+              <label className="full-field"><span>Settlement date</span><input type="date" value={settlementDraft.settlementDate} onChange={(event) => chooseSettlementDate(event.target.value)} required /></label>
               <label className="full-field">
                 <span>Currency</span>
                 <select value={settlementDraft.currency} onChange={(event) => chooseSettlementCurrency(event.target.value)} disabled={Boolean(settlementParty?.transactionCurrency)} required>
@@ -1329,8 +1460,9 @@ export function ArApWorkspace({
                     <option value="EXPLICIT">Choose or enter rate evidence</option>
                   </select>
                   <small>
-                    Automatic mode resolves a permitted observation for the settlement date and
-                    freezes it before the posting is created.
+                    Automatic mode resolves the organization-approved observation for the
+                    settlement date. Choose explicit evidence to override it; the entered rate,
+                    source, and effective time are frozen before the posting is created.
                   </small>
                 </label>
               )}
@@ -1358,7 +1490,21 @@ export function ArApWorkspace({
                 <small>{settlementEntity.functionalCurrency} per {settlementDraft.currency}.</small>
               </label>
               <label className="full-field"><span>FX source</span><input value={settlementDraft.fxSource} onChange={(event) => setSettlementDraft((draft) => ({ ...draft, fxSource: event.target.value }))} maxLength={100} disabled={settlementDraft.fxMode === "AUTO"} required={settlementDraft.fxMode === "EXPLICIT"} /></label>
-              <label className="full-field"><span>FX effective time</span><input value={settlementDraft.fxMode === "AUTO" ? "Resolved when saved" : settlementDraft.fxEffectiveAt} readOnly /><small>UTC snapshot tied to the settlement date.</small></label>
+              <label className="full-field">
+                <span>FX effective time</span>
+                {settlementDraft.fxMode === "AUTO"
+                  ? <input value="Resolved when saved" readOnly />
+                  : <input
+                      type="datetime-local"
+                      value={utcDateTimeInput(settlementDraft.fxEffectiveAt)}
+                      onChange={(event) => setSettlementDraft((draft) => ({
+                        ...draft,
+                        fxEffectiveAt: utcTimestampFromInput(event.target.value),
+                      }))}
+                      required
+                    />}
+                <small>UTC evidence time; it cannot be after the settlement date.</small>
+              </label>
               <label className="full-field"><span>Total allocated</span><input value={displayExactMoney(settlementDraft.currency, settlementTotal)} readOnly /></label>
             </div>
             <label className="full-field"><span>Description</span><input value={settlementDraft.description} onChange={(event) => setSettlementDraft((draft) => ({ ...draft, description: event.target.value }))} maxLength={500} required /></label>

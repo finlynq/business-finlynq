@@ -1,5 +1,9 @@
 import type { McpServer, CallToolResult, JSONValue } from "@modelcontextprotocol/server";
 import { z } from "zod";
+import {
+  SAFE_FX_RATE_UNAVAILABLE_MESSAGE,
+  safeFxRateUnavailableDetails,
+} from "@/modules/fx/error-transport";
 import type { McpAuthorizationSnapshot, McpToolPolicy } from "./connection-policy";
 import { authorizeMcpWrite, isMcpToolVisible, mcpToolAuthorizationMetadata } from "./connection-policy";
 import { beginMcpExecution, finishMcpExecution } from "./execution-store";
@@ -90,7 +94,11 @@ function approvalResult(approval: Readonly<{
   };
 }
 
-function toolError(error: unknown): Readonly<{ code: string; message: string }> {
+function toolError(error: unknown): Readonly<{
+  code: string;
+  message: string;
+  providerFailureCode?: string;
+}> {
   const candidate = error && typeof error === "object" ? error as { code?: unknown; message?: unknown } : null;
   if (typeof candidate?.code === "string" && /^[0-9A-Z]{5}$/.test(candidate.code)) {
     return { code: "MCP_DATABASE_REJECTED", message: "The accounting operation was rejected by an integrity or concurrency control" };
@@ -98,11 +106,22 @@ function toolError(error: unknown): Readonly<{ code: string; message: string }> 
   const code = typeof candidate?.code === "string" && /^[A-Z0-9_]{2,80}$/.test(candidate.code)
     ? candidate.code
     : "MCP_OPERATION_FAILED";
-  const rawMessage = typeof candidate?.message === "string" ? candidate.message : "The accounting operation could not be completed";
-  return { code, message: rawMessage.replace(/[\r\n]+/g, " ").slice(0, 700) };
+  const fxFailure = safeFxRateUnavailableDetails(error);
+  const rawMessage = fxFailure
+    ? SAFE_FX_RATE_UNAVAILABLE_MESSAGE
+    : typeof candidate?.message === "string"
+      ? candidate.message
+      : "The accounting operation could not be completed";
+  return {
+    code,
+    message: rawMessage.replace(/[\r\n]+/g, " ").slice(0, 700),
+    ...(fxFailure?.providerFailureCode
+      ? { providerFailureCode: fxFailure.providerFailureCode }
+      : {}),
+  };
 }
 
-function errorResult(error: unknown): CallToolResult {
+export function mcpToolFailureResult(error: unknown): CallToolResult {
   const failure = toolError(error);
   const envelope = { status: "failed", error: failure };
   return {
@@ -177,7 +196,7 @@ export function registerMcpTools(
             // repository's immutable business-audit events inside their own transaction.
           }
         }
-        return errorResult(error);
+        return mcpToolFailureResult(error);
       }
     });
   }

@@ -9,7 +9,12 @@ vi.mock("next/navigation", () => ({
   useRouter: () => ({ refresh: vi.fn() }),
 }));
 
-import { ArApWorkspace, DocumentDetails } from "@/app/_components/ar-ap-workspace.client";
+import {
+  ArApWorkspace,
+  businessDraftCanPreserveFx,
+  businessDraftFxMutationFields,
+  DocumentDetails,
+} from "@/app/_components/ar-ap-workspace.client";
 import { filterSubledgerDocuments } from "@/modules/subledger/register-filter";
 
 function invoice(overrides: Partial<SubledgerWorkspaceDocumentDto> = {}): SubledgerWorkspaceDocumentDto {
@@ -76,6 +81,71 @@ const allFilter = {
 };
 
 describe("scalable AR/AP transaction register", () => {
+  it("finds the edited invoice by business kind when a settlement number and version collide", () => {
+    const legalEntityId = "50000000-0000-4000-8000-000000000001";
+    const collision = {
+      ownerModule: "receivables",
+      businessKind: "SALES_INVOICE",
+      entities: [{ id: legalEntityId, functionalCurrency: "CAD", partyAccounts: [] }],
+      documents: [
+        {
+          ...receipt(),
+          sourceNumber: "SHARED-1001",
+          version: 2,
+        },
+        invoice({
+          sourceNumber: "SHARED-1001",
+          version: 2,
+          snapshot: {
+            kind: "SALES_INVOICE",
+            currency: "USD",
+            functionalCurrency: "CAD",
+            accountingDate: "2026-08-27",
+          } as SubledgerWorkspaceDocumentDto["snapshot"],
+        }),
+      ],
+    } as unknown as SubledgerWorkspaceDto;
+    expect(businessDraftCanPreserveFx(collision, {
+      editingVersion: 2,
+      sourceNumber: "SHARED-1001",
+      legalEntityId,
+      currency: "USD",
+      accountingDate: "2026-08-27",
+    })).toBe(true);
+  });
+
+  it("sends fail-closed FX intent from the browser draft editor", () => {
+    const evidence = {
+      fxRate: "1.35",
+      fxSource: "Client contract rate",
+      fxEffectiveAt: "2026-08-27T12:00:00.000Z",
+    };
+    expect(businessDraftFxMutationFields({
+      ...evidence,
+      editingVersion: 3,
+      fxMode: "PRESERVE",
+    })).toEqual({ expectedVersion: 3, fxResolutionMode: "PRESERVE" });
+    expect(businessDraftFxMutationFields({
+      ...evidence,
+      editingVersion: 3,
+      fxMode: "AUTO",
+    })).toEqual({ expectedVersion: 3, fxResolutionMode: "RESOLVE" });
+    expect(businessDraftFxMutationFields({
+      ...evidence,
+      editingVersion: 3,
+      fxMode: "EXPLICIT",
+    })).toEqual({
+      expectedVersion: 3,
+      fxResolutionMode: "EXPLICIT",
+      fx: {
+        rate: evidence.fxRate,
+        source: evidence.fxSource,
+        effectiveAt: evidence.fxEffectiveAt,
+        quoteConvention: "FUNCTIONAL_UNITS_PER_TRANSACTION_UNIT",
+      },
+    });
+  });
+
   it("combines text, entity, status, currency, date, and due-state filters", () => {
     const documents = [invoice(), receipt()];
     expect(filterSubledgerDocuments(documents, {
@@ -199,7 +269,45 @@ describe("scalable AR/AP transaction register", () => {
         accountingDate: "2026-08-27",
         settlementFunctionalAmount: "67.50",
         bankAccountCombinationId: "60000000-0000-4000-8000-000000000001",
-        fx: { rate: "1.35", source: "Manual", effectiveAt: "2026-08-27T12:00:00.000Z" },
+        fx: {
+          rate: "1.35",
+          source: "Source: ECB statistics. Euro foreign exchange reference rates",
+          effectiveAt: "2026-08-27T00:00:00.000Z",
+          quoteConvention: "FUNCTIONAL_UNITS_PER_TRANSACTION_UNIT",
+          provenance: {
+            mode: "PROVIDER_RATE",
+            asOfDate: "2026-08-27",
+            resolvedAt: "2026-08-27T12:00:00.000Z",
+            policyKey: "EUROPEAN_CENTRAL_BANK_REFERENCE_RATE",
+            policyVersion: 3,
+            providerKey: "EUROPEAN_CENTRAL_BANK",
+            providerSymbol: "EXR.D.USD.EUR.SP00.A+EXR.D.CAD.EUR.SP00.A",
+            providerSourceCurrency: "USD",
+            providerTargetCurrency: "CAD",
+            providerObservedAt: "2026-08-27T00:00:00.000Z",
+            providerRetrievedAt: "2026-08-27T12:00:00.000Z",
+            providerResponseSha256: "a".repeat(64),
+            providerMaxLookbackDays: 7,
+            providerCalculation: "CROSS_VIA_EUR",
+            providerFormula: "TARGET_UNITS_PER_EUR / SOURCE_UNITS_PER_EUR",
+            providerLegs: [
+              {
+                currency: "USD",
+                rate: "1.1",
+                rateConvention: "CURRENCY_UNITS_PER_EUR",
+                observedDate: "2026-08-27",
+                seriesKey: "EXR.D.USD.EUR.SP00.A",
+              },
+              {
+                currency: "CAD",
+                rate: "1.485",
+                rateConvention: "CURRENCY_UNITS_PER_EUR",
+                observedDate: "2026-08-27",
+                seriesKey: "EXR.D.CAD.EUR.SP00.A",
+              },
+            ],
+          },
+        },
         allocations: [{
           openItemId: source.openItemId,
           transactionAmount: "50.00",
@@ -213,6 +321,13 @@ describe("scalable AR/AP transaction register", () => {
       <DocumentDetails workspace={workspace} document={completeSettlement} onClose={vi.fn()} onEdit={vi.fn()} />,
     );
     expect(markup).toContain("INV-1001");
+    expect(markup).toContain("Source: ECB statistics.");
+    expect(markup).toContain("FinLynQ calculation over provider source legs");
+    expect(markup).toContain("CROSS VIA EUR");
+    expect(markup).toContain("TARGET_UNITS_PER_EUR / SOURCE_UNITS_PER_EUR");
+    expect(markup).toContain("EXR.D.USD.EUR.SP00.A: 1.1 CURRENCY UNITS PER EUR on 2026-08-27");
+    expect(markup).toContain("Provider response SHA-256");
+    expect(markup).toContain("a".repeat(64));
     expect(markup).not.toContain(source.openItemId);
   });
 });

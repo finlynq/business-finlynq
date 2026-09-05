@@ -41,6 +41,16 @@ function emptySegmentSelection(): Record<AccountSegmentKey, string> {
   return Object.fromEntries(accountSegmentKeys.map((key) => [key, ""])) as Record<AccountSegmentKey, string>;
 }
 
+const fxProviderLabels: Readonly<Record<
+  AccountingConfigurationDto["fxProviderPolicy"]["providerMode"],
+  string
+>> = {
+  STORED_ONLY: "Stored organization rates only",
+  BANK_OF_CANADA: "Bank of Canada daily reference rates",
+  EUROPEAN_CENTRAL_BANK: "European Central Bank reference rates",
+  YAHOO_FINANCE_EXPERIMENTAL: "Yahoo Finance experimental",
+};
+
 const hierarchyDimensionLabels: Readonly<Record<AccountingHierarchyDimensionKey, string>> = {
   entity: "Legal entity",
   account: "Natural account",
@@ -765,18 +775,18 @@ export function AccountingSettings({
         <div className="close-form" aria-labelledby="fx-provider-policy-title">
           <h3 id="fx-provider-policy-title">FX provider policy</h3>
           <p className="panel-note">
-            <strong>Current:</strong> {configuration.fxProviderPolicy.providerMode === "STORED_ONLY"
-              ? "Stored organization rates only"
-              : "Yahoo Finance experimental"} · version {configuration.fxProviderPolicy.version}
+            <strong>Current:</strong> {fxProviderLabels[configuration.fxProviderPolicy.providerMode]} · version {configuration.fxProviderPolicy.version}
             {configuration.fxProviderPolicy.configuredAt
               ? ` · configured ${new Date(configuration.fxProviderPolicy.configuredAt).toLocaleString()}`
               : " · safe default"}
           </p>
           <p className="panel-note">
-            Stored only keeps all resolution inside FinLynQ. The experimental option records an
-            organization preference and lookback limit; availability also requires operator
-            activation. Saving this policy does not fetch market data or alter existing drafts,
-            posted journals, or stored rate evidence.
+            Automatic resolution first uses a direct organization rate. If none exists, the
+            selected provider may supply a reference observation within this lookback window.
+            Bank of Canada and ECB rates may be inverted or crossed through CAD or EUR, with the
+            published legs and formula frozen in the document. Users can choose explicit rate
+            evidence for a rate-sensitive invoice or settlement; that value overrides automatic
+            resolution. Saving this policy does not fetch market data or alter existing evidence.
           </p>
           {configuration.canManageSettings && (
             <form onSubmit={(event) => {
@@ -808,6 +818,8 @@ export function AccountingSettings({
                     }}
                   >
                     <option value="STORED_ONLY">Stored organization rates only</option>
+                    <option value="BANK_OF_CANADA">Bank of Canada daily reference rates</option>
+                    <option value="EUROPEAN_CENTRAL_BANK">European Central Bank reference rates</option>
                     <option value="YAHOO_FINANCE_EXPERIMENTAL">Yahoo Finance experimental</option>
                   </select>
                 </label>
@@ -824,6 +836,24 @@ export function AccountingSettings({
                   />
                 </label>
               </div>
+              {fxProviderMode === "BANK_OF_CANADA" && (
+                <p className="panel-note">
+                  Bank of Canada daily exchange rates are indicative reference observations,
+                  not a benchmark or transaction quote. Publication can be delayed, unavailable,
+                  or revised. FinLynQ may calculate an inverse or CAD cross from the published
+                  legs. Use an explicit client-approved rate when the transaction requires a
+                  contractual, bank, tax, or other controlled rate.
+                </p>
+              )}
+              {fxProviderMode === "EUROPEAN_CENTRAL_BANK" && (
+                <p className="panel-note">
+                  ECB foreign-exchange reference rates are published for information, and the ECB
+                  discourages their use for transactions. Publication can be delayed, unavailable,
+                  or revised. FinLynQ may calculate an inverse or EUR cross from the published legs.
+                  Use an explicit client-approved rate when the transaction requires a contractual,
+                  bank, tax, or other controlled rate.
+                </p>
+              )}
               {fxProviderMode === "YAHOO_FINANCE_EXPERIMENTAL" && (
                 <label className="currency-toggle">
                   <input
