@@ -835,7 +835,7 @@ runDatabaseTests("PostgreSQL accounting controls", () => {
       },
       ...journal,
       idempotencyKey: "demo-boundary-write",
-    })).rejects.toThrow(/live isolated|organization mode|organization/i);
+    })).rejects.toThrow(/live shared|organization mode|organization/i);
   });
 
   it("creates journals concurrently with bound idempotency, role-aware auto-post, and one full reversal", async () => {

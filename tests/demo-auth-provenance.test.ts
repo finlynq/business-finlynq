@@ -56,7 +56,7 @@ describe("demo transaction authentication provenance", () => {
   it("accepts a stepped-up demo principal across context validation and write authorization", () => {
     process.env.DEMO_WRITES_ENABLED = "true";
     const context = mutationContext(principal, "demo-step-up-request", {
-      reason: "Exercise a sandbox-only privileged control",
+      reason: "Exercise a shared-demo privileged control",
     });
 
     expect(context.authMethod).toBe("demo-link+mfa");
@@ -109,7 +109,7 @@ describe("demo transaction authentication provenance", () => {
       );
       expect(isAuthorizedDemoWriteContext(context)).toBe(false);
       expect(() => assertTenantWritesEnabled(context)).toThrow(
-        /live isolated demo-link session/i,
+        /live shared demo-link session/i,
       );
     }
   });

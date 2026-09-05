@@ -38,7 +38,7 @@ export default async function PartiesPage({ searchParams }: { searchParams: Prom
   return (
     <div className="page-content">
       <PageHeader eyebrow="Unified master data" title="Organization address book" description="Create each person or business once for the organization, then attach customer or supplier accounts for every legal entity that trades with it. Party names and addresses remain envelope-encrypted." />
-      {directory.demoOnly && <DemoNotice>These are encrypted synthetic records in your isolated writable sandbox. Your changes persist for this browser and reset nightly.</DemoNotice>}
+      {directory.demoOnly && <DemoNotice>These are encrypted synthetic records in the shared writable demo. Everyone sees changes until they reset nightly.</DemoNotice>}
       {directory.readiness === "READY" && directory.canManage && (
         <PartyCreateForm />
       )}

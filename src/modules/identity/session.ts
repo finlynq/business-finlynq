@@ -28,11 +28,6 @@ export function sessionCookieName(): string {
     (process.env.NODE_ENV === "production" ? "__Host-business_finlynq_session" : "business_finlynq_session");
 }
 
-export function demoClaimCookieName(): string {
-  return process.env.DEMO_CLAIM_COOKIE_NAME?.trim() ||
-    (process.env.NODE_ENV === "production" ? "__Host-business_finlynq_demo_claim" : "business_finlynq_demo_claim");
-}
-
 export function createOpaqueToken(): { raw: string; hash: string } {
   const raw = randomBytes(32).toString("base64url");
   return { raw, hash: hashOpaqueToken(raw) };
@@ -114,17 +109,6 @@ export function setSessionCookie(response: NextResponse, rawToken: string, maxAg
     sameSite: "lax",
     path: "/",
     maxAge: maxAgeSeconds,
-    priority: "high",
-  });
-}
-
-export function setDemoClaimCookie(response: NextResponse, rawToken: string, expiresAt: Date): void {
-  response.cookies.set(demoClaimCookieName(), rawToken, {
-    httpOnly: true,
-    secure: process.env.NODE_ENV === "production",
-    sameSite: "lax",
-    path: "/",
-    expires: expiresAt,
     priority: "high",
   });
 }

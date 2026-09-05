@@ -14,31 +14,23 @@ runDatabaseTests("PostgreSQL identity controls", () => {
 
   afterAll(async () => pool.end());
 
-  it("claims, resolves, logs out, and re-enters the same isolated daily sandbox", async () => {
+  it("issues, resolves, logs out, and re-enters the shared public demo", async () => {
     const tokenHash = randomUUID().replaceAll("-", "").repeat(2);
-    const claimHash = randomUUID().replaceAll("-", "").repeat(2);
     const requestId = randomUUID();
     const issued = await pool.query(
       "SELECT * FROM app.auth_issue_demo_session($1,$2,$3,$4,$5,$6)",
-      [tokenHash, null, claimHash, "b".repeat(64), "c".repeat(64), requestId],
+      [tokenHash, null, null, "b".repeat(64), "c".repeat(64), requestId],
     );
-    expect(issued.rows[0]).toMatchObject({ role_label: "Demo owner", claim_created: true });
+    expect(issued.rows[0]).toMatchObject({ role_label: "Demo accountant", organization_name: "Northstar Demo Group", claim_created: false });
     expect(issued.rows[0].session_id).toBeTruthy();
     expect(issued.rows[0].user_id).toBeTruthy();
     expect(issued.rows[0].organization_id).toBeTruthy();
     expect(issued.rows[0].membership_id).toBeTruthy();
-    expect(issued.rows[0].organization_name).toMatch(/^Northstar Demo Sandbox \d{3}$/);
-    const assigned = await pool.query(
-      `SELECT slot.state, organization.organization_mode
-       FROM demo_sandbox_slots slot
-       JOIN organizations organization ON organization.id = slot.organization_id
-       WHERE slot.organization_id = $1`,
+    const sharedDemo = await pool.query(
+      "SELECT organization_mode FROM organizations WHERE id = $1",
       [issued.rows[0].organization_id],
     );
-    expect(assigned.rows[0]).toMatchObject({
-      state: "ASSIGNED",
-      organization_mode: "SANDBOX",
-    });
+    expect(sharedDemo.rows[0]).toEqual({ organization_mode: "PUBLIC_DEMO" });
 
     const resolved = await pool.query("SELECT * FROM app.auth_resolve_session_v2($1, $2)", [tokenHash, "c".repeat(64)]);
     expect(resolved.rows[0]).toMatchObject({ session_mode: "DEMO", auth_method: "DEMO_LINK" });
@@ -100,16 +92,11 @@ runDatabaseTests("PostgreSQL identity controls", () => {
     expect(revoked.rows[0].revoked).toBe(true);
     const afterLogout = await pool.query("SELECT * FROM app.auth_resolve_session_v2($1, $2)", [tokenHash, "c".repeat(64)]);
     expect(afterLogout.rowCount).toBe(0);
-    const preserved = await pool.query(
-      "SELECT state FROM demo_sandbox_slots WHERE organization_id = $1",
-      [issued.rows[0].organization_id],
-    );
-    expect(preserved.rows[0]).toMatchObject({ state: "ASSIGNED" });
 
     const reentryTokenHash = randomUUID().replaceAll("-", "").repeat(2);
     const reentered = await pool.query(
       "SELECT * FROM app.auth_issue_demo_session($1,$2,$3,$4,$5,$6)",
-      [reentryTokenHash, claimHash, "e".repeat(64), "b".repeat(64), "c".repeat(64), randomUUID()],
+      [reentryTokenHash, null, null, "b".repeat(64), "c".repeat(64), randomUUID()],
     );
     expect(reentered.rows[0]).toMatchObject({
       organization_id: issued.rows[0].organization_id,
@@ -126,7 +113,7 @@ runDatabaseTests("PostgreSQL identity controls", () => {
     await pool.query("SELECT app.auth_revoke_session($1, $2)", [reentryTokenHash, randomUUID()]);
   });
 
-  it("allows release-gate retries but caps one network at 16 daily claims", async () => {
+  it("allows concurrent visitors from one network into the same shared demo", async () => {
     const ipHash = randomUUID().replaceAll("-", "").repeat(2);
     const attempts = Array.from({ length: 17 }, (_, index) => ({
       tokenHash: randomUUID().replaceAll("-", "").repeat(2),
@@ -134,27 +121,25 @@ runDatabaseTests("PostgreSQL identity controls", () => {
     }));
     const issued = await Promise.all(attempts.map((attempt) => pool.query(
       "SELECT * FROM app.auth_issue_demo_session($1,$2,$3,$4,$5,$6)",
-      [attempt.tokenHash, null, randomUUID().replaceAll("-", "").repeat(2), ipHash, "d".repeat(64), attempt.requestId],
+      [attempt.tokenHash, null, null, ipHash, "d".repeat(64), attempt.requestId],
     )));
-    expect(issued.filter((result) => result.rowCount === 1)).toHaveLength(16);
-    expect(issued.filter((result) => result.rowCount === 0)).toHaveLength(1);
+    expect(issued.every((result) => result.rowCount === 1)).toBe(true);
+    expect(new Set(issued.map((result) => result.rows[0]?.organization_id)).size).toBe(1);
     expect((await pool.query(
       `SELECT count(*)::int AS count FROM auth_sessions
        WHERE session_mode = 'DEMO' AND ip_hash = $1 AND revoked_at IS NULL
          AND expires_at > now() AND idle_expires_at > now()`,
       [ipHash],
-    )).rows[0]?.count).toBe(16);
-    await Promise.all(attempts.map((attempt, index) =>
-      issued[index]?.rowCount === 1
-        ? pool.query("SELECT app.auth_revoke_session($1, $2)", [attempt.tokenHash, randomUUID()])
-        : Promise.resolve()));
+    )).rows[0]?.count).toBe(17);
+    await Promise.all(attempts.map((attempt) =>
+      pool.query("SELECT app.auth_revoke_session($1, $2)", [attempt.tokenHash, randomUUID()])));
   });
 
-  it("holds a demo lease through the tenant transaction and blocks handoff", async () => {
+  it("holds the shared demo reset fence through the tenant transaction and blocks revocation", async () => {
     const tokenHash = randomUUID().replaceAll("-", "").repeat(2);
     const issued = await pool.query(
       "SELECT * FROM app.auth_issue_demo_session($1,$2,$3,$4,$5,$6)",
-      [tokenHash, null, randomUUID().replaceAll("-", "").repeat(2), randomUUID().replaceAll("-", "").repeat(2), "e".repeat(64), randomUUID()],
+      [tokenHash, null, null, randomUUID().replaceAll("-", "").repeat(2), "e".repeat(64), randomUUID()],
     );
     const principal = issued.rows[0];
     expect(principal?.session_id).toBeTruthy();

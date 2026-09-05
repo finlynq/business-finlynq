@@ -2,10 +2,19 @@ import { describe, expect, it } from "vitest";
 import {
   applicableOrganizationFxRates,
   suggestedFxEvidence,
+  utcFxDateCutoff,
   type OrganizationFxRate,
 } from "@/modules/subledger/fx-suggestions";
 
 const rates: OrganizationFxRate[] = [
+  {
+    id: "rate-same-day-evening",
+    sourceCurrency: "USD",
+    targetCurrency: "CAD",
+    rate: "1.385",
+    effectiveAt: "2026-08-27T18:00:00.000Z",
+    source: "Treasury same-day close",
+  },
   {
     id: "rate-future",
     sourceCurrency: "USD",
@@ -60,6 +69,22 @@ describe("subledger organization FX suggestions", () => {
       effectiveAt: "2026-08-26T16:00:00.000Z",
       organizationRateId: "rate-latest",
     });
+  });
+
+  it("uses the end of the UTC accounting date to match server eligibility", () => {
+    const cutoff = utcFxDateCutoff("2026-08-27");
+    expect(cutoff).toBe("2026-08-27T23:59:59.999Z");
+    expect(applicableOrganizationFxRates(
+      rates,
+      "USD",
+      "CAD",
+      cutoff,
+    ).map((rate) => rate.id)).toEqual([
+      "rate-same-day-evening",
+      "rate-latest",
+      "rate-old",
+    ]);
+    expect(utcFxDateCutoff("")).toBe("");
   });
 
   it("falls back to explicit user evidence and never invents an inverse rate", () => {

@@ -6,6 +6,7 @@ const schema = z.object({
   legalEntityId: z.uuid(),
   ledgerId: z.uuid(),
   cashAccountCombinationId: z.uuid(),
+  accountKind: z.enum(["CASH", "CREDIT_CARD"]).optional(),
 }).strict();
 
 export const PUT = createBankingMutationRoute({

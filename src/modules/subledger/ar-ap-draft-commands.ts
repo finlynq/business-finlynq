@@ -1,4 +1,7 @@
 import "server-only";
+import { loadDocumentEvidence } from "./evidence-store";
+import type { PoolClient } from "pg";
+import { evidenceReferencesSchema, type EvidenceReference } from "./evidence-model";
 
 import { withTenantTransaction } from "@/db/transaction";
 import {
@@ -7,6 +10,7 @@ import {
 } from "@/modules/workspace/write-policy";
 import {
   buildBusinessDocumentSnapshot,
+  canonicalHash,
   createBusinessDocumentSchema,
   DOCUMENT_KIND_POLICY,
   editBusinessDocumentSchema,
@@ -23,6 +27,8 @@ import {
 } from "./ar-ap-idempotency";
 import { loadAccountingSetup, validateDraftConfiguration } from "./ar-ap-accounting";
 import { appendSourceDocument, recordFromRow } from "./ar-ap-persistence";
+import { exact } from "@/kernel/money";
+import { resolveFx } from "@/modules/fx/rate-resolver";
 import {
   SOURCE_TYPES_BY_OWNER,
   type CreateBusinessDocumentCommand,
@@ -33,6 +39,62 @@ import {
   type SourceDocumentRow,
   type SubledgerDocumentRecord,
 } from "./ar-ap-types";
+
+type EditableFxEvidence = Readonly<{
+  rate: string;
+  source: string;
+  effectiveAt: string;
+  quoteConvention?: "FUNCTIONAL_UNITS_PER_TRANSACTION_UNIT";
+}>;
+
+export function sameFxEvidenceForEdit(
+  supplied: EditableFxEvidence | undefined,
+  frozen: EditableFxEvidence,
+): boolean {
+  if (!supplied
+      || supplied.source !== frozen.source
+      || (supplied.quoteConvention ?? "FUNCTIONAL_UNITS_PER_TRANSACTION_UNIT")
+        !== (frozen.quoteConvention ?? "FUNCTIONAL_UNITS_PER_TRANSACTION_UNIT")) return false;
+  const suppliedTime = Date.parse(supplied.effectiveAt);
+  const frozenTime = Date.parse(frozen.effectiveAt);
+  try {
+    return Number.isFinite(suppliedTime)
+      && suppliedTime === frozenTime
+      && exact(supplied.rate).equals(frozen.rate);
+  } catch {
+    return false;
+  }
+}
+
+export type EditFxResolutionAction = "PRESERVE" | "RESOLVE" | "EXPLICIT";
+
+export function editFxResolutionAction(
+  mode: EditFxResolutionAction | undefined,
+  supplied: EditableFxEvidence | undefined,
+  frozen: EditableFxEvidence | undefined,
+  priorSnapshotCompatible: boolean,
+): EditFxResolutionAction {
+  if (mode === "PRESERVE") {
+    if (!frozen || !priorSnapshotCompatible) {
+      throw new Error("Preserving FX requires unchanged currency, functional currency, and accounting date");
+    }
+    return "PRESERVE";
+  }
+  if (mode === "RESOLVE") return "RESOLVE";
+  if (mode === "EXPLICIT") {
+    if (!supplied) throw new Error("Explicit FX evidence is required");
+    return "EXPLICIT";
+  }
+
+  if (!supplied) return "RESOLVE";
+  if (frozen && sameFxEvidenceForEdit(supplied, frozen)) {
+    if (!priorSnapshotCompatible) {
+      throw new Error("Current FX evidence cannot be preserved after changing its accounting facts");
+    }
+    return "PRESERVE";
+  }
+  return "EXPLICIT";
+}
 
 export async function listCurrentSubledgerDocuments(
   command: ListCurrentDocumentsCommand,
@@ -92,12 +154,27 @@ export async function getCurrentSubledgerDocument(
       sourceNumber,
       false,
     );
-    return row ? recordFromRow(row) : null;
+    if (!row) return null;
+    const document = recordFromRow(row);
+    return { ...document, attachments: await loadDocumentEvidence(client, {
+      organizationId: document.organizationId, ownerModule: document.ownerModule,
+      id: document.id, sourceNumber: document.sourceNumber, version: document.version,
+      evidence: "evidence" in document.snapshot ? document.snapshot.evidence : undefined,
+    }) };
   });
 }
 
 export async function createBusinessDocumentDraft(
   unparsedCommand: CreateBusinessDocumentCommand,
+): Promise<DocumentMutationResult> {
+  return withTenantTransaction(unparsedCommand.context, (client) => createBusinessDocumentDraftInTransaction(client, unparsedCommand));
+}
+
+/** Shared with inbox completion so draft creation and evidence linking commit together. */
+export async function createBusinessDocumentDraftInTransaction(
+  client: PoolClient,
+  unparsedCommand: CreateBusinessDocumentCommand,
+  evidence: readonly EvidenceReference[] = [],
 ): Promise<DocumentMutationResult> {
   assertTenantWritesEnabled(unparsedCommand.context);
   const command = createBusinessDocumentSchema.parse(withoutContext(unparsedCommand));
@@ -107,63 +184,72 @@ export async function createBusinessDocumentDraft(
     "draft-create",
     command.idempotencyKey,
   );
-  const fingerprints = subledgerCommandFingerprints(policy.ownerModule, "draft-create", command);
+  const refs = evidenceReferencesSchema.parse(evidence);
+  const fingerprint = refs.length ? canonicalHash({ command, evidence: refs }) : null;
+  const fingerprints = fingerprint ? { current: fingerprint, legacy: fingerprint } : subledgerCommandFingerprints(policy.ownerModule, "draft-create", command);
+  await assertWritableOrganization(client, unparsedCommand.context);
+  await assertPermission(client, unparsedCommand.context, permissionForOwner(policy.ownerModule, "manage"));
+  await acquireIdempotencyLock(client, unparsedCommand.context.organizationId, idempotencyKey);
+  const replay = await findSourceByIdempotency(
+    client,
+    unparsedCommand.context.organizationId,
+    idempotencyKey,
+  );
+  if (replay) {
+    assertIdempotentSource(replay, fingerprints, "DRAFT");
+    return { document: recordFromRow(replay), idempotentReplay: true };
+  }
 
-  return withTenantTransaction(unparsedCommand.context, async (client) => {
-    await assertWritableOrganization(client, unparsedCommand.context);
-    await assertPermission(client, unparsedCommand.context, permissionForOwner(policy.ownerModule, "manage"));
-    await acquireIdempotencyLock(client, unparsedCommand.context.organizationId, idempotencyKey);
-    const replay = await findSourceByIdempotency(
-      client,
-      unparsedCommand.context.organizationId,
-      idempotencyKey,
-    );
-    if (replay) {
-      assertIdempotentSource(replay, fingerprints, "DRAFT");
-      return { document: recordFromRow(replay), idempotentReplay: true };
-    }
+  await acquireDocumentIdentityLock(
+    client,
+    unparsedCommand.context.organizationId,
+    policy.sourceType,
+    command.sourceNumber,
+  );
+  if (await currentSourceDocument(
+    client,
+    unparsedCommand.context.organizationId,
+    policy.sourceType,
+    command.sourceNumber,
+    true,
+  )) {
+    throw new Error("Source number already exists in this organization and document type");
+  }
 
-    await acquireDocumentIdentityLock(
-      client,
-      unparsedCommand.context.organizationId,
-      policy.sourceType,
-      command.sourceNumber,
-    );
-    if (await currentSourceDocument(
-      client,
-      unparsedCommand.context.organizationId,
-      policy.sourceType,
-      command.sourceNumber,
-      true,
-    )) {
-      throw new Error("Source number already exists in this organization and document type");
-    }
-
-    const setup = await loadAccountingSetup(client, {
-      organizationId: unparsedCommand.context.organizationId,
-      ledgerId: command.ledgerId,
-      legalEntityId: command.legalEntityId,
-      periodId: command.periodId,
-      partyAccountId: command.partyAccountId,
-    });
-    const { idempotencyKey: _idempotencyKey, ...documentInput } = command;
-    void _idempotencyKey;
-    const snapshot = buildBusinessDocumentSnapshot(documentInput, setup.functional_currency);
-    await validateDraftConfiguration(client, unparsedCommand.context, snapshot);
-    const row = await appendSourceDocument(client, {
-      context: unparsedCommand.context,
-      ownerModule: policy.ownerModule,
-      sourceType: policy.sourceType,
-      sourceNumber: command.sourceNumber,
-      legalEntityId: command.legalEntityId,
-      version: 1,
-      status: "DRAFT",
-      snapshot,
-      idempotencyKey,
-      commandHash: fingerprints.current,
-    });
-    return { document: recordFromRow(row), idempotentReplay: false };
+  const setup = await loadAccountingSetup(client, {
+    organizationId: unparsedCommand.context.organizationId,
+    ledgerId: command.ledgerId,
+    legalEntityId: command.legalEntityId,
+    periodId: command.periodId,
+    partyAccountId: command.partyAccountId,
   });
+  const { idempotencyKey: _idempotencyKey, fx: suppliedFx, ...unresolvedDocumentInput } = command;
+  void _idempotencyKey;
+  const fx = await resolveFx(client, {
+    organizationId: unparsedCommand.context.organizationId,
+    transactionCurrency: command.currency,
+    functionalCurrency: setup.functional_currency,
+    asOfDate: command.accountingDate,
+    explicitFx: suppliedFx,
+  });
+  const snapshot = {
+    ...buildBusinessDocumentSnapshot({ ...unresolvedDocumentInput, fx }, setup.functional_currency),
+    ...(refs.length ? { evidence: refs } : {}),
+  };
+  await validateDraftConfiguration(client, unparsedCommand.context, snapshot);
+  const row = await appendSourceDocument(client, {
+    context: unparsedCommand.context,
+    ownerModule: policy.ownerModule,
+    sourceType: policy.sourceType,
+    sourceNumber: command.sourceNumber,
+    legalEntityId: command.legalEntityId,
+    version: 1,
+    status: "DRAFT",
+    snapshot,
+    idempotencyKey,
+    commandHash: fingerprints.current,
+  });
+  return { document: recordFromRow(row), idempotentReplay: false };
 }
 
 export async function editBusinessDocumentDraft(
@@ -220,11 +306,39 @@ export async function editBusinessDocumentDraft(
     const {
       idempotencyKey: _idempotencyKey,
       expectedVersion: _expectedVersion,
-      ...documentInput
+      fx: suppliedFx,
+      fxResolutionMode,
+      ...unresolvedDocumentInput
     } = command;
     void _idempotencyKey;
     void _expectedVersion;
-    const snapshot = buildBusinessDocumentSnapshot(documentInput, setup.functional_currency);
+    const prior = recordFromRow(current).snapshot;
+    const priorBusiness = prior.kind === "SALES_INVOICE" || prior.kind === "SUPPLIER_BILL"
+      ? prior
+      : null;
+    const priorSnapshotCompatible = priorBusiness !== null
+      && priorBusiness.currency === command.currency
+      && priorBusiness.functionalCurrency === setup.functional_currency
+      && priorBusiness.accountingDate === command.accountingDate;
+    const fxAction = editFxResolutionAction(
+      fxResolutionMode,
+      suppliedFx,
+      priorBusiness?.fx,
+      priorSnapshotCompatible,
+    );
+    const fx = fxAction === "PRESERVE"
+      ? priorBusiness!.fx
+      : await resolveFx(client, {
+          organizationId: unparsedCommand.context.organizationId,
+          transactionCurrency: command.currency,
+          functionalCurrency: setup.functional_currency,
+          asOfDate: command.accountingDate,
+          explicitFx: fxAction === "EXPLICIT" ? suppliedFx : undefined,
+        });
+    const snapshot = {
+      ...buildBusinessDocumentSnapshot({ ...unresolvedDocumentInput, fx }, setup.functional_currency),
+      ...("evidence" in prior ? { evidence: prior.evidence } : {}),
+    };
     await validateDraftConfiguration(client, unparsedCommand.context, snapshot);
     const row = await appendSourceDocument(client, {
       context: unparsedCommand.context,

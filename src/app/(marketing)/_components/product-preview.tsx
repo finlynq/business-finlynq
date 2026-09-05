@@ -8,7 +8,7 @@ const metrics = [
 
 export function ProductPreview() {
   return (
-    <div className={styles.previewShell} role="img" aria-label="Business Finlynq writable synthetic accounting sandbox showing multicurrency balances, recent journals, and period-close status">
+    <div className={styles.previewShell} role="img" aria-label="Business Finlynq shared writable synthetic accounting demo showing multicurrency balances, recent journals, and period-close status">
       <div className={styles.previewTopbar} aria-hidden="true">
         <span><i aria-hidden="true" /> Public synthetic demo</span>
         <span>August 2026</span>
@@ -20,7 +20,7 @@ export function ProductPreview() {
         <div className={styles.previewContent}>
           <div className={styles.previewHeading}>
             <div><small>Northstar Demo Group</small><strong>Accounting overview</strong></div>
-            <span>Writable sandbox</span>
+            <span>Shared writable demo</span>
           </div>
           <div className={styles.previewMetrics}>
             {metrics.map(([label, value, note]) => (

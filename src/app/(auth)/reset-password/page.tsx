@@ -13,7 +13,7 @@ export default function ResetPasswordPage() {
     <AuthShell
       eyebrow="Account recovery"
       title={accountLoginEnabled ? "Choose a new password" : "Recovery is not enabled in the preview"}
-      description={accountLoginEnabled ? "Changing your password revokes existing sessions but does not alter your organization’s encrypted accounting records." : "Real account recovery is disabled. The public demo opens a disposable synthetic sandbox without an account."}
+      description={accountLoginEnabled ? "Changing your password revokes existing sessions but does not alter your organization’s encrypted accounting records." : "Real account recovery is disabled. The shared public demo opens without an account."}
     >
       {accountLoginEnabled ? <ResetPasswordForm /> : <Link className={styles.afterFormLink} href="/login">Return to sign in</Link>}
     </AuthShell>

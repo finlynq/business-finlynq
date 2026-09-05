@@ -39,7 +39,9 @@ The complete frozen decisions and invariants are in [docs/architecture/001-found
 
 ## Local development
 
-Requirements: Node.js 24+, npm 11+, and PostgreSQL 16+.
+Requirements: Node.js 24+, npm 11+, and PostgreSQL 16+. Cloud PDF ingestion also requires Poppler (`poppler-utils`); deployment images include it.
+
+The MCP-driven Google Drive/OneDrive inbox keeps new cloud originals in user storage and uses the client for AI processing. See the [cloud inbox setup and operations guide](docs/operations/document-cloud-inbox.md). Provider credentials and live acceptance are required before enabling a deployment.
 
 ```bash
 cp .env.example .env.local

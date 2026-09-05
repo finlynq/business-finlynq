@@ -17,8 +17,18 @@ const ownerOnlyRlsTables = new Set([
   "auth_recovery_requests",
   "auth_security_events",
   "auth_sessions",
+  "auth_trusted_browsers",
   "demo_daily_claims",
   "demo_sandbox_slots",
+  "shared_demo_reset_state",
+]);
+const userBoundRlsTables = new Set([
+  "mcp_access_tokens",
+  "mcp_approvals",
+  "mcp_connections",
+  "mcp_oauth_codes",
+  "mcp_refresh_tokens",
+  "mcp_tool_executions",
 ]);
 // These policies existed before 0025 completed the FORCE RLS contract. Their
 // names are part of the reviewed historical database contract, so do not
@@ -37,12 +47,13 @@ const runtimeSelectRelations = [
   "organizations", "organization_memberships", "roles", "membership_roles",
   "role_permissions", "permissions", "organization_key_versions",
   "legal_entities", "ledgers", "currency_definitions",
-  "organization_currencies", "currency_exchange_rates", "fiscal_periods",
+  "organization_currencies", "currency_exchange_rates",
+  "organization_fx_provider_policy_versions", "fiscal_periods",
   "period_events", "ledger_number_sequences", "ledger_posting_policies",
   "gl_accounts", "segment_definitions", "segment_values",
   "account_combinations", "accounting_hierarchies",
   "accounting_hierarchy_nodes", "journal_type_definitions",
-  "source_documents", "journal_entries", "journal_approvals", "journal_lines",
+  "source_documents", "document_evidence_assets", "journal_entries", "journal_approvals", "journal_lines",
   "journal_entry_relations", "parties", "party_addresses", "party_accounts",
   "subledger_events", "open_items", "document_settlement_allocations",
   "open_item_void_events", "open_item_balances", "tax_pack_versions",
@@ -50,25 +61,33 @@ const runtimeSelectRelations = [
   "bank_connections", "bank_connection_credential_events",
   "bank_external_accounts", "bank_sync_runs", "bank_observations",
   "bank_observation_versions", "bank_balance_anchors",
+  "bank_statement_imports", "bank_statement_import_rows",
   "bank_reconciliation_sessions", "bank_reconciliation_voids",
   "bank_match_allocations", "bank_match_allocation_voids", "bank_rules",
-  "bank_rule_runs", "bank_draft_proposals",
+  "bank_rule_runs", "bank_draft_proposals", "mcp_oauth_clients",
+  "mcp_connections", "mcp_oauth_codes", "mcp_access_tokens",
+  "mcp_refresh_tokens", "mcp_approvals", "mcp_tool_executions",
+  "document_storage_connections", "document_storage_oauth", "document_inbox_items",
 ];
 const runtimeInsertUpdateRelations = [
   "journal_entries", "journal_lines", "parties", "party_addresses",
-  "party_accounts", "ledger_posting_policies", "ledger_number_sequences",
+  "party_accounts", "gl_accounts", "ledger_posting_policies", "ledger_number_sequences",
   "bank_connections", "bank_external_accounts", "bank_sync_runs",
-  "bank_reconciliation_sessions",
+  "bank_reconciliation_sessions", "mcp_connections", "mcp_oauth_codes",
+  "mcp_access_tokens", "mcp_refresh_tokens", "mcp_approvals",
+  "mcp_tool_executions",
+  "document_storage_connections", "document_storage_oauth", "document_inbox_items",
 ];
 const runtimeInsertRelations = [
-  "journal_approvals", "journal_entry_relations", "source_documents",
+  "journal_approvals", "journal_entry_relations", "source_documents", "document_evidence_assets",
   "subledger_events", "open_items", "document_settlement_allocations",
   "open_item_void_events", "tax_determination_snapshots",
   "bank_connection_credential_events", "bank_observations",
   "bank_observation_versions", "bank_balance_anchors",
+  "bank_statement_imports", "bank_statement_import_rows",
   "bank_reconciliation_voids", "bank_match_allocations",
   "bank_match_allocation_voids", "bank_rules", "bank_rule_runs",
-  "bank_draft_proposals",
+  "bank_draft_proposals", "mcp_oauth_clients",
 ];
 const runtimeExecuteFunctions = [
   "public.digest(bytea, text)",
@@ -76,6 +95,7 @@ const runtimeExecuteFunctions = [
   "app.current_organization_id()",
   "app.current_actor_id()",
   "app.current_actor_has_permission(text)",
+  "app.mcp_user_is_active(uuid)",
   "app.segment_value_is_valid(uuid, uuid, text, date)",
   "app.currency_minor_units(text)",
   "app.current_demo_session_is_valid()",
@@ -85,21 +105,27 @@ const runtimeExecuteFunctions = [
   "app.install_initial_organization_key(text, text)",
   "app.accounting_set_currency_enabled(text, boolean)",
   "app.accounting_add_currency_rate(text, text, numeric, timestamp with time zone, text)",
+  "app.accounting_set_fx_provider_policy(integer, text, integer, boolean)",
   "app.accounting_add_tax_registration(uuid, uuid, text, text, integer, text, text, text, text, text, date, date)",
   "app.accounting_configure_segment(text, text, boolean, boolean, text)",
   "app.accounting_add_segment_value(text, text, text, date, date)",
   "app.accounting_create_account_combination(uuid, uuid, uuid, uuid, uuid, uuid, uuid, uuid, uuid, uuid, uuid, uuid, uuid, uuid, uuid)",
   "app.accounting_create_legal_entity(text, text, text, text, text, accounting_profile, integer, manual_posting_mode)",
+  "app.accounting_create_fiscal_periods(uuid, integer, text, period_state, text)",
   "app.accounting_create_hierarchy_draft(text, uuid, text, text, uuid)",
   "app.accounting_replace_hierarchy_draft(uuid, integer, jsonb)",
   "app.accounting_publish_hierarchy(uuid, integer, date)",
   "app.auth_consume_rate_limit(text, text, integer, integer)",
   "app.auth_lookup_login(text)",
   "app.auth_lookup_login_v2(text)",
+  "app.auth_lookup_login_v3(text)",
   "app.auth_issue_demo_session(text, text, text, text, text, text)",
   "app.auth_demo_session_lease_valid(uuid)",
   "app.auth_mark_demo_step_up(uuid, text)",
+  "app.shared_demo_operations_state()",
   "app.auth_issue_mfa_user_session(uuid, uuid, uuid, uuid, bigint, text, text, text, text)",
+  "app.auth_issue_mfa_user_session_trusted(uuid, uuid, uuid, uuid, bigint, text, text, text, text, text, text)",
+  "app.auth_issue_trusted_browser_user_session(uuid, uuid, uuid, text, text, text, text, text, text)",
   "app.auth_issue_password_user_session(uuid, uuid, uuid, text, text, text, text)",
   "app.auth_resolve_session(text, text)",
   "app.auth_resolve_session_v2(text, text)",
@@ -107,6 +133,10 @@ const runtimeExecuteFunctions = [
   "app.auth_platform_administrator_authorization(uuid, uuid)",
   "app.platform_administration_overview(uuid, uuid)",
   "app.auth_revoke_session(text, text)",
+  "app.auth_trusted_browsers_for_session(uuid, text)",
+  "app.auth_revoke_trusted_browser(uuid, uuid, text)",
+  "app.auth_revoke_all_trusted_browsers(uuid, text)",
+  "app.auth_logout_all_sessions(uuid, text)",
   "app.auth_queue_password_reset(text, text, text, uuid, text, text)",
   "app.auth_finish_password_reset(text, text, text)",
   "app.auth_record_login_failure(text)",
@@ -138,6 +168,8 @@ const runtimeExecuteFunctions = [
   "app.auth_consume_recovery_approval_limits(uuid, uuid)",
   "app.auth_consume_mfa_enrollment_limits(text)",
   "app.organization_settings_read()",
+  "app.organization_settings_read_v2()",
+  "app.organization_update_trusted_browser_policy(boolean, integer, integer)",
   "app.organization_members_read()",
   "app.organization_update_settings(text, integer)",
   "app.organization_invite_member(uuid, uuid, uuid, uuid, text, text, text, uuid, text, uuid, text)",
@@ -146,6 +178,7 @@ const runtimeExecuteFunctions = [
   "app.organization_assign_member_role(uuid, uuid, integer)",
   "app.organization_set_member_active(uuid, integer, boolean)",
   "app.organization_revoke_member_sessions(uuid)",
+  "app.organization_revoke_member_sessions_and_trust(uuid)",
 ];
 const universallyUnsafeTablePrivileges = new Set([
   "DELETE", "REFERENCES", "TRIGGER", "TRUNCATE",
@@ -774,7 +807,7 @@ export function normalizeColumnDefault(value) {
     .replace(/current_timestamp\b/g, "now()")
     // PostgreSQL adds the target column type to typed literals while Drizzle
     // snapshots retain the literal. The column type itself is compared above.
-    .replace(/('(?:[^']|'')*')::[a-z_][a-z0-9_ ]*(?:\([^)]*\))?/g, "$1");
+    .replace(/('(?:[^']|'')*')::[a-z_][a-z0-9_ ]*(?:\([^)]*\))?(?:\[\])?/g, "$1");
   // PostgreSQL folds this reviewed all-zero command-hash default into
   // repeat('0',64). Keep the rewrite deliberately exact: arbitrary function
   // defaults remain syntactically distinct and therefore reviewable.
@@ -872,6 +905,22 @@ function ownerOnlyPolicyExpression(tableName) {
 }
 
 function expectedRlsPolicy(table) {
+  if (["document_storage_connections", "document_storage_oauth", "document_inbox_items"].includes(table.name)) {
+    const moduleRead = "organization_id = app.current_organization_id() AND (app.current_actor_has_permission(owner_module || '.read'::text) OR app.current_actor_has_permission(owner_module || '.manage'::text))";
+    const connectionAccess = "organization_id = app.current_organization_id() AND (app.current_actor_has_permission(owner_module || '.read'::text) OR app.current_actor_has_permission(owner_module || '.manage'::text) OR app.current_actor_has_permission('organization.settings.manage'::text))";
+    const oauthAccess = "organization_id = app.current_organization_id() AND actor_id = app.current_actor_id() AND session_id = NULLIF(current_setting('app.session_id'::text, true), ''::text)::uuid AND app.current_actor_has_permission('organization.settings.manage'::text)";
+    return { command: "ALL", name: "tenant_isolation", permissive: true, roles: ["PUBLIC"],
+      usingExpression: table.name === "document_storage_oauth" ? oauthAccess : table.name === "document_storage_connections" ? connectionAccess : moduleRead,
+      withCheckExpression: table.name === "document_storage_oauth" ? oauthAccess : table.name === "document_storage_connections" ? connectionAccess : "organization_id = app.current_organization_id() AND app.current_actor_has_permission(owner_module || '.manage'::text)",
+    };
+  }
+  if (table.name === "document_evidence_assets") {
+    return {
+      command: "ALL", name: "tenant_isolation", permissive: true, roles: ["PUBLIC"],
+      usingExpression: "organization_id = app.current_organization_id() AND (app.current_actor_has_permission(owner_module || '.read'::text) OR app.current_actor_has_permission(owner_module || '.manage'::text))",
+      withCheckExpression: "organization_id = app.current_organization_id() AND app.current_actor_has_permission(owner_module || '.manage'::text)",
+    };
+  }
   if (table.name === "organizations") {
     return {
       command: "ALL",
@@ -880,6 +929,17 @@ function expectedRlsPolicy(table) {
       roles: ["PUBLIC"],
       usingExpression: "id = app.current_organization_id()",
       withCheckExpression: "id = app.current_organization_id()",
+    };
+  }
+  if (userBoundRlsTables.has(table.name)) {
+    const expression = "organization_id = app.current_organization_id() AND user_id = app.current_actor_id()";
+    return {
+      command: "ALL",
+      name: "mcp_user_isolation",
+      permissive: true,
+      roles: ["PUBLIC"],
+      usingExpression: expression,
+      withCheckExpression: expression,
     };
   }
   if (ownerOnlyRlsTables.has(table.name)) {

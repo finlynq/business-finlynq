@@ -37,6 +37,8 @@
 
 	# Bind the access event to the same edge UUID sent upstream and returned by
 	# the application. Never use the untrusted inbound header as correlation.
+	# OAuth codes and state must never enter access logs.
+	log_skip /api/document-storage/callback/*
 	log_append request_id {http.request.uuid}
 
 	log {
@@ -77,6 +79,8 @@
 		-Server
 	}
 
+	# OAuth codes and state must never enter access logs.
+	log_skip /api/document-storage/callback/*
 	log_append request_id {http.request.uuid}
 
 	log {

@@ -55,7 +55,7 @@ export function assertTenantWritesEnabled(context: TenantTransactionContext): vo
     (isDemoTransactionAuthMethod(context.authMethod) ? "demo" : "real");
   if (sessionMode === "demo") {
     if (!isAuthorizedDemoWriteContext(context)) {
-      throw new Error("Demo writes require a live isolated demo-link session");
+      throw new Error("Demo writes require a live shared demo-link session");
     }
     return;
   }
@@ -93,7 +93,7 @@ export async function assertWritableOrganization(
   if (!organization?.active) throw new Error("Accounting writes require an active organization");
   const authorizedDemo = isAuthorizedDemoWriteContext(context);
   if (organization.is_demo !== authorizedDemo ||
-      (authorizedDemo && organization.organization_mode !== "SANDBOX") ||
+      (authorizedDemo && organization.organization_mode !== "PUBLIC_DEMO") ||
       (!authorizedDemo && organization.organization_mode !== "REAL")) {
     throw new Error("The write context does not match the organization mode");
   }

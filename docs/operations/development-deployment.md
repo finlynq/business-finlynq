@@ -9,7 +9,7 @@ A same-repository push to `dev` must pass the complete `quality-gate` job before
 
 ## Isolation contract
 
-The development stack uses its own checkout, Compose project, loopback port, database volume, networks, secrets, state directory, and failure latch:
+The development stack uses its own checkout, Compose project, loopback port, database volume, networks, secrets, and deployment state:
 
 | Boundary | Development | Production |
 | --- | --- | --- |
@@ -36,7 +36,132 @@ sudo systemctl start business-finlynq-development-deployment.service
 
 The installer creates independent random database credentials and encryption secrets without printing them. It also creates the external development edge network and gives `deploy` narrowly scoped permission to start, inspect, and read the journal for the development deployment service.
 
-The environment initially sets `DEVELOPMENT_REQUIRE_PUBLIC_ACCEPTANCE=false` so the first internal deployment can be validated before Caddy/DNS activation. After the A record for `dev.business.finlynq.com` resolves to the application host, run `sudo bash /home/deploy/business-finlynq/deploy/edge/reconcile-shared-edge.sh` from the production checkout. The reconciler verifies the development backend and all other shared-edge deployments before converging only Caddy. Then change the value to `true`, run the browser acceptance container once, and keep it true for later automatic deployments.
+The environment initially sets `DEVELOPMENT_REQUIRE_PUBLIC_ACCEPTANCE=false` so the first internal deployment can be validated before Caddy/DNS activation. After the A record for `dev.business.finlynq.com` resolves to the application host, run `sudo bash /home/deploy/business-finlynq/deploy/edge/reconcile-shared-edge.sh` from the production checkout. The reconciler verifies the development backend and all other shared-edge deployments before converging only Caddy. Then change the value to `true`, run the browser acceptance container once, and keep it true for later automatic deployments. On later releases, the deployer waits up to two minutes for the exact public `/api/health` response to return `ready` before starting browser acceptance. The acceptance container marks that public target as an already managed server so Playwright cannot fall back to starting a second local Next.js process; ordinary CI browser runs still start their own reviewed build.
+
+## Enable every development feature
+
+Keep the initial fail-closed installation until development-specific provider credentials exist. Create a separate Resend sending-access key and a separate Cloudflare Turnstile widget restricted to `dev.business.finlynq.com`; using the same verified sending domain is acceptable, but never copy a production API key or Turnstile secret into development. Treat the sender address domain as an exact provider contract: if Resend lists only `finlynq.com` as verified, use an address ending in `@finlynq.com`, such as `noreply-dev-business@finlynq.com`. Do not assume an unlisted nested sender domain such as `dev.business.finlynq.com` is covered; verify the intended `From` address with one delivery to an operator-owned mailbox before enabling automated delivery.
+
+Install each one-line secret without placing its value in shell history, then make it readable only by the deployment secret group:
+
+```bash
+sudo install -o root -g business-finlynq-secrets -m 0440 /dev/null \
+  /etc/business-finlynq-development/secrets/resend-api-key
+read -rsp "Development Resend API key: " development_resend_key; printf '\n'
+printf '%s\n' "$development_resend_key" | sudo tee \
+  /etc/business-finlynq-development/secrets/resend-api-key >/dev/null
+unset development_resend_key
+
+sudo install -o root -g business-finlynq-secrets -m 0440 /dev/null \
+  /etc/business-finlynq-development/secrets/turnstile-secret-key
+read -rsp "Development Turnstile secret key: " development_turnstile_key; printf '\n'
+printf '%s\n' "$development_turnstile_key" | sudo tee \
+  /etc/business-finlynq-development/secrets/turnstile-secret-key >/dev/null
+unset development_turnstile_key
+sudo chown root:business-finlynq-secrets \
+  /etc/business-finlynq-development/secrets/{resend-api-key,turnstile-secret-key}
+sudo chmod 0440 \
+  /etc/business-finlynq-development/secrets/{resend-api-key,turnstile-secret-key}
+for secret_file in \
+  /etc/business-finlynq-development/secrets/{resend-api-key,turnstile-secret-key}; do
+  sudo awk 'END { print FNR, FILENAME }' "$secret_file"
+done
+sudo stat -c '%U:%G:%a %n' -- \
+  /etc/business-finlynq-development/secrets/{resend-api-key,turnstile-secret-key}
+```
+
+The two `awk` results must each be `1`, and both `stat` results must begin with `root:business-finlynq-secrets:440`; these checks do not print either secret. When entering a secret through a browser-hosted server console, confirm the console keyboard layout before the masked prompt—on a US layout, underscore is `Shift`+`-`. Never omit or substitute a character that the console renders unexpectedly; verify the installed credential with its provider before enabling the feature gates.
+
+From a clean, reviewed `dev` checkout, opt in explicitly with the non-secret sender metadata and Turnstile site key:
+
+```bash
+sudo bash deploy/development/install-development.sh \
+  --enable \
+  --enable-all-features \
+  --auth-email-from 'Business Finlynq Development <noreply-dev-business@finlynq.com>' \
+  --auth-email-reply-to 'support@finlynq.com' \
+  --turnstile-site-key '<development-site-key>'
+sudo systemctl start business-finlynq-development-deployment.service
+```
+
+The installer refuses provider secrets with unsafe ownership, mode, symlink status, or line structure. The opt-in atomically enables demo and real-account login, signup, email delivery, Turnstile, business writes, bank feeds, and public acceptance. The development deployer compares the running container with the reviewed Compose environment, so a gate or provider-metadata change forces recreation even when the Git revision is unchanged.
+
+## Official central-bank FX modes
+
+`BANK_OF_CANADA` and `EUROPEAN_CENTRAL_BANK` need no provider secret, OAuth
+registration, API key, installer option, or deployment-wide feature flag. They
+become selectable after the reviewed application revision and FX-policy
+migration are deployed. Each organization remains `STORED_ONLY` until one of
+its administrators selects a mode, sets the bounded one-to-seven-calendar-day
+lookback, records a reason, and completes the normal permission and MFA checks.
+
+The application container needs outbound HTTPS access to
+`www.bankofcanada.ca` and `data-api.ecb.europa.eu`. Do not add a general proxy
+fallback or copy provider responses into deployment configuration. Stored
+organization rates retain automatic priority, and an authorized invoice or
+settlement request can supply explicit FX evidence for a rate-sensitive
+transaction.
+
+Ordinary CI uses mocked provider transport. After deployment, validate each
+official source in development with recent direct, inverse, and common-date
+cross cases, plus a weekend/holiday lookback and an unavailable case. Compare
+the saved source legs and formula with the official response and confirm failure
+occurs before any accounting or cloud-file write. Record the revision, mode,
+pair, request date, observation date, and outcome without tokens or full
+responses. Keep production untouched until the revision is deliberately
+promoted through its separate process. See the
+[FX rate provider runbook](fx-rate-providers.md) for the formulas, attribution
+and reuse conditions, source caveats, and complete validation procedure.
+
+## Experimental Yahoo FX gate
+
+Yahoo FX is independent of `--enable-all-features` and defaults off. It uses an
+undocumented Finance chart route whose availability and data rights are not
+established by a Yahoo consumer subscription. Read the
+[FX rate provider runbook](fx-rate-providers.md) and complete its operator
+licensing, retention, display, and attribution review before enabling it.
+
+Enable the operator gate in development and apply the configuration immediately:
+
+```bash
+sudo bash deploy/development/install-development.sh \
+  --enable-yahoo-fx-experimental \
+  --enable
+sudo systemctl start business-finlynq-development-deployment.service
+```
+
+This sets only the deployment-wide `YAHOO_FX_ENABLED` gate. Each organization
+continues to use `STORED_ONLY` until one of its administrators explicitly
+acknowledges and selects `YAHOO_FINANCE_EXPERIMENTAL`. Both gates must be active
+before FinLynQ makes a request. Stored organization rates always have priority.
+
+Disable provider calls and recreate the app at the current reviewed revision:
+
+```bash
+sudo bash deploy/development/install-development.sh \
+  --disable-yahoo-fx \
+  --enable
+sudo systemctl start business-finlynq-development-deployment.service
+```
+
+Disabling the operator gate preserves organization policy, stored rates, and
+immutable historical snapshots. Production remains off by default and has no
+activation procedure in this guide. Provider tests in ordinary CI use mocks;
+optional live checks are non-production, explicitly authorized, and never a
+release-gate dependency.
+
+## Direct-to-development acceptance and automatic recovery
+
+Every signalled candidate is installed directly on the development stack and validated against `https://dev.business.finlynq.com`; there is no second shadow stack. Public browser acceptance is attempted twice before the candidate is rejected. The PostgreSQL volume remains mounted throughout deployment and recovery.
+
+The deployer records the last fully accepted SHA in the root-only `accepted-revision` state file. If checkout, build, migration/startup, public acceptance, or final health verification fails, it attempts to restore that exact checkout and image revision. Recovery is considered successful only after the restored app reports the expected revision on its internal detailed health endpoint and the public HTTPS health endpoint remains ready. If an accepted runtime image tag is no longer present, recovery rebuilds only the required runtime images from that exact accepted checkout and verifies their embedded revision labels before starting them.
+
+
+After verified recovery, the failed SHA is quarantined rather than globally latching all future deployments. The deployer removes only containers from the development Compose project whose image label matches that SHA, removes the exact Finlynq image tags for that SHA, prunes dangling images with the same revision label, and bounds BuildKit cache to 8 GB. It never runs `docker system prune`, never removes a volume, and preserves an image revision if another Compose project still uses it. The quarantine is a single atomic state file, not an artifact directory, so repeated failures cannot accumulate retained release folders.
+
+The same quarantined SHA is not retried. Its cleanup is retried automatically when needed, and a newer fast-forward SHA with its own successful CI signal is evaluated without operator acknowledgement. Only an inability to verify the restored runtime creates `deployment-hard-failed` and stops subsequent candidates for manual recovery; this is the safety boundary for potentially incompatible persistent-database changes.
+
+On the one-time transition from the old global latch, the latch’s `sourceRevision` is treated as the recovery authority. The deployer restores and verifies that revision, quarantines and removes the recorded failed candidate, and only then evaluates the newer CI-approved SHA.
 
 ## Promotion
 
@@ -50,7 +175,9 @@ systemctl start business-finlynq-development-deployment.service
 journalctl -u business-finlynq-development-deployment.service --since today
 ```
 
-If a mutated deployment fails, later attempts remain latched. Review the journal and current development containers, then clear only the matching revision:
+Ordinary candidate failures do not need a manual latch-clear command. The service restores the last accepted revision, verifies it internally and through the live development HTTPS route, removes the failed revision’s development containers and image tags, bounds build cache, and waits for a newer CI-approved SHA. Inspect `/var/lib/business-finlynq-development/quarantined-candidate` and the journal for the compact failure record; no failed release directory is retained.
+
+Manual acknowledgement is reserved for `deployment-hard-failed`, which is written only when the prior accepted runtime cannot be restored and verified. Candidate artifacts are retained in that case because they may be required to diagnose or recover the persistent database. After recovery and review, clear only the exact recorded SHA:
 
 ```bash
 failed_revision=<full-failed-sha>

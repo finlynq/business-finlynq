@@ -35,7 +35,7 @@ export default async function TaxPage({ searchParams }: { searchParams: Promise<
       />
       {principal.sessionMode === "demo" && (
         <DemoNotice>
-          This list reflects your isolated writable sandbox. Transaction and tax changes persist for this browser until the seeded business is restored nightly.
+          This list reflects the shared writable demo. Transaction and tax changes from every visitor remain visible until the seeded business is restored nightly.
         </DemoNotice>
       )}
 

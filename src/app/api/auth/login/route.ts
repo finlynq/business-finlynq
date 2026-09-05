@@ -8,15 +8,31 @@ import {
   assertEmailDeliveryReady,
   consumeRateLimit,
   issueMfaUserSession,
+  issueMfaUserSessionWithTrust,
   issuePasswordUserSession,
+  issueTrustedBrowserUserSession,
   lookupLogin,
   recordLoginFailure,
+  type LoginIdentity,
 } from "@/modules/identity/auth-store";
 import { assertAccountAuthenticationConfigured } from "@/modules/identity/email-provider";
 import { consumeDummyPasswordCheck, verifyPassword } from "@/modules/identity/passwords";
 import { requestFingerprints, validateSameOriginMutation } from "@/modules/identity/request-security";
 import { safeAppPath } from "@/modules/identity/safe-redirect";
-import { createOpaqueToken, hashOpaqueToken, requestPrincipal, sessionCookieName, setSessionCookie } from "@/modules/identity/session";
+import {
+  createOpaqueToken,
+  hashOpaqueToken,
+  requestPrincipal,
+  sessionCookieName,
+  setSessionCookie,
+} from "@/modules/identity/session";
+import {
+  clearTrustedBrowserCookie,
+  isPlausibleTrustedBrowserToken,
+  setTrustedBrowserCookie,
+  trustedBrowserCookieName,
+  trustedBrowserLabel,
+} from "@/modules/identity/trusted-browser";
 import { verifyTotp } from "@/modules/identity/totp";
 import { decryptAuthPayload, emailLookupHash, identityLookupHash } from "@/security/identity-secret";
 
@@ -24,10 +40,28 @@ const loginSchema = z.object({
   email: z.email().max(254),
   password: z.string().min(1).max(128),
   otp: z.string().regex(/^\d{6}$/).optional(),
+  trustBrowser: z.boolean().optional().default(false),
   next: z.string().max(2000).optional(),
 });
 
 const noStoreHeaders = { "Cache-Control": "private, no-store", "X-Robots-Tag": "noindex" };
+
+function mfaChallenge(
+  identity: LoginIdentity,
+  clearTrust: boolean,
+  error = "Enter the six-digit code from your authenticator.",
+): NextResponse {
+  const response = NextResponse.json({
+    error,
+    mfaRequired: true,
+    trustedBrowserAllowed: identity.trusted_browser_enabled === true,
+    trustedBrowserDurationDays: identity.trusted_browser_enabled
+      ? identity.trusted_browser_duration_days
+      : undefined,
+  }, { status: 401, headers: noStoreHeaders });
+  if (clearTrust) clearTrustedBrowserCookie(response);
+  return response;
+}
 
 async function post(request: NextRequest) {
   const requestId = requestIdFor(request);
@@ -81,6 +115,9 @@ async function post(request: NextRequest) {
     }
 
     const candidates = await lookupLogin(identifierHash);
+    // Current identity rules permit one active organization membership. Keep
+    // the existing deterministic first-candidate behavior until an explicit
+    // organization chooser is introduced.
     const identity = candidates[0];
     const passwordValid = identity
       ? await verifyPassword(parsed.data.password, identity.password_hash)
@@ -101,32 +138,102 @@ async function post(request: NextRequest) {
       requestId,
       replacedDemoSessionTokenHash,
     };
+
+    if (!identity.mfa_required) {
+      const sessionId = await issuePasswordUserSession(sessionInput);
+      if (!sessionId) throw new Error("The selected membership is no longer available");
+      const response = NextResponse.json({ success: true, next: safeAppPath(parsed.data.next) }, { headers: noStoreHeaders });
+      setSessionCookie(response, token.raw, 24 * 60 * 60);
+      return response;
+    }
+
+    const rawTrustedBrowserToken = request.cookies.get(trustedBrowserCookieName())?.value;
+    let clearRejectedTrust = Boolean(rawTrustedBrowserToken);
+    if (isPlausibleTrustedBrowserToken(rawTrustedBrowserToken)) {
+      const replacementTrustToken = createOpaqueToken();
+      const trustedSession = await issueTrustedBrowserUserSession({
+        userId: identity.user_id,
+        organizationId: identity.organization_id,
+        membershipId: identity.membership_id,
+        trustedBrowserTokenHash: hashOpaqueToken(rawTrustedBrowserToken),
+        replacementTrustedBrowserTokenHash: replacementTrustToken.hash,
+        sessionTokenHash: token.hash,
+        ipHash,
+        userAgentHash,
+        requestId,
+        replacedDemoSessionTokenHash,
+      });
+      if (trustedSession) {
+        const response = NextResponse.json({
+          success: true,
+          next: safeAppPath(parsed.data.next),
+          authentication: "PASSWORD_TRUSTED_BROWSER",
+        }, { headers: noStoreHeaders });
+        setSessionCookie(response, token.raw, 24 * 60 * 60);
+        setTrustedBrowserCookie(
+          response,
+          replacementTrustToken.raw,
+          trustedSession.trustedBrowserExpiresAt,
+        );
+        return response;
+      }
+    }
+
+    if (!identity.mfa_factor_id || !identity.mfa_secret_ciphertext) {
+      const response = NextResponse.json(
+        { error: "Account security setup is incomplete. Ask an administrator to issue a new invitation." },
+        { status: 403, headers: noStoreHeaders },
+      );
+      if (clearRejectedTrust) clearTrustedBrowserCookie(response);
+      return response;
+    }
+    if (!parsed.data.otp) return mfaChallenge(identity, clearRejectedTrust);
+
+    const secret = decryptAuthPayload(identity.mfa_secret_ciphertext, "totp-secret", identity.mfa_factor_id);
+    const mfaCounter = verifyTotp(secret, parsed.data.otp);
+    if (mfaCounter === null) {
+      await recordLoginFailure(requestId);
+      return mfaChallenge(
+        identity,
+        clearRejectedTrust,
+        "Invalid email address, password, or authenticator code.",
+      );
+    }
+
     let sessionId: string | null;
-    if (identity.mfa_required) {
-      if (!identity.mfa_factor_id || !identity.mfa_secret_ciphertext) {
-        return NextResponse.json({ error: "Account security setup is incomplete. Ask an administrator to issue a new invitation." }, { status: 403, headers: noStoreHeaders });
+    let enrolledTrustedBrowser: { raw: string; expiresAt: Date } | null = null;
+    if (parsed.data.trustBrowser && identity.trusted_browser_enabled === true) {
+      const trustToken = createOpaqueToken();
+      const issuance = await issueMfaUserSessionWithTrust({
+        ...sessionInput,
+        factorId: identity.mfa_factor_id,
+        totpCounter: mfaCounter,
+        trustedBrowserTokenHash: trustToken.hash,
+        browserLabel: trustedBrowserLabel(request.headers.get("user-agent")),
+      });
+      sessionId = issuance?.sessionId ?? null;
+      if (issuance) {
+        enrolledTrustedBrowser = {
+          raw: trustToken.raw,
+          expiresAt: issuance.trustedBrowserExpiresAt,
+        };
       }
-      if (!parsed.data.otp) {
-        return NextResponse.json({ error: "Enter the six-digit code from your authenticator.", mfaRequired: true }, { status: 401, headers: noStoreHeaders });
-      }
-      const secret = decryptAuthPayload(identity.mfa_secret_ciphertext, "totp-secret", identity.mfa_factor_id);
-      const mfaCounter = verifyTotp(secret, parsed.data.otp);
-      if (mfaCounter === null) {
-        await recordLoginFailure(requestId);
-        return NextResponse.json({ error: "Invalid email address, password, or authenticator code.", mfaRequired: true }, { status: 401, headers: noStoreHeaders });
-      }
+    } else {
       sessionId = await issueMfaUserSession({
         ...sessionInput,
         factorId: identity.mfa_factor_id,
         totpCounter: mfaCounter,
       });
-    } else {
-      sessionId = await issuePasswordUserSession(sessionInput);
     }
     if (!sessionId) throw new Error("The selected membership is no longer available");
 
     const response = NextResponse.json({ success: true, next: safeAppPath(parsed.data.next) }, { headers: noStoreHeaders });
     setSessionCookie(response, token.raw, 24 * 60 * 60);
+    if (enrolledTrustedBrowser) {
+      setTrustedBrowserCookie(response, enrolledTrustedBrowser.raw, enrolledTrustedBrowser.expiresAt);
+      clearRejectedTrust = false;
+    }
+    if (clearRejectedTrust) clearTrustedBrowserCookie(response);
     return response;
   } catch (error) {
     logRouteFailure("account-login", requestId, error);

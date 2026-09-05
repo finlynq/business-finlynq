@@ -18,11 +18,11 @@ The detailed release order and acceptance gates now live in the [product impleme
 
 ## P0 writable interactive demo baseline implemented
 
-- Each browser claims an isolated, independently encrypted synthetic sandbox instead of sharing a mutable demo tenant.
+- Every browser enters the same shared, independently encrypted synthetic organization, so visitors can see changes made by other visitors until reset.
 - Manual GL, service/non-stock AR/AP, recorded settlement and allocation, transaction-tax snapshot, trial-balance/reporting, and period-control workflows persist across logout and session expiry until nightly reset.
-- `DEMO_LOGIN_ENABLED=true` and `DEMO_WRITES_ENABLED=true` authorize sandbox-only mutations. Real login, signup, and business writes use separate gates and never inherit demo authority.
-- Sessions expire after 15 minutes idle or one hour total. A hash-only host claim reopens the same organization, while 04:15 Toronto nightly reconciliation invalidates all claims and rebuilds the additive 128-slot pool.
-- Inventory, live bank credentials in the sandbox, live payment execution, production tax returns/filing, and public MCP access remain out of scope. Synthetic banking/reconciliation is reset with the rest of the demo.
+- `DEMO_LOGIN_ENABLED=true` and `DEMO_WRITES_ENABLED=true` authorize mutations only for the fixed shared demo. Real login, signup, and business writes use separate gates.
+- Sessions expire after 15 minutes idle or one hour total. There is no browser claim or capacity pool; 04:15 Toronto nightly reconciliation revokes all demo sessions and rebuilds the single baseline.
+- Inventory, live bank credentials in the public demo, live payment execution, production tax returns/filing, and public MCP access remain out of scope. Synthetic banking/reconciliation is reset with the rest of the demo.
 - The release passes the isolation, browser, reset, and monitoring checklist in [operations/interactive-demo.md](operations/interactive-demo.md).
 
 P0 demonstrates durable accounting behavior inside disposable synthetic tenants; it does not satisfy or bypass any real-account milestone exit gate.
@@ -75,6 +75,10 @@ The initial release provides hardened SimpleFIN connection/sync for private tena
 - Read tools and explicit draft creation only in v0. Posting, approval, period reopen, role changes, recovery, payment execution, and hard deletion are never MCP tools.
 
 No public MCP endpoint is active in the writable-demo release.
+
+### Document inbox and external storage
+
+The implementation uses the user's Codex, ChatGPT, or compatible MCP client to identify inbox documents, create drafts or link supporting evidence, and trigger deterministic cloud filing. Google Drive/OneDrive retain original files; FinLynQ retains metadata, workflow state, and accounting records. Hosted model API processing is deferred. Shared application services leave room for a future API adapter without introducing model API calls or an AI-key requirement now. See the [MCP document inbox plan](plan/mcp-document-inbox-2026-09.md) for the agreed scope, provider access constraints, naming rules, and delivery gates. Implemented in source; live provider/client acceptance and production activation remain pending. See the [cloud inbox operations guide](operations/document-cloud-inbox.md).
 
 ## Later modular work
 

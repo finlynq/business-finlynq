@@ -1,7 +1,9 @@
+import { randomUUID } from "node:crypto";
 import Link from "next/link";
 import { AccountMfaEnrollment } from "@/app/_components/account-mfa-enrollment.client";
+import { TrustedBrowserManager } from "@/app/_components/trusted-browser-manager.client";
 import { DemoNotice, PageHeader, StatusPill } from "@/app/_components/ui";
-import { mfaStatusForSession } from "@/modules/identity/auth-store";
+import { mfaStatusForSession, trustedBrowsersForSession } from "@/modules/identity/auth-store";
 import type { SessionPrincipal } from "@/modules/identity/session";
 import { requireWorkspacePrincipal } from "@/modules/workspace/access";
 
@@ -38,9 +40,12 @@ function mfaSessionState(principal: SessionPrincipal): Readonly<{
 export default async function AccountPage() {
   const principal = await requireWorkspacePrincipal("/app/account");
   const mfa = mfaSessionState(principal);
-  const authenticator = principal.sessionMode === "real"
-    ? await mfaStatusForSession(principal.sessionId)
-    : null;
+  const [authenticator, trustedBrowsers] = principal.sessionMode === "real"
+    ? await Promise.all([
+        mfaStatusForSession(principal.sessionId),
+        trustedBrowsersForSession(principal.sessionId, randomUUID()),
+      ])
+    : [null, []] as const;
   const authenticatorEnabled = Boolean(authenticator?.mfa_required && authenticator.active_factor);
   const authenticatorStatus = principal.sessionMode === "demo"
     ? "DEMO LINK"
@@ -103,7 +108,7 @@ export default async function AccountPage() {
       </div>
 
       {principal.sessionMode === "real" && (
-        <section className="panel" aria-labelledby="account-authenticator-title">
+        <section id="mfa-enrollment" className="panel" aria-labelledby="account-authenticator-title">
           <div className="panel-heading">
             <div><p className="eyebrow">Optional protection</p><h2 id="account-authenticator-title">Authenticator enrollment</h2></div>
             <StatusPill status={authenticatorStatus} />
@@ -115,17 +120,34 @@ export default async function AccountPage() {
         </section>
       )}
 
+      {principal.sessionMode === "real" && (
+        <section id="trusted-browsers" className="panel" aria-labelledby="trusted-browsers-title">
+          <div className="panel-heading">
+            <div><p className="eyebrow">Login MFA</p><h2 id="trusted-browsers-title">Trusted browsers</h2></div>
+            <StatusPill status={trustedBrowsers.length > 0 ? "ACTIVE" : "NONE"} />
+          </div>
+          <TrustedBrowserManager initialBrowsers={trustedBrowsers.map((browser) => ({
+            id: browser.id,
+            label: browser.browser_label,
+            createdAt: browser.created_at.toISOString(),
+            lastUsedAt: browser.last_used_at?.toISOString() ?? null,
+            expiresAt: browser.expires_at.toISOString(),
+          }))} />
+        </section>
+      )}
+
       <section className="panel" aria-labelledby="account-links-title">
         <div className="panel-heading">
           <div><p className="eyebrow">Safe destinations</p><h2 id="account-links-title">Related settings and policies</h2></div>
         </div>
         <div className="panel-actions account-safe-links">
+          <Link className="secondary-button" href="/app/settings/mcp">AI & MCP connections</Link>
           <Link className="secondary-button" href="/app/settings">Organization settings</Link>
           <Link className="secondary-button" href="/security">Security approach</Link>
           <Link className="secondary-button" href="/privacy">Privacy policy</Link>
           <Link className="secondary-button" href="/terms">Terms of use</Link>
         </div>
-        <p className="panel-note">Password replacement, role changes, and recovery approvals use their dedicated protected workflows. Authenticator enrollment is available above for password-only accounts.</p>
+        <p className="panel-note">Password replacement, role changes, recovery approvals, and trusted-browser revocation use protected workflows. Authenticator enrollment is available above for password-only accounts.</p>
       </section>
     </div>
   );

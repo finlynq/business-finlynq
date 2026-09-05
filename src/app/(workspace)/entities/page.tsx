@@ -19,7 +19,7 @@ export default async function EntitiesPage({ searchParams }: { searchParams: Pro
       <PageHeader eyebrow="Organization setup" title="Legal entities" description="Active legal entities with their persisted accounting framework, primary ledger, functional currency, and current period state." actions={<Link className="primary-button" href="/app/settings/accounting#legal-entities">＋ Add legal entity</Link>} />
       {principal.sessionMode === "demo" && (
         <DemoNotice>
-          This is your isolated writable sandbox. Transaction changes persist for this browser until the seeded business is restored nightly.
+          This is one shared writable demo company. Changes are visible to every demo visitor until the seeded business is restored nightly.
         </DemoNotice>
       )}
       {entities.length ? <div className="entity-grid">{entities.map((entity) => (

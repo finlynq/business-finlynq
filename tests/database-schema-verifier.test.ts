@@ -311,6 +311,12 @@ describe("database schema verifier", () => {
     ]) {
       expect(ownerPolicyBlock).toContain(`'${tableName}'`);
     }
+    const sharedDemoMigration = readFileSync(
+      join(process.cwd(), "migrations", "drizzle", "0037_shared_public_demo.sql"),
+      "utf8",
+    );
+    expect(sharedDemoMigration).toContain("shared_demo_reset_state_owner_only_policy");
+    expect(sharedDemoMigration).toContain("ALTER TABLE shared_demo_reset_state FORCE ROW LEVEL SECURITY");
     expect(ownerPolicyBlock).not.toContain("'ledger_posting_policies'");
     expect(ownerPolicyBlock).not.toContain("'organization_invitations'");
     expect(existingTenantPolicyBlock).toContain("'ledger_posting_policies'");
@@ -796,9 +802,9 @@ describe("database schema verifier", () => {
       }),
       { checks: 0, foreignKeys: 0, indexes: 0, uniqueConstraints: 0 },
     );
-    expect(counts).toEqual({ checks: 178, foreignKeys: 107, indexes: 123, uniqueConstraints: 54 });
+    expect(counts).toEqual({ checks: 223, foreignKeys: 113, indexes: 156, uniqueConstraints: 54 });
     expect(migrationContract.get("bank_connections")?.checks.get("bank_connections_provider_check"))
-      .toMatchObject({ expression: "provider='SIMPLEFIN'" });
+      .toMatchObject({ expression: "provider=any(array['SIMPLEFIN','FILE_IMPORT'])" });
     expect(migrationContract.get("bank_match_allocations")?.checks.get("bank_match_allocations_command_hash_sha256"))
       .toMatchObject({ expression: "command_hash~'^(?:[0-9a-f]{64}|legacy-bank-match:[0-9a-f-]{36})$'" });
     expect(migrationContract.get("bank_match_allocations")?.foreignKeys.get("bank_match_allocations_org_session_fk"))

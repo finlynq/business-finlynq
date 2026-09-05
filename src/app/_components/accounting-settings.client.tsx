@@ -1,6 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
   accountSegmentKeys,
@@ -39,6 +40,16 @@ function localDateDefault(): string {
 function emptySegmentSelection(): Record<AccountSegmentKey, string> {
   return Object.fromEntries(accountSegmentKeys.map((key) => [key, ""])) as Record<AccountSegmentKey, string>;
 }
+
+const fxProviderLabels: Readonly<Record<
+  AccountingConfigurationDto["fxProviderPolicy"]["providerMode"],
+  string
+>> = {
+  STORED_ONLY: "Stored organization rates only",
+  BANK_OF_CANADA: "Bank of Canada daily reference rates",
+  EUROPEAN_CENTRAL_BANK: "European Central Bank reference rates",
+  YAHOO_FINANCE_EXPERIMENTAL: "Yahoo Finance experimental",
+};
 
 const hierarchyDimensionLabels: Readonly<Record<AccountingHierarchyDimensionKey, string>> = {
   entity: "Legal entity",
@@ -190,6 +201,14 @@ export function AccountingSettings({
   const [rate, setRate] = useState("");
   const [rateEffectiveAt, setRateEffectiveAt] = useState(localDateTimeDefault);
   const [rateProvider, setRateProvider] = useState("Manual rate");
+  const [fxProviderMode, setFxProviderMode] = useState(configuration.fxProviderPolicy.providerMode);
+  const [fxProviderMaxLookbackDays, setFxProviderMaxLookbackDays] = useState(
+    configuration.fxProviderPolicy.maxLookbackDays,
+  );
+  const [
+    fxProviderLicensedAndAuthorizedUseAcknowledged,
+    setFxProviderLicensedAndAuthorizedUseAcknowledged,
+  ] = useState(configuration.fxProviderPolicy.licensedAndAuthorizedUseAcknowledged);
   const [segmentDrafts, setSegmentDrafts] = useState(() => Object.fromEntries(
     configuration.segments.map((segment) => [segment.key, {
       displayName: segment.displayName,
@@ -431,6 +450,7 @@ export function AccountingSettings({
         <section className="panel form-panel" aria-labelledby="accounting-step-up-title">
           <div className="panel-heading"><span className="eyebrow">Security check</span><h2 id="accounting-step-up-title">Verify before changing accounting setup</h2><p>Entity, posting policy, currency, rate, and chart-dimension changes require a fresh authenticator check.</p></div>
           <label className="full-field"><span>Six-digit authenticator code</span><input value={otp} onChange={(event) => setOtp(event.target.value.replace(/\D/g, "").slice(0, 6))} inputMode="numeric" autoComplete="one-time-code" pattern="[0-9]{6}" maxLength={6} /></label>
+          <p className="form-footnote">Need to add or restart an authenticator? <Link href="/app/account#mfa-enrollment">Open Account &amp; security</Link>.</p>
         </section>
       )}
 
@@ -570,9 +590,9 @@ export function AccountingSettings({
         )}
 
         <div className="table-scroll" tabIndex={0} aria-label="Account combinations">
-          <table><thead><tr><th>Entity & account</th><th>Displayed key</th><th>Canonical key</th><th>Status</th><th>Usage</th></tr></thead><tbody>{configuration.accountCombinations.length ? configuration.accountCombinations.map((combination) => (
-            <tr key={combination.id}><td><strong>{combination.entityCode} · {combination.accountCode}</strong><small>{combination.accountName}</small></td><td><code>{combination.displayKey}</code></td><td><code>{combination.canonicalKey}</code></td><td><span className={`status-pill ${combination.active ? "status-success" : "status-neutral"}`}>{combination.active ? "Active" : "Historical"}</span></td><td>{combination.used ? "Protected after use" : "Unused — replaceable"}{combination.lastUsedAt && <small>Last used {new Date(combination.lastUsedAt).toLocaleDateString()}</small>}</td></tr>
-          )) : <tr><td colSpan={5}>No account combinations are configured.</td></tr>}</tbody></table>
+          <table><thead><tr><th>Entity & account</th><th>Displayed key</th><th>Canonical key</th><th>Status</th><th>Effective dates</th><th>Usage</th></tr></thead><tbody>{configuration.accountCombinations.length ? configuration.accountCombinations.map((combination) => (
+            <tr key={combination.id}><td><strong>{combination.entityCode} · {combination.accountCode}</strong><small>{combination.accountName} · {combination.controlKind}</small></td><td><code>{combination.displayKey}</code></td><td><code>{combination.canonicalKey}</code></td><td><span className={"status-pill " + (combination.validOnAccountingDate ? "status-success" : "status-neutral")}>{combination.validOnAccountingDate ? "Valid on " + configuration.evaluatedAccountingDate : combination.active && combination.accountActive && combination.postable ? "Not valid on " + configuration.evaluatedAccountingDate : "Inactive / non-postable"}</span></td><td>{combination.validFrom}–{combination.validTo ?? "open-ended"}</td><td>{combination.used ? "Protected after use" : "Unused — replaceable"}{combination.lastUsedAt && <small>Last used {new Date(combination.lastUsedAt).toLocaleDateString()}</small>}</td></tr>
+          )) : <tr><td colSpan={6}>No account combinations are configured.</td></tr>}</tbody></table>
         </div>
       </section>
 
@@ -752,6 +772,122 @@ export function AccountingSettings({
         <div className="currency-toggle-grid">{configuration.currencies.map((currency) => (
           <label className="currency-toggle" key={currency.code}><input type="checkbox" checked={currency.enabled} disabled={!configuration.canManageSettings || currency.functional || busy !== null} onChange={(event) => void mutate(`currency-${currency.code}`, "/api/accounting/configuration/currencies", "PATCH", { currencyCode: currency.code, enabled: event.target.checked, reason }, `${currency.code} was ${event.target.checked ? "enabled" : "disabled"}.`)} /><span><strong>{currency.code}</strong><small>{currency.minorUnits} decimal places{currency.functional ? " · functional currency" : ""}</small></span></label>
         ))}</div>
+        <div className="close-form" aria-labelledby="fx-provider-policy-title">
+          <h3 id="fx-provider-policy-title">FX provider policy</h3>
+          <p className="panel-note">
+            <strong>Current:</strong> {fxProviderLabels[configuration.fxProviderPolicy.providerMode]} · version {configuration.fxProviderPolicy.version}
+            {configuration.fxProviderPolicy.configuredAt
+              ? ` · configured ${new Date(configuration.fxProviderPolicy.configuredAt).toLocaleString()}`
+              : " · safe default"}
+          </p>
+          <p className="panel-note">
+            Automatic resolution first uses a direct organization rate. If none exists, the
+            selected provider may supply a reference observation within this lookback window.
+            Bank of Canada and ECB rates may be inverted or crossed through CAD or EUR, with the
+            published legs and formula frozen in the document. Users can choose explicit rate
+            evidence for a rate-sensitive invoice or settlement; that value overrides automatic
+            resolution. Saving this policy does not fetch market data or alter existing evidence.
+          </p>
+          {configuration.canManageSettings && (
+            <form onSubmit={(event) => {
+              event.preventDefault();
+              void mutate(
+                "fx-provider-policy",
+                "/api/accounting/configuration/fx-provider-policy",
+                "PATCH",
+                {
+                  expectedVersion: configuration.fxProviderPolicy.version,
+                  providerMode: fxProviderMode,
+                  maxLookbackDays: fxProviderMaxLookbackDays,
+                  licensedAndAuthorizedUseAcknowledged:
+                    fxProviderMode === "YAHOO_FINANCE_EXPERIMENTAL"
+                      && fxProviderLicensedAndAuthorizedUseAcknowledged,
+                  reason,
+                },
+                "The organization FX provider policy was versioned without changing existing rate evidence.",
+              );
+            }}>
+              <div className="form-grid form-grid-three">
+                <label>
+                  <span>Rate policy</span>
+                  <select
+                    value={fxProviderMode}
+                    onChange={(event) => {
+                      setFxProviderMode(event.target.value as typeof fxProviderMode);
+                      setFxProviderLicensedAndAuthorizedUseAcknowledged(false);
+                    }}
+                  >
+                    <option value="STORED_ONLY">Stored organization rates only</option>
+                    <option value="BANK_OF_CANADA">Bank of Canada daily reference rates</option>
+                    <option value="EUROPEAN_CENTRAL_BANK">European Central Bank reference rates</option>
+                    <option value="YAHOO_FINANCE_EXPERIMENTAL">Yahoo Finance experimental</option>
+                  </select>
+                </label>
+                <label>
+                  <span>Maximum calendar-day lookback</span>
+                  <input
+                    type="number"
+                    min={1}
+                    max={7}
+                    value={fxProviderMaxLookbackDays}
+                    disabled={fxProviderMode === "STORED_ONLY"}
+                    onChange={(event) => setFxProviderMaxLookbackDays(Number(event.target.value))}
+                    required
+                  />
+                </label>
+              </div>
+              {fxProviderMode === "BANK_OF_CANADA" && (
+                <p className="panel-note">
+                  Bank of Canada daily exchange rates are indicative reference observations,
+                  not a benchmark or transaction quote. Publication can be delayed, unavailable,
+                  or revised. FinLynQ may calculate an inverse or CAD cross from the published
+                  legs. Use an explicit client-approved rate when the transaction requires a
+                  contractual, bank, tax, or other controlled rate.
+                </p>
+              )}
+              {fxProviderMode === "EUROPEAN_CENTRAL_BANK" && (
+                <p className="panel-note">
+                  ECB foreign-exchange reference rates are published for information, and the ECB
+                  discourages their use for transactions. Publication can be delayed, unavailable,
+                  or revised. FinLynQ may calculate an inverse or EUR cross from the published legs.
+                  Use an explicit client-approved rate when the transaction requires a contractual,
+                  bank, tax, or other controlled rate.
+                </p>
+              )}
+              {fxProviderMode === "YAHOO_FINANCE_EXPERIMENTAL" && (
+                <label className="currency-toggle">
+                  <input
+                    type="checkbox"
+                    checked={fxProviderLicensedAndAuthorizedUseAcknowledged}
+                    onChange={(event) => setFxProviderLicensedAndAuthorizedUseAcknowledged(
+                      event.target.checked,
+                    )}
+                    required
+                  />
+                  <span>
+                    <strong>Licensed and authorized use</strong>
+                    <small>
+                      I confirm that this organization is licensed and authorized to use Yahoo
+                      Finance data for this accounting workflow.
+                    </small>
+                  </span>
+                </label>
+              )}
+              <div className="form-actions">
+                <button
+                  className="primary-button"
+                  type="submit"
+                  disabled={busy !== null || (
+                    fxProviderMode === "YAHOO_FINANCE_EXPERIMENTAL"
+                    && !fxProviderLicensedAndAuthorizedUseAcknowledged
+                  )}
+                >
+                  {busy === "fx-provider-policy" ? "Saving…" : "Save FX provider policy"}
+                </button>
+              </div>
+            </form>
+          )}
+        </div>
         {configuration.canManageSettings && enabledCurrencies.length >= 2 && (
           <form className="close-form" onSubmit={(event) => {
             event.preventDefault();

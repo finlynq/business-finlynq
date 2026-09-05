@@ -1,5 +1,5 @@
 import { Pool } from "pg";
-import { resetDemoSandboxes } from "../src/modules/onboarding/demo-bootstrap";
+import { resetSharedDemoOrganization } from "../src/modules/onboarding/demo-bootstrap";
 import { operatorDatabaseConfig } from "./operator-database";
 import { parseDemoResetMode } from "./demo-reset-mode";
 
@@ -11,14 +11,14 @@ async function main(): Promise<void> {
     application_name: `business-finlynq-demo-reset-${selected.mode}`,
   });
   try {
-    await resetDemoSandboxes(pool, { mode: selected.mode });
-    process.stdout.write(`Business Finlynq ${selected.mode} demo-sandbox maintenance completed.\n`);
+    await resetSharedDemoOrganization(pool, { mode: selected.mode });
+    process.stdout.write(`Business Finlynq ${selected.mode} shared-demo maintenance completed.\n`);
   } finally {
     await pool.end();
   }
 }
 
 main().catch((error: unknown) => {
-  process.stderr.write(`${error instanceof Error ? error.message : "Demo-sandbox reset failed."}\n`);
+  process.stderr.write(`${error instanceof Error ? error.message : "Shared-demo reset failed."}\n`);
   process.exitCode = 1;
 });

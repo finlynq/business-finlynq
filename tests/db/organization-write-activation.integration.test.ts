@@ -35,7 +35,7 @@ runDatabaseTests("organization write activation", () => {
        VALUES
          ($1, $5, 'Activation A', true, false, 'REAL'),
          ($2, $6, 'Activation B', true, false, 'REAL'),
-         ($3, $7, 'Activation demo', true, true, 'SANDBOX'),
+         ($3, $7, 'Activation demo', true, true, 'PUBLIC_DEMO'),
          ($4, $8, 'Activation inactive', false, false, 'REAL')`,
       [
         organizationA,

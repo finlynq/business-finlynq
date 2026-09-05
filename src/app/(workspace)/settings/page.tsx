@@ -13,11 +13,11 @@ export default async function SettingsPage() {
         eyebrow="Business administration"
         title="Organization settings"
         description="Maintain the business profile, invite team members, assign fixed roles, and control active access without deleting identity history."
-        actions={<Link className="primary-button" href="/app/settings/accounting">Accounting configuration</Link>}
+        actions={<><Link className="secondary-button" href="/app/settings/documents">Document inbox</Link><Link className="primary-button" href="/app/settings/accounting">Accounting configuration</Link></>}
       />
       {workspace.isDemo && (
         <DemoNotice>
-          This page has the same organization and access controls as a standard account, but all members and invitations are synthetic, email delivery is suppressed, and the seeded sandbox resets nightly.
+          This page has the same organization and access controls as a standard account, but the demo is shared, all members and invitations are synthetic, email delivery is suppressed, and the seeded company resets nightly.
         </DemoNotice>
       )}
       <OrganizationSettings workspace={workspace} />

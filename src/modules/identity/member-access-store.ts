@@ -12,6 +12,8 @@ export type OrganizationSettingsRecord = Readonly<{
   display_name: string;
   settings_version: number;
   is_demo: boolean;
+  trusted_browser_enabled: boolean;
+  trusted_browser_duration_days: number;
   can_manage_settings: boolean;
   can_read_members: boolean;
   can_manage_members: boolean;
@@ -76,7 +78,7 @@ export async function readOrganizationSettingsRecord(
 ): Promise<OrganizationSettingsRecord | null> {
   const rows = await inContext<OrganizationSettingsRecord>(
     context,
-    "SELECT * FROM app.organization_settings_read()",
+    "SELECT * FROM app.organization_settings_read_v2()",
   );
   return rows[0] ?? null;
 }
@@ -100,6 +102,23 @@ export async function updateOrganizationSettingsRecord(
     [input.displayName, input.expectedVersion],
   );
   if (!rows[0]) throw new Error("Organization settings update returned no result");
+  return rows[0].version;
+}
+
+export async function updateOrganizationTrustedBrowserPolicyRecord(
+  context: TenantTransactionContext,
+  input: Readonly<{
+    enabled: boolean;
+    durationDays: 7 | 30 | 90;
+    expectedVersion: number;
+  }>,
+): Promise<number> {
+  const rows = await inMutationContext<VersionRecord>(
+    context,
+    "SELECT app.organization_update_trusted_browser_policy($1,$2,$3) AS version",
+    [input.enabled, input.durationDays, input.expectedVersion],
+  );
+  if (!rows[0]) throw new Error("Trusted-browser policy update returned no result");
   return rows[0].version;
 }
 
@@ -217,7 +236,7 @@ export async function revokeOrganizationMemberSessionsRecord(
 ): Promise<number> {
   const rows = await inMutationContext<{ revoked_count: string }>(
     context,
-    "SELECT app.organization_revoke_member_sessions($1)::text AS revoked_count",
+    "SELECT app.organization_revoke_member_sessions_and_trust($1)::text AS revoked_count",
     [membershipId],
   );
   return Number(rows[0]?.revoked_count ?? "0");

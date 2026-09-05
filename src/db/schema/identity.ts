@@ -21,6 +21,8 @@ export const organizations = pgTable(
     isDemo: boolean("is_demo").notNull().default(false),
     mode: text("organization_mode").notNull().default("REAL"),
     writesEnabledAt: timestamp("writes_enabled_at", { withTimezone: true }),
+    trustedBrowserEnabled: boolean("trusted_browser_enabled").notNull().default(false),
+    trustedBrowserDurationDays: integer("trusted_browser_duration_days").notNull().default(30),
     settingsVersion: integer("settings_version").notNull().default(1),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
@@ -30,6 +32,10 @@ export const organizations = pgTable(
     check(
       "organizations_real_writes_enabled_check",
       sql`${table.writesEnabledAt} IS NULL OR (${table.active} AND NOT ${table.isDemo} AND ${table.mode} = 'REAL')`,
+    ),
+    check(
+      "organizations_trusted_browser_duration_check",
+      sql`${table.trustedBrowserDurationDays} IN (7, 30, 90)`,
     ),
   ],
 );
@@ -45,11 +51,15 @@ export const users = pgTable(
     active: boolean("active").notNull().default(true),
     isDemo: boolean("is_demo").notNull().default(false),
     mfaRequired: boolean("mfa_required").notNull().default(true),
+    authSecurityEpoch: integer("auth_security_epoch").notNull().default(1),
     emailVerifiedAt: timestamp("email_verified_at", { withTimezone: true }),
     passwordChangedAt: timestamp("password_changed_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
-  (table) => [uniqueIndex("users_email_lookup_hash_unique").on(table.emailLookupHash)],
+  (table) => [
+    uniqueIndex("users_email_lookup_hash_unique").on(table.emailLookupHash),
+    check("users_auth_security_epoch_check", sql`${table.authSecurityEpoch} > 0`),
+  ],
 );
 
 export const organizationMemberships = pgTable(

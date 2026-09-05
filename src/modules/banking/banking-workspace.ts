@@ -43,6 +43,7 @@ export type BankingWorkspaceDto = Readonly<{
     connectionId: string;
     displayName: string;
     currencyCode: string;
+    accountKind: "CASH" | "CREDIT_CARD";
     active: boolean;
     legalEntityId: string | null;
     entityCode: string | null;
@@ -63,6 +64,7 @@ export type BankingWorkspaceDto = Readonly<{
     currencyCode: string;
     accountCode: string;
     accountName: string;
+    accountClass: "ASSET" | "LIABILITY";
   }>[];
   ruleTargetAccounts: readonly Readonly<{
     id: string;
@@ -267,15 +269,16 @@ export async function loadBankingWorkspace(
       ),
       client.query<{
         id: string; connection_id: string; display_name_ciphertext: string; key_version: number;
-        currency_code: string; active: boolean; legal_entity_id: string | null;
+        currency_code: string; account_kind: "CASH" | "CREDIT_CARD";
+        active: boolean; legal_entity_id: string | null;
         entity_code: string | null; ledger_id: string | null;
         cash_account_combination_id: string | null; account_code: string | null;
         account_name: string | null; latest_balance: string | null;
         latest_balance_at: string | null; observation_count: number;
       }>(
         `SELECT external.id, external.connection_id, external.display_name_ciphertext,
-           external.key_version, external.currency_code, external.active,
-           external.legal_entity_id, entity.code AS entity_code, external.ledger_id,
+           external.key_version, external.currency_code, external.account_kind,
+           external.active, external.legal_entity_id, entity.code AS entity_code, external.ledger_id,
            external.cash_account_combination_id, account.code AS account_code,
            account.display_name AS account_name, balance.balance::text AS latest_balance,
            balance.balance_at::text AS latest_balance_at,
@@ -303,12 +306,14 @@ export async function loadBankingWorkspace(
       ),
       client.query<{
         id: string; legal_entity_id: string; entity_code: string; ledger_id: string;
-        ledger_code: string; currency_code: string; account_code: string; account_name: string;
+        ledger_code: string; currency_code: string; account_code: string;
+        account_name: string; account_class: "ASSET" | "LIABILITY";
       }>(
         `SELECT combination.id, combination.entity_id AS legal_entity_id,
            entity.code AS entity_code, combination.ledger_id, ledger.code AS ledger_code,
            ledger.functional_currency AS currency_code,
-           account.code AS account_code, account.display_name AS account_name
+           account.code AS account_code, account.display_name AS account_name,
+           account.class AS account_class
          FROM account_combinations combination
          JOIN legal_entities entity
            ON entity.organization_id = combination.organization_id AND entity.id = combination.entity_id AND entity.active
@@ -316,7 +321,8 @@ export async function loadBankingWorkspace(
            ON ledger.organization_id = combination.organization_id AND ledger.id = combination.ledger_id AND ledger.active
          JOIN gl_accounts account
            ON account.organization_id = combination.organization_id AND account.id = combination.account_id
-          AND account.active AND account.postable AND account.class = 'ASSET' AND account.control_kind = 'NONE'
+          AND account.active AND account.postable
+          AND account.class IN ('ASSET', 'LIABILITY') AND account.control_kind = 'NONE'
          WHERE combination.organization_id = $1 AND combination.active
          ORDER BY entity.code, account.code, combination.id`,
         [principal.organizationId],
@@ -576,6 +582,7 @@ export async function loadBankingWorkspace(
           connectionId: row.connection_id,
           displayName,
           currencyCode: row.currency_code,
+          accountKind: row.account_kind,
           active: row.active,
           legalEntityId: row.legal_entity_id,
           entityCode: row.entity_code,
@@ -811,6 +818,7 @@ export async function loadBankingWorkspace(
           ledgerId: row.ledger_id, ledgerCode: row.ledger_code,
           currencyCode: row.currency_code,
           accountCode: row.account_code, accountName: row.account_name,
+          accountClass: row.account_class,
         })),
         ruleTargetAccounts: ruleTargetResult.rows.map((row) => ({
           id: row.id, legalEntityId: row.legal_entity_id, entityCode: row.entity_code,

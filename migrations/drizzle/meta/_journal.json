@@ -239,6 +239,118 @@
       "when": 1788311035538,
       "tag": "0033_self_service_signup_write_activation",
       "breakpoints": true
+    },
+    {
+      "idx": 34,
+      "version": "7",
+      "when": 1788399124622,
+      "tag": "0034_clean_praxagora",
+      "breakpoints": true
+    },
+    {
+      "idx": 35,
+      "version": "7",
+      "when": 1788399340579,
+      "tag": "0035_remote_mcp_security",
+      "breakpoints": true
+    },
+    {
+      "idx": 36,
+      "version": "7",
+      "when": 1788402809181,
+      "tag": "0036_mcp_approval_assurance",
+      "breakpoints": true
+    },
+    {
+      "idx": 37,
+      "version": "7",
+      "when": 1788441362466,
+      "tag": "0037_shared_public_demo",
+      "breakpoints": true
+    },
+    {
+      "idx": 38,
+      "version": "7",
+      "when": 1788444891210,
+      "tag": "0038_mcp_approval_session_binding",
+      "breakpoints": true
+    },
+    {
+      "idx": 39,
+      "version": "7",
+      "when": 1788456201495,
+      "tag": "0039_create_fiscal_periods",
+      "breakpoints": true
+    },
+    {
+      "idx": 40,
+      "version": "7",
+      "when": 1788468556364,
+      "tag": "0040_document_evidence_assets",
+      "breakpoints": true
+    },
+    {
+      "idx": 41,
+      "version": "7",
+      "when": 1788484641057,
+      "tag": "0041_document_cloud_inbox",
+      "breakpoints": true
+    },
+    {
+      "idx": 42,
+      "version": "7",
+      "when": 1788485452259,
+      "tag": "0042_inbox_duplicate_detection",
+      "breakpoints": true
+    },
+    {
+      "idx": 43,
+      "version": "7",
+      "when": 1788485688120,
+      "tag": "0043_inbox_upload_idempotency",
+      "breakpoints": true
+    },
+    {
+      "idx": 44,
+      "version": "7",
+      "when": 1788486005443,
+      "tag": "0044_storage_oauth_revocation",
+      "breakpoints": true
+    },
+    {
+      "idx": 45,
+      "version": "7",
+      "when": 1788568810587,
+      "tag": "0045_organization_fx_provider_policy",
+      "breakpoints": true
+    },
+    {
+      "idx": 46,
+      "version": "7",
+      "when": 1788576779368,
+      "tag": "0046_central_bank_fx_providers",
+      "breakpoints": true
+    },
+    {
+      "idx": 47,
+      "version": "7",
+      "when": 1788620971682,
+      "tag": "0047_bank_statement_imports",
+      "breakpoints": true
+    },
+    {
+      "idx": 48,
+      "version": "7",
+      "when": 1788621957322,
+      "tag": "0048_trusted_browser_mfa",
+      "breakpoints": true
+    },
+    {
+      "idx": 49,
+      "version": "7",
+      "when": 1788634622007,
+      "tag": "0049_structured_evidence_mime_types",
+      "breakpoints": true
     }
   ]
 }

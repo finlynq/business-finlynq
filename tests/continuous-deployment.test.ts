@@ -11,6 +11,7 @@ const deployMain = read("deploy", "continuous-deployment", "deploy-main.sh");
 const reconcileSharedEdge = read("deploy", "edge", "reconcile-shared-edge.sh");
 const deployDevelopment = read("deploy", "development", "deploy-development.sh");
 const installDevelopment = read("deploy", "development", "install-development.sh");
+const playwrightConfig = read("playwright.config.ts");
 const compose = read("docker-compose.yml");
 const caddy = read("deploy", "Caddyfile.container");
 const allowRevisions = read(
@@ -102,8 +103,10 @@ describe("continuous deployment safety boundary", () => {
     expect(deployDevelopment).toContain(sharedLock);
     expect(compose).toContain("BUSINESS_FINLYNQ_APP_NETWORK_ALIAS:-production-app");
     expect(compose).toContain("business_finlynq_development_edge:");
+    expect(caddy).toContain("reverse_proxy production-app:3000");
     expect(caddy).toContain("BUSINESS_FINLYNQ_DEVELOPMENT_HOSTNAME:dev.business.finlynq.com");
     expect(caddy).toContain("reverse_proxy development-app:3000");
+    expect(caddy).not.toContain("reverse_proxy app:3000");
     expect(reconcileSharedEdge).toContain(sharedLock);
   });
 
@@ -149,6 +152,107 @@ describe("continuous deployment safety boundary", () => {
     expect(installDevelopment).toContain("SIGNUP_TURNSTILE_ENABLED=false");
     expect(installDevelopment).toContain("BUSINESS_WRITES_ENABLED=true");
     expect(installDevelopment).toContain("BANK_FEEDS_ENABLED=false");
+    expect(installDevelopment).toContain("YAHOO_FX_ENABLED=false");
+    expect(installDevelopment).toContain("--enable-yahoo-fx-experimental");
+    expect(installDevelopment).toContain("--disable-yahoo-fx");
+  });
+
+  it("enables every development feature only with isolated provider secrets", () => {
+    expect(installDevelopment).toContain("--enable-all-features");
+    expect(installDevelopment).toContain("resend-api-key turnstile-secret-key");
+    expect(installDevelopment).toContain("root:business-finlynq-secrets:440");
+    for (const gate of [
+      "ACCOUNT_LOGIN_ENABLED",
+      "ACCOUNT_SIGNUP_ENABLED",
+      "BUSINESS_WRITES_ENABLED",
+      "BANK_FEEDS_ENABLED",
+    ]) {
+      expect(installDevelopment).toContain(`= "${gate}"`);
+    }
+    expect(installDevelopment).toContain('values[keys[key_index]] = "true"');
+    expect(installDevelopment).not.toContain("for (index =");
+    expect(deployDevelopment).toContain("SIGNUP_TURNSTILE_SITE_KEY");
+    expect(deployDevelopment).toContain("YAHOO_FX_ENABLED");
+    expect(deployDevelopment).toContain('[[ "$actual" == "$expected" ]] || return 1');
+  });
+
+  it("waits for the public route before externally targeted browser acceptance", () => {
+    const readiness = deployDevelopment.lastIndexOf(
+      "    if ( wait_for_public_readiness",
+    );
+    const acceptance = deployDevelopment.lastIndexOf(
+      "compose --profile acceptance run --rm --no-deps release_acceptance",
+    );
+    expect(deployDevelopment).toContain("deadline=$((SECONDS + 120))");
+    expect(deployDevelopment).toContain('"https://$hostname/api/health"');
+    expect(readiness).toBeGreaterThan(0);
+    expect(acceptance).toBeGreaterThan(readiness);
+    expect(deployDevelopment).toContain("for attempt in 1 2");
+    expect(playwrightConfig).toContain(
+      'const managedServer = process.env.PLAYWRIGHT_MANAGED_SERVER === "true";',
+    );
+    expect(playwrightConfig).toContain("webServer: managedServer ? undefined : {");
+    expect(compose).toContain('PLAYWRIGHT_MANAGED_SERVER: "true"');
+  });
+
+  it("automatically restores dev and quarantines only the failed candidate", () => {
+    expect(deployDevelopment).toContain(
+      'readonly accepted_revision_file="$state_directory/accepted-revision"',
+    );
+    expect(deployDevelopment).toContain(
+      'readonly quarantine_file="$state_directory/quarantined-candidate"',
+    );
+    expect(deployDevelopment).toContain(
+      'readonly hard_failure_latch="$state_directory/deployment-hard-failed"',
+    );
+    expect(deployDevelopment).toContain(
+      'restore_accepted_revision "$candidate_revision" "$accepted_revision"',
+    );
+    expect(deployDevelopment).toContain(
+      'restore_accepted_revision "$legacy_candidate" "$legacy_source"',
+    );
+    expect(deployDevelopment).toContain(
+      'write_failure_state "$quarantine_file" quarantine "$legacy_source" "$legacy_candidate"',
+    );
+    expect(deployDevelopment).toContain(
+      'git_as_deploy reset --hard "$recovery_revision"',
+    );
+    expect(deployDevelopment).toContain(
+      'write_failure_state "$quarantine_file" quarantine "$accepted_revision"',
+    );
+    expect(deployDevelopment).toContain(
+      'release_is_accepted "$recovery_revision"',
+    );
+    expect(deployDevelopment).toContain(
+      'ensure_revision_runtime_images "$recovery_revision"',
+    );
+    expect(deployDevelopment).toContain('compose build "${services[@]}"');
+    expect(deployDevelopment).toContain(
+      "a newer CI-approved revision is required",
+    );
+    expect(deployDevelopment).toContain(
+      'write_failure_state "$hard_failure_latch" hard',
+    );
+  });
+
+  it("removes only exact failed-dev artifacts and never the persistent volume", () => {
+    expect(deployDevelopment).toContain(
+      '--filter label=com.docker.compose.project="$project"',
+    );
+    expect(deployDevelopment).toContain('docker rm --force -- "${container_ids[@]}"');
+    expect(deployDevelopment).toContain('docker image rm -- "$reference"');
+    expect(deployDevelopment).toContain(
+      '--filter "label=org.opencontainers.image.revision=$revision"',
+    );
+    expect(deployDevelopment).toContain(
+      'docker builder prune --force --max-used-space "$build_cache_limit"',
+    );
+    expect(deployDevelopment).toContain(
+      'revision_is_used_outside_project "$revision"',
+    );
+    expect(deployDevelopment).not.toContain("docker volume rm");
+    expect(deployDevelopment).not.toContain("down --volumes");
+    expect(deployDevelopment).not.toContain("docker system prune");
   });
 
   it("updates recovery trust before mutation and latches any failed release", () => {

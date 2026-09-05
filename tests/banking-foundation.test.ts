@@ -249,17 +249,14 @@ describe("banking persistence and workflow contract", () => {
     expect(seed).toContain("set_config('app.organization_id', '', true)");
   });
 
-  it("keeps the repeatable fixed public template bank-free while seeding nightly-reset sandboxes", () => {
-    expect(seed).toMatch(
-      /if \(!identity\.publicTemplate\) \{[\s\S]*?await seedDemoBankingData\(client, identity, foundations\);[\s\S]*?await clearDemoSeedApplicationContext\(client\);[\s\S]*?\}/,
-    );
-    expect(seed).toContain("draft-only, bank-free baseline invariant");
-    expect(seed).toContain("bank_connections !== \"0\"");
+  it("seeds the full banking fixture into the one nightly-reset shared demo", () => {
+    expect(seed).toContain("await seedDemoBankingData(client, identity, foundations)");
+    expect(seed).not.toContain("if (!identity.publicTemplate)");
     expect(seed).toContain("bank_connections: \"1\"");
     expect(seed).toContain("bank_accounts: \"2\"");
     expect(seed).toContain("bank_observations: \"3\"");
-    expect(seed).toContain("const DEMO_BASELINE_VERSION = 6");
-    expect(seed).toContain("slot.baseline_version < $2");
-    expect(seed).toContain('slot?.state === "READY" && slot.baseline_version < DEMO_BASELINE_VERSION');
+    expect(seed).toContain("export const DEMO_BASELINE_VERSION = 7");
+    expect(seed).toContain("state.baseline_version < DEMO_BASELINE_VERSION");
+    expect(seed).toContain("purgeSharedDemoBusinessData(client, DEMO_ORGANIZATION_ID)");
   });
 });

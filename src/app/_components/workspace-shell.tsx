@@ -25,7 +25,7 @@ const workspaceItems: readonly NavigationItem[] = [
 ];
 
 const connectionItems: readonly NavigationItem[] = [
-  { abbreviation: "AI", label: "AI & MCP", href: "/app/automation" },
+  { abbreviation: "AI", label: "AI & MCP", href: "/app/settings/mcp" },
 ];
 
 function createSearchIndex(includeDemoRecords: boolean): readonly SearchEntry[] {
@@ -59,7 +59,7 @@ export function WorkspaceShell({
 }) {
   const organization = {
     name: principal.organizationName,
-    environment: principal.sessionMode === "demo" ? "Nightly-reset sandbox" : "Private workspace",
+    environment: principal.sessionMode === "demo" ? "Shared nightly demo" : "Private workspace",
   };
   const searchIndex = createSearchIndex(principal.sessionMode === "demo");
   const accountPrincipal: AccountMenuPrincipal = {

@@ -8,7 +8,7 @@ const mocks = vi.hoisted(() => {
     userId: "20000000-0000-4000-8000-000000000002",
     organizationId: "20000000-0000-4000-8000-000000000003",
     membershipId: "20000000-0000-4000-8000-000000000004",
-    organizationName: "Northstar Demo Sandbox 001",
+    organizationName: "Northstar Demo Group",
     roleLabel: "Demo owner",
     displayName: "Demo owner",
     initials: "DO",
@@ -134,7 +134,7 @@ describe("demo-to-real account session switching", () => {
     const page = await LoginPage({ searchParams: Promise.resolve({}) });
     const markup = renderToStaticMarkup(page);
 
-    expect(markup).toContain("Sign in to switch from the public demo to your private organization.");
+    expect(markup).toContain("Sign in to switch from the shared public demo to your private organization.");
     expect(markup).toContain("<form");
     expect(markup).toContain("Sign in");
   });

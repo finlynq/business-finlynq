@@ -507,7 +507,7 @@ runDatabaseTests("organization administration concurrency", () => {
     });
   });
 
-  it("enforces the sandbox member ceiling inside the serialized database mutation", async () => {
+  it("enforces the shared-demo member safety ceiling inside the serialized database mutation", async () => {
     const client = await pool.connect();
     await client.query("BEGIN");
     try {
@@ -520,7 +520,7 @@ runDatabaseTests("organization administration concurrency", () => {
         [
           randomUUID().replaceAll("-", "").repeat(2),
           null,
-          randomUUID().replaceAll("-", "").repeat(2),
+          null,
           randomUUID().replaceAll("-", "").repeat(2),
           randomUUID().replaceAll("-", "").repeat(2),
           randomUUID(),
@@ -535,7 +535,7 @@ runDatabaseTests("organization administration concurrency", () => {
       await client.query("SELECT set_config('app.auth_method', 'demo-link', true)");
       await client.query("SELECT set_config('app.request_id', $1, true)", [randomUUID()]);
       await client.query("SELECT set_config('app.source_surface', 'UI', true)");
-      await client.query("SELECT set_config('app.reason', 'Sandbox member capacity test', true)");
+      await client.query("SELECT set_config('app.reason', 'Shared demo member capacity test', true)");
       const role = await client.query<{ id: string }>(
         `SELECT id FROM roles WHERE organization_id=$1
            AND key='VIEWER_AUDITOR' AND active AND system_template`,

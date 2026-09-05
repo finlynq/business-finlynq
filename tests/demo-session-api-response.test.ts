@@ -5,18 +5,14 @@ import { demoSessionLeaseLostResponse } from "@/app/api/_shared/demo-session-err
 import { DemoSessionLeaseLostError } from "@/db/errors";
 
 const previousSessionCookieName = process.env.SESSION_COOKIE_NAME;
-const previousDemoClaimCookieName = process.env.DEMO_CLAIM_COOKIE_NAME;
 
 beforeEach(() => {
   process.env.SESSION_COOKIE_NAME = "test_business_session";
-  process.env.DEMO_CLAIM_COOKIE_NAME = "test_demo_claim";
 });
 
 afterAll(() => {
   if (previousSessionCookieName === undefined) delete process.env.SESSION_COOKIE_NAME;
   else process.env.SESSION_COOKIE_NAME = previousSessionCookieName;
-  if (previousDemoClaimCookieName === undefined) delete process.env.DEMO_CLAIM_COOKIE_NAME;
-  else process.env.DEMO_CLAIM_COOKIE_NAME = previousDemoClaimCookieName;
 });
 
 describe("demo session API error response", () => {
@@ -32,7 +28,6 @@ describe("demo session API error response", () => {
     const setCookie = response?.headers.get("Set-Cookie") ?? "";
     expect(setCookie).toContain("test_business_session=");
     expect(setCookie).toContain("Max-Age=0");
-    expect(setCookie).not.toContain("test_demo_claim=");
   });
 
   it("does not translate unrelated failures", () => {

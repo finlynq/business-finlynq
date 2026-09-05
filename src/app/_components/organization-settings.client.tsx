@@ -1,6 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import type {
   OrganizationAdministrationDto,
@@ -22,6 +23,9 @@ export function OrganizationSettings({ workspace }: { workspace: OrganizationAdm
   const [stepUpComplete, setStepUpComplete] = useState(!workspace.requiresMfaStepUp);
   const [displayName, setDisplayName] = useState(workspace.displayName);
   const [settingsReason, setSettingsReason] = useState("Update organization profile");
+  const [trustedBrowserEnabled, setTrustedBrowserEnabled] = useState(workspace.trustedBrowserPolicy.enabled);
+  const [trustedBrowserDurationDays, setTrustedBrowserDurationDays] = useState(workspace.trustedBrowserPolicy.durationDays);
+  const [trustedBrowserReason, setTrustedBrowserReason] = useState("Update trusted-browser policy");
   const [inviteEmail, setInviteEmail] = useState("");
   const [inviteName, setInviteName] = useState("");
   const [inviteRole, setInviteRole] = useState(workspace.assignableRoles[0]?.id ?? "");
@@ -126,6 +130,7 @@ export function OrganizationSettings({ workspace }: { workspace: OrganizationAdm
               maxLength={6}
             />
           </label>
+          <p className="form-footnote">Need to add or restart an authenticator? <Link href="/app/account#mfa-enrollment">Open Account &amp; security</Link>.</p>
         </section>
       )}
 
@@ -158,13 +163,71 @@ export function OrganizationSettings({ workspace }: { workspace: OrganizationAdm
         </form>
       </section>
 
+      <section className="panel form-panel" aria-labelledby="trusted-browser-policy-title">
+        <div className="panel-heading">
+          <span className="eyebrow">Sign-in security</span>
+          <h2 id="trusted-browser-policy-title">Trusted-browser MFA policy</h2>
+          <p>When enabled, a user may opt in after a successful password and authenticator login. Their password is still required on later logins, and sensitive actions still require fresh MFA.</p>
+        </div>
+        <form
+          className="close-form"
+          onSubmit={(event) => {
+            event.preventDefault();
+            void mutate("trusted-browser-policy", "/api/organization/settings/trusted-browsers", "PATCH", {
+              enabled: trustedBrowserEnabled,
+              durationDays: trustedBrowserDurationDays,
+              expectedVersion: workspace.settingsVersion,
+              reason: trustedBrowserReason,
+            }, "Trusted-browser policy updated. Existing trusted-browser grants were revoked for this policy change.");
+          }}
+        >
+          <div className="form-grid settings-profile-grid">
+            <label className="checkbox-field">
+              <input
+                type="checkbox"
+                checked={trustedBrowserEnabled}
+                onChange={(event) => setTrustedBrowserEnabled(event.target.checked)}
+                disabled={workspace.isDemo || !workspace.permissions.canManageSettings}
+              />
+              <span><strong>Allow users to trust a private browser</strong><br />The option remains off unless each user selects it during MFA.</span>
+            </label>
+            <label>
+              <span>Trust duration</span>
+              <select
+                value={trustedBrowserDurationDays}
+                onChange={(event) => setTrustedBrowserDurationDays(Number(event.target.value) as 7 | 30 | 90)}
+                disabled={workspace.isDemo || !workspace.permissions.canManageSettings}
+              >
+                <option value={7}>7 days</option>
+                <option value={30}>30 days</option>
+                <option value={90}>90 days</option>
+              </select>
+            </label>
+            <label><span>Audit reason</span><input value={trustedBrowserReason} onChange={(event) => setTrustedBrowserReason(event.target.value)} minLength={8} maxLength={500} disabled={workspace.isDemo || !workspace.permissions.canManageSettings} /></label>
+          </div>
+          <p className="form-footnote">Clearing cookies or using private browsing requires MFA again. Password or authenticator changes, account recovery, logout-all, administrator access changes, and policy disablement revoke applicable trust.</p>
+          <div className="form-actions">
+            <button
+              className="primary-button"
+              type="submit"
+              disabled={workspace.isDemo || !workspace.permissions.canManageSettings || busy !== null || (
+                trustedBrowserEnabled === workspace.trustedBrowserPolicy.enabled &&
+                trustedBrowserDurationDays === workspace.trustedBrowserPolicy.durationDays
+              )}
+            >
+              {busy === "trusted-browser-policy" ? "Saving…" : "Save trusted-browser policy"}
+            </button>
+          </div>
+        </form>
+      </section>
+
       {workspace.permissions.canManageMembers && (
         <section className="panel form-panel" aria-labelledby="invite-member-title">
           <div className="panel-heading">
             <span className="eyebrow">Controlled onboarding</span>
             <h2 id="invite-member-title">Invite a team member</h2>
             <p>{workspace.isDemo
-              ? "The sandbox creates a synthetic local invitation. No email is sent and the nightly reset removes it."
+              ? "The shared demo creates a synthetic local invitation visible to every visitor. No email is sent and the nightly reset removes it."
               : "The invitation is encrypted, expires after 72 hours, and stays within this organization."}</p>
           </div>
           <form
@@ -176,7 +239,7 @@ export function OrganizationSettings({ workspace }: { workspace: OrganizationAdm
                 displayName: inviteName,
                 roleId: inviteRole,
                 reason: inviteReason,
-              }, workspace.isDemo ? "Synthetic sandbox invitation created." : "Invitation queued for secure delivery.");
+              }, workspace.isDemo ? "Synthetic shared-demo invitation created." : "Invitation queued for secure delivery.");
             }}
           >
             <div className="form-grid form-grid-three">

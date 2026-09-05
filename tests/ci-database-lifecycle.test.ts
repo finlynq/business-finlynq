@@ -64,9 +64,9 @@ describe("CI predecessor-upgrade and restore verification", () => {
     );
   });
 
-  it("replays exactly 0000-0024 before preserving a tenant sentinel through 0033", () => {
+  it("replays exactly 0000-0024 before preserving a tenant sentinel through 0049", () => {
     expect(migrationJournal.entries.map((entry) => entry.idx)).toEqual(
-      Array.from({ length: 34 }, (_, index) => index),
+      Array.from({ length: 50 }, (_, index) => index),
     );
     expect(migrationJournal.entries.find((entry) => entry.idx === 25)?.tag).toBe(
       "0025_tenant_rls_completion",
@@ -95,7 +95,40 @@ describe("CI predecessor-upgrade and restore verification", () => {
     expect(migrationJournal.entries.find((entry) => entry.idx === 33)?.tag).toBe(
       "0033_self_service_signup_write_activation",
     );
+    expect(migrationJournal.entries.find((entry) => entry.idx === 34)?.tag).toBe(
+      "0034_clean_praxagora",
+    );
+    expect(migrationJournal.entries.find((entry) => entry.idx === 35)?.tag).toBe(
+      "0035_remote_mcp_security",
+    );
+    expect(migrationJournal.entries.find((entry) => entry.idx === 36)?.tag).toBe(
+      "0036_mcp_approval_assurance",
+    );
     expect(tenantPolicyMigration).toContain("ALTER TABLE public.%I ENABLE ROW LEVEL SECURITY");
+    expect(migrationJournal.entries.find((entry) => entry.idx === 37)?.tag).toBe(
+      "0037_shared_public_demo",
+    );
+    expect(migrationJournal.entries.find((entry) => entry.idx === 38)?.tag).toBe(
+      "0038_mcp_approval_session_binding",
+    );
+    expect(migrationJournal.entries.find((entry) => entry.idx === 39)?.tag).toBe(
+      "0039_create_fiscal_periods",
+    );
+    expect(migrationJournal.entries.find((entry) => entry.idx === 45)?.tag).toBe(
+      "0045_organization_fx_provider_policy",
+    );
+    expect(migrationJournal.entries.find((entry) => entry.idx === 46)?.tag).toBe(
+      "0046_central_bank_fx_providers",
+    );
+    expect(migrationJournal.entries.find((entry) => entry.idx === 47)?.tag).toBe(
+      "0047_bank_statement_imports",
+    );
+    expect(migrationJournal.entries.find((entry) => entry.idx === 48)?.tag).toBe(
+      "0048_trusted_browser_mfa",
+    );
+    expect(migrationJournal.entries.find((entry) => entry.idx === 49)?.tag).toBe(
+      "0049_structured_evidence_mime_types",
+    );
     expect(tenantPolicyMigration).toContain("ALTER TABLE public.%I FORCE ROW LEVEL SECURITY");
     expect(tenantPolicyMigration).toContain("auth_sessions");
     expect(lifecycleScript).toContain("migration_prefix <= 24");
@@ -118,9 +151,9 @@ describe("CI predecessor-upgrade and restore verification", () => {
     expect(lifecycleScript).toContain(
       'run_migrations "$predecessor_database" "$repository_root/migrations/drizzle"',
     );
-    expect(lifecycleScript).toContain('[[ "$upgraded_count" == "34" ]]');
+    expect(lifecycleScript).toContain('[[ "$upgraded_count" == "50" ]]');
     expect(lifecycleScript).toContain(
-      "tenant sentinel was not preserved through migrations 0025 through 0033",
+      "tenant sentinel was not preserved through migrations 0025 through 0049",
     );
     expect(lifecycleScript).toContain("ci.predecessor-audit-after-upgrade");
     expect(lifecycleScript).toContain(

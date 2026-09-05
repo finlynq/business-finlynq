@@ -25,6 +25,7 @@ const configuration = JSON.parse(rendered);
 const services = configuration.services ?? {};
 const providerSecret = "business_finlynq_resend_api_key";
 const turnstileSecret = "business_finlynq_turnstile_secret_key";
+const documentSecrets = ["business_finlynq_document_google_secret", "business_finlynq_document_microsoft_secret"];
 const appDatabaseSecret = "business_finlynq_app_db_password";
 const workerDatabaseSecret = "business_finlynq_auth_worker_db_password";
 const backupDatabaseSecret = "business_finlynq_backup_db_password";
@@ -72,6 +73,11 @@ if (turnstileSecretConsumers.join(",") !== "app") {
   fail(`Turnstile secret consumers must be only app; found ${turnstileSecretConsumers.join(",") || "none"}`);
 }
 
+for (const secret of documentSecrets) {
+  const consumers = Object.entries(services).filter(([, service]) => secretSources(service).includes(secret)).map(([name]) => name);
+  if (consumers.join(",") !== "app") fail(`${secret} must be mounted only by app`);
+}
+
 for (const [name, service] of Object.entries(services)) {
   const providerEnvironmentKeys = Object.keys(service.environment ?? {})
     .filter((key) => key === "RESEND_API_KEY" || key === "RESEND_API_KEY_FILE");
@@ -92,8 +98,26 @@ if (secretSources(worker).includes("business_finlynq_root_kek")) fail("auth_emai
 if ((worker.ports ?? []).length > 0) fail("auth_email_worker publishes a port");
 if ((worker.networks ?? {}).business_finlynq_edge) fail("auth_email_worker is attached to the public edge network");
 
+const scanner = services.evidence_scanner;
+if (!scanner || scanner.image !== "clamav/clamav@sha256:f0954d679017eb6d48221e2b2be3ac5457bf278a844f39b672376f55a085f591"
+  || scanner.user !== "100:101" || scanner.read_only !== true
+  || !(scanner.cap_drop ?? []).includes("ALL") || secretSources(scanner).length
+  || (scanner.ports ?? []).length || Object.keys(scanner.environment ?? {}).some((key) => /PASSWORD|SECRET|KEY/.test(key))) {
+  fail("evidence scanner must be pinned, non-root, read-only, and receive no credentials or published ports");
+}
+if ((scanner.configs ?? []).length
+  || scanner.environment?.CLAMD_CONFIG?.trim() !== readFileSync("deploy/evidence/clamd.conf", "utf8").trim()
+  || !scanner.command?.[0]?.includes('--config-file=/tmp/finlynq-clamd.conf')) {
+  fail("scanner configuration must be delivered through bounded tmpfs, independent of checkout file permissions");
+}
+const scannerNetworks = Object.keys(scanner.networks ?? {}).sort().join(",");
+if (scannerNetworks !== "business_finlynq_evidence,business_finlynq_scanner_egress"
+  || configuration.networks?.business_finlynq_evidence?.internal !== true) {
+  fail("evidence scanner must be isolated from the database and public edge");
+}
 const app = services.app;
 if (!app) fail("app service is missing");
+if (dependencyCondition(app, "evidence_scanner") !== "service_healthy" || app.environment?.EVIDENCE_SCANNER_HOST !== "evidence_scanner") fail("app evidence scanning must be mandatory and health-gated");
 const expectedReleaseImages = {
   database: `business-finlynq-database:${process.env.BUSINESS_FINLYNQ_IMAGE_REVISION}`,
   app: `business-finlynq-app:${process.env.BUSINESS_FINLYNQ_IMAGE_REVISION}`,
@@ -194,6 +218,7 @@ for (const [gate, expected] of [
   ["ACCOUNT_SIGNUP_ENABLED", "false"],
   ["BUSINESS_WRITES_ENABLED", "false"],
   ["BANK_FEEDS_ENABLED", "false"],
+  ["YAHOO_FX_ENABLED", "false"],
 ]) {
   if (app.environment?.[gate] !== expected) fail(`app release gate ${gate} must render as ${expected}`);
 }
@@ -497,7 +522,7 @@ if (services.restore_key_verify?.environment?.RESTORE_ALLOW_EMPTY_SECRET_FIXTURE
 if (dependencyCondition(services.restore_runtime_verify, "restore_app") !== "service_healthy") {
   fail("restored runtime acceptance can run before the restored app is healthy");
 }
-for (const disabledGate of ["DEMO_WRITES_ENABLED", "ACCOUNT_LOGIN_ENABLED", "ACCOUNT_SIGNUP_ENABLED", "SIGNUP_TURNSTILE_ENABLED", "BUSINESS_WRITES_ENABLED", "BANK_FEEDS_ENABLED"]) {
+for (const disabledGate of ["DEMO_WRITES_ENABLED", "ACCOUNT_LOGIN_ENABLED", "ACCOUNT_SIGNUP_ENABLED", "SIGNUP_TURNSTILE_ENABLED", "BUSINESS_WRITES_ENABLED", "BANK_FEEDS_ENABLED", "YAHOO_FX_ENABLED"]) {
   if (services.restore_app?.environment?.[disabledGate] !== "false") {
     fail(`restored app does not force ${disabledGate} off`);
   }
@@ -596,7 +621,7 @@ if (rollbackApp.environment?.BUSINESS_FINLYNQ_DB_PASSWORD_FILE !== "/run/secrets
 if (rollbackApp.environment?.BUSINESS_FINLYNQ_IMAGE_REVISION !== "f8485ca86fef5b5fb4a38be9cb4cf3bea5ac2107") {
   fail("legacy rollback override is not pinned to the reviewed prior revision");
 }
-for (const disabledFlag of ["DEMO_LOGIN_ENABLED", "DEMO_WRITES_ENABLED", "ACCOUNT_LOGIN_ENABLED", "ACCOUNT_SIGNUP_ENABLED", "SIGNUP_TURNSTILE_ENABLED", "AUTH_EMAIL_DELIVERY_ENABLED", "BUSINESS_WRITES_ENABLED", "BANK_FEEDS_ENABLED"]) {
+for (const disabledFlag of ["DEMO_LOGIN_ENABLED", "DEMO_WRITES_ENABLED", "ACCOUNT_LOGIN_ENABLED", "ACCOUNT_SIGNUP_ENABLED", "SIGNUP_TURNSTILE_ENABLED", "AUTH_EMAIL_DELIVERY_ENABLED", "BUSINESS_WRITES_ENABLED", "BANK_FEEDS_ENABLED", "YAHOO_FX_ENABLED"]) {
   if (rollbackApp.environment?.[disabledFlag] !== "false") fail(`legacy rollback override does not force ${disabledFlag} off`);
 }
 if ((rollbackApp.entrypoint ?? []).join(" ") !== "/bin/sh /usr/local/bin/business-finlynq-legacy-db-password") {
@@ -637,7 +662,7 @@ if (!secretSources(rehearsalApp).includes(appDatabaseSecret)) fail("restore rehe
 if (secretSources(rehearsalApp).includes(providerSecret) || secretSources(rehearsalApp).includes(turnstileSecret) || secretSources(rehearsalApp).includes(workerDatabaseSecret)) {
   fail("restore rehearsal receives an unrelated provider, challenge, or worker credential");
 }
-for (const disabledFlag of ["DEMO_LOGIN_ENABLED", "DEMO_WRITES_ENABLED", "ACCOUNT_LOGIN_ENABLED", "ACCOUNT_SIGNUP_ENABLED", "SIGNUP_TURNSTILE_ENABLED", "AUTH_EMAIL_DELIVERY_ENABLED", "BUSINESS_WRITES_ENABLED", "BANK_FEEDS_ENABLED"]) {
+for (const disabledFlag of ["DEMO_LOGIN_ENABLED", "DEMO_WRITES_ENABLED", "ACCOUNT_LOGIN_ENABLED", "ACCOUNT_SIGNUP_ENABLED", "SIGNUP_TURNSTILE_ENABLED", "AUTH_EMAIL_DELIVERY_ENABLED", "BUSINESS_WRITES_ENABLED", "BANK_FEEDS_ENABLED", "YAHOO_FX_ENABLED"]) {
   if (rehearsalApp.environment?.[disabledFlag] !== "false") fail(`restore rehearsal does not force ${disabledFlag} off`);
 }
 if ((rehearsalVerify.secrets ?? []).length > 0) fail("legacy restore verifier receives a secret");
@@ -667,7 +692,6 @@ const releaseRehearsalRendered = execFileSync(
       BACKUP_REQUIRE_OFFSITE: "false",
       BUSINESS_FINLYNQ_APP_ORIGIN: "http://127.0.0.1:3311",
       BUSINESS_FINLYNQ_APP_PORT: "3311",
-      DEMO_CLAIM_COOKIE_NAME: "business_finlynq_rehearsal_claim",
       MONITOR_BACKUP_DIR: "/tmp/business-finlynq-release-evidence/rehearsal-backup",
       MONITOR_REQUIRE_OFFSITE: "false",
       RELEASE_REHEARSAL_PROJECT: releaseRehearsalProject,
@@ -687,6 +711,36 @@ for (const resource of [
 const rehearsalAppPort = (releaseRehearsal.services?.app?.ports ?? []).find((port) => port.target === 3000);
 if (rehearsalAppPort?.host_ip !== "127.0.0.1" || rehearsalAppPort?.published !== "3311") {
   fail("release rehearsal app is not restricted to its unique loopback port");
+}
+
+
+const developmentRendered = JSON.parse(execFileSync("docker", [
+  "compose", "--project-name", "business-finlynq-development",
+  "--profile", "auth-email", "config", "--format", "json",
+], {
+  encoding: "utf8", maxBuffer: 16 * 1024 * 1024,
+  env: {
+    ...process.env,
+    BUSINESS_FINLYNQ_HOSTNAME: "dev.business.finlynq.com",
+    BUSINESS_FINLYNQ_APP_ORIGIN: "https://dev.business.finlynq.com",
+    BUSINESS_FINLYNQ_APP_PORT: "3200",
+    BUSINESS_FINLYNQ_APP_NETWORK_ALIAS: "development-app",
+    BUSINESS_FINLYNQ_PGDATA_VOLUME: "business_finlynq_development_pgdata",
+    BUSINESS_FINLYNQ_CADDY_DATA_VOLUME: "business_finlynq_development_caddy_data",
+    BUSINESS_FINLYNQ_CADDY_CONFIG_VOLUME: "business_finlynq_development_caddy_config",
+    BUSINESS_FINLYNQ_PRIVATE_NETWORK: "business_finlynq_development_private",
+    BUSINESS_FINLYNQ_EGRESS_NETWORK: "business_finlynq_development_egress",
+    BUSINESS_FINLYNQ_EDGE_NETWORK: "business_finlynq_development_edge",
+    BUSINESS_FINLYNQ_RESTORE_DRILL_NETWORK: "business_finlynq_development_restore_drill",
+  },
+}));
+for (const resource of [
+  ...Object.values(developmentRendered.volumes ?? {}),
+  ...Object.values(developmentRendered.networks ?? {}),
+]) {
+  if (!resource.name?.startsWith("business_finlynq_development_")) {
+    fail(`development resource is not deployment-isolated: ${resource.name ?? "unnamed"}`);
+  }
 }
 
 const rollbackImageId = `sha256:${"b".repeat(64)}`;

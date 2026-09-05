@@ -1,0 +1,1 @@
+ALTER TABLE "mcp_approvals" ADD COLUMN "mfa_step_up_expires_at" timestamp with time zone;

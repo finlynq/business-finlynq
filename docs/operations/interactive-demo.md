@@ -1,86 +1,40 @@
-# Writable interactive demo acceptance
+# Interactive shared demo
 
-The public demo is a bounded, writable accounting sandbox over synthetic data. Each visitor receives an exclusive database organization; no visitor selects a tenant or shares another visitor's mutable records. Demo persistence is intentionally temporary and is separate from real-account activation.
+The public demo is one shared, writable accounting organization backed by the same accounting services, database controls, and transaction workflows used by ordinary organizations. It is not allocated per browser. Every visitor enters Northstar Demo Group, so two visitors can see and affect the same invoices, bills, journals, parties, reconciliation work, settings, and reports.
 
-## Production release boundary
+All demo data is synthetic and temporary. Nightly maintenance revokes open demo sessions, deletes organization-owned business data, restores the canonical identity and settings, reseeds the verified accounting baseline, and advances the next reset boundary. The scheduled boundary is 04:15 America/Toronto.
 
-Demo access, private accounts, and external bank feeds use six independent application gates. A sandbox-only deployment uses:
+## Access and feature gates
 
-```dotenv
-DEMO_LOGIN_ENABLED=true
-DEMO_WRITES_ENABLED=true
-ACCOUNT_LOGIN_ENABLED=false
-ACCOUNT_SIGNUP_ENABLED=false
-BUSINESS_WRITES_ENABLED=false
-BANK_FEEDS_ENABLED=false
-```
+Demo access remains controlled by DEMO_LOGIN_ENABLED; demo mutations require DEMO_WRITES_ENABLED. Real account login, signup, writes, and external bank feeds retain their independent gates. A live demo-link session is valid only for the fixed PUBLIC_DEMO organization and current canonical demo membership.
 
-`DEMO_WRITES_ENABLED` authorizes mutations only for a live `demo-link` session whose claimed organization is registered as a synthetic `SANDBOX`. `ACCOUNT_SIGNUP_ENABLED` independently controls owner acquisition, `BUSINESS_WRITES_ENABLED` controls real organizations, and `BANK_FEEDS_ENABLED` controls external-provider credentials and synchronization only. The combined hosted service may enable the private-account gates after their separate acceptance without broadening demo authority; synthetic demo banking remains available while the external bank gate is false.
+The shared demo uses the normal accounting write paths and database permissions for chart-of-accounts changes, parties, journals, AR/AP documents, payments, receipts, reconciliations, period operations, and reports. Anonymous-demo safety boundaries still prevent recovery administration, real provider credentials, external email delivery, and delegated MCP/OAuth connections. These boundaries prevent a public visitor from gaining control over real identities or third-party systems.
 
-## Isolation and lifecycle contract
+## Session and concurrency model
 
-- A new browser atomically claims one `READY` sandbox slot. The opaque claim is host-only and HttpOnly; only its digest is stored. The immutable public template is never claimed or mutated.
-- A network identity may create at most 16 claims in one nightly pool cycle, so one address can reserve no more than 12.5% of the 128-slot pool. This supports the six-browser release gate, its CI retry allowance, and shared-network visitors over the cycle. Separate route controls still limit demo entry to 10 requests per IP and 60 requests globally per minute.
-- Every slot has its own organization, legal entities, users, memberships, role assignments, wrapped organization DEK, and independently encrypted seed data.
-- A session expires after 15 minutes without activity and has a one-hour absolute maximum. The browser cookie cannot extend that maximum.
-- Logout or expiry revokes only the short-lived session. Re-entry from the same browser issues a new session for the same `ASSIGNED` sandbox and preserves its changes.
-- Nightly reconciliation at 04:15 `America/Toronto` invalidates every daily claim, revokes remaining sessions, resets every slot to the exact seed, verifies the baseline, and returns successful slots to `READY` with an incremented generation. No five-minute/session-release reset exists.
-- The demo accounting clock follows the `America/Toronto` date only inside the latest approved bundled tax-pack window. At the Washington pack's `effective_to` boundary it pins to that date; never extend an expired rate to keep the calendar moving. Before advancing the clock, publish a reviewed pack version with official source, digest, effective dates, and passing clock/tax/baseline tests.
-- Reset is an owner-only maintenance operation with no tenant selector. It purges tenant business data child-first while preserving the registered organization, synthetic identity, membership, role, and key envelope. Failed resets leave the slot `QUARANTINED`.
-- Synthetic accounting content belongs in PostgreSQL only. Do not put journal, party, tax, or subledger content in cookies, browser local storage, logs, or analytics.
+- /try-demo creates a short-lived, user-agent-bound session for the fixed shared organization.
+- There is no browser claim cookie, slot, generation, lease handoff, pool capacity, or per-IP allocation ceiling.
+- Multiple visitors may hold live sessions at the same time and all resolve to the same organization and canonical demo user.
+- Signing out revokes only that browser session and does not undo business changes.
+- New visitors see changes left by earlier visitors until the next reset.
+- Route-level burst controls still protect the public entry endpoint.
 
-See [demo-sandbox-maintenance.md](demo-sandbox-maintenance.md) for operator commands, locking, schedules, and rollback behavior.
+## Reset consistency
 
-## Supported demo workflows
+Every demo transaction takes a shared advisory fence before organization work begins. The nightly reset takes the exclusive side of the same fence, so reset cannot race an in-flight accounting transaction. During reset the durable shared_demo_reset_state row is RESETTING; new demo sessions fail closed. A successful verified reseed changes it to READY. Any failure records FAILED, keeps entry closed, and requires a repaired rerun.
 
-The release may persist the following synthetic actions inside the leased sandbox:
+The reset purges every registered organization-owned table child-first, runs app.reset_shared_demo_extensions for identity and cross-tenant cleanup, reseeds encrypted fixtures under the existing organization key, posts issued fixtures through production posting controls, and verifies exact baseline counts before reopening access.
 
-- balanced manual GL drafts and role/policy-driven posting;
-- linked reversal/void behavior and period-state enforcement;
-- customer and supplier account use, service/non-stock invoice and bill drafts, issue/post, and void;
-- recorded customer receipts and supplier payments, exact open-item allocations, settlement reversal, and realized-FX accounting;
-- transaction-tax decisions and immutable tax snapshots using the bundled Ontario and Washington reference packs;
-- seeded synthetic bank observations, cash-account mapping, review-only categorization proposals, and guarded reconciliation without accepting external credentials;
-- trial-balance/reporting views and exports that reflect the visitor's saved sandbox activity;
-- permitted period transitions and locked-period rejection.
+## Release acceptance
 
-Recorded receipts and supplier payments are accounting records only. The demo never connects to a live bank or accepts provider credentials. It has no inventory, live payment execution, tax return or filing service, identity/recovery administration, or public MCP endpoint. Do not imply those capabilities in UI copy or acceptance evidence.
+Acceptance must prove:
 
-## Browser acceptance checklist
+- two clean browser contexts enter the same organization;
+- a transaction created in one context becomes visible in the other;
+- logout and re-entry do not erase shared changes;
+- AR/AP issue, settlement, void, journal, reconciliation, setup, and reporting paths still use normal controls;
+- unique acceptance document numbers allow safe retries before nightly reset;
+- the reset revokes all visitor sessions and restores the exact baseline;
+- no browser console errors, failed requests, cross-origin leaks, or public reset authority are present.
 
-- HTTP redirects to the exact HTTPS origin, the certificate is valid, and expected security and `private, no-store` headers are present.
-- Speculative browser requests cannot claim a sandbox. Anonymous workspace requests redirect to login, and `/try-demo` issues only a same-site, rate-limited server session.
-- Two clean browser profiles entering concurrently receive different session and organization identities. A journal, party, document, settlement, period change, or report result created in one is absent from the other.
-- Every visible sidebar item, dashboard link, button, row action, dialog close action, and account-menu action has a visible result; there are no dead controls.
-- Browser back/forward navigation, direct route loading, refresh, and not-found/error handling work without unhandled console or request failures. Refresh preserves the active sandbox rather than replacing it with the baseline.
-- Manual journals reject invalid exact decimals, unbalanced lines, control-account misuse, unauthorized posting, and locked periods. A valid request is saved once, and retry behavior does not duplicate it.
-- AR/AP forms enforce party role, entity/ledger, dates, currency/FX facts, tax evidence, source ownership, and version checks. Issuing produces the expected source-owned journal and open item.
-- Receipt/payment allocations cannot exceed or cross the selected party, source type, ledger, or currency. Voiding reverses allocations and accounting lineage instead of deleting history.
-- Tax-review outcomes and snapshots remain traceable to their pack/version and evidence. The UI does not claim to file a return or fetch a live official rate.
-- Synthetic bank observations can be mapped and reconciled without leaving the sandbox; rules create reviewable proposals only, and neither rules nor observations can post or erase accounting records directly.
-- Trial-balance pages and CSV exports are non-empty, correctly labeled, keep unlike currencies separate, and reflect the current sandbox's posted activity.
-- Period controls reject ordinary posting in restricted periods and preserve the audit path for permitted transitions and corrections.
-- Keyboard order, visible focus, dialog focus containment, labels, status announcements, mobile layout, and zoom remain usable across writable forms and confirmation states.
-- The workspace clearly identifies synthetic, disposable data and warns visitors not to enter real or confidential information.
-- Logout revokes the current session but preserves the browser claim. Re-entry returns to the same changed organization; another clean browser still receives a different organization. After nightly reset, the original browser receives a newly seeded available sandbox.
-- Pool exhaustion fails closed with a temporary-unavailable response; no fixed template, dirty slot, quarantined slot, or real organization is substituted.
-
-Run the checklist against a production build and again at `https://business.finlynq.com` after deployment.
-
-`npm run test:e2e` automates public-route and security-header checks, GL posting, AR issue/void, the AP bill/payment/allocation/reversal chain, concurrent-browser isolation, and logout/re-entry claim continuity. It intentionally does not invoke owner maintenance against the deployed site; reset and baseline verification remain explicit operator acceptance.
-
-## Release and nightly reset acceptance
-
-Before enabling traffic for every release:
-
-1. Apply the current migrations and bootstrap the full sandbox pool.
-2. In an announced destructive acceptance window, run one full nightly-mode reconciliation and require all 128 slots to verify as `READY` with no quarantine.
-3. Exercise one complete GL and one complete AR or AP workflow, log out, reopen from the same browser, and verify that the changed data remains while a clean browser cannot see it.
-4. Run nightly reconciliation, verify that visitor-created rows are gone and the exact baseline returns, then enable the single nightly scheduler and set `MONITOR_EXPECT_DEMO_MAINTENANCE=true`.
-5. Confirm alerts for a failed/overdue reset, quarantined slot, repeated pool exhaustion, and an inactive reconciliation timer.
-
-Nightly reconciliation is destructive only to registered synthetic sandbox business data. It must never select the immutable template or a real organization. Backup and restore validation still uses the separately provisioned read-only backup role; writable demo access does not broaden that role.
-
-## Real-account launch gates
-
-The writable demo does not authorize real customer data. `ACCOUNT_LOGIN_ENABLED` and `BUSINESS_WRITES_ENABLED` remain false until the separate real-account release decision covers verified email delivery and recovery, encrypted persistence/key recovery drills, off-server backups and restore evidence, authorization and concurrency suites, monitoring, retention, production tax data, and the intended real-tenant modules. MCP activation requires its own organization-bound authentication, scopes, revocation, idempotency, rate limits, and audit review.
+See [demo-sandbox-maintenance.md](demo-sandbox-maintenance.md) for the operator procedure. The filename remains stable for existing runbook links during the compatibility release.

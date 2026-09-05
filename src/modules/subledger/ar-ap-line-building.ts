@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { resolveSettlementFunding, SETTLEMENT_METHOD_LABELS } from "./settlement-funding";
 import { exact, minorUnits, quantizeMoney, sumExact } from "@/kernel/money";
 import {
   recordSettlementSchema,
@@ -26,6 +27,8 @@ export function calculateSettlementAllocations(
   openItems: ReadonlyMap<string, LockedOpenItemRow>,
   functionalCurrency: string,
 ): readonly CalculatedSettlementAllocation[] {
+  const fx = command.fx;
+  if (!fx) throw new Error("Settlement FX must be resolved before allocation");
   const policy = SETTLEMENT_KIND_POLICY[command.kind];
   return command.allocations.map((allocation) => {
     const item = openItems.get(allocation.openItemId);
@@ -56,7 +59,7 @@ export function calculateSettlementAllocations(
           functionalCurrency,
         );
     const settlementFunctional = quantizeMoney(
-      transactionAmount.times(command.fx.rate),
+      transactionAmount.times(fx.rate),
       functionalCurrency,
     );
     if (!carryingFunctional.greaterThan(0) || !settlementFunctional.greaterThan(0)) {
@@ -92,7 +95,9 @@ export function buildSettlementSnapshot(
   functionalCurrency: string,
   allocations: readonly CalculatedSettlementAllocation[],
 ): SettlementDocumentSnapshot {
+  if (!command.fx) throw new Error("Settlement FX must be resolved before snapshot creation");
   const policy = SETTLEMENT_KIND_POLICY[command.kind];
+  const funding = resolveSettlementFunding(command);
   return settlementDocumentSnapshotSchema.parse({
     schemaVersion: 1,
     kind: command.kind,
@@ -114,7 +119,9 @@ export function buildSettlementSnapshot(
       functionalCurrency,
     ),
     fx: { ...command.fx, rate: exact(command.fx.rate).toFixed() },
-    bankAccountCombinationId: command.bankAccountCombinationId,
+    ...(funding.method === "BANK"
+      ? { bankAccountCombinationId: funding.accountCombinationId }
+      : { settlementAccountCombinationId: funding.accountCombinationId, settlementMethod: funding.method }),
     realizedFxGainAccountCombinationId: command.realizedFxGainAccountCombinationId,
     realizedFxLossAccountCombinationId: command.realizedFxLossAccountCombinationId,
     fxRoundingAccountCombinationId: command.fxRoundingAccountCombinationId ?? null,
@@ -135,16 +142,17 @@ export function buildSettlementJournalLines(
   allocations: readonly CalculatedSettlementAllocation[],
   subledgerEventId: string,
 ): readonly JournalLineInput[] {
+  const funding = resolveSettlementFunding(snapshot);
   const lines: JournalLineInput[] = [transactionLine({
     side: snapshot.kind === "CUSTOMER_RECEIPT" ? "DEBIT" : "CREDIT",
-    accountCombinationId: snapshot.bankAccountCombinationId,
+    accountCombinationId: funding.accountCombinationId,
     transactionAmount: snapshot.amount,
     transactionCurrency: snapshot.currency,
     fxRate: snapshot.fx.rate,
     functionalCurrency: snapshot.functionalCurrency,
     fxRateSource: snapshot.fx.source,
     fxRateEffectiveAt: snapshot.fx.effectiveAt,
-    memo: `${snapshot.sourceNumber} bank settlement`,
+    memo: `${snapshot.sourceNumber} ${funding.method === "BANK" ? "bank" : SETTLEMENT_METHOD_LABELS[funding.method]} settlement`,
   })];
   for (const allocation of allocations) {
     lines.push(transactionLine({

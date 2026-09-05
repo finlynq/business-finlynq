@@ -299,6 +299,7 @@ describe("commit-addressed release orchestration", () => {
     expect(service).toContain(
       'command: ["./node_modules/.bin/playwright", "test", "--output", "/app/test-results/release"]',
     );
+    expect(service).toContain('PLAYWRIGHT_MANAGED_SERVER: "true"');
     expect(service).toContain("PLAYWRIGHT_HTML_OUTPUT_DIR: /app/playwright-report/release");
     expect(service).toContain("- /app/test-results:size=256m,mode=1777");
     expect(service).toContain("- /app/playwright-report:size=64m,mode=1777");
@@ -334,7 +335,6 @@ describe("commit-addressed release orchestration", () => {
         BUSINESS_FINLYNQ_APP_ORIGIN: "http://127.0.0.1:3201",
         BUSINESS_FINLYNQ_APP_PORT: "3201",
         SESSION_COOKIE_NAME: "business_finlynq_rehearsal_session",
-        DEMO_CLAIM_COOKIE_NAME: "business_finlynq_rehearsal_demo_claim",
       },
     );
 
@@ -865,6 +865,7 @@ wait_for_captured_containers 'test operation' service.log 51-state.json \
         rmSync(root, { recursive: true, force: true });
       }
     },
+    15_000,
   );
   it("arms a complete re-pause before attempting a guarded scheduler resume", () => {
     const resume = source("deploy/release/resume-schedulers.sh");

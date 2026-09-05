@@ -23,6 +23,12 @@ import {
 } from "@/modules/workspace/write-policy";
 import { withWorkspaceTenantRead } from "@/modules/workspace/tenant-read";
 import { supportedCurrencies } from "@/kernel/money";
+import { createCommandFingerprint } from "@/kernel/command-fingerprint";
+import { demoAccountingDate } from "@/modules/demo/accounting-clock";
+import {
+  readOrganizationFxProviderPolicy,
+  type OrganizationFxProviderPolicy,
+} from "@/modules/fx/provider-policy";
 import { presentAccountKey } from "./account-key-display";
 import {
   accountSegmentKeys,
@@ -68,6 +74,68 @@ export const legalEntityConfigurationSchema = z.object({
   manualPostingMode: z.enum(["REVIEW_REQUIRED", "AUTO_POST"]),
   reason: z.string().trim().min(8).max(500),
 }).strict();
+
+export const fiscalPeriodCreationSchema = z.object({
+  ledgerId: z.uuid(),
+  fiscalYear: z.number().int().min(2000).max(2200),
+  periodPattern: z.literal("MONTHLY"),
+  initialState: z.literal("OPEN"),
+  idempotencyKey: z.string().trim().min(1).max(180),
+  reason: z.string().trim().min(8).max(500),
+}).strict();
+
+const fiscalPeriodOutcomeSchema = z.enum([
+  "CREATED",
+  "ALREADY_EXISTING",
+  "REJECTED",
+]);
+const fiscalPeriodRejectionSchema = z.enum([
+  "INCOMPATIBLE_PERIOD_DEFINITION",
+  "OVERLAPPING_PERIOD",
+  "BATCH_REJECTED",
+]);
+const fiscalPeriodStateSchema = z.enum([
+  "OPEN",
+  "ADJUSTMENT_ONLY",
+  "HARD_CLOSED",
+  "SEALED",
+]);
+
+export const fiscalPeriodCreationResultSchema = z.object({
+  accepted: z.boolean(),
+  idempotentReplay: z.boolean(),
+  ledgerId: z.uuid(),
+  fiscalYear: z.number().int(),
+  periodPattern: z.literal("MONTHLY"),
+  initialState: z.literal("OPEN"),
+  summary: z.object({
+    created: z.number().int().nonnegative(),
+    existing: z.number().int().nonnegative(),
+    rejected: z.number().int().nonnegative(),
+  }).strict(),
+  periods: z.array(z.object({
+    periodId: z.uuid().nullable(),
+    periodNumber: z.number().int().min(1).max(12),
+    label: z.string(),
+    startsOn: z.iso.date(),
+    endsOn: z.iso.date(),
+    state: fiscalPeriodStateSchema.nullable(),
+    outcome: fiscalPeriodOutcomeSchema,
+    rejectionCode: fiscalPeriodRejectionSchema.nullable(),
+  }).strict()).length(12),
+  conflicts: z.array(z.object({
+    periodId: z.uuid(),
+    fiscalYear: z.number().int(),
+    periodNumber: z.number().int(),
+    label: z.string(),
+    startsOn: z.iso.date(),
+    endsOn: z.iso.date(),
+    state: fiscalPeriodStateSchema,
+    rejectionCode: fiscalPeriodRejectionSchema.exclude(["BATCH_REJECTED"]),
+  }).strict()),
+}).strict();
+
+export type FiscalPeriodCreationResult = z.output<typeof fiscalPeriodCreationResultSchema>;
 
 export const organizationCurrencyConfigurationSchema = z.object({
   currencyCode: currencySchema,
@@ -213,10 +281,12 @@ export type AccountingCombinationSegmentValueDto = Readonly<{
 }>;
 
 export type AccountingConfigurationDto = Readonly<{
+  evaluatedAccountingDate: string;
   canManageSettings: boolean;
   canManageSegments: boolean;
   canManagePostingPolicy: boolean;
   requiresMfaStepUp: boolean;
+  fxProviderPolicy: OrganizationFxProviderPolicy;
   currencies: readonly Readonly<{
     code: string;
     minorUnits: number;
@@ -278,6 +348,12 @@ export type AccountingConfigurationDto = Readonly<{
     canonicalKey: string;
     displayKey: string;
     active: boolean;
+    accountActive: boolean;
+    postable: boolean;
+    controlKind: "NONE" | "AR" | "AP";
+    validFrom: string;
+    validTo: string | null;
+    validOnAccountingDate: boolean;
     used: boolean;
     lastUsedAt: string | null;
   }>[];
@@ -318,7 +394,15 @@ function readContext(principal: SessionPrincipal) {
 
 export async function loadAccountingConfiguration(
   principal: SessionPrincipal,
+  accountingDate?: string,
 ): Promise<AccountingConfigurationDto> {
+  const evaluatedAccountingDate = accountingDate
+    ?? (principal.sessionMode === "demo"
+      ? demoAccountingDate()
+      : new Date().toISOString().slice(0, 10));
+  if (!z.iso.date().safeParse(evaluatedAccountingDate).success) {
+    throw new Error("Accounting context requires an ISO accounting date");
+  }
   return withWorkspaceTenantRead(readContext(principal), "/app/settings/accounting", async (client) => {
     const [canManageSettings, canManageSegments, canManagePostingPolicy, canReadTax] = await Promise.all([
       actorHasActivePermission(client, {
@@ -353,6 +437,7 @@ export async function loadAccountingConfiguration(
       segmentValueResult,
       accountResult,
       combinationResult,
+      fxProviderPolicy,
     ] = await Promise.all([
       client.query<{
         code: string; minor_units: number; enabled: boolean; functional: boolean;
@@ -515,7 +600,9 @@ export async function loadAccountingConfiguration(
         custom_6_id: string | null; custom_6_code: string | null; custom_6_name: string | null;
         custom_7_id: string | null; custom_7_code: string | null; custom_7_name: string | null;
         custom_8_id: string | null; custom_8_code: string | null; custom_8_name: string | null;
-        canonical_key: string; active: boolean; used: boolean; last_used_at: string | null;
+        canonical_key: string; active: boolean; account_active: boolean; postable: boolean;
+        control_kind: "NONE" | "AR" | "AP"; valid_from: string; valid_to: string | null;
+        used: boolean; last_used_at: string | null;
       }>(
         `SELECT combination.id, combination.entity_id AS legal_entity_id,
            entity.code AS entity_code, combination.ledger_id, ledger.code AS ledger_code,
@@ -541,7 +628,9 @@ export async function loadAccountingConfiguration(
              coalesce(custom3.code, '0000'), coalesce(custom4.code, '0000'),
              coalesce(custom5.code, '0000'), coalesce(custom6.code, '0000'),
              coalesce(custom7.code, '0000'), coalesce(custom8.code, '0000')) AS canonical_key,
-           combination.active,
+           combination.active, account.active AS account_active,
+           account.postable, account.control_kind,
+           account.valid_from::text, account.valid_to::text,
            EXISTS (
              SELECT 1 FROM journal_lines line
              WHERE line.organization_id = combination.organization_id
@@ -580,6 +669,7 @@ export async function loadAccountingConfiguration(
          LIMIT 5000`,
         [principal.organizationId],
       ),
+      readOrganizationFxProviderPolicy(client, principal.organizationId),
     ]);
 
     const taxRegistrations: AccountingConfigurationDto["taxRegistrations"][number][] = [];
@@ -679,16 +769,26 @@ export async function loadAccountingConfiguration(
           canonicalKey: presentation.canonicalKey,
           displayKey: presentation.displayKey,
           active: row.active,
+          accountActive: row.account_active,
+          postable: row.postable,
+          controlKind: row.control_kind,
+          validFrom: row.valid_from,
+          validTo: row.valid_to,
+          validOnAccountingDate: row.active && row.account_active && row.postable
+            && row.valid_from <= evaluatedAccountingDate
+            && (row.valid_to === null || row.valid_to >= evaluatedAccountingDate),
           used: row.used || row.last_used_at !== null,
           lastUsedAt: row.last_used_at,
         };
       });
 
     return {
+      evaluatedAccountingDate,
       canManageSettings: writable && canManageSettings,
       canManageSegments: writable && canManageSegments,
       canManagePostingPolicy: writable && canManagePostingPolicy,
       requiresMfaStepUp: principal.sessionMode === "real" && !hasRecentStepUp(principal),
+      fxProviderPolicy,
       currencies: currencyResult.rows.map((row) => ({
         code: row.code,
         minorUnits: row.minor_units,
@@ -773,11 +873,12 @@ async function mutateConfiguration<T>(input: Readonly<{
   principal: SessionPrincipal;
   requestId: string;
   reason: string;
+  sourceSurface?: "API" | "MCP";
 }>, work: Parameters<typeof withTenantTransaction<T>>[1]): Promise<T> {
   assertConfigurationMutationSession(input.principal);
   const context = mutationContext(input.principal, input.requestId, {
     reason: input.reason,
-    sourceSurface: "API",
+    sourceSurface: input.sourceSurface ?? "API",
   });
   assertTenantWritesEnabled(context);
   return withTenantTransaction(context, async (client) => {
@@ -951,5 +1052,49 @@ export async function createLegalEntity(input: Readonly<{
     const entity = result.rows[0];
     if (!entity) throw new Error("Legal entity was not created");
     return { legalEntityId: entity.legal_entity_id, ledgerId: entity.ledger_id };
+  });
+}
+
+export async function createFiscalPeriods(input: Readonly<{
+  principal: SessionPrincipal;
+  requestId: string;
+  sourceSurface?: "API" | "MCP";
+}> & z.output<typeof fiscalPeriodCreationSchema>): Promise<FiscalPeriodCreationResult> {
+  const businessRequestId = `period-create:${createCommandFingerprint(
+    "ledger.fiscal-periods.idempotency-key",
+    {
+      organizationId: input.principal.organizationId,
+      idempotencyKey: input.idempotencyKey,
+    },
+  )}`;
+  const commandHash = createCommandFingerprint("ledger.fiscal-periods.create", {
+    ledgerId: input.ledgerId,
+    fiscalYear: input.fiscalYear,
+    periodPattern: input.periodPattern,
+    initialState: input.initialState,
+    reason: input.reason,
+  });
+
+  return mutateConfiguration({
+    principal: input.principal,
+    requestId: businessRequestId,
+    reason: input.reason,
+    sourceSurface: input.sourceSurface,
+  }, async (client) => {
+    const result = await client.query<{ result: unknown }>(
+      `SELECT app.accounting_create_fiscal_periods(
+         $1::uuid,$2::integer,$3::text,$4::period_state,$5::text
+       ) AS result`,
+      [
+        input.ledgerId,
+        input.fiscalYear,
+        input.periodPattern,
+        input.initialState,
+        commandHash,
+      ],
+    );
+    const created = result.rows[0]?.result;
+    if (!created) throw new Error("Fiscal periods were not created");
+    return fiscalPeriodCreationResultSchema.parse(created);
   });
 }

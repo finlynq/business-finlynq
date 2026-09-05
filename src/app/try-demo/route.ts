@@ -7,10 +7,7 @@ import { configuredAppOrigin, isSpeculativeNavigation, requestFingerprints } fro
 import { safeAppPath } from "@/modules/identity/safe-redirect";
 import {
   createOpaqueToken,
-  demoClaimCookieName,
-  hashOpaqueToken,
   requestPrincipal,
-  setDemoClaimCookie,
   setSessionCookie,
 } from "@/modules/identity/session";
 import { identityLookupHash } from "@/security/identity-secret";
@@ -37,7 +34,7 @@ async function get(request: NextRequest) {
     const { ipHash, userAgentHash } = requestFingerprints(request);
     const [rate, globalRate] = await Promise.all([
       consumeRateLimit("demo-login-ip-minute", ipHash, 10, 60),
-      consumeRateLimit("demo-login-global-minute", identityLookupHash("demo-sandbox-global-claim"), 60, 60),
+      consumeRateLimit("demo-login-global-minute", identityLookupHash("shared-public-demo-login"), 60, 60),
     ]);
     if (!rate.allowed || !globalRate.allowed) {
       const response = loginError("rate-limited");
@@ -46,15 +43,8 @@ async function get(request: NextRequest) {
     }
 
     const token = createOpaqueToken();
-    const replacementClaim = createOpaqueToken();
-    const rawClaim = request.cookies.get(demoClaimCookieName())?.value;
-    const claimTokenHash = rawClaim && rawClaim.length >= 32 && rawClaim.length <= 200
-      ? hashOpaqueToken(rawClaim)
-      : null;
     const issued = await issueDemoSession({
       tokenHash: token.hash,
-      claimTokenHash,
-      replacementClaimTokenHash: replacementClaim.hash,
       ipHash,
       userAgentHash,
       requestId,
@@ -63,9 +53,6 @@ async function get(request: NextRequest) {
     const response = NextResponse.redirect(new URL(safeAppPath(request.nextUrl.searchParams.get("next")), configuredAppOrigin()), 303);
     response.headers.set("Cache-Control", "private, no-store");
     setSessionCookie(response, token.raw, 60 * 60);
-    if (issued.claim_created) {
-      setDemoClaimCookie(response, replacementClaim.raw, new Date(issued.claim_expires_at));
-    }
     return response;
   } catch (error) {
     logRouteFailure("demo-login", requestId, error);

@@ -354,6 +354,68 @@ services:
         max-size: "10m"
         max-file: "3"
 
+  evidence_scanner:
+    image: clamav/clamav@sha256:f0954d679017eb6d48221e2b2be3ac5457bf278a844f39b672376f55a085f591
+    pull_policy: missing
+    user: "100:101"
+    entrypoint: ["/sbin/tini", "-g", "--", "/bin/sh", "-ec"]
+    command:
+      - |
+        printf '%s\n' "$$CLAMD_CONFIG" > /tmp/finlynq-clamd.conf
+        if [ ! -f /var/lib/clamav/main.cvd ]; then
+          freshclam --foreground --stdout
+        fi
+        freshclam --checks=12 --daemon --foreground --stdout --user=clamav &
+        exec clamd --foreground --config-file=/tmp/finlynq-clamd.conf
+    environment:
+      CLAMD_CONFIG: |
+        Foreground yes
+        LocalSocket /tmp/clamd.sock
+        TCPSocket 3310
+        DatabaseDirectory /var/lib/clamav
+        TemporaryDirectory /tmp
+        LogTime yes
+        StreamMaxLength 2M
+        MaxFileSize 16M
+        MaxScanSize 32M
+        MaxRecursion 10
+        MaxFiles 1000
+        MaxScanTime 10000
+        MaxThreads 2
+        MaxQueue 4
+        ReadTimeout 15
+        CommandReadTimeout 5
+        ConcurrentDatabaseReload no
+        SelfCheck 600
+        ScanPDF yes
+        AlertEncrypted yes
+        AlertExceedsMax yes
+        EnableShutdownCommand no
+        FailIfCvdOlderThan 7
+    volumes:
+      - business_finlynq_clamav:/var/lib/clamav
+    tmpfs:
+      - /tmp:size=128m,mode=1777,noexec,nosuid,nodev
+      - /var/log/clamav:size=8m,uid=100,gid=101,mode=0700
+    read_only: true
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "clamdcheck.sh"]
+      interval: 30s
+      timeout: 10s
+      start_period: 180s
+      retries: 5
+    networks: [business_finlynq_evidence, business_finlynq_scanner_egress]
+    cpus: "1.00"
+    mem_limit: 3g
+    pids_limit: 64
+    logging:
+      options:
+        max-size: "10m"
+        max-file: "3"
+
   app:
     image: business-finlynq-app:${BUSINESS_FINLYNQ_IMAGE_REVISION:?set BUSINESS_FINLYNQ_IMAGE_REVISION}
     pull_policy: never
@@ -371,7 +433,6 @@ services:
       APP_ORIGIN: ${BUSINESS_FINLYNQ_APP_ORIGIN:-https://${BUSINESS_FINLYNQ_HOSTNAME:-business.finlynq.com}}
       TRUSTED_PROXY_HOPS: ${TRUSTED_PROXY_HOPS:-0}
       SESSION_COOKIE_NAME: ${SESSION_COOKIE_NAME:-__Host-business_finlynq_session}
-      DEMO_CLAIM_COOKIE_NAME: ${DEMO_CLAIM_COOKIE_NAME:-__Host-business_finlynq_demo_claim}
       DEMO_LOGIN_ENABLED: ${DEMO_LOGIN_ENABLED:-false}
       DEMO_WRITES_ENABLED: ${DEMO_WRITES_ENABLED:-false}
       ACCOUNT_LOGIN_ENABLED: ${ACCOUNT_LOGIN_ENABLED:-false}
@@ -384,7 +445,16 @@ services:
       AUTH_EMAIL_FROM: ${AUTH_EMAIL_FROM:-}
       AUTH_EMAIL_REPLY_TO: ${AUTH_EMAIL_REPLY_TO:-}
       BUSINESS_WRITES_ENABLED: ${BUSINESS_WRITES_ENABLED:-false}
+      EVIDENCE_SCANNER_HOST: evidence_scanner
+      EVIDENCE_SCANNER_PORT: "3310"
+      DOCUMENT_GOOGLE_CLIENT_ID: ${DOCUMENT_GOOGLE_CLIENT_ID:-}
+      DOCUMENT_GOOGLE_CLIENT_SECRET_FILE: /run/secrets/business_finlynq_document_google_secret
+      DOCUMENT_MICROSOFT_CLIENT_ID: ${DOCUMENT_MICROSOFT_CLIENT_ID:-}
+      DOCUMENT_MICROSOFT_CLIENT_SECRET_FILE: /run/secrets/business_finlynq_document_microsoft_secret
+      DOCUMENT_INBOX_MAX_DEPTH: "${DOCUMENT_INBOX_MAX_DEPTH:-8}"
+      DOCUMENT_INBOX_MAX_PROVIDER_CALLS: "${DOCUMENT_INBOX_MAX_PROVIDER_CALLS:-10}"
       BANK_FEEDS_ENABLED: ${BANK_FEEDS_ENABLED:-false}
+      YAHOO_FX_ENABLED: ${YAHOO_FX_ENABLED:-false}
       BUSINESS_FINLYNQ_IMAGE_REVISION: ${BUSINESS_FINLYNQ_IMAGE_REVISION:-unknown}
       ORGANIZATION_ROOT_KEK_FILE: /run/secrets/business_finlynq_root_kek
       IDENTITY_SECRET_FILE: /run/secrets/business_finlynq_identity_secret
@@ -393,6 +463,8 @@ services:
       - business_finlynq_identity_secret
       - business_finlynq_app_db_password
       - business_finlynq_turnstile_secret_key
+      - business_finlynq_document_google_secret
+      - business_finlynq_document_microsoft_secret
     group_add:
       - ${BUSINESS_FINLYNQ_SECRET_GID:?set BUSINESS_FINLYNQ_SECRET_GID}
     ports:
@@ -400,6 +472,8 @@ services:
     depends_on:
       bootstrap_demo:
         condition: service_completed_successfully
+      evidence_scanner:
+        condition: service_healthy
     read_only: true
     init: true
     tmpfs:
@@ -411,6 +485,7 @@ services:
     networks:
       business_finlynq_private:
       business_finlynq_egress:
+      business_finlynq_evidence:
       business_finlynq_edge:
         aliases:
           - ${BUSINESS_FINLYNQ_APP_NETWORK_ALIAS:-production-app}
@@ -485,6 +560,7 @@ services:
         BUSINESS_FINLYNQ_IMAGE_REVISION: ${BUSINESS_FINLYNQ_IMAGE_REVISION:?set BUSINESS_FINLYNQ_IMAGE_REVISION}
     environment:
       PLAYWRIGHT_BASE_URL: ${BUSINESS_FINLYNQ_APP_ORIGIN:-https://${BUSINESS_FINLYNQ_HOSTNAME:-business.finlynq.com}}
+      PLAYWRIGHT_MANAGED_SERVER: "true"
       E2E_EXPECT_ACCOUNT_LOGIN_ENABLED: ${ACCOUNT_LOGIN_ENABLED:-false}
       E2E_EXPECT_ACCOUNT_SIGNUP_ENABLED: ${ACCOUNT_SIGNUP_ENABLED:-false}
       # Playwright removes its output directories before every run. Keep the
@@ -1260,7 +1336,6 @@ services:
       # follows its external redirect target.
       APP_ORIGIN: https://${BUSINESS_FINLYNQ_HOSTNAME:-business.finlynq.com}
       SESSION_COOKIE_NAME: business_finlynq_restore_session
-      DEMO_CLAIM_COOKIE_NAME: business_finlynq_restore_demo_claim
       DEMO_LOGIN_ENABLED: "true"
       # Restore verification is deliberately degraded/read-only. Sandbox reset
       # operators and maintenance timers are not part of this drill surface.
@@ -1271,6 +1346,7 @@ services:
       AUTH_EMAIL_DELIVERY_ENABLED: "false"
       BUSINESS_WRITES_ENABLED: "false"
       BANK_FEEDS_ENABLED: "false"
+      YAHOO_FX_ENABLED: "false"
       BUSINESS_FINLYNQ_IMAGE_REVISION: ${BUSINESS_FINLYNQ_IMAGE_REVISION:-unknown}
       ORGANIZATION_ROOT_KEK_FILE: /run/secrets/business_finlynq_root_kek
       IDENTITY_SECRET_FILE: /run/secrets/business_finlynq_identity_secret
@@ -1413,6 +1489,8 @@ services:
         max-file: "3"
 
 volumes:
+  business_finlynq_clamav:
+    name: ${BUSINESS_FINLYNQ_PGDATA_VOLUME:-business_finlynq_pgdata}_clamav
   business_finlynq_pgdata:
     name: ${BUSINESS_FINLYNQ_PGDATA_VOLUME:-business_finlynq_pgdata}
   business_finlynq_caddy_data:
@@ -1421,6 +1499,10 @@ volumes:
     name: ${BUSINESS_FINLYNQ_CADDY_CONFIG_VOLUME:-business_finlynq_caddy_config}
 
 secrets:
+  business_finlynq_document_google_secret:
+    file: ${DOCUMENT_GOOGLE_CLIENT_SECRET_FILE:-./deploy/backup/not-configured}
+  business_finlynq_document_microsoft_secret:
+    file: ${DOCUMENT_MICROSOFT_CLIENT_SECRET_FILE:-./deploy/backup/not-configured}
   business_finlynq_app_db_password:
     file: ${APP_DATABASE_PASSWORD_FILE:?set APP_DATABASE_PASSWORD_FILE}
   business_finlynq_root_kek:
@@ -1451,6 +1533,11 @@ secrets:
     file: ${RESTORE_DATABASE_PASSWORD_FILE:-./deploy/backup/not-configured}
 
 networks:
+  business_finlynq_evidence:
+    name: ${BUSINESS_FINLYNQ_PRIVATE_NETWORK:-business_finlynq_private}_evidence
+    internal: true
+  business_finlynq_scanner_egress:
+    name: ${BUSINESS_FINLYNQ_EGRESS_NETWORK:-business_finlynq_egress}_scanner
   business_finlynq_private:
     name: ${BUSINESS_FINLYNQ_PRIVATE_NETWORK:-business_finlynq_private}
     internal: true

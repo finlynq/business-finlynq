@@ -1,65 +1,42 @@
-# Demo sandbox maintenance
+# Shared demo maintenance
 
-The public demo uses 128 independently encrypted synthetic organizations. A browser receives an opaque host-only daily claim; PostgreSQL stores only its SHA-256 digest. A short-lived authentication session may expire or be revoked without releasing the organization. Reopening the demo from the same browser returns to the same data until nightly reconciliation.
+The public demo has one fixed PUBLIC_DEMO organization and one canonical demo_accountant identity. Visitors share all daytime changes. Nightly reconciliation destructively restores that organization to the canonical synthetic baseline.
 
-The immutable public demo template is not part of this pool. Real organizations are never eligible for reset.
+## Scheduled reset
 
-New allocations are durably limited to 16 claims per IP hash in each pool cycle. A browser that presents its still-valid claim reuses the assigned sandbox instead of consuming another allocation. This leaves at least 112 slots outside any one network identity, while allowing the six-clean-browser release gate, its CI retry allowance, and shared-network visitors behind one egress address over the cycle. The `/try-demo` route independently limits bursts to 10 requests per IP and 60 requests globally per minute.
+npm run demo:reset accepts no tenant, organization, or slot selector and fails closed unless DEMO_RESET_MODE=nightly. The reviewed systemd timer or managed-cron fallback runs it at the 04:15 America/Toronto boundary. The Compose service and systemd unit retain their historical reconciliation names for one compatibility release, but they now reset only the fixed shared demo.
 
-## Safety contract
+The reset sequence is:
 
-`npm run demo:reset` accepts no command-line selectors and fails closed unless `DEMO_RESET_MODE=nightly`. It is intentionally destructive to every registered sandbox and must not run as an ordinary deployment step.
+1. Acquire the global reset advisory lock and the exclusive shared-demo transaction fence.
+2. Mark shared_demo_reset_state as RESETTING.
+3. Revoke every live demo session and invalidate any legacy claim rows.
+4. Validate the fixed organization, user, membership, and demo_accountant role.
+5. Purge all registered organization-owned tables in child-first order.
+6. Run app.reset_shared_demo_extensions to remove noncanonical synthetic identities and restore shared settings.
+7. Reseed tax packs, master data, banking fixtures, AR/AP documents, journals, and reconciliation data.
+8. Post issued fixtures through normal posting controls and verify exact baseline counts.
+9. Mark the state READY, record the completed reset time and baseline version, and advance the next boundary.
 
-Normal `npm run demo:bootstrap` is non-destructive: it seeds the immutable template and prepares only additive `DIRTY` slots. It does not reset an `ASSIGNED` sandbox, revoke its session, or invalidate its browser claim.
+New demo entry is available only while the state is READY and the boundary is not overdue. A failed reset stores FAILED plus an owner-visible error, revokes open sessions, and keeps new entry closed.
 
-Nightly reconciliation obtains the global reset lock, blocks new claims, and processes every slot. For each organization it locks and revokes live demo sessions, invalidates active claims, purges registered organization-owned tables child-first, invokes `app.reset_demo_sandbox_extensions(organization_id, canonical_user_id)`, reseeds encrypted fixtures under the existing organization DEK, verifies exact baseline counts, increments the generation, and returns the slot to `READY`. Only after all 128 slots succeed does it advance the pool cycle and the next 04:15 `America/Toronto` boundary. A failed slot is `QUARANTINED`, the pool remains expired, and demo access fails closed until an operator repairs and reruns the full reconciliation.
+## Manual execution
 
-Future modules register ordinary organization-owned tables in `demo_sandbox_reset_tables` with child-first `purge_order`. A migration that needs identity or cross-tenant cleanup must replace the extension hook. The maintenance code validates every registered identifier and requires an `organization_id` column before dynamic deletion.
+Run from the checked-out release directory during a reviewed maintenance window:
 
-The maintenance container runs as the database owner because the purge temporarily uses `session_replication_role=replica`. It has the root KEK mounted from a file, no published port or egress network, a read-only root filesystem, and only the private PostgreSQL network. The application role cannot read claim hashes or invoke maintenance.
+    docker compose --profile demo-maintenance build reconcile_demo_sandboxes
+    docker compose --profile demo-maintenance run --rm --no-deps reconcile_demo_sandboxes
 
-Claims and sandboxes are not an erasure guarantee. Encrypted backups may retain pre-reset records according to the backup retention policy. The demo must never contain real or confidential information.
+Do not append an organization ID or other selector. After completion, verify one shared_demo_reset_state row with READY, the current baseline version, a future reset_after, and a recent last_completed_reset_at. Then open two independent browser contexts and prove they enter the same organization and share a newly created uniquely numbered transaction.
 
-## Manual acceptance
+## Failure recovery
 
-After migrations and `bootstrap_demo` prepare the additive pool, build the one reviewed maintenance service:
+Keep demo login or writes disabled while reset maintenance is unavailable. Repair the underlying schema, encryption, role, or seed problem through a reviewed forward change and rerun the complete reconciliation. Never mark the state ready by hand, partially delete tenant tables, disable triggers, or edit the reset boundary to bypass the fail-closed gate.
 
-```bash
-docker compose --profile demo-maintenance build reconcile_demo_sandboxes
-```
+The application runtime role can read only the aggregate app.shared_demo_operations_state result. It cannot read or write shared_demo_reset_state, invoke app.reset_shared_demo_extensions, select a different organization, or run reset code. The maintenance container has owner database access and the organization wrapping key because the baseline includes encrypted values; it has no public port, provider credential, or egress network.
 
-Run the destructive acceptance only in an announced maintenance window:
+## Schema evolution and rollback
 
-```bash
-docker compose --profile demo-maintenance run --rm --no-deps reconcile_demo_sandboxes
-```
+Future organization-owned modules must register purge order in demo_sandbox_reset_tables; that legacy table name is retained as the reviewed reset registry during the compatibility window. Cross-tenant or identity cleanup belongs in app.reset_shared_demo_extensions.
 
-Do not append an organization, UUID, or slot argument. Verify 128 `READY` slots, zero `QUARANTINED`/`RESETTING` slots, a future `demo_sandbox_pool.reset_after`, and an updated `last_completed_reset_at` before reopening traffic.
-
-## Scheduling on the target
-
-The preferred systemd timer is DST-safe and runs once at 04:15 Toronto time:
-
-```bash
-install -m 0644 deploy/systemd/business-finlynq-demo-reconcile.service /etc/systemd/system/
-install -m 0644 deploy/systemd/business-finlynq-demo-reconcile.timer /etc/systemd/system/
-install -m 0644 deploy/systemd/business-finlynq-monitor-notify@.service /etc/systemd/system/
-systemctl daemon-reload
-systemctl enable --now business-finlynq-demo-reconcile.timer
-```
-
-Set `MONITOR_EXPECT_DEMO_MAINTENANCE=true`, `MONITOR_EXPECT_DEMO_POOL_SIZE=128`, and the reviewed write/login expectations in `/etc/business-finlynq/operations.env`. The monitor validates the timer, pool capacity, quarantine/reset states, and whether the pool boundary is overdue.
-
-Where only the deploy-owned UTC crontab is available, run `bash deploy/cron/install.sh`. The committed schedule invokes the gated wrapper at 08:15 and 09:15 UTC; exactly one is 04:15 Toronto across EST/EDT, while the other exits without resetting. The installer replaces the old five-minute dirty reset and hourly due-check inside the managed markers. The success-only Toronto date stamp prevents duplicate completion.
-
-Before changing schema, pause the selected scheduler and drain its shared lock. Ordinary deploys then run migrations and bootstrap without resetting assigned sandboxes. Re-enable scheduling after acceptance; do not run nightly reconciliation on every deployment.
-
-## Rollback and recovery
-
-Disable the nightly scheduler before rolling back to an incompatible artifact:
-
-```bash
-systemctl disable --now business-finlynq-demo-reconcile.timer
-```
-
-Keep demo login/writes disabled while maintenance is unavailable. Never delete a sandbox organization, alter its generation, disable triggers, clear claims, or mark a dirty/quarantined slot ready by hand. Use a reviewed forward migration, rerun full reconciliation, inspect journal output and pool state, then re-enable the scheduler.
+Legacy pool, slot, and claim tables remain owner-only for one release so a rollback can read historical state. Current login and reset paths never allocate them. A later migration may remove those tables after the rollback window closes. Encrypted backups may retain pre-reset records under the backup retention policy, so the demo must never contain real or confidential information.

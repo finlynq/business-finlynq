@@ -33,6 +33,8 @@ business.finlynq.com {
 
   # Bind the access event to the same edge UUID sent upstream and returned by
   # the application. Never use the untrusted inbound header as correlation.
+  # Do not log OAuth authorization codes or state.
+  log_skip /api/document-storage/callback/*
   log_append request_id {http.request.uuid}
 
   log {

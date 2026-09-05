@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import { createHash } from "node:crypto";
 
 type ReadinessState = "ready" | "disabled";
 
@@ -47,13 +48,13 @@ async function openDemo(page: Page, destination: string): Promise<void> {
   await expect(page).toHaveURL(new RegExp(`${destination.replaceAll("/", "\\/")}$`));
 }
 
-async function readSandboxName(page: Page): Promise<string> {
+async function readDemoOrganizationName(page: Page): Promise<string> {
   const accountButton = page.getByRole("button", { name: "Open account and security menu" });
   await accountButton.click();
   const details = page.getByRole("dialog");
   await expect(details).toBeVisible();
-  const match = (await details.textContent())?.match(/Northstar Demo Sandbox \d{3}/);
-  expect(match, "The account menu must expose the leased synthetic organization name").not.toBeNull();
+  const match = (await details.textContent())?.match(/Northstar Demo Group/);
+  expect(match, "The account menu must expose the shared demo organization name").not.toBeNull();
   await page.getByRole("button", { name: "Close account menu" }).click();
   return match?.[0] ?? "";
 }
@@ -89,6 +90,58 @@ async function createBillDraft(
 
   const bill = page.getByRole("row").filter({ hasText: input.number });
   await expect(bill).toContainText("DRAFT");
+}
+
+
+async function evidenceRequestHeaders(page: Page) {
+  // Chromium accepts Secure cookies on loopback HTTP; APIRequestContext does
+  // not. Explicitly forward this browser context's cookies for local acceptance.
+  return { Origin: new URL(page.url()).origin,
+    "User-Agent": await page.evaluate(() => navigator.userAgent),
+    Cookie: (await page.context().cookies()).map((cookie) => `${cookie.name}=${cookie.value}`).join("; ") };
+}
+async function attachInvoiceAndReceipt(page: Page, sourceNumber: string) {
+  const headers = await evidenceRequestHeaders(page);
+  let expectedVersion = 1;
+  const attachments: Array<{ assetId: string; filename: string; downloadUrl: string }> = [];
+  for (const purpose of ["INVOICE", "RECEIPT"] as const) {
+    const bytes = Buffer.from("%PDF-1.4\n1 0 obj << /Type /Catalog >> endobj\n%%EOF");
+    const filename = `${sourceNumber}-${purpose.toLowerCase()}.pdf`;
+    const upload = { module: "payables", filename, mimeType: "application/pdf", byteSize: bytes.length,
+      sha256: createHash("sha256").update(bytes).digest("hex"), contentBase64: bytes.toString("base64"),
+      idempotencyKey: crypto.randomUUID() };
+    const response = await page.request.post("/api/document-evidence", { headers, data: upload });
+    expect(response.status(), await response.text()).toBe(201);
+    const assetId = (await response.json()).asset.assetId as string;
+    const replay = await page.request.post("/api/document-evidence", { headers, data: upload });
+    expect(replay.status()).toBe(200);
+    expect((await replay.json()).asset.assetId).toBe(assetId);
+    const link = { kind: "SUPPLIER_BILL", sourceNumber, expectedVersion, assetId, purpose,
+      idempotencyKey: crypto.randomUUID(), reason: "Release acceptance source evidence" };
+    const linked = await page.request.post("/api/document-evidence/links", { headers, data: link });
+    expect(linked.status(), await linked.text()).toBe(201);
+    const document = (await linked.json()).document;
+    expectedVersion = document.version;
+    const linkReplay = await page.request.post("/api/document-evidence/links", { headers, data: link });
+    expect(linkReplay.status()).toBe(200);
+    attachments.push({ assetId, filename, downloadUrl: `/api/document-evidence/${assetId}?sourceDocumentId=${document.id}` });
+  }
+  await page.reload();
+  const bill = page.getByRole("row").filter({ hasText: sourceNumber });
+  await bill.getByRole("button", { name: "Edit draft", exact: true }).click();
+  await page.getByLabel("Description", { exact: true }).first().fill("Supplier bill with retained invoice and receipt");
+  await page.getByRole("button", { name: "Save draft" }).click();
+  await bill.getByRole("button", { name: "View details", exact: true }).click();
+  for (const attachment of attachments) {
+    await expect(page.getByRole("link", { name: attachment.filename, exact: true })).toBeVisible();
+    const download = await page.request.get(attachment.downloadUrl, { headers });
+    expect(download.status()).toBe(200);
+    expect(download.headers()["content-disposition"]).toContain("attachment;");
+    expect(download.headers()["cache-control"]).toContain("no-store");
+    expect((await download.body()).toString()).toContain("%PDF-1.4");
+  }
+  await page.getByRole("button", { name: "Close details" }).click();
+  return attachments;
 }
 
 test("public website, readiness, and security headers are release-ready", async ({ page, request }) => {
@@ -185,19 +238,22 @@ test("demo session protects workspace routes and is revoked by sign-out", async 
   await expect(page.getByRole("navigation", { name: "Banking views" })).toBeVisible();
   await page.goto("/app/journals");
 
-  const seededDraft = page.getByRole("row").filter({ hasText: "Synthetic Canadian software accrual" });
-  await expect(seededDraft).toContainText("DRAFT");
-  await seededDraft.getByText("Post draft", { exact: true }).click();
-  await seededDraft.getByRole("checkbox").check();
-  await seededDraft.getByRole("button", { name: "Confirm posting" }).click();
-  await expect(seededDraft).toContainText("POSTED");
-  await expect(seededDraft.getByText("Reverse", { exact: true })).toBeVisible();
+  // The public demo is shared and writable, so visitor-created journals can
+  // legitimately push an older baseline fixture beyond the first register page.
+  // Use the register's supported search path to verify that the fixture remains
+  // available without coupling release acceptance to mutable page-one ordering.
+  const journalFilter = page.getByRole("form", { name: "Filter journal register" });
+  await journalFilter.getByRole("searchbox", { name: "Journal, description, entity, or type" })
+    .fill("Synthetic Canadian software accrual");
+  await journalFilter.getByRole("button", { name: "Search", exact: true }).click();
+  const seededJournal = page.getByRole("row").filter({ hasText: "Synthetic Canadian software accrual" });
+  await expect(seededJournal).toBeVisible();
 
   await page.goto("/app");
   await expect(page.getByRole("heading", { level: 1, name: "Accounting overview" })).toBeVisible();
   await expect(page.getByRole("link", { name: "Create a permanent business account" })).toBeVisible();
   await page.getByRole("button", { name: "Open account and security menu" }).click();
-  await expect(page.getByRole("dialog")).toContainText("Public synthetic sandbox");
+  await expect(page.getByRole("dialog")).toContainText("Shared public demo");
   await expect(page.getByRole("link", { name: "Create account", exact: true })).toBeVisible();
   await page.getByRole("button", { name: "Sign out" }).click();
   await expect(page).toHaveURL(/\/$/);
@@ -209,6 +265,7 @@ test("demo session protects workspace routes and is revoked by sign-out", async 
 
 test("writable demo can create, post, and void an AR invoice", async ({ page }) => {
   const errors = collectBrowserErrors(page);
+  const invoiceNumber = `INV-E2E-${crypto.randomUUID().slice(0, 8).toUpperCase()}`;
   await page.goto("/login?next=%2Fapp%2Freceivables%2Finvoices");
   const demoHref = await page.getByRole("link", { name: /Open the public demo/ }).getAttribute("href");
   if (!demoHref) throw new Error("Demo login link is missing its target");
@@ -217,27 +274,27 @@ test("writable demo can create, post, and void an AR invoice", async ({ page }) 
   await page.goto("/app/receivables/invoices");
 
   await page.getByRole("button", { name: /New invoice/ }).click();
-  await page.getByLabel("Invoice number").fill("INV-E2E-VOID");
+  await page.getByLabel("Invoice number").fill(invoiceNumber);
   await page.getByLabel("Description", { exact: true }).first().fill("Release-gate consulting invoice");
   const line = page.getByRole("group", { name: "Line 1" });
   await line.getByLabel("Description").fill("Implementation services");
   await line.getByLabel("Net amount").fill("100.00");
   await page.getByRole("button", { name: "Save draft" }).click();
 
-  const invoice = page.getByRole("row").filter({ hasText: "INV-E2E-VOID" });
+  const invoice = page.getByRole("row").filter({ hasText: invoiceNumber });
   await expect(invoice).toContainText("DRAFT");
   await invoice.getByRole("button", { name: "Issue", exact: true }).click();
   await expect(invoice).toContainText("POSTED");
   await invoice.getByRole("button", { name: "Void", exact: true }).click();
 
-  const voidHeading = page.getByRole("heading", { name: "Void INV-E2E-VOID" });
+  const voidHeading = page.getByRole("heading", { name: `Void ${invoiceNumber}` });
   const voidPanel = page.locator("section").filter({ has: voidHeading });
   const submitVoid = page.getByRole("button", { name: "Void and reverse" });
   await expect(submitVoid).toBeEnabled();
   await page.getByLabel("Mandatory reason").fill("Release acceptance reversal");
   await submitVoid.click();
   await expect(invoice).toContainText("VOIDED");
-  await expect(page.getByText("Release acceptance reversal", { exact: true })).toBeVisible();
+  await expect(invoice.getByText("Release acceptance reversal", { exact: true })).toBeVisible();
   await expect(voidPanel).toBeHidden();
 
   await page.getByRole("button", { name: "Open account and security menu" }).click();
@@ -245,39 +302,44 @@ test("writable demo can create, post, and void an AR invoice", async ({ page }) 
   expect(errors).toEqual([]);
 });
 
-test("writable demo completes and exactly reverses an AP bill payment lifecycle", async ({ page }) => {
+for (const fundingMethod of ["BANK", "SHAREHOLDER_ADVANCE"] as const) {
+test(`writable demo completes and exactly reverses an AP bill ${fundingMethod} settlement lifecycle`, async ({ page }) => {
   const errors = collectBrowserErrors(page);
+  const billNumber = `BILL-E2E-PAY-${crypto.randomUUID().slice(0, 8).toUpperCase()}`;
+  const paymentNumber = `PAY-E2E-${crypto.randomUUID().slice(0, 8).toUpperCase()}`;
   await openDemo(page, "/app/payables/bills");
 
   await createBillDraft(page, {
-    number: "BILL-E2E-PAY",
+    number: billNumber,
     description: "Release-gate supplier bill",
     amount: "100.00",
   });
 
-  const bill = page.getByRole("row").filter({ hasText: "BILL-E2E-PAY" });
+  const evidence = fundingMethod === "SHAREHOLDER_ADVANCE" ? await attachInvoiceAndReceipt(page, billNumber) : [];
+  const bill = page.getByRole("row").filter({ hasText: billNumber });
   await bill.getByRole("button", { name: "Issue", exact: true }).click();
   await expect(bill).toContainText("POSTED");
   await expect(bill).toContainText("CAD 100.00");
   await expect(bill).toContainText("OPEN");
 
-  await bill.getByRole("button", { name: "Record payment", exact: true }).click();
-  await expect(page.getByRole("heading", { name: "Record payment" })).toBeVisible();
-  await page.getByLabel("Payment number").fill("PAY-E2E-VOID");
+  await bill.getByRole("button", { name: "Record settlement", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Record settlement" })).toBeVisible();
+  await page.getByLabel("Settlement number").fill(paymentNumber);
+  await page.getByRole("combobox", { name: /^Settlement method/ }).selectOption(fundingMethod);
   await page.getByLabel("Description", { exact: true }).fill("Release-gate supplier payment");
-  await page.getByLabel("Allocation for BILL-E2E-PAY").fill("100.00");
+  await page.getByLabel(`Allocation for ${billNumber}`).fill("100.00");
   await expect(page.getByLabel("Total allocated")).toHaveValue("CAD 100.00");
-  await page.getByRole("button", { name: "Record and post payment" }).click();
+  await page.getByRole("button", { name: "Record and post settlement" }).click();
 
-  const payment = page.getByRole("row").filter({ hasText: "PAY-E2E-VOID" });
+  const payment = page.getByRole("row").filter({ hasText: paymentNumber });
   await expect(payment).toContainText("POSTED");
   await expect(payment).toContainText("1 open item");
   await expect(bill).toContainText("CAD 0.00");
   await expect(bill).toContainText("SETTLED");
-  await expect(bill.getByRole("button", { name: "Reverse payment first" })).toBeDisabled();
+  await expect(bill.getByRole("button", { name: "Reverse settlement first" })).toBeDisabled();
 
   await payment.getByRole("button", { name: "Void", exact: true }).click();
-  await expect(page.getByRole("heading", { name: "Void PAY-E2E-VOID" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: `Void ${paymentNumber}` })).toBeVisible();
   await page.getByLabel("Mandatory reason").fill("Release acceptance payment reversal");
   await page.getByRole("button", { name: "Void and reverse" }).click();
   await expect(payment).toContainText("VOIDED");
@@ -286,20 +348,38 @@ test("writable demo completes and exactly reverses an AP bill payment lifecycle"
   await expect(bill).toContainText("OPEN");
 
   await bill.getByRole("button", { name: "Void", exact: true }).click();
-  await expect(page.getByRole("heading", { name: "Void BILL-E2E-PAY" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: `Void ${billNumber}` })).toBeVisible();
   await page.getByLabel("Mandatory reason").fill("Release acceptance bill reversal");
   await page.getByRole("button", { name: "Void and reverse" }).click();
   await expect(bill).toContainText("VOIDED");
   await expect(bill).toContainText("Release acceptance bill reversal");
-
+  if (evidence.length) {
+    await bill.getByRole("button", { name: "View details", exact: true }).click();
+    const headers = await evidenceRequestHeaders(page);
+    for (const attachment of evidence) {
+      const link = page.getByRole("link", { name: attachment.filename, exact: true });
+      await expect(link).toBeVisible();
+      expect((await page.request.get((await link.getAttribute("href"))!, { headers })).status()).toBe(200);
+      expect((await page.request.get(attachment.downloadUrl, { headers })).status()).toBe(200);
+    }
+    const forbidden = await page.request.delete("/api/document-evidence/links", {
+      headers,
+      data: { kind: "SUPPLIER_BILL", sourceNumber: billNumber, expectedVersion: 6,
+        assetId: evidence[0].assetId, idempotencyKey: crypto.randomUUID(), reason: "Posted evidence cannot be detached" },
+    });
+    expect(forbidden.status()).toBe(409);
+  }
   await revokeDemoSession(page);
+  for (const attachment of evidence) expect((await page.request.get(attachment.downloadUrl)).status()).toBe(401);
   expect(errors).toEqual([]);
 });
 
-test("concurrent demo visitors are isolated and a released dirty slot is not reissued", async ({ browser }, testInfo) => {
+}
+
+test("concurrent demo visitors share one company and see each other's changes", async ({ browser }, testInfo) => {
   test.setTimeout(90_000);
   const baseURL = testInfo.project.use.baseURL;
-  if (typeof baseURL !== "string") throw new Error("Playwright baseURL is required for isolation acceptance");
+  if (typeof baseURL !== "string") throw new Error("Playwright baseURL is required for shared-demo acceptance");
   const contextA = await browser.newContext({ baseURL });
   const contextB = await browser.newContext({ baseURL });
   const pageA = await contextA.newPage();
@@ -309,39 +389,40 @@ test("concurrent demo visitors are isolated and a released dirty slot is not rei
   let contextC: Awaited<ReturnType<typeof browser.newContext>> | null = null;
   let pageC: Page | null = null;
   let errorsC: string[] = [];
+  const billNumber = `BILL-E2E-SHARED-${crypto.randomUUID().slice(0, 8).toUpperCase()}`;
 
   try {
     await Promise.all([
       openDemo(pageA, "/app/payables/bills"),
       openDemo(pageB, "/app/payables/bills"),
     ]);
-    const [sandboxA, sandboxB] = await Promise.all([
-      readSandboxName(pageA),
-      readSandboxName(pageB),
+    const [organizationA, organizationB] = await Promise.all([
+      readDemoOrganizationName(pageA),
+      readDemoOrganizationName(pageB),
     ]);
-    expect(sandboxA).not.toBe(sandboxB);
+    expect(organizationA).toBe("Northstar Demo Group");
+    expect(organizationB).toBe(organizationA);
 
     await createBillDraft(pageA, {
-      number: "BILL-E2E-ISOLATED",
-      description: "Visitor A private draft",
+      number: billNumber,
+      description: "Visitor A shared draft",
       amount: "17.00",
     });
     await pageA.reload();
-    await expect(pageA.getByRole("row").filter({ hasText: "BILL-E2E-ISOLATED" })).toContainText("DRAFT");
+    await expect(pageA.getByRole("row").filter({ hasText: billNumber })).toContainText("DRAFT");
     await pageB.reload();
-    await expect(pageB.getByRole("row").filter({ hasText: "BILL-E2E-ISOLATED" })).toHaveCount(0);
+    await expect(pageB.getByRole("row").filter({ hasText: billNumber })).toContainText("DRAFT");
 
     await revokeDemoSession(pageA);
     contextC = await browser.newContext({ baseURL });
     pageC = await contextC.newPage();
     errorsC = collectBrowserErrors(pageC);
     await openDemo(pageC, "/app/payables/bills");
-    const sandboxC = await readSandboxName(pageC);
-    expect(sandboxC).not.toBe(sandboxA);
-    expect(sandboxC).not.toBe(sandboxB);
-    await expect(pageC.getByRole("row").filter({ hasText: "BILL-E2E-ISOLATED" })).toHaveCount(0);
+    const organizationC = await readDemoOrganizationName(pageC);
+    expect(organizationC).toBe(organizationA);
+    await expect(pageC.getByRole("row").filter({ hasText: billNumber })).toContainText("DRAFT");
 
-    // Revoke the two remaining leases in the assertion path. The finally block
+    // Revoke the two remaining sessions in the assertion path. The finally block
     // remains only a safety net for an earlier failure.
     await revokeDemoSession(pageB);
     await revokeDemoSession(pageC);

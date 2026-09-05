@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
+import { evidenceReferencesSchema } from "./evidence-model";
 import {
   exact,
   isQuantizedMoney,
@@ -9,10 +10,16 @@ import {
 } from "@/kernel/money";
 import { decideTax } from "@/modules/tax/engine";
 import type { TaxDecision, TaxDirection, TaxFacts } from "@/modules/tax/types";
+import { settlementMethodSchema, validateSettlementFunding } from "./settlement-funding";
+import { BusinessDocumentValidationError } from "./validation-errors";
 
 const positiveAmountSchema = z.string().trim().regex(/^\d+(?:\.\d{1,9})?$/).refine(
   (value) => exact(value).greaterThan(0),
   "Amount must be greater than zero",
+);
+const signedNonZeroAmountSchema = z.string().trim().regex(/^-?\d+(?:\.\d{1,9})?$/).refine(
+  (value) => !exact(value).isZero(),
+  "Amount must not be zero",
 );
 const positiveRateSchema = z.string().trim().regex(/^\d+(?:\.\d{1,18})?$/).refine(
   (value) => exact(value).greaterThan(0),
@@ -82,13 +89,312 @@ export const SETTLEMENT_KIND_POLICY: Readonly<Record<SettlementDocumentKind, Rea
   },
 };
 
-export const fxSnapshotSchema = z.object({
+export const fxInputSchema = z.object({
   rate: positiveRateSchema,
   source: z.string().trim().min(1).max(100),
   effectiveAt: z.iso.datetime({ offset: true }),
   quoteConvention: z.literal("FUNCTIONAL_UNITS_PER_TRANSACTION_UNIT")
     .default("FUNCTIONAL_UNITS_PER_TRANSACTION_UNIT"),
 }).strict();
+
+const providerFxCalculationSchema = z.enum([
+  "DIRECT_TO_CAD",
+  "INVERSE_FROM_CAD",
+  "CROSS_VIA_CAD",
+  "DIRECT_FROM_EUR",
+  "INVERSE_TO_EUR",
+  "CROSS_VIA_EUR",
+]);
+
+const providerFxFormulaSchema = z.enum([
+  "CAD_PER_SOURCE_UNIT",
+  "1 / CAD_PER_TARGET_UNIT",
+  "CAD_PER_SOURCE_UNIT / CAD_PER_TARGET_UNIT",
+  "TARGET_UNITS_PER_EUR",
+  "1 / SOURCE_UNITS_PER_EUR",
+  "TARGET_UNITS_PER_EUR / SOURCE_UNITS_PER_EUR",
+]);
+
+const providerFxLegSchema = z.object({
+  currency: z.string().trim().toUpperCase().regex(/^[A-Z]{3}$/),
+  rate: positiveRateSchema,
+  rateConvention: z.enum([
+    "CAD_PER_CURRENCY_UNIT",
+    "CURRENCY_UNITS_PER_EUR",
+  ]),
+  observedDate: z.iso.date(),
+  seriesKey: z.string().trim().min(1).max(100),
+}).strict();
+
+const fxProvenanceSchema = z.object({
+  mode: z.enum(["FUNCTIONAL", "ORGANIZATION_RATE", "PROVIDER_RATE", "EXPLICIT"]),
+  asOfDate: z.iso.date(),
+  resolvedAt: z.iso.datetime({ offset: true }),
+  policyKey: z.string().trim().min(1).max(100),
+  policyVersion: z.number().int().positive(),
+  organizationRateId: z.uuid().optional(),
+  rateRecordedAt: z.iso.datetime({ offset: true }).optional(),
+  providerKey: z.enum([
+    "BANK_OF_CANADA",
+    "EUROPEAN_CENTRAL_BANK",
+    "YAHOO_FINANCE_EXPERIMENTAL",
+  ]).optional(),
+  providerSymbol: z.string().trim().min(1).max(200).optional(),
+  providerSourceCurrency: z.string().trim().toUpperCase().regex(/^[A-Z]{3}$/).optional(),
+  providerTargetCurrency: z.string().trim().toUpperCase().regex(/^[A-Z]{3}$/).optional(),
+  providerObservedAt: z.iso.datetime({ offset: true }).optional(),
+  providerRetrievedAt: z.iso.datetime({ offset: true }).optional(),
+  providerResponseSha256: z.string().regex(/^[a-f0-9]{64}$/).optional(),
+  providerMaxLookbackDays: z.number().int().min(1).max(7).optional(),
+  providerCalculation: providerFxCalculationSchema.optional(),
+  providerFormula: providerFxFormulaSchema.optional(),
+  providerLegs: z.array(providerFxLegSchema).min(1).max(2).optional(),
+}).strict().superRefine((value, context) => {
+  const stored = value.mode === "ORGANIZATION_RATE";
+  const storedEvidence = Boolean(value.organizationRateId) && Boolean(value.rateRecordedAt);
+  if (stored !== storedEvidence
+      || (!stored && (value.organizationRateId !== undefined || value.rateRecordedAt !== undefined))) {
+    context.addIssue({
+      code: "custom",
+      message: "Stored organization FX provenance requires its rate identity and recorded time",
+    });
+  }
+
+  const provider = value.mode === "PROVIDER_RATE";
+  const providerEvidence = value.providerKey !== undefined
+    && value.providerSymbol !== undefined
+    && value.providerObservedAt !== undefined
+    && value.providerRetrievedAt !== undefined
+    && value.providerResponseSha256 !== undefined
+    && value.providerMaxLookbackDays !== undefined;
+  const providerRetrievedAfterResolution = provider
+    && value.providerRetrievedAt !== undefined
+    && Date.parse(value.providerRetrievedAt) > Date.parse(value.resolvedAt);
+  if (provider !== providerEvidence || providerRetrievedAfterResolution) {
+    context.addIssue({
+      code: "custom",
+      message: "Provider FX provenance requires complete observation, retrieval, and resolution times",
+    });
+  }
+  const pairEvidenceComplete = value.providerSourceCurrency !== undefined
+    && value.providerTargetCurrency !== undefined;
+  const pairEvidencePartial = value.providerSourceCurrency !== undefined
+    || value.providerTargetCurrency !== undefined;
+  if (pairEvidencePartial && !pairEvidenceComplete) {
+    context.addIssue({
+      code: "custom",
+      message: "Provider FX currency-pair evidence requires both source and target currencies",
+    });
+  }
+
+  const centralFieldsPresent = value.providerCalculation !== undefined
+    || value.providerFormula !== undefined
+    || value.providerLegs !== undefined;
+  if (provider && value.providerKey === "YAHOO_FINANCE_EXPERIMENTAL") {
+    const yahooSymbolValid = value.providerSymbol !== undefined
+      && /^[A-Z]{3}(?:[A-Z]{3})?=X$/.test(value.providerSymbol);
+    const yahooSource = value.providerSourceCurrency ?? "";
+    const yahooTarget = value.providerTargetCurrency ?? "";
+    const expectedSymbol = pairEvidenceComplete
+      ? yahooSource === "USD"
+        ? yahooTarget + "=X"
+        : yahooSource + yahooTarget + "=X"
+      : value.providerSymbol;
+    if (value.policyKey !== "YAHOO_FINANCE_EXPERIMENTAL_DIRECT_DAILY_CLOSE"
+        || !yahooSymbolValid
+        || centralFieldsPresent
+        || (pairEvidenceComplete && (
+          yahooSource === yahooTarget
+          || value.providerSymbol !== expectedSymbol
+        ))) {
+      context.addIssue({
+        code: "custom",
+        message: "Yahoo FX provenance requires its exact direct symbol and no derived-rate evidence",
+      });
+    }
+  }
+
+  if (provider && value.providerKey === "BANK_OF_CANADA") {
+    const source = value.providerSourceCurrency;
+    const target = value.providerTargetCurrency;
+    const observedDate = value.providerObservedAt?.slice(0, 10);
+    const expected = !source || !target || source === target
+      ? null
+      : target === "CAD"
+        ? {
+            calculation: "DIRECT_TO_CAD",
+            formula: "CAD_PER_SOURCE_UNIT",
+            currencies: [source],
+          }
+        : source === "CAD"
+          ? {
+              calculation: "INVERSE_FROM_CAD",
+              formula: "1 / CAD_PER_TARGET_UNIT",
+              currencies: [target],
+            }
+          : {
+              calculation: "CROSS_VIA_CAD",
+              formula: "CAD_PER_SOURCE_UNIT / CAD_PER_TARGET_UNIT",
+              currencies: [source, target],
+            };
+    const legs = value.providerLegs;
+    const consistent = expected !== null
+      && legs !== undefined
+      && value.policyKey === "BANK_OF_CANADA_DAILY_REFERENCE_RATE"
+      && value.providerCalculation === expected.calculation
+      && value.providerFormula === expected.formula
+      && legs.length === expected.currencies.length
+      && legs.every((leg, index) => (
+        leg.currency === expected.currencies[index]
+        && leg.rateConvention === "CAD_PER_CURRENCY_UNIT"
+        && leg.seriesKey === "FX" + leg.currency + "CAD"
+        && leg.observedDate === observedDate
+      ))
+      && value.providerSymbol === legs.map((leg) => leg.seriesKey).join("+");
+    if (!consistent) {
+      context.addIssue({
+        code: "custom",
+        message: "Bank of Canada provenance must match the CAD calculation, pair, series, and common observation date",
+      });
+    }
+  }
+
+  if (provider && value.providerKey === "EUROPEAN_CENTRAL_BANK") {
+    const source = value.providerSourceCurrency;
+    const target = value.providerTargetCurrency;
+    const observedDate = value.providerObservedAt?.slice(0, 10);
+    const expected = !source || !target || source === target
+      ? null
+      : source === "EUR"
+        ? {
+            calculation: "DIRECT_FROM_EUR",
+            formula: "TARGET_UNITS_PER_EUR",
+            currencies: [target],
+          }
+        : target === "EUR"
+          ? {
+              calculation: "INVERSE_TO_EUR",
+              formula: "1 / SOURCE_UNITS_PER_EUR",
+              currencies: [source],
+            }
+          : {
+              calculation: "CROSS_VIA_EUR",
+              formula: "TARGET_UNITS_PER_EUR / SOURCE_UNITS_PER_EUR",
+              currencies: [source, target],
+            };
+    const legs = value.providerLegs;
+    const consistent = expected !== null
+      && legs !== undefined
+      && value.policyKey === "EUROPEAN_CENTRAL_BANK_REFERENCE_RATE"
+      && value.providerCalculation === expected.calculation
+      && value.providerFormula === expected.formula
+      && legs.length === expected.currencies.length
+      && legs.every((leg, index) => (
+        leg.currency === expected.currencies[index]
+        && leg.rateConvention === "CURRENCY_UNITS_PER_EUR"
+        && leg.seriesKey === "EXR.D." + leg.currency + ".EUR.SP00.A"
+        && leg.observedDate === observedDate
+      ))
+      && value.providerSymbol === legs.map((leg) => leg.seriesKey).join("+");
+    if (!consistent) {
+      context.addIssue({
+        code: "custom",
+        message: "ECB provenance must match the EUR calculation, pair, series, and common observation date",
+      });
+    }
+  }
+
+  if (!provider && (
+    value.providerKey !== undefined
+    || value.providerSymbol !== undefined
+    || value.providerSourceCurrency !== undefined
+    || value.providerTargetCurrency !== undefined
+    || value.providerObservedAt !== undefined
+    || value.providerRetrievedAt !== undefined
+    || value.providerResponseSha256 !== undefined
+    || value.providerMaxLookbackDays !== undefined
+    || value.providerCalculation !== undefined
+    || value.providerFormula !== undefined
+    || value.providerLegs !== undefined
+  )) {
+    context.addIssue({
+      code: "custom",
+      message: "Provider FX evidence is only valid for provider-resolved rates",
+    });
+  }
+});
+
+export const fxSnapshotSchema = fxInputSchema.extend({
+  // Optional only so immutable snapshots written before server-side resolution remain readable.
+  provenance: fxProvenanceSchema.optional(),
+}).strict().superRefine((value, context) => {
+  const provenance = value.provenance;
+  if (provenance?.mode === "PROVIDER_RATE" && provenance.providerKey) {
+    const expectedSource = {
+      BANK_OF_CANADA: "Bank of Canada Valet API daily exchange rates",
+      EUROPEAN_CENTRAL_BANK: "Source: ECB statistics. Euro foreign exchange reference rates",
+      YAHOO_FINANCE_EXPERIMENTAL: "Yahoo Finance / ICE Data Services",
+    }[provenance.providerKey];
+    if (value.source !== expectedSource) {
+      context.addIssue({
+        code: "custom",
+        path: ["source"],
+        message: "Provider FX source attribution must match the recorded provider",
+      });
+    }
+  }
+
+  if (provenance?.mode === "PROVIDER_RATE"
+      && provenance.providerObservedAt
+      && provenance.providerRetrievedAt
+      && provenance.providerMaxLookbackDays) {
+    const asOfStart = Date.parse(provenance.asOfDate + "T00:00:00.000Z");
+    const observedAt = Date.parse(provenance.providerObservedAt);
+    const retrievedAt = Date.parse(provenance.providerRetrievedAt);
+    const effectiveAt = Date.parse(value.effectiveAt);
+    const earliestObservation = asOfStart
+      - (provenance.providerMaxLookbackDays * 24 * 60 * 60 * 1_000);
+    if (effectiveAt !== observedAt
+        || observedAt < earliestObservation
+        || observedAt >= asOfStart + (24 * 60 * 60 * 1_000)
+        || retrievedAt < observedAt) {
+      context.addIssue({
+        code: "custom",
+        path: ["provenance"],
+        message: "Provider FX times must match the observation and configured as-of window",
+      });
+    }
+  }
+
+  const legs = provenance?.providerLegs;
+  if (!provenance || !legs || !provenance.providerCalculation) return;
+
+  let calculatedRate;
+  if (provenance.providerCalculation === "DIRECT_TO_CAD"
+      || provenance.providerCalculation === "DIRECT_FROM_EUR") {
+    if (legs.length !== 1) return;
+    calculatedRate = exact(legs[0]!.rate);
+  } else if (provenance.providerCalculation === "INVERSE_FROM_CAD"
+      || provenance.providerCalculation === "INVERSE_TO_EUR") {
+    if (legs.length !== 1) return;
+    calculatedRate = exact(1).div(legs[0]!.rate);
+  } else {
+    if (legs.length !== 2) return;
+    calculatedRate = provenance.providerCalculation === "CROSS_VIA_CAD"
+      ? exact(legs[0]!.rate).div(legs[1]!.rate)
+      : exact(legs[1]!.rate).div(legs[0]!.rate);
+  }
+
+  if (!exact(value.rate).toDecimalPlaces(18).equals(
+    calculatedRate.toDecimalPlaces(18),
+  )) {
+    context.addIssue({
+      code: "custom",
+      path: ["rate"],
+      message: "Central-bank FX rate must equal the disclosed calculation over its source legs",
+    });
+  }
+});
 
 export const taxInputSchema = z.object({
   packKey: z.string().trim().min(1).max(100),
@@ -112,7 +418,8 @@ export const taxInputSchema = z.object({
 export const businessDocumentLineInputSchema = z.object({
   description: z.string().trim().min(1).max(500),
   accountCombinationId: z.uuid(),
-  netAmount: positiveAmountSchema,
+  netAmount: signedNonZeroAmountSchema,
+  lineType: z.enum(["STANDARD", "ADJUSTMENT"]).optional(),
   tax: taxInputSchema,
 }).strict();
 
@@ -135,14 +442,43 @@ export const businessDocumentInputSchema = z.object({
   lines: z.array(businessDocumentLineInputSchema).min(1).max(200),
 }).strict();
 
-export const createBusinessDocumentSchema = businessDocumentInputSchema.extend({
+const businessDocumentRequestSchema = businessDocumentInputSchema.extend({
+  fx: fxInputSchema.optional(),
+}).strict();
+
+export const createBusinessDocumentSchema = businessDocumentRequestSchema.extend({
   idempotencyKey: idempotencyKeySchema,
 }).strict();
 
-export const editBusinessDocumentSchema = businessDocumentInputSchema.extend({
+export function validateEditBusinessDocumentFxMode(
+  value: Readonly<{
+    fxResolutionMode?: "RESOLVE" | "PRESERVE" | "EXPLICIT";
+    fx?: unknown;
+  }>,
+  context: z.RefinementCtx,
+): void {
+  if ((value.fxResolutionMode === "RESOLVE" || value.fxResolutionMode === "PRESERVE")
+      && value.fx !== undefined) {
+    context.addIssue({
+      code: "custom",
+      path: ["fx"],
+      message: `${value.fxResolutionMode} FX mode requires fx to be omitted`,
+    });
+  }
+  if (value.fxResolutionMode === "EXPLICIT" && value.fx === undefined) {
+    context.addIssue({
+      code: "custom",
+      path: ["fx"],
+      message: "EXPLICIT FX mode requires rate, source, and effective time",
+    });
+  }
+}
+
+export const editBusinessDocumentSchema = businessDocumentRequestSchema.extend({
   expectedVersion: z.number().int().positive(),
+  fxResolutionMode: z.enum(["RESOLVE", "PRESERVE", "EXPLICIT"]).optional(),
   idempotencyKey: idempotencyKeySchema,
-}).strict();
+}).strict().superRefine(validateEditBusinessDocumentFxMode);
 
 export const issueBusinessDocumentSchema = z.object({
   kind: businessDocumentKindSchema,
@@ -179,15 +515,22 @@ export const recordSettlementSchema = z.object({
   settlementDate: z.iso.date(),
   currency: z.string().trim().toUpperCase().regex(/^[A-Z]{3}$/),
   amount: positiveAmountSchema,
-  fx: fxSnapshotSchema,
-  bankAccountCombinationId: z.uuid(),
+  fx: fxInputSchema.optional(),
+  bankAccountCombinationId: z.uuid().optional(),
+  settlementAccountCombinationId: z.uuid().optional(),
+  settlementMethod: settlementMethodSchema.optional(),
   realizedFxGainAccountCombinationId: z.uuid(),
   realizedFxLossAccountCombinationId: z.uuid(),
   fxRoundingAccountCombinationId: z.uuid().optional(),
   description: z.string().trim().min(1).max(500),
   allocations: z.array(settlementAllocationInputSchema).min(1).max(200),
   idempotencyKey: idempotencyKeySchema,
-}).strict();
+}).strict().superRefine(validateSettlementFunding);
+
+export const resolvedSettlementSchema = z.object({
+  ...recordSettlementSchema.shape,
+  fx: fxSnapshotSchema,
+}).strict().superRefine(validateSettlementFunding);
 
 export const voidSettlementSchema = z.object({
   kind: settlementDocumentKindSchema,
@@ -258,10 +601,42 @@ const businessDocumentSnapshotLineSchema = z.object({
   description: z.string(),
   accountCombinationId: z.uuid(),
   netAmount: z.string(),
+  // Absent only on snapshots written before signed supplier adjustments.
+  lineType: z.enum(["STANDARD", "ADJUSTMENT"]).optional(),
   tax: taxInputSchema,
   taxDecision: taxDecisionSchema,
   taxDecisionHash: z.string().regex(/^[a-f0-9]{64}$/),
 }).strict();
+
+function validateSnapshotProviderPair(
+  value: Readonly<{
+    accountingDate: string;
+    settlementDate?: string;
+    currency: string;
+    functionalCurrency: string;
+    fx: z.output<typeof fxSnapshotSchema>;
+  }>,
+  context: z.RefinementCtx,
+): void {
+  const provenance = value.fx.provenance;
+  const expectedAsOfDate = value.settlementDate ?? value.accountingDate;
+  if (provenance && provenance.asOfDate !== expectedAsOfDate) {
+    context.addIssue({
+      code: "custom",
+      path: ["fx", "provenance", "asOfDate"],
+      message: "FX provenance as-of date must match the document's FX resolution date",
+    });
+  }
+  if (provenance?.providerSourceCurrency !== undefined
+      && (provenance.providerSourceCurrency !== value.currency
+        || provenance.providerTargetCurrency !== value.functionalCurrency)) {
+    context.addIssue({
+      code: "custom",
+      path: ["fx", "provenance"],
+      message: "Provider FX currency-pair evidence must match the document currencies",
+    });
+  }
+}
 
 export const businessDocumentSnapshotSchema = z.object({
   schemaVersion: z.literal(1),
@@ -288,7 +663,42 @@ export const businessDocumentSnapshotSchema = z.object({
   taxTotal: z.string(),
   grossTotal: z.string(),
   grossFunctional: z.string(),
-}).strict();
+  evidence: evidenceReferencesSchema.optional(),
+}).strict().superRefine((value, context) => {
+  validateSnapshotProviderPair(value, context);
+  for (const line of value.lines) {
+    if (exact(line.netAmount).isNegative()) {
+      if (value.kind === "SALES_INVOICE") {
+        context.addIssue({
+          code: "custom",
+          path: ["lines", line.lineNumber - 1, "netAmount"],
+          message: "Sales-invoice lines must remain positive",
+        });
+      } else if (line.lineType !== "ADJUSTMENT") {
+        context.addIssue({
+          code: "custom",
+          path: ["lines", line.lineNumber - 1, "lineType"],
+          message: "A negative supplier-bill line must be marked ADJUSTMENT",
+        });
+      }
+    }
+  }
+  if (exact(value.grossTotal).isZero()) {
+    context.addIssue({
+      code: "custom",
+      path: ["grossTotal"],
+      message: "Zero-gross AR/AP documents are not supported",
+    });
+  } else if (exact(value.grossTotal).isNegative()) {
+    context.addIssue({
+      code: "custom",
+      path: ["grossTotal"],
+      message: value.kind === "SUPPLIER_BILL"
+        ? "A net supplier credit cannot be represented as a supplier bill"
+        : "A net customer credit cannot be represented as a sales invoice",
+    });
+  }
+});
 
 export const settlementSnapshotAllocationSchema = z.object({
   openItemId: z.uuid(),
@@ -317,13 +727,17 @@ export const settlementDocumentSnapshotSchema = z.object({
   amount: z.string(),
   settlementFunctionalAmount: z.string(),
   fx: fxSnapshotSchema,
-  bankAccountCombinationId: z.uuid(),
+  bankAccountCombinationId: z.uuid().optional(),
+  settlementAccountCombinationId: z.uuid().optional(),
+  settlementMethod: settlementMethodSchema.optional(),
   realizedFxGainAccountCombinationId: z.uuid(),
   realizedFxLossAccountCombinationId: z.uuid(),
   fxRoundingAccountCombinationId: z.uuid().nullable(),
   description: z.string(),
   allocations: z.array(settlementSnapshotAllocationSchema).min(1),
-}).strict();
+}).strict()
+  .superRefine(validateSettlementFunding)
+  .superRefine(validateSnapshotProviderPair);
 
 export const subledgerSourceSnapshotSchema = z.discriminatedUnion("kind", [
   businessDocumentSnapshotSchema,
@@ -332,6 +746,7 @@ export const subledgerSourceSnapshotSchema = z.discriminatedUnion("kind", [
 
 export type BusinessDocumentInput = z.infer<typeof businessDocumentInputSchema>;
 export type BusinessDocumentSnapshot = z.infer<typeof businessDocumentSnapshotSchema>;
+export type ResolvedSettlementInput = z.infer<typeof resolvedSettlementSchema>;
 export type SettlementDocumentSnapshot = z.infer<typeof settlementDocumentSnapshotSchema>;
 export type SubledgerSourceSnapshot = z.infer<typeof subledgerSourceSnapshotSchema>;
 
@@ -385,13 +800,18 @@ function assertTaxDecisionAccountingShape(
   decision: TaxDecision,
   direction: TaxDirection,
   currency: string,
+  taxableBasis: string,
 ): void {
-  if (!isQuantizedMoney(decision.totalTax, currency) || exact(decision.totalTax).isNegative()) {
+  const negativeBasis = exact(taxableBasis).isNegative();
+  const invalidSign = (amount: string) => negativeBasis
+    ? exact(amount).greaterThan(0)
+    : exact(amount).lessThan(0);
+  if (!isQuantizedMoney(decision.totalTax, currency) || invalidSign(decision.totalTax)) {
     throw new Error("Tax pack returned an invalid transaction-currency tax amount");
   }
   for (const component of decision.components) {
-    if (!isQuantizedMoney(component.amount, currency) || exact(component.amount).isNegative()) {
-      throw new Error(`Tax component ${component.key} returned an invalid amount`);
+    if (!isQuantizedMoney(component.amount, currency) || invalidSign(component.amount)) {
+      throw new Error("Tax component " + component.key + " returned an invalid amount");
     }
   }
   const recognized = sumExact(
@@ -436,16 +856,34 @@ export function buildBusinessDocumentSnapshot(
 
   const policy = DOCUMENT_KIND_POLICY[input.kind];
   const lines = input.lines.map((line, index) => {
+    const lineNumber = index + 1;
     if (!isQuantizedMoney(line.netAmount, input.currency)) {
-      throw new Error(`Line ${index + 1} exceeds ${input.currency} precision`);
+      throw new Error("Line " + lineNumber + " exceeds " + input.currency + " precision");
+    }
+    if (exact(line.netAmount).isNegative()) {
+      if (input.kind === "SALES_INVOICE") {
+        throw new BusinessDocumentValidationError(
+          "NEGATIVE_SALES_LINE_UNSUPPORTED",
+          "Line " + lineNumber + " is negative, but sales-invoice lines must remain positive.",
+          lineNumber,
+        );
+      }
+      if (line.lineType !== "ADJUSTMENT") {
+        throw new BusinessDocumentValidationError(
+          "SIGNED_LINE_REQUIRES_ADJUSTMENT",
+          "Line " + lineNumber + " is negative and must be marked as an ADJUSTMENT.",
+          lineNumber,
+        );
+      }
     }
     const decision = decideTax(line.tax.packKey, buildTaxFacts(policy.direction, line, input));
-    assertTaxDecisionAccountingShape(decision, policy.direction, input.currency);
+    assertTaxDecisionAccountingShape(decision, policy.direction, input.currency, line.netAmount);
     return {
-      lineNumber: index + 1,
+      lineNumber,
       description: line.description,
       accountCombinationId: line.accountCombinationId,
       netAmount: moneyString(line.netAmount, input.currency),
+      lineType: line.lineType,
       tax: line.tax,
       taxDecision: decision,
       taxDecisionHash: canonicalHash(decision),
@@ -460,6 +898,20 @@ export function buildBusinessDocumentSnapshot(
       .filter((component) => component.treatment === "SELF_ASSESSED_PAYABLE")
       .map((component) => component.amount)));
   const grossTotal = subtotal.plus(taxTotal).minus(selfAssessedTaxTotal);
+  if (grossTotal.isZero()) {
+    throw new BusinessDocumentValidationError(
+      "ZERO_GROSS_UNSUPPORTED",
+      "The document has a zero gross total; FinLynQ does not create zero-gross AR/AP open items.",
+    );
+  }
+  if (grossTotal.isNegative()) {
+    throw new BusinessDocumentValidationError(
+      "SUPPLIER_CREDIT_NOTE_REQUIRED",
+      input.kind === "SUPPLIER_BILL"
+        ? "The document is a net supplier credit and cannot be saved as a supplier bill."
+        : "The document is a net customer credit and cannot be saved as a sales invoice.",
+    );
+  }
   const taxMappingRequired = lines.some((line) => line.taxDecision.components.some(
     (component) => component.treatment === "PAYABLE" ||
       component.treatment === "RECOVERABLE" ||

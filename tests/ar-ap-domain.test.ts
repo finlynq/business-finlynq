@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   assertSnapshotTaxDecisionsCurrent,
   buildBusinessDocumentSnapshot,
+  businessDocumentSnapshotSchema,
   canonicalHash,
   sourceContentHash,
 } from "@/modules/subledger/document-model";
@@ -167,4 +168,104 @@ describe("AR/AP immutable source snapshots", () => {
       fx: { ...input.fx, rate: "0" },
     }, "CAD")).toThrow();
   });
+
+  it("ties FX provenance as-of date to the invoice accounting date", () => {
+    const input = baseDocument();
+    const historical = buildBusinessDocumentSnapshot({
+      ...input,
+      currency: "USD",
+      fx: {
+        rate: "1.35",
+        source: "Bank of Canada Valet API daily exchange rates",
+        effectiveAt: "2026-08-26T00:00:00.000Z",
+        quoteConvention: "FUNCTIONAL_UNITS_PER_TRANSACTION_UNIT",
+      },
+    }, "CAD");
+    const providerSnapshot = {
+      ...historical,
+      fx: {
+        ...historical.fx,
+        provenance: {
+          mode: "PROVIDER_RATE" as const,
+          asOfDate: "2026-08-27",
+          resolvedAt: "2026-08-27T13:00:00.000Z",
+          policyKey: "BANK_OF_CANADA_DAILY_REFERENCE_RATE",
+          policyVersion: 2,
+          providerKey: "BANK_OF_CANADA" as const,
+          providerSymbol: "FXUSDCAD",
+          providerSourceCurrency: "USD",
+          providerTargetCurrency: "CAD",
+          providerObservedAt: "2026-08-26T00:00:00.000Z",
+          providerRetrievedAt: "2026-08-27T12:00:00.000Z",
+          providerResponseSha256: "c".repeat(64),
+          providerMaxLookbackDays: 7,
+          providerCalculation: "DIRECT_TO_CAD" as const,
+          providerFormula: "CAD_PER_SOURCE_UNIT" as const,
+          providerLegs: [{
+            currency: "USD",
+            rate: "1.35",
+            rateConvention: "CAD_PER_CURRENCY_UNIT" as const,
+            observedDate: "2026-08-26",
+            seriesKey: "FXUSDCAD",
+          }],
+        },
+      },
+    };
+    expect(businessDocumentSnapshotSchema.parse(providerSnapshot)).toEqual(providerSnapshot);
+    expect(() => businessDocumentSnapshotSchema.parse({
+      ...providerSnapshot,
+      fx: {
+        ...providerSnapshot.fx,
+        provenance: { ...providerSnapshot.fx.provenance, asOfDate: "2026-08-26" },
+      },
+    })).toThrow(/as-of date must match/);
+  });
+
+  it("ties provider currency-pair evidence to the document and functional currencies", () => {
+    const input = baseDocument();
+    expect(() => buildBusinessDocumentSnapshot({
+      ...input,
+      currency: "USD",
+      fx: {
+        rate: "0.9",
+        source: "Bank of Canada Valet API daily exchange rates",
+        effectiveAt: "2026-08-26T00:00:00.000Z",
+        quoteConvention: "FUNCTIONAL_UNITS_PER_TRANSACTION_UNIT",
+        provenance: {
+          mode: "PROVIDER_RATE",
+          asOfDate: "2026-08-27",
+          resolvedAt: "2026-08-27T12:00:00.000Z",
+          policyKey: "BANK_OF_CANADA_DAILY_REFERENCE_RATE",
+          policyVersion: 2,
+          providerKey: "BANK_OF_CANADA",
+          providerSymbol: "FXUSDCAD+FXEURCAD",
+          providerSourceCurrency: "USD",
+          providerTargetCurrency: "EUR",
+          providerObservedAt: "2026-08-26T00:00:00.000Z",
+          providerRetrievedAt: "2026-08-27T12:00:00.000Z",
+          providerResponseSha256: "b".repeat(64),
+          providerMaxLookbackDays: 7,
+          providerCalculation: "CROSS_VIA_CAD",
+          providerFormula: "CAD_PER_SOURCE_UNIT / CAD_PER_TARGET_UNIT",
+          providerLegs: [
+            {
+              currency: "USD",
+              rate: "1.35",
+              rateConvention: "CAD_PER_CURRENCY_UNIT",
+              observedDate: "2026-08-26",
+              seriesKey: "FXUSDCAD",
+            },
+            {
+              currency: "EUR",
+              rate: "1.5",
+              rateConvention: "CAD_PER_CURRENCY_UNIT",
+              observedDate: "2026-08-26",
+              seriesKey: "FXEURCAD",
+            },
+          ],
+        },
+      },
+    }, "CAD")).toThrow(/must match the document currencies/);
+  });
+
 });

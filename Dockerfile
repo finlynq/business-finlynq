@@ -110,7 +110,7 @@ FROM node:24-alpine@sha256:e67514e5d0f6c46656005e1b693b2ec9d52e80b641307de684d4a
 ARG BUSINESS_FINLYNQ_IMAGE_REVISION=unknown
 LABEL org.opencontainers.image.revision=$BUSINESS_FINLYNQ_IMAGE_REVISION
 
-RUN apk add --no-cache curl libc6-compat \
+RUN apk add --no-cache curl libc6-compat poppler-utils \
   && addgroup --system --gid 1001 nodejs \
   && adduser --system --uid 1001 nextjs
 

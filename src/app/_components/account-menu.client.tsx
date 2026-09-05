@@ -68,7 +68,7 @@ export function AccountMenu({ principal }: { principal: AccountMenuPrincipal }) 
             </div>
             <button type="button" className="icon-button close-button" aria-label="Close account menu" onClick={close}>×</button>
           </div>
-          <p id={descriptionId}>{principal.sessionMode === "demo" ? "Public synthetic sandbox. Changes are disposable; do not enter real information or connect external systems." : "Your session is checked against active organization membership and roles."}</p>
+          <p id={descriptionId}>{principal.sessionMode === "demo" ? "Shared public demo. Everyone can see its changes until the nightly reset; do not enter real information or connect external systems." : "Your session is checked against active organization membership and roles."}</p>
           <div className="account-popover-actions">
             <Link className="secondary-button compact-button" href="/app/account" onClick={close}>Account &amp; security</Link>
             <Link className="secondary-button compact-button" href="/app/settings" onClick={close}>Organization settings</Link>
