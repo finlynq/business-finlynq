@@ -344,6 +344,13 @@
       "when": 1788621957322,
       "tag": "0048_trusted_browser_mfa",
       "breakpoints": true
+    },
+    {
+      "idx": 49,
+      "version": "7",
+      "when": 1788634622007,
+      "tag": "0049_structured_evidence_mime_types",
+      "breakpoints": true
     }
   ]
 }

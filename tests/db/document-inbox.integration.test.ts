@@ -81,10 +81,14 @@ const draftInput = { kind: "SUPPLIER_BILL" as const, sourceNumber: "INBOX-BILL",
   partyAccountId: randomUUID(), controlAccountCombinationId: randomUUID(), documentDate: "2026-09-04", accountingDate: "2026-09-04", periodId: randomUUID(), dueOn: "2026-09-30", currency: "USD",
   fx: { rate: "1", source: "FUNCTIONAL" as const, effectiveAt: "2026-09-04T00:00:00Z", quoteConvention: "FUNCTIONAL_UNITS_PER_TRANSACTION_UNIT" as const }, description: "Cloud invoice",
   lines: [{ description: "Consulting", accountCombinationId: randomUUID(), netAmount: "158.20", tax: { packKey: "us.wa.sales-use", category: "OUT_OF_SCOPE" as const, destinationCountry: "US", destinationRegion: "WA" } }] };
-function addFile(name: string, suffix = "") {
-  const id = randomUUID(); const bytes = Buffer.concat([png, Buffer.from(suffix)]);
-  cloud.files.set(id, { id, name, parentId: "inbox", folder: false, mimeType: "image/png", size: bytes.length, version: "v1" }); cloud.bytes.set(id, bytes);
+function addDocumentFile(name: string, mimeType: string, bytes: Buffer) {
+  const id = randomUUID();
+  cloud.files.set(id, { id, name, parentId: "inbox", folder: false, mimeType, size: bytes.length, version: "v1" });
+  cloud.bytes.set(id, Buffer.from(bytes));
   return id;
+}
+function addFile(name: string, suffix = "") {
+  return addDocumentFile(name, "image/png", Buffer.concat([png, Buffer.from(suffix)]));
 }
 const principal: SessionPrincipal = { sessionId: ids.session, userId: ids.actor, organizationId: ids.org, membershipId: ids.membership,
   organizationName: "Inbox test", roleLabel: "Owner", displayName: "Tester", initials: "T", sessionMode: "real", authMethod: "PASSWORD",
@@ -137,8 +141,8 @@ run("cloud inbox PostgreSQL lifecycle", () => {
       await owner.end();
     }
   });
-  async function discover(name: string, suffix = "") {
-    addFile(name, suffix);
+  async function discoverDocument(name: string, mimeType: string, bytes: Buffer) {
+    addDocumentFile(name, mimeType, bytes);
     // A saved recursive cursor represents the scan that was active before this
     // externally dropped file existed. Finish it, then start the next root scan.
     for (let attempt = 0; attempt < 20; attempt += 1) {
@@ -147,6 +151,9 @@ run("cloud inbox PostgreSQL lifecycle", () => {
       if (item) return item;
     }
     throw new Error("The bounded inbox traversal did not reach the newly dropped test file.");
+  }
+  async function discover(name: string, suffix = "") {
+    return discoverDocument(name, "image/png", Buffer.concat([png, Buffer.from(suffix)]));
   }
   it("discovers metadata without storing bytes and denies cross-tenant access", async () => {
     const item = await discover("invoice.png"); itemId = item.id;
@@ -227,6 +234,87 @@ run("cloud inbox PostgreSQL lifecycle", () => {
     invoiceDownload = { assetId: recovered.item.assetId!, sourceDocumentId: recovered.item.sourceDocumentId! };
     const download = await downloadDocumentEvidence({ context: requestContext(), ...invoiceDownload }); expect(download.bytes).toEqual(png);
     await expect(completeInboxDocument(requestContext(), { ...complete, reason: "Changed completion arguments" })).rejects.toThrow(/different arguments/);
+  });
+  it("archives structured CSV evidence with a canonical MIME and rejects MIME values outside the database allowlist", async () => {
+    const csv = Buffer.from("date,description,amount\n2026-09-01,Opening balance,100.00\n");
+    const row = await discoverDocument("statement.csv", "application/csv", csv);
+    const claim = randomUUID();
+    await claimInboxDocument(requestContext(), { itemId: row.id, claimId: claim });
+    const read = await readInboxDocument(requestContext(), { itemId: row.id, claimId: claim });
+    expect(read.mimeType).toBe("text/csv");
+
+    const saved = await completeInboxDocument(requestContext(), {
+      itemId: row.id,
+      claimId: claim,
+      sha256: read.sha256,
+      metadata: {
+        documentType: "STATEMENT",
+        documentDate: "2026-09-01",
+        counterparty: "Test Bank",
+        currency: "USD",
+      },
+      action: { type: "ARCHIVE_ONLY" },
+      reason: "Archive validated structured statement evidence",
+    });
+    expect(saved.item).toMatchObject({ status: "FILED", mimeType: "text/csv" });
+    expect(saved.item.canonicalName).toMatch(/\.csv$/);
+    const assetId = saved.item.assetId!;
+    const stored = (await owner.query(
+      "SELECT mime_type,storage_backend,content_ciphertext,sha256 FROM document_evidence_assets WHERE organization_id=$1 AND id=$2",
+      [ids.org, assetId],
+    )).rows[0];
+    expect(stored).toEqual({
+      mime_type: "text/csv",
+      storage_backend: "CLOUD",
+      content_ciphertext: null,
+      sha256: read.sha256,
+    });
+
+    const canonicalMimeTypes = [
+      "application/pdf",
+      "image/png",
+      "image/jpeg",
+      "text/csv",
+      "text/tab-separated-values",
+      "text/plain",
+      "application/vnd.ms-excel",
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    ];
+    const insertProbe = `INSERT INTO document_evidence_assets
+      (id,organization_id,owner_module,filename_ciphertext,content_ciphertext,storage_backend,
+       storage_connection_id,provider_file_id,key_version,mime_type,byte_size,sha256,
+       scanner_version,scanned_at,uploaded_by,idempotency_key,command_hash)
+      SELECT $2,organization_id,owner_module,filename_ciphertext,content_ciphertext,storage_backend,
+       storage_connection_id,provider_file_id,key_version,$3,byte_size,sha256,
+       scanner_version,now(),$4,$5,repeat('e',64)
+      FROM document_evidence_assets WHERE organization_id=$1 AND id=$6
+      RETURNING mime_type`;
+    await withTenantTransaction(requestContext(), async (client) => {
+      for (const mimeType of canonicalMimeTypes) {
+        await client.query("SAVEPOINT evidence_mime_probe");
+        try {
+          const inserted = await client.query(insertProbe, [
+            ids.org, randomUUID(), mimeType, ids.actor, randomUUID(), assetId,
+          ]);
+          expect(inserted.rows).toEqual([{ mime_type: mimeType }]);
+        } finally {
+          await client.query("ROLLBACK TO SAVEPOINT evidence_mime_probe");
+          await client.query("RELEASE SAVEPOINT evidence_mime_probe");
+        }
+      }
+
+      for (const mimeType of ["application/csv", "application/octet-stream", "text/html"]) {
+        await client.query("SAVEPOINT unsafe_evidence_mime_probe");
+        await expect(client.query(insertProbe, [
+          ids.org, randomUUID(), mimeType, ids.actor, randomUUID(), assetId,
+        ])).rejects.toMatchObject({
+          code: "23514",
+          constraint: "document_evidence_assets_metadata_check_v2",
+        });
+        await client.query("ROLLBACK TO SAVEPOINT unsafe_evidence_mime_probe");
+        await client.query("RELEASE SAVEPOINT unsafe_evidence_mime_probe");
+      }
+    });
   });
   it("downloads an exact bank-statement evidence link through real PostgreSQL tenant SQL", async () => {
     // The banking migration suite proves the deferred lineage trigger separately.
