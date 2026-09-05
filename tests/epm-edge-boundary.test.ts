@@ -29,6 +29,15 @@ describe("shared edge isolation", () => {
     }
   });
 
+  it.each(caddyfiles)("omits EPM OIDC callbacks from access logs, including sensitive query values", (caddyfile) => {
+    const epmSite = caddyfile.slice(caddyfile.indexOf("epm.finlynq.com"));
+    const callbackWithSecrets = new URL(
+      "https://epm.finlynq.com/auth/callback?code=private-code&state=private-state",
+    );
+
+    expect(epmSite).toMatch(new RegExp(`\\n\\s*log_skip ${callbackWithSecrets.pathname}\\s*\\n\\s*log\\s*\\{`, "u"));
+  });
+
   it("keeps each EPM password include aligned with its deployment-specific mount", () => {
     expect(containerCaddy).toContain("import /config/epm-basic-auth");
     expect(containerCaddy).not.toContain("/etc/caddy/epm-basic-auth");

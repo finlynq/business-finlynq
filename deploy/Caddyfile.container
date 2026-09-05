@@ -156,6 +156,10 @@
 		-Server
 	}
 
+	# The OIDC callback carries authorization code and state query values.
+	# Skip the entire request so neither value can enter the access log.
+	log_skip /auth/callback
+
 	log {
 		output stdout
 		format json
