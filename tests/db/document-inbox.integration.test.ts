@@ -120,7 +120,23 @@ run("cloud inbox PostgreSQL lifecycle", () => {
         VALUES ($1,$2,$3,'payables','GOOGLE_DRIVE','Company purchases',$4,$5,1,true,$6)`, [ids.connection, ids.org, ids.entity, config, credentials, ids.actor]);
     });
   });
-  afterAll(async () => { vi.unstubAllEnvs(); await closeDatabasePool(); await owner.end(); });
+  afterAll(async () => {
+    vi.unstubAllEnvs();
+    await closeDatabasePool();
+    const client = await owner.connect();
+    try {
+      await client.query("BEGIN");
+      await client.query("SET LOCAL session_replication_role = replica");
+      await client.query("DELETE FROM bank_statement_imports WHERE id=$1", [statementImportId]);
+      await client.query("COMMIT");
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+      await owner.end();
+    }
+  });
   async function discover(name: string, suffix = "") {
     addFile(name, suffix);
     // A saved recursive cursor represents the scan that was active before this
