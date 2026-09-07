@@ -196,7 +196,8 @@ for schedule_name in "${schedule_names[@]}"; do
       && "$(systemctl show --property=StateDirectoryMode --value "$service_name")" == "0775" ]] \
       || fail "loaded $schedule_name shared metrics ownership differs from the candidate"
   elif [[ "$schedule_name" == "demo-reconcile" ]]; then
-    [[ "$(systemctl show --property=StateDirectory --value "$service_name")" == "business-finlynq" \
+    [[ "$(systemctl show --property=Group --value "$service_name")" == "deploy" \
+      && "$(systemctl show --property=StateDirectory --value "$service_name")" == "business-finlynq" \
       && "$(systemctl show --property=StateDirectoryMode --value "$service_name")" == "0775" \
       && "$(systemctl show --property=Environment --value "$service_name")" \
         == *"DEMO_RESET_LOCK_FILE=/var/lib/business-finlynq/demo-sandbox-maintenance.lock"* ]] \

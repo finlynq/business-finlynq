@@ -213,11 +213,15 @@ describe("internal observability metrics", () => {
     expect(demoService).toContain(
       "Environment=DEMO_RESET_LOCK_FILE=/var/lib/business-finlynq/demo-sandbox-maintenance.lock",
     );
+    expect(demoService).toContain("Group=deploy");
     expect(demoService).toContain("StateDirectory=business-finlynq");
     expect(demoService).toContain("ProtectHome=read-only");
     expect(scheduleVerifier).toContain(
       "loaded demo-reconcile writable lock state differs from the candidate",
     );
+    expect(
+      scheduleVerifier.match(/systemctl show --property=Group --value "\$service_name"/g),
+    ).toHaveLength(2);
     expect(monitor).toContain(
       "shared_demo_last_completed_reset_unixtime > demo_job_last_run_unixtime",
     );

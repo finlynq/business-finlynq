@@ -61,6 +61,7 @@ for (const [path, script] of [
   requireText(unit, "ProtectHome=read-only", path);
   requireText(unit, "OnFailure=business-finlynq-monitor-notify@%n.service", path);
   requireText(unit, "EnvironmentFile=/etc/business-finlynq/operations.env", path);
+  requireText(unit, "Group=deploy", path);
   if (unit.includes("EnvironmentFile=-/etc/business-finlynq/operations.env")) {
     throw new Error(`${path} treats mandatory operations configuration as optional`);
   }
