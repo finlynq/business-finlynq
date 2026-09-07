@@ -313,6 +313,16 @@ jobs:
       - name: Run browser release gate
         run: npm run test:e2e
       - run: npm audit --omit=dev --audit-level=high
+      - name: Remove disposable evidence scanner
+        if: always()
+        run: |
+          docker rm --force \
+            finlynq-ci-evidence-scanner-update \
+            finlynq-ci-evidence-scanner >/dev/null 2>&1 || true
+          docker volume rm finlynq-ci-evidence-scanner-signatures >/dev/null 2>&1 || true
+          ! docker container inspect finlynq-ci-evidence-scanner-update >/dev/null 2>&1
+          ! docker container inspect finlynq-ci-evidence-scanner >/dev/null 2>&1
+          ! docker volume inspect finlynq-ci-evidence-scanner-signatures >/dev/null 2>&1
 
   signal-development:
     if: github.event_name == 'push' && github.ref == 'refs/heads/dev'
