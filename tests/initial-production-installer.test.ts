@@ -48,6 +48,7 @@ describe("fresh production bootstrap installer", () => {
     expect(installer).toContain(".Driver == \"bridge\"");
     expect(installer).toContain(".Internal == true");
     expect(installer).toContain(".Attachable == false");
+    expect(installer).toContain("Docker Compose 2.39.0 or newer is required");
   });
 
   it("uses portable numeric ownership for container-writable backup directories", () => {
