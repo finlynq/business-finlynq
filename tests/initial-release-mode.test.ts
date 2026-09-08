@@ -68,6 +68,12 @@ describe("contained initial production release", () => {
     expect(runner).toContain("now - signature_mtime <= 604800");
     expect(runner).toContain("EICAR-STANDARD-ANTIVIRUS-TEST-FILE");
     expect(runner).toContain("eicarDetected: true");
+    expect(runner).toContain('if [[ "$mode" == "initial" || "$mode" == "rehearsal" ]]');
+    expect(runner).toContain('stage="rehearsal-evidence-scanner-bootstrap"');
+    expect(runner).toContain('stage="rehearsal-evidence-scanner-eicar-boundary"');
+    expect(runner).toContain('--arg volumeName "$scanner_volume_name"');
+    expect(runner).toContain('--arg evidenceNetwork "$scanner_evidence_network_name"');
+    expect(runner).toContain('--arg egressNetwork "$scanner_egress_network_name"');
   });
 
   it("backs up only after fresh migrations and never invents a prior app", () => {

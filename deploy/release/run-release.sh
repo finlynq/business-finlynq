@@ -1512,6 +1512,16 @@ else
   public_base_url="$app_origin"
 fi
 
+scanner_volume_name="$(jq -r '.volumes.business_finlynq_clamav.name // empty' <<<"$rendered_compose")" \
+  || fail "evidence-scanner volume name could not be read"
+scanner_evidence_network_name="$(jq -r '.networks.business_finlynq_evidence.name // empty' <<<"$rendered_compose")" \
+  || fail "evidence-scanner private network name could not be read"
+scanner_egress_network_name="$(jq -r '.networks.business_finlynq_scanner_egress.name // empty' <<<"$rendered_compose")" \
+  || fail "evidence-scanner egress network name could not be read"
+[[ -n "$scanner_volume_name" && -n "$scanner_evidence_network_name" \
+  && -n "$scanner_egress_network_name" ]] \
+  || fail "evidence-scanner resource names are missing"
+
 compose_hash="$(printf '%s' "$rendered_compose" | sha256sum | awk '{print $1}')" \
   || fail "rendered Compose configuration checksum could not be computed"
 [[ "$compose_hash" =~ ^[a-f0-9]{64}$ ]] \
@@ -2078,7 +2088,7 @@ if [[ "$mode" == "initial" && "$initial_state" == "resume" ]]; then
     || fail "initial resume rebuilt image IDs or pinned Compose configuration differently"
 fi
 
-attest_initial_evidence_scanner() {
+attest_evidence_scanner() {
   local scanner_container scanner_runtime expected_scanner_image_id now signature_record
   local signature_path signature_uid signature_gid signature_mode signature_mtime
   local signature_count=0 signature_inventory signature_evidence='[]' verified_at
@@ -2092,14 +2102,17 @@ attest_initial_evidence_scanner() {
   read_docker_output "pinned evidence-scanner image" image inspect --format '{{.Id}}' \
     "$scanner_image_reference"
   expected_scanner_image_id="$docker_query_output"
-  jq -e --arg imageId "$expected_scanner_image_id" '
+  jq -e --arg imageId "$expected_scanner_image_id" \
+    --arg evidenceNetwork "$scanner_evidence_network_name" \
+    --arg egressNetwork "$scanner_egress_network_name" \
+    --arg volumeName "$scanner_volume_name" '
     type == "object" and
     .imageId == $imageId and .user == "100:101" and .readOnly == true and
     .status == "running" and .healthy == "healthy" and
     ([.networks | keys[]] | sort) ==
-      ["business_finlynq_egress_scanner", "business_finlynq_private_evidence"] and
+      ([$egressNetwork, $evidenceNetwork] | sort) and
     (.mounts | length) == 1 and .mounts[0].Type == "volume" and
-    .mounts[0].Name == "business_finlynq_pgdata_clamav" and
+    .mounts[0].Name == $volumeName and
     .mounts[0].Destination == "/var/lib/clamav" and .mounts[0].RW == true
   ' <<<"$scanner_runtime" >/dev/null \
     || fail "evidence scanner runtime differs from the pinned non-root healthy contract"
@@ -2151,7 +2164,7 @@ attest_initial_evidence_scanner() {
     || fail "evidence-scanner attestation permissions could not be set"
 }
 
-probe_initial_evidence_scanner() {
+probe_evidence_scanner() {
   compose run --rm --no-deps -T app node -e '
     const net = require("node:net");
     function query(parts) {
@@ -2244,13 +2257,21 @@ jq -n \
   >"$evidence_directory/12-rollback-artifact.json"
 chmod 0600 -- "$evidence_directory/12-rollback-artifact.json"
 
-if [[ "$mode" == "initial" ]]; then
-  stage="initial-evidence-scanner-bootstrap"
+if [[ "$mode" == "initial" || "$mode" == "rehearsal" ]]; then
+  if [[ "$mode" == "initial" ]]; then
+    stage="initial-evidence-scanner-bootstrap"
+  else
+    stage="rehearsal-evidence-scanner-bootstrap"
+  fi
   run_logged 13-evidence-scanner-start.log compose_timed 15m up --detach --wait \
     --no-build --force-recreate evidence_scanner
-  run_logged 14-evidence-scanner-attestation.log attest_initial_evidence_scanner
-  stage="initial-evidence-scanner-eicar-boundary"
-  run_logged 15-evidence-scanner-eicar.log probe_initial_evidence_scanner
+  run_logged 14-evidence-scanner-attestation.log attest_evidence_scanner
+  if [[ "$mode" == "initial" ]]; then
+    stage="initial-evidence-scanner-eicar-boundary"
+  else
+    stage="rehearsal-evidence-scanner-eicar-boundary"
+  fi
+  run_logged 15-evidence-scanner-eicar.log probe_evidence_scanner
   write_checkpoint 16-evidence-scanner-eicar.json evidence-scanner-eicar-boundary-passed
 fi
 
