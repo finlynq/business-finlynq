@@ -29,6 +29,21 @@ business.finlynq.com {
 		-Server
 	}
 
+	# A reverse-proxy transport failure enters Caddy's error route before the
+	# deferred normal-response header handler runs. Preserve the same public
+	# security boundary while returning the original 502/503 status.
+	handle_errors {
+		header {
+			X-Request-Id "{http.request.uuid}"
+			Strict-Transport-Security "max-age=31536000; includeSubDomains"
+			X-Content-Type-Options "nosniff"
+			X-Frame-Options "DENY"
+			Referrer-Policy "strict-origin-when-cross-origin"
+			-Server
+		}
+		respond "" {err.status_code}
+	}
+
 	# OAuth authorization codes and state values must never enter access logs.
 	log_skip /api/document-storage/callback/*
 	log_append request_id {http.request.uuid}

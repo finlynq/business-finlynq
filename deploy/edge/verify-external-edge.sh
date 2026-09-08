@@ -496,8 +496,7 @@ for address in "${expected_public_ipv4s[@]}"; do
       || fail "the not-yet-started production route could not be checked on $address"
     [[ "$preflight_status" == 502 || "$preflight_status" == 503 ]] \
       || fail "production preflight must expose only the expected unavailable-backend response"
-    grep -Eiq '^strict-transport-security:' "$preflight_headers" \
-      || fail "production preflight response is missing HSTS"
+    verify_security_headers "$production_hostname" "$preflight_headers"
     http_redirect_is_exact "$production_hostname" "$address"
     tls_is_valid "$production_hostname" "$address"
   fi
