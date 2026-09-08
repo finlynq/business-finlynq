@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { posix } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -10,6 +11,13 @@ const developmentInstaller = read("deploy/development/install-development.sh");
 const developmentDeployer = read("deploy/development/deploy-development.sh");
 const externalEdgeVerifier = read("deploy/edge/verify-external-edge.sh");
 const rehearsalCompose = read("deploy/release/docker-compose.rehearsal.yml");
+
+function shellFunction(source: string, name: string) {
+  const start = source.indexOf(`${name}() {`);
+  const end = source.indexOf("\n}\n", start);
+  if (start < 0 || end < 0) throw new Error(`${name} is unavailable`);
+  return source.slice(start, end + 2);
+}
 
 describe("fresh production bootstrap installer", () => {
   it("exposes separate, fail-closed phases for edge, configuration, run, and recovery", () => {
@@ -231,7 +239,12 @@ describe("fresh production bootstrap installer", () => {
   it("recovers only the exact stopped accepted app and recontains finalization failures", () => {
     expect(installer).toContain("recover_accepted_stopped_app");
     expect(installer).toContain("terminal recovery requires exactly app, database, and scanner containers");
-    expect(installer).toContain("terminal-recovery scanner signature is writable, stale, or future-dated");
+    expect(installer).toContain("terminal-recovery scanner signature is writable or future-dated");
+    expect(installer).toContain("signature_mtime <= now + 300");
+    expect(installer).not.toContain("now - signature_mtime <= 604800");
+    expect(installer).toContain("clamdscan --config-file=/tmp/finlynq-clamd.conf --version");
+    expect(installer).toContain('clamd_database_is_fresh "$clamd_version" "$now"');
+    expect(installer).toContain("terminal-recovery ClamD loaded signatures are unavailable, stale, or future-dated");
     expect(installer).toContain('start_output="$(docker start "$app_container")"');
     expect(installer).toContain("wrapper_stop_app_on_failure=\"true\"");
     expect(installer).toContain("stopped app differs from the exact accepted contained contract");
@@ -242,6 +255,28 @@ describe("fresh production bootstrap installer", () => {
     expect(optionalFailure).toBeGreaterThan(-1);
     expect(optionalFailureEnd).toBeLessThan(recovery);
   });
+
+  it.skipIf(process.platform === "win32")(
+    "validates ClamD ctime output at the exact stale and future boundaries",
+    () => {
+      const helper = shellFunction(installer, "clamd_database_is_fresh");
+      const result = spawnSync("/bin/bash", ["-c", `
+set -Eeuo pipefail
+${helper}
+now=1788868800
+clamd_database_is_fresh 'ClamAV 1.5.4/28117/Tue Sep  8 06:26:31 2026' "$now"
+clamd_database_is_fresh 'ClamAV 1.5.4/28110/Tue Sep  1 12:00:00 2026' "$now"
+clamd_database_is_fresh 'ClamAV 1.5.4/28118/Tue Sep  8 12:05:00 2026' "$now"
+! clamd_database_is_fresh 'ClamAV 1.5.4/28109/Tue Sep  1 11:59:59 2026' "$now"
+! clamd_database_is_fresh 'ClamAV 1.5.4/28118/Tue Sep  8 12:05:01 2026' "$now"
+! clamd_database_is_fresh 'ClamAV 1.5.4' "$now"
+! clamd_database_is_fresh 'ClamAV 1.5.4/28117/not-a-date' "$now"
+! clamd_database_is_fresh 'ClamAV 1.5.4/28117/Tue Feb 31 06:26:31 2026' "$now"
+! clamd_database_is_fresh 'ClamAV 1.5.4/28117/Mon Sep  8 06:26:31 2026' "$now"
+`], { encoding: "utf8" });
+      expect(result.status, result.stderr).toBe(0);
+    },
+  );
 
   it("prunes only disposable initial containers and retains all volumes and networks", () => {
     expect(runner).toContain('stage="initial-runtime-pruning"');
