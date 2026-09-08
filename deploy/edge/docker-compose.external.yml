@@ -1,0 +1,20 @@
+services:
+  # A broad `--profile edge` must not let this application claim the host
+  # listener when another project owns it. `!reset` removes inherited
+  # resources under the reviewed Compose v2 deployment baseline.
+  edge:
+    profiles: !override [external-edge-disabled]
+    entrypoint: ["/bin/false"]
+    restart: "no"
+    ports: !reset []
+    volumes: !reset []
+    networks: !reset []
+    network_mode: none
+    depends_on: !reset {}
+
+networks:
+  # In external-edge mode the listener owner creates this network and attaches
+  # its Caddy container. Business Finlynq may join it, but must never own or
+  # delete it as part of an application Compose lifecycle.
+  business_finlynq_edge:
+    external: true

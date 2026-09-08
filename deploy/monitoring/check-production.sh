@@ -13,6 +13,10 @@ MONITOR_BACKUP_VERIFY_TIMEOUT_SECONDS="${MONITOR_BACKUP_VERIFY_TIMEOUT_SECONDS:-
 MONITOR_MIN_TLS_DAYS="${MONITOR_MIN_TLS_DAYS:-21}"
 MONITOR_MAX_DISK_PERCENT="${MONITOR_MAX_DISK_PERCENT:-85}"
 MONITOR_EXPECT_EDGE="${MONITOR_EXPECT_EDGE:-true}"
+MONITOR_EDGE_MODE="${MONITOR_EDGE_MODE:-compose}"
+MONITOR_EXTERNAL_EDGE_PROJECT="${MONITOR_EXTERNAL_EDGE_PROJECT:-}"
+MONITOR_EXTERNAL_EDGE_SERVICE="${MONITOR_EXTERNAL_EDGE_SERVICE:-edge}"
+MONITOR_EXTERNAL_EDGE_NETWORK="${MONITOR_EXTERNAL_EDGE_NETWORK:-business_finlynq_edge}"
 MONITOR_EXPECT_AUTH_EMAIL_WORKER="${MONITOR_EXPECT_AUTH_EMAIL_WORKER:-false}"
 MONITOR_EXPECT_OUTBOX_PUBLISHER="${MONITOR_EXPECT_OUTBOX_PUBLISHER:-false}"
 MONITOR_REQUIRE_OFFSITE="${MONITOR_REQUIRE_OFFSITE:-true}"
@@ -60,6 +64,19 @@ for numeric_value in \
   }
 done
 [[ "$MONITOR_EXPECT_EDGE" == "true" || "$MONITOR_EXPECT_EDGE" == "false" ]] || exit 2
+[[ "$MONITOR_EDGE_MODE" == "compose" || "$MONITOR_EDGE_MODE" == "external" ]] || {
+  printf '%s\n' "MONITOR_EDGE_MODE must be compose or external" >&2
+  exit 2
+}
+if [[ "$MONITOR_EDGE_MODE" == external ]]; then
+  [[ "$MONITOR_EXPECT_EDGE" == true \
+    && "$MONITOR_EXTERNAL_EDGE_PROJECT" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ \
+    && "$MONITOR_EXTERNAL_EDGE_SERVICE" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ \
+    && "$MONITOR_EXTERNAL_EDGE_NETWORK" == business_finlynq_edge ]] || {
+      printf '%s\n' "external edge monitoring settings are incomplete or unsafe" >&2
+      exit 2
+    }
+fi
 [[ "$MONITOR_EXPECT_AUTH_EMAIL_WORKER" == "true" || "$MONITOR_EXPECT_AUTH_EMAIL_WORKER" == "false" ]] || exit 2
 [[ "$MONITOR_EXPECT_OUTBOX_PUBLISHER" == "true" || "$MONITOR_EXPECT_OUTBOX_PUBLISHER" == "false" ]] || exit 2
 [[ "$MONITOR_EXPECT_DEMO_MAINTENANCE" == "true" || "$MONITOR_EXPECT_DEMO_MAINTENANCE" == "false" ]] || exit 2
@@ -337,7 +354,7 @@ if ! openssl s_client \
 fi
 
 expected_services=(database app)
-if [[ "$MONITOR_EXPECT_EDGE" == "true" ]]; then
+if [[ "$MONITOR_EXPECT_EDGE" == "true" && "$MONITOR_EDGE_MODE" == compose ]]; then
   expected_services+=(edge)
 fi
 if [[ "$MONITOR_EXPECT_AUTH_EMAIL_WORKER" == "true" ]]; then
@@ -361,6 +378,37 @@ for service_name in "${expected_services[@]}"; do
     record_failure "container is not healthy: $service_name ($container_state)"
   fi
 done
+
+if [[ "$MONITOR_EXPECT_EDGE" == true && "$MONITOR_EDGE_MODE" == external ]]; then
+  business_edge_container="$(docker ps --all \
+    --filter 'label=com.docker.compose.project=business-finlynq' \
+    --filter 'label=com.docker.compose.service=edge' --format '{{.ID}}' 2>/dev/null || true)"
+  [[ -z "$business_edge_container" ]] \
+    || record_failure "Compose-owned edge is running while external edge mode is selected"
+  mapfile -t external_edge_containers < <(
+    docker ps --filter "label=com.docker.compose.project=$MONITOR_EXTERNAL_EDGE_PROJECT" \
+      --filter "label=com.docker.compose.service=$MONITOR_EXTERNAL_EDGE_SERVICE" \
+      --format '{{.ID}}' 2>/dev/null || true
+  )
+  if [[ "${#external_edge_containers[@]}" != 1 ]]; then
+    record_failure "exactly one running external edge container is required"
+  else
+    external_edge_container="${external_edge_containers[0]}"
+    external_edge_state="$(docker inspect \
+      --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' \
+      "$external_edge_container" 2>/dev/null || true)"
+    [[ "$external_edge_state" == healthy ]] \
+      || record_failure "external edge container is not healthy ($external_edge_state)"
+    docker inspect --format '{{json .NetworkSettings.Networks}}' "$external_edge_container" \
+      2>/dev/null \
+      | jq -e --arg network "$MONITOR_EXTERNAL_EDGE_NETWORK" 'has($network)' >/dev/null \
+      || record_failure "external edge is detached from the production ingress network"
+  fi
+  if ! bash /home/deploy/business-finlynq/deploy/edge/verify-external-edge.sh \
+    --scope full >/dev/null; then
+    record_failure "full external edge ownership, routing, and sibling-preservation attestation failed"
+  fi
+fi
 
 if [[ -n "$app_container_id" ]]; then
   app_environment="$(docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$app_container_id" 2>/dev/null || true)"

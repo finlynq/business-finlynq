@@ -85,11 +85,25 @@ git_as_deploy() {
 }
 
 compose() {
+  local edge_mode edge_mode_count
+  local -a compose_files=(-f "$repository/docker-compose.yml")
+  edge_mode="$(awk -F= '$1 == "BUSINESS_FINLYNQ_EDGE_MODE" { sub(/^[^=]*=/, ""); print }' \
+    "$compose_environment")"
+  edge_mode_count="$(awk -F= '$1 == "BUSINESS_FINLYNQ_EDGE_MODE" { count++ } END { print count + 0 }' \
+    "$compose_environment")"
+  [[ "$edge_mode_count" == 0 || "$edge_mode_count" == 1 ]] \
+    || fail "BUSINESS_FINLYNQ_EDGE_MODE must be defined at most once"
+  edge_mode="${edge_mode:-compose}"
+  case "$edge_mode" in
+    compose) ;;
+    external) compose_files+=(-f "$repository/deploy/edge/docker-compose.external.yml") ;;
+    *) fail "BUSINESS_FINLYNQ_EDGE_MODE must be compose or external" ;;
+  esac
   env -i PATH="$clean_path" docker compose \
     --project-name "$project" \
     --project-directory "$repository" \
     --env-file "$compose_environment" \
-    -f "$repository/docker-compose.yml" "$@"
+    "${compose_files[@]}" "$@"
 }
 
 read_environment_value() {
@@ -98,6 +112,24 @@ read_environment_value() {
   [[ "$(grep -c "^${key}=" "$compose_environment")" == 1 ]] \
     || fail "development environment must define $key exactly once"
   printf '%s' "$value"
+}
+
+verify_external_edge_if_selected() {
+  local selected_mode selected_count
+  selected_count="$(awk -F= '$1 == "BUSINESS_FINLYNQ_EDGE_MODE" { count++ } END { print count + 0 }' \
+    "$compose_environment")"
+  [[ "$selected_count" == 0 || "$selected_count" == 1 ]] \
+    || fail "BUSINESS_FINLYNQ_EDGE_MODE must be defined at most once"
+  selected_mode="$(awk -F= '$1 == "BUSINESS_FINLYNQ_EDGE_MODE" { sub(/^[^=]*=/, ""); print }' \
+    "$compose_environment")"
+  selected_mode="${selected_mode:-compose}"
+  [[ "$selected_mode" == compose || "$selected_mode" == external ]] \
+    || fail "BUSINESS_FINLYNQ_EDGE_MODE must be compose or external"
+  [[ "$selected_mode" == external ]] || return 0
+  [[ -f /home/deploy/business-finlynq/deploy/edge/verify-external-edge.sh \
+    && ! -L /home/deploy/business-finlynq/deploy/edge/verify-external-edge.sh ]] \
+    || fail "the canonical production external-edge verifier is unavailable"
+  bash /home/deploy/business-finlynq/deploy/edge/verify-external-edge.sh --scope development
 }
 
 state_file_is_safe() {
@@ -599,6 +631,10 @@ fi
 
 if [[ "$source_revision" == "$candidate_revision" ]]; then
   if release_is_accepted "$candidate_revision"; then
+    if [[ "$(read_environment_value DEVELOPMENT_REQUIRE_PUBLIC_ACCEPTANCE)" == true ]]; then
+      run_public_acceptance || fail "same-revision development public acceptance failed twice"
+      verify_external_edge_if_selected
+    fi
     write_accepted_revision "$candidate_revision"
     printf 'Development already runs accepted dev revision %s.\n' "$candidate_revision"
     exit 0
@@ -672,6 +708,7 @@ fi
 if [[ "$(read_environment_value DEVELOPMENT_REQUIRE_PUBLIC_ACCEPTANCE)" == true ]]; then
   deployment_stage=public-acceptance
   run_public_acceptance || fail "development public acceptance failed twice"
+  verify_external_edge_if_selected
 fi
 
 deployment_stage=final-verification

@@ -37,6 +37,7 @@ scheduler_boundary_bootstrap_required="false"
 scheduler_boundary_bootstrap_source_revision=""
 scheduler_boundary_bootstrap_receipt=""
 scheduler_boundary_bootstrap_receipt_sha256=""
+edge_mode="compose"
 
 usage() {
   cat <<'USAGE'
@@ -181,6 +182,16 @@ canonical_environment_file="$environment_file"
 compose_environment_sha256="$(sha256sum "$canonical_environment_file" | awk '{print $1}')"
 [[ "$compose_environment_sha256" =~ ^[a-f0-9]{64}$ ]] \
   || fail "Compose environment checksum is invalid"
+edge_mode_count="$(awk -F= '$1 == "BUSINESS_FINLYNQ_EDGE_MODE" { count++ } END { print count + 0 }' \
+  "$canonical_environment_file")"
+[[ "$edge_mode_count" == 0 || "$edge_mode_count" == 1 ]] \
+  || fail "Compose environment must define BUSINESS_FINLYNQ_EDGE_MODE at most once"
+if [[ "$edge_mode_count" == 1 ]]; then
+  edge_mode="$(awk -F= '$1 == "BUSINESS_FINLYNQ_EDGE_MODE" { sub(/^[^=]*=/, ""); print }' \
+    "$canonical_environment_file")"
+fi
+[[ "$edge_mode" == compose || "$edge_mode" == external ]] \
+  || fail "BUSINESS_FINLYNQ_EDGE_MODE must be compose or external"
 if [[ "$mode" == "release" ]]; then
   operations_environment_file="$(validate_secret_environment_file "$operations_environment_file" "operations environment")"
   reject_repository_path "$operations_environment_file" "operations environment"
@@ -342,6 +353,9 @@ run_compose() {
   if [[ "$mode" == "rehearsal" ]]; then
     controlled_environment+=("RELEASE_REHEARSAL_PROJECT=$compose_project")
     compose_files+=(-f "$candidate_source_root/deploy/release/docker-compose.rehearsal.yml")
+  fi
+  if [[ "$mode" == "release" && "$edge_mode" == "external" ]]; then
+    compose_files+=(-f "$candidate_source_root/deploy/edge/docker-compose.external.yml")
   fi
   if [[ "$release_images_pinned" == "true" ]]; then
     controlled_environment+=(
@@ -943,6 +957,18 @@ read_operations_value() {
   ' bash "$operations_environment_file" "$key"
 }
 
+read_compose_value() {
+  local key="$1" count value
+  [[ "$key" =~ ^[A-Z][A-Z0-9_]*$ ]] || fail "Compose environment key is invalid"
+  count="$(awk -F= -v selected="$key" '$1 == selected { count++ } END { print count + 0 }' \
+    "$canonical_environment_file")"
+  [[ "$count" == 1 ]] || fail "Compose environment must define $key exactly once"
+  value="$(awk -F= -v selected="$key" '$1 == selected { sub(/^[^=]*=/, ""); print }' \
+    "$canonical_environment_file")"
+  [[ -n "$value" ]] || fail "Compose environment contains an empty $key"
+  printf '%s' "$value"
+}
+
 if [[ "$mode" == "release" ]]; then
   [[ "$(read_operations_value BUSINESS_FINLYNQ_IMAGE_REVISION)" == "$revision" ]] \
     || fail "operations image revision does not match the candidate"
@@ -969,6 +995,16 @@ if [[ "$mode" == "release" ]]; then
   MONITOR_MIN_TLS_DAYS="$(read_operations_value MONITOR_MIN_TLS_DAYS)"
   MONITOR_MAX_DISK_PERCENT="$(read_operations_value MONITOR_MAX_DISK_PERCENT)"
   MONITOR_EXPECT_EDGE="$(read_operations_value MONITOR_EXPECT_EDGE)"
+  MONITOR_EDGE_MODE="$(read_operations_value MONITOR_EDGE_MODE)"
+  MONITOR_EDGE_MODE="${MONITOR_EDGE_MODE:-compose}"
+  MONITOR_EXTERNAL_EDGE_PROJECT=""
+  MONITOR_EXTERNAL_EDGE_SERVICE=""
+  MONITOR_EXTERNAL_EDGE_NETWORK=""
+  if [[ "$MONITOR_EDGE_MODE" == external ]]; then
+    MONITOR_EXTERNAL_EDGE_PROJECT="$(read_operations_value MONITOR_EXTERNAL_EDGE_PROJECT)"
+    MONITOR_EXTERNAL_EDGE_SERVICE="$(read_operations_value MONITOR_EXTERNAL_EDGE_SERVICE)"
+    MONITOR_EXTERNAL_EDGE_NETWORK="$(read_operations_value MONITOR_EXTERNAL_EDGE_NETWORK)"
+  fi
   MONITOR_EXPECT_AUTH_EMAIL_WORKER="$(read_operations_value MONITOR_EXPECT_AUTH_EMAIL_WORKER)"
   MONITOR_EXPECT_OUTBOX_PUBLISHER="$(read_operations_value MONITOR_EXPECT_OUTBOX_PUBLISHER)"
   MONITOR_REQUIRE_OFFSITE="$(read_operations_value MONITOR_REQUIRE_OFFSITE)"
@@ -978,7 +1014,9 @@ if [[ "$mode" == "release" ]]; then
     SCHEDULED_BACKUP_TIMEOUT_SECONDS \
     MONITOR_MAX_BACKUP_ACTIVE_SECONDS MONITOR_BACKUP_VERIFY_TIMEOUT_SECONDS \
     ACCOUNTING_EVIDENCE_VERIFY_TIMEOUT_SECONDS MONITOR_MIN_TLS_DAYS \
-    MONITOR_MAX_DISK_PERCENT MONITOR_EXPECT_EDGE MONITOR_EXPECT_AUTH_EMAIL_WORKER \
+    MONITOR_MAX_DISK_PERCENT MONITOR_EXPECT_EDGE MONITOR_EDGE_MODE \
+    MONITOR_EXTERNAL_EDGE_PROJECT MONITOR_EXTERNAL_EDGE_SERVICE MONITOR_EXTERNAL_EDGE_NETWORK \
+    MONITOR_EXPECT_AUTH_EMAIL_WORKER \
     MONITOR_EXPECT_OUTBOX_PUBLISHER MONITOR_REQUIRE_OFFSITE \
     MONITOR_EXPECT_DEMO_MAINTENANCE
   for explicit_boolean in MONITOR_EXPECT_EDGE MONITOR_EXPECT_AUTH_EMAIL_WORKER \
@@ -1002,6 +1040,16 @@ if [[ "$mode" == "release" ]]; then
   release_backup_timeout_seconds="$SCHEDULED_BACKUP_TIMEOUT_SECONDS"
   [[ "$MONITOR_BASE_URL" =~ ^https:// ]] || fail "production monitor base URL must use HTTPS"
   [[ "$MONITOR_EXPECT_EDGE" == "true" ]] || fail "the production release requires the reviewed edge boundary"
+  [[ "$MONITOR_EDGE_MODE" == compose || "$MONITOR_EDGE_MODE" == external ]] \
+    || fail "MONITOR_EDGE_MODE must be compose or external"
+  [[ "$MONITOR_EDGE_MODE" == "$edge_mode" ]] \
+    || fail "monitor and Compose edge modes differ"
+  if [[ "$edge_mode" == external ]]; then
+    [[ "$MONITOR_EXTERNAL_EDGE_PROJECT" == "$(read_compose_value BUSINESS_FINLYNQ_EXTERNAL_EDGE_PROJECT)" \
+      && "$MONITOR_EXTERNAL_EDGE_SERVICE" == "$(read_compose_value BUSINESS_FINLYNQ_EXTERNAL_EDGE_SERVICE)" \
+      && "$MONITOR_EXTERNAL_EDGE_NETWORK" == "$(read_compose_value BUSINESS_FINLYNQ_EDGE_NETWORK)" ]] \
+      || fail "monitor external-edge identity differs from the Compose contract"
+  fi
   [[ "$MONITOR_REQUIRE_OFFSITE" == "true" ]] || fail "production release requires off-site backup verification"
   [[ "$MONITOR_EXPECT_AUTH_EMAIL_WORKER" == "$release_ACCOUNT_LOGIN_ENABLED" ]] \
     || fail "auth-worker monitor expectation must match the account-login gate"
@@ -1966,6 +2014,13 @@ jq -e 'type == "object" and keys == ["status"] and .status == "ready"' "$public_
   || fail "public readiness exposed details or was unavailable"
 grep -Eiq '^cache-control:.*no-store' "$public_headers" || fail "public readiness is missing no-store"
 chmod 0600 -- "$public_headers" "$public_body"
+
+if [[ "$mode" == release && "$edge_mode" == external ]]; then
+  stage="external-edge-contract"
+  run_logged 67-external-edge-contract.log \
+    bash "$repository_root/deploy/edge/verify-external-edge.sh"
+  write_checkpoint 68-external-edge-contract.json external-edge-accepted
+fi
 
 expected_auth="disabled"; [[ "$release_ACCOUNT_LOGIN_ENABLED" == "true" ]] && expected_auth="ready"
 expected_signup="disabled"; [[ "$release_ACCOUNT_SIGNUP_ENABLED" == "true" ]] && expected_signup="ready"

@@ -23,6 +23,8 @@ fail() {
 
 enable_timer=false
 enable_all_features=false
+edge_mode="compose"
+public_acceptance_mode=""
 yahoo_fx_mode=""
 auth_email_from=""
 auth_email_reply_to=""
@@ -35,6 +37,18 @@ while (( $# > 0 )); do
       ;;
     --enable-all-features)
       enable_all_features=true
+      shift
+      ;;
+    --external-edge)
+      edge_mode="external"
+      shift
+      ;;
+    --require-public-acceptance)
+      public_acceptance_mode="true"
+      shift
+      ;;
+    --skip-public-acceptance)
+      public_acceptance_mode="false"
       shift
       ;;
     --enable-yahoo-fx-experimental)
@@ -137,6 +151,7 @@ if [[ ! -e "$compose_environment" ]]; then
     printf 'BUSINESS_FINLYNQ_PRIVATE_NETWORK=business_finlynq_development_private\n'
     printf 'BUSINESS_FINLYNQ_EGRESS_NETWORK=business_finlynq_development_egress\n'
     printf 'BUSINESS_FINLYNQ_EDGE_NETWORK=business_finlynq_development_edge\n'
+    printf 'BUSINESS_FINLYNQ_EDGE_MODE=%s\n' "$edge_mode"
     printf 'BUSINESS_FINLYNQ_RESTORE_DRILL_NETWORK=business_finlynq_development_restore_drill\n'
     printf 'TRUSTED_PROXY_HOPS=1\n'
     printf 'SESSION_COOKIE_NAME=__Host-business_finlynq_development_session\n'
@@ -291,16 +306,73 @@ if [[ -n "$yahoo_fx_mode" ]]; then
   printf 'Development Yahoo FX experimental gate set to %s.\n' "$yahoo_fx_mode"
 fi
 
+if [[ -n "$public_acceptance_mode" ]]; then
+  public_acceptance_temporary="$(mktemp "$configuration_directory/.compose.env.public-acceptance.XXXXXX")"
+  awk -F= -v selected="$public_acceptance_mode" '
+    BEGIN { key = "DEVELOPMENT_REQUIRE_PUBLIC_ACCEPTANCE" }
+    {
+      if ($1 == key) {
+        if (seen++) exit 42
+        print key "=" selected
+        next
+      }
+      print
+    }
+    END { if (seen != 1) exit 42 }
+  ' "$compose_environment" >"$public_acceptance_temporary" \
+    || {
+      rm -f -- "$public_acceptance_temporary"
+      fail "could not update the development public-acceptance gate"
+    }
+  chown root:deploy "$public_acceptance_temporary"
+  chmod 0600 "$public_acceptance_temporary"
+  mv -f -- "$public_acceptance_temporary" "$compose_environment"
+  sync -f -- "$compose_environment"
+  printf 'Development public acceptance requirement set to %s; provider gates were unchanged.\n' \
+    "$public_acceptance_mode"
+fi
+
+configured_edge_mode="$(awk -F= '$1 == "BUSINESS_FINLYNQ_EDGE_MODE" { sub(/^[^=]*=/, ""); print }' \
+  "$compose_environment")"
+configured_edge_mode_count="$(awk -F= '$1 == "BUSINESS_FINLYNQ_EDGE_MODE" { count++ } END { print count + 0 }' \
+  "$compose_environment")"
+[[ "$configured_edge_mode_count" == 0 || "$configured_edge_mode_count" == 1 ]] \
+  || fail "BUSINESS_FINLYNQ_EDGE_MODE must be defined at most once"
+configured_edge_mode="${configured_edge_mode:-compose}"
+[[ "$configured_edge_mode" == compose || "$configured_edge_mode" == external ]] \
+  || fail "BUSINESS_FINLYNQ_EDGE_MODE must be compose or external"
+[[ "$edge_mode" == compose || "$configured_edge_mode" == "$edge_mode" ]] \
+  || fail "existing development environment does not match the requested edge mode"
+
 if ! docker network inspect "$development_edge_network" >/dev/null 2>&1; then
-  docker network create --driver bridge --label com.business-finlynq.environment=development \
-    "$development_edge_network" >/dev/null
+  network_create_arguments=(
+    --driver bridge
+    --label com.business-finlynq.environment=development
+  )
+  if [[ "$configured_edge_mode" == external ]]; then
+    network_create_arguments+=(
+      --internal
+      --label com.business-finlynq.edge-owner=external
+    )
+  fi
+  docker network create "${network_create_arguments[@]}" "$development_edge_network" >/dev/null
 fi
 network_driver="$(docker network inspect --format '{{.Driver}}' "$development_edge_network")"
 network_scope="$(docker network inspect --format '{{.Scope}}' "$development_edge_network")"
+network_internal="$(docker network inspect --format '{{.Internal}}' "$development_edge_network")"
 network_label="$(docker network inspect --format '{{ index .Labels "com.business-finlynq.environment" }}' \
+  "$development_edge_network")"
+network_owner="$(docker network inspect --format '{{ index .Labels "com.business-finlynq.edge-owner" }}' \
   "$development_edge_network")"
 [[ "$network_driver" == bridge && "$network_scope" == local && "$network_label" == development ]] \
   || fail "the development edge network has an unexpected driver, scope, or ownership label"
+if [[ "$configured_edge_mode" == external ]]; then
+  [[ "$network_internal" == true && "$network_owner" == external ]] \
+    || fail "external development ingress must be internally scoped and externally owned"
+else
+  [[ "$network_internal" == false && -z "$network_owner" ]] \
+    || fail "Compose-edge development ingress must remain egress-capable and Compose-owned"
+fi
 
 install -d -o root -g root -m 0755 -- /usr/local/sbin
 install -o root -g root -m 0550 -- "$script_directory/deploy-development.sh" "$deploy_target"

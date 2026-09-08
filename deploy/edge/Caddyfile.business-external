@@ -1,0 +1,79 @@
+business.finlynq.com {
+	encode zstd gzip
+
+	@auth_mutations {
+		path /api/auth/*
+		method POST
+	}
+	request_body @auth_mutations {
+		max_size 16KB
+	}
+
+	reverse_proxy production-app:3000 {
+		# Never trust public attempts to opt in to internal health or metrics.
+		header_up -X-Business-Finlynq-Internal-Health
+		header_up -X-Business-Finlynq-Internal-Metrics
+		header_up -X-Request-Id
+		header_up X-Request-Id {http.request.uuid}
+		health_uri /api/health
+		health_interval 30s
+		health_timeout 5s
+	}
+
+	header {
+		X-Request-Id "{http.request.uuid}"
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		-Server
+	}
+
+	# OAuth authorization codes and state values must never enter access logs.
+	log_skip /api/document-storage/callback/*
+	log_append request_id {http.request.uuid}
+
+	log {
+		output stdout
+		format json
+	}
+}
+
+dev.business.finlynq.com {
+	encode zstd gzip
+
+	@auth_mutations {
+		path /api/auth/*
+		method POST
+	}
+	request_body @auth_mutations {
+		max_size 16KB
+	}
+
+	reverse_proxy development-app:3000 {
+		header_up -X-Business-Finlynq-Internal-Health
+		header_up -X-Business-Finlynq-Internal-Metrics
+		header_up -X-Request-Id
+		header_up X-Request-Id {http.request.uuid}
+		health_uri /api/health
+		health_interval 30s
+		health_timeout 5s
+	}
+
+	header {
+		X-Request-Id "{http.request.uuid}"
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		-Server
+	}
+
+	log_skip /api/document-storage/callback/*
+	log_append request_id {http.request.uuid}
+
+	log {
+		output stdout
+		format json
+	}
+}
