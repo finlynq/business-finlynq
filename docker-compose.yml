@@ -362,9 +362,7 @@ services:
     command:
       - |
         printf '%s\n' "$$CLAMD_CONFIG" > /tmp/finlynq-clamd.conf
-        if [ ! -f /var/lib/clamav/main.cvd ]; then
-          freshclam --foreground --stdout
-        fi
+        freshclam --foreground --stdout --user=clamav
         freshclam --checks=12 --daemon --foreground --stdout --user=clamav &
         exec clamd --foreground --config-file=/tmp/finlynq-clamd.conf
     environment:

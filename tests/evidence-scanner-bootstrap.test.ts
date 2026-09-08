@@ -29,6 +29,39 @@ describe("disposable CI evidence scanner bootstrap", () => {
     expect(checkedInConfig).toContain("FailIfCvdOlderThan 7");
   });
 
+  it("refreshes the persistent signature volume before starting ClamD", () => {
+    const scannerStart = compose.indexOf("  evidence_scanner:\n");
+    const scannerEnd = compose.indexOf("\n  app:\n", scannerStart);
+    const scannerService = compose.slice(scannerStart, scannerEnd);
+    const refresh = scannerService.indexOf(
+      "freshclam --foreground --stdout --user=clamav",
+    );
+    const daemon = scannerService.indexOf(
+      "freshclam --checks=12 --daemon --foreground --stdout --user=clamav &",
+    );
+    const clamd = scannerService.indexOf(
+      "exec clamd --foreground --config-file=/tmp/finlynq-clamd.conf",
+    );
+
+    expect(refresh).toBeGreaterThanOrEqual(0);
+    expect(daemon).toBeGreaterThan(refresh);
+    expect(clamd).toBeGreaterThan(daemon);
+    expect(scannerService).toContain(
+      'entrypoint: ["/sbin/tini", "-g", "--", "/bin/sh", "-ec"]',
+    );
+    expect(scannerService).toMatch(
+      /^        freshclam --foreground --stdout --user=clamav$/m,
+    );
+    expect(scannerService).not.toContain(
+      "if [ ! -f /var/lib/clamav/main.cvd ]",
+    );
+
+    const appService = compose.slice(scannerEnd);
+    expect(appService).toMatch(
+      /evidence_scanner:\n        condition: service_healthy/,
+    );
+  });
+
   it("finishes a bounded signature refresh before starting ClamD", () => {
     const trap = bootstrap.indexOf("trap cleanup_failed_bootstrap EXIT");
     const create = bootstrap.indexOf('docker volume create "$signature_volume"');
