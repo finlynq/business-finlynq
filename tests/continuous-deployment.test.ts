@@ -195,6 +195,35 @@ describe("continuous deployment safety boundary", () => {
     expect(compose).toContain('PLAYWRIGHT_MANAGED_SERVER: "true"');
   });
 
+  it("preflights strict external-edge upgrades after recovery and before candidate mutation", () => {
+    const acceptedRecovery = deployDevelopment.indexOf(
+      'elif [[ "$source_revision" != "$accepted_revision" ]]; then',
+    );
+    const preflight = deployDevelopment.indexOf(
+      'if [[ "$source_revision" != "$candidate_revision" ]]; then\n' +
+        '  require_public_acceptance="$(read_environment_value DEVELOPMENT_REQUIRE_PUBLIC_ACCEPTANCE)"',
+    );
+    const quarantine = deployDevelopment.indexOf(
+      'if [[ -e "$quarantine_file" || -L "$quarantine_file" ]]; then',
+    );
+    const mutation = deployDevelopment.indexOf("mutated=true");
+    const preflightBlock = deployDevelopment.slice(preflight, quarantine);
+
+    expect(acceptedRecovery).toBeGreaterThan(0);
+    expect(preflight).toBeGreaterThan(acceptedRecovery);
+    expect(preflight).toBeGreaterThan(0);
+    expect(quarantine).toBeGreaterThan(preflight);
+    expect(mutation).toBeGreaterThan(quarantine);
+    expect(preflightBlock).toContain(
+      '[[ "$require_public_acceptance" == true || "$require_public_acceptance" == false ]]',
+    );
+    expect(preflightBlock).toContain(
+      'if [[ "$require_public_acceptance" == true ]]; then\n' +
+        "    verify_external_edge_if_selected\n" +
+        "  fi",
+    );
+  });
+
   it("automatically restores dev and quarantines only the failed candidate", () => {
     expect(deployDevelopment).toContain(
       'readonly accepted_revision_file="$state_directory/accepted-revision"',

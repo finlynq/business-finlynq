@@ -786,6 +786,19 @@ elif [[ "$source_revision" != "$accepted_revision" ]]; then
   fi
 fi
 
+# Recovery must establish a healthy accepted source first. Once it has, verify
+# strict external-edge prerequisites before processing the current quarantine
+# or mutating a newer candidate.
+if [[ "$source_revision" != "$candidate_revision" ]]; then
+  require_public_acceptance="$(read_environment_value DEVELOPMENT_REQUIRE_PUBLIC_ACCEPTANCE)" \
+    || fail "DEVELOPMENT_REQUIRE_PUBLIC_ACCEPTANCE could not be read"
+  [[ "$require_public_acceptance" == true || "$require_public_acceptance" == false ]] \
+    || fail "DEVELOPMENT_REQUIRE_PUBLIC_ACCEPTANCE must be true or false"
+  if [[ "$require_public_acceptance" == true ]]; then
+    verify_external_edge_if_selected
+  fi
+fi
+
 if [[ -e "$quarantine_file" || -L "$quarantine_file" ]]; then
   quarantine_kind="$(read_state_value "$quarantine_file" kind)" \
     || fail "the protected quarantine kind could not be read"
