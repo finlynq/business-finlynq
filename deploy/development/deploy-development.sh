@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
+set +x
 
 umask 077
 
@@ -14,6 +15,8 @@ readonly legacy_failure_latch="$state_directory/deployment-failed"
 readonly quarantine_file="$state_directory/quarantined-candidate"
 readonly hard_failure_latch="$state_directory/deployment-hard-failed"
 readonly accepted_revision_file="$state_directory/accepted-revision"
+readonly protected_external_edge_verifier="/usr/local/libexec/business-finlynq/deploy/edge/verify-external-edge.sh"
+readonly production_install_state="/etc/business-finlynq/initial-install-state.json"
 readonly build_cache_limit="8GB"
 readonly clean_path="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
@@ -85,19 +88,96 @@ git_as_deploy() {
 }
 
 compose() {
+  local edge_mode edge_mode_count
+  local -a compose_files=(-f "$repository/docker-compose.yml")
+  edge_mode="$(awk -F= '$1 == "BUSINESS_FINLYNQ_EDGE_MODE" { sub(/^[^=]*=/, ""); print }' \
+    "$compose_environment")" \
+    || fail "BUSINESS_FINLYNQ_EDGE_MODE could not be read"
+  edge_mode_count="$(awk -F= '$1 == "BUSINESS_FINLYNQ_EDGE_MODE" { count++ } END { print count + 0 }' \
+    "$compose_environment")" \
+    || fail "BUSINESS_FINLYNQ_EDGE_MODE definitions could not be counted"
+  [[ "$edge_mode_count" == 0 || "$edge_mode_count" == 1 ]] \
+    || fail "BUSINESS_FINLYNQ_EDGE_MODE must be defined at most once"
+  edge_mode="${edge_mode:-compose}"
+  case "$edge_mode" in
+    compose) ;;
+    external) compose_files+=(-f "$repository/deploy/edge/docker-compose.external.yml") ;;
+    *) fail "BUSINESS_FINLYNQ_EDGE_MODE must be compose or external" ;;
+  esac
   env -i PATH="$clean_path" docker compose \
     --project-name "$project" \
     --project-directory "$repository" \
     --env-file "$compose_environment" \
-    -f "$repository/docker-compose.yml" "$@"
+    "${compose_files[@]}" "$@"
 }
 
 read_environment_value() {
-  local key="$1" value
-  value="$(awk -F= -v selected="$key" '$1 == selected { sub(/^[^=]*=/, ""); print }' "$compose_environment")"
-  [[ "$(grep -c "^${key}=" "$compose_environment")" == 1 ]] \
+  local key="$1" value count
+  value="$(awk -F= -v selected="$key" '$1 == selected { sub(/^[^=]*=/, ""); print }' "$compose_environment")" \
+    || fail "development environment value could not be read: $key"
+  count="$(grep -c "^${key}=" "$compose_environment")" \
+    || fail "development environment does not define $key"
+  [[ "$count" == 1 ]] \
     || fail "development environment must define $key exactly once"
   printf '%s' "$value"
+}
+
+verify_external_edge_if_selected() {
+  local selected_mode selected_count verifier_record expected_sha observed_output observed_sha
+  local observed_remainder expected_bytes observed_bytes
+  selected_count="$(awk -F= '$1 == "BUSINESS_FINLYNQ_EDGE_MODE" { count++ } END { print count + 0 }' \
+    "$compose_environment")" \
+    || fail "BUSINESS_FINLYNQ_EDGE_MODE definitions could not be counted"
+  [[ "$selected_count" == 0 || "$selected_count" == 1 ]] \
+    || fail "BUSINESS_FINLYNQ_EDGE_MODE must be defined at most once"
+  selected_mode="$(awk -F= '$1 == "BUSINESS_FINLYNQ_EDGE_MODE" { sub(/^[^=]*=/, ""); print }' \
+    "$compose_environment")" \
+    || fail "BUSINESS_FINLYNQ_EDGE_MODE could not be read"
+  selected_mode="${selected_mode:-compose}"
+  [[ "$selected_mode" == compose || "$selected_mode" == external ]] \
+    || fail "BUSINESS_FINLYNQ_EDGE_MODE must be compose or external"
+  [[ "$selected_mode" == external ]] || return 0
+  [[ -f "$production_install_state" && ! -L "$production_install_state" \
+    && "$(readlink -f -- "$production_install_state")" == "$production_install_state" \
+    && "$(stat -c '%u:%g:%a:%h' -- "$production_install_state")" == 0:0:600:1 ]] \
+    || fail "the protected production install state is unavailable"
+  verifier_record="$(jq -ce --arg path "$protected_external_edge_verifier" '
+    if type == "object" and .schemaVersion == 1 and
+      .product == "business-finlynq" and .phase == "configured" and
+      (.revision | type == "string" and test("^[a-f0-9]{40}$")) and
+      (.revision | test("^0+$") | not) and
+      (.configurationFiles | type == "array")
+    then . else error("invalid install state") end |
+    [.configurationFiles[] | select(.path == $path)] |
+    if length == 1 then .[0] else error("missing protected verifier") end
+  ' "$production_install_state")" \
+    || fail "the protected production install state does not bind exactly one edge verifier"
+  jq -e '
+    type == "object" and keys == ["bytes", "metadata", "path", "sha256"] and
+    .metadata == "0:0:550" and (.sha256 | test("^[a-f0-9]{64}$")) and
+    (.bytes | type == "number" and . == floor and . > 0)
+  ' <<<"$verifier_record" >/dev/null \
+    || fail "the protected external-edge verifier inventory record is invalid"
+  [[ -f "$protected_external_edge_verifier" && ! -L "$protected_external_edge_verifier" \
+    && "$(readlink -f -- "$protected_external_edge_verifier")" \
+      == "$protected_external_edge_verifier" \
+    && "$(stat -c '%u:%g:%a:%h' -- "$protected_external_edge_verifier")" \
+      == 0:0:550:1 ]] \
+    || fail "the protected external-edge verifier is unavailable or unsafe"
+  expected_sha="$(jq -er '.sha256' <<<"$verifier_record")" \
+    || fail "the protected external-edge verifier checksum could not be read"
+  expected_bytes="$(jq -er '.bytes' <<<"$verifier_record")" \
+    || fail "the protected external-edge verifier size could not be read"
+  observed_output="$(sha256sum -- "$protected_external_edge_verifier")" \
+    || fail "the protected external-edge verifier could not be hashed"
+  read -r observed_sha observed_remainder <<<"$observed_output" \
+    || fail "the protected external-edge verifier digest could not be parsed"
+  observed_bytes="$(stat -c '%s' -- "$protected_external_edge_verifier")" \
+    || fail "the protected external-edge verifier size could not be inspected"
+  [[ "$observed_sha" =~ ^[a-f0-9]{64}$ && -n "$observed_remainder" \
+    && "$observed_sha" == "$expected_sha" && "$observed_bytes" == "$expected_bytes" ]] \
+    || fail "the protected external-edge verifier differs from the install-state inventory"
+  "$protected_external_edge_verifier" --scope development
 }
 
 state_file_is_safe() {
@@ -107,58 +187,88 @@ state_file_is_safe() {
 }
 
 read_state_value() {
-  local target="$1" key="$2" value
+  local target="$1" key="$2" value count
   state_file_is_safe "$target" || fail "protected deployment state is unavailable or unsafe: $target"
-  [[ "$(grep -c "^${key}=" "$target")" == 1 ]] \
+  count="$(grep -c "^${key}=" "$target")" \
+    || fail "protected deployment state does not define $key: $target"
+  [[ "$count" == 1 ]] \
     || fail "protected deployment state must define $key exactly once: $target"
-  value="$(awk -F= -v selected="$key" '$1 == selected { sub(/^[^=]*=/, ""); print }' "$target")"
+  value="$(awk -F= -v selected="$key" '$1 == selected { sub(/^[^=]*=/, ""); print }' "$target")" \
+    || fail "protected deployment state value could not be read: $key"
   [[ -n "$value" ]] || fail "protected deployment state contains an empty $key: $target"
   printf '%s' "$value"
 }
 
 write_accepted_revision() {
-  local revision="$1" temporary
+  local revision="$1" temporary accepted_at
   validate_revision "$revision"
-  temporary="$(mktemp "${accepted_revision_file}.XXXXXX")"
+  accepted_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    || fail "the accepted-revision timestamp could not be generated"
+  [[ "$accepted_at" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] \
+    || fail "the accepted-revision timestamp is invalid"
+  temporary="$(mktemp "${accepted_revision_file}.XXXXXX")" \
+    || fail "the accepted-revision staging file could not be created"
   printf 'revision=%s\nacceptedAt=%s\n' \
-    "$revision" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >"$temporary"
-  chmod 0600 "$temporary"
-  chown root:root "$temporary"
-  mv -f -- "$temporary" "$accepted_revision_file"
-  sync -f -- "$state_directory"
+    "$revision" "$accepted_at" >"$temporary" \
+    || fail "the accepted-revision state could not be written"
+  chmod 0600 "$temporary" \
+    || fail "the accepted-revision staging mode could not be set"
+  chown root:root "$temporary" \
+    || fail "the accepted-revision staging owner could not be set"
+  sync -f -- "$temporary" \
+    || fail "the accepted-revision staging file could not be synchronized"
+  mv -f -- "$temporary" "$accepted_revision_file" \
+    || fail "the accepted-revision state could not be published"
+  sync -f -- "$state_directory" \
+    || fail "the accepted-revision state directory could not be synchronized"
 }
 
 write_failure_state() {
   local target="$1" kind="$2" source="$3" candidate="$4" stage="$5" recovered="$6" \
-    cleanup_complete="$7" temporary
+    cleanup_complete="$7" temporary failed_at
   validate_revision "$source"
   validate_revision "$candidate"
   [[ "$kind" == quarantine || "$kind" == hard ]] \
     || fail "invalid development failure-state kind"
   [[ "$cleanup_complete" == true || "$cleanup_complete" == false ]] \
     || fail "invalid development cleanup state"
-  temporary="$(mktemp "${target}.XXXXXX")"
+  failed_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    || fail "the failure-state timestamp could not be generated"
+  [[ "$failed_at" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] \
+    || fail "the failure-state timestamp is invalid"
+  temporary="$(mktemp "${target}.XXXXXX")" \
+    || fail "the failure-state staging file could not be created"
   printf 'kind=%s\nsourceRevision=%s\ncandidateRevision=%s\nstage=%s\nfailedAt=%s\nrecoveredRevision=%s\ncleanupComplete=%s\n' \
-    "$kind" "$source" "$candidate" "$stage" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-    "$recovered" "$cleanup_complete" >"$temporary"
-  chmod 0600 "$temporary"
-  chown root:root "$temporary"
-  mv -f -- "$temporary" "$target"
-  sync -f -- "$state_directory"
+    "$kind" "$source" "$candidate" "$stage" "$failed_at" \
+    "$recovered" "$cleanup_complete" >"$temporary" \
+    || fail "the failure state could not be written"
+  chmod 0600 "$temporary" \
+    || fail "the failure-state staging mode could not be set"
+  chown root:root "$temporary" \
+    || fail "the failure-state staging owner could not be set"
+  sync -f -- "$temporary" \
+    || fail "the failure-state staging file could not be synchronized"
+  mv -f -- "$temporary" "$target" \
+    || fail "the failure state could not be published"
+  sync -f -- "$state_directory" \
+    || fail "the failure-state directory could not be synchronized"
 }
 
 replace_environment_revision() {
-  local old_revision="$1" new_revision="$2" current_revision temporary
+  local old_revision="$1" new_revision="$2" current_revision temporary duplicate_keys
   validate_revision "$old_revision"
   validate_revision "$new_revision"
-  [[ -z "$(sed -n 's/^\([A-Z][A-Z0-9_]*\)=.*/\1/p' "$compose_environment" | sort | uniq -d)" ]] \
+  duplicate_keys="$(sed -n 's/^\([A-Z][A-Z0-9_]*\)=.*/\1/p' "$compose_environment" \
+    | sort | uniq -d)" \
     || return 1
-  current_revision="$(read_environment_value BUSINESS_FINLYNQ_IMAGE_REVISION)"
+  [[ -z "$duplicate_keys" ]] \
+    || return 1
+  current_revision="$(read_environment_value BUSINESS_FINLYNQ_IMAGE_REVISION)" || return 1
   if [[ "$current_revision" == "$new_revision" ]]; then
     return 0
   fi
   [[ "$current_revision" == "$old_revision" ]] || return 1
-  temporary="$(mktemp "${compose_environment}.deployment.XXXXXX")"
+  temporary="$(mktemp "${compose_environment}.deployment.XXXXXX")" || return 1
   if ! awk -v old="$old_revision" -v new="$new_revision" '
     $0 == "BUSINESS_FINLYNQ_IMAGE_REVISION=" old {
       print "BUSINESS_FINLYNQ_IMAGE_REVISION=" new
@@ -171,44 +281,56 @@ replace_environment_revision() {
     rm -f -- "$temporary"
     return 1
   fi
-  chown root:deploy "$temporary"
-  chmod 0600 "$temporary"
-  mv -f -- "$temporary" "$compose_environment"
-  sync -f -- "$compose_environment"
+  chown root:deploy "$temporary" || return 1
+  chmod 0600 "$temporary" || return 1
+  sync -f -- "$temporary" || return 1
+  mv -f -- "$temporary" "$compose_environment" || return 1
+  sync -f -- "$compose_environment" || return 1
 }
 
 revision_project_container_ids() {
-  local revision="$1" container container_revision
+  local revision="$1" container container_revision container_output
   validate_revision "$revision"
+  container_output="$(docker ps --all --no-trunc --quiet \
+    --filter label=com.docker.compose.project="$project")" \
+    || return 1
   while IFS= read -r container; do
     [[ -n "$container" ]] || continue
     container_revision="$(docker inspect --format \
-      '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$container" 2>/dev/null || true)"
+      '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$container" 2>/dev/null)" \
+      || return 1
     [[ "$container_revision" == "$revision" ]] && printf '%s\n' "$container"
-  done < <(docker ps --all --no-trunc --quiet \
-    --filter label=com.docker.compose.project="$project")
+  done <<<"$container_output"
+  return 0
 }
 
 revision_is_used_outside_project() {
-  local revision="$1" container container_project container_revision
+  local revision="$1" container container_project container_revision container_output
   validate_revision "$revision"
+  container_output="$(docker ps --all --no-trunc --quiet)" || return 2
   while IFS= read -r container; do
     [[ -n "$container" ]] || continue
     container_revision="$(docker inspect --format \
-      '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$container" 2>/dev/null || true)"
+      '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$container" 2>/dev/null)" \
+      || return 2
     [[ "$container_revision" == "$revision" ]] || continue
     container_project="$(docker inspect --format \
-      '{{ index .Config.Labels "com.docker.compose.project" }}' "$container" 2>/dev/null || true)"
+      '{{ index .Config.Labels "com.docker.compose.project" }}' "$container" 2>/dev/null)" \
+      || return 2
     [[ "$container_project" == "$project" ]] || return 0
-  done < <(docker ps --all --no-trunc --quiet)
+  done <<<"$container_output"
   return 1
 }
 
 remove_revision_artifacts() {
-  local revision="$1" reference image_revision
+  local revision="$1" reference image_revision container_output image_ids outside_status
   local -a container_ids image_references
   validate_revision "$revision"
-  mapfile -t container_ids < <(revision_project_container_ids "$revision")
+  container_output="$(revision_project_container_ids "$revision")" || return 1
+  container_ids=()
+  if [[ -n "$container_output" ]]; then
+    mapfile -t container_ids <<<"$container_output" || return 1
+  fi
   if (( ${#container_ids[@]} > 0 )); then
     docker rm --force -- "${container_ids[@]}" >/dev/null || return 1
   fi
@@ -225,17 +347,26 @@ remove_revision_artifacts() {
     printf 'Development cleanup retained revision %s images used by another Compose project.\n' \
       "$revision"
   else
+    outside_status=$?
+    [[ "$outside_status" == 1 ]] || return 1
     for reference in "${image_references[@]}"; do
-      docker image inspect "$reference" >/dev/null 2>&1 || continue
+      image_ids="$(docker image ls --quiet --no-trunc "$reference")" || return 1
+      [[ -n "$image_ids" ]] || continue
+      [[ "$image_ids" != *$'\n'* ]] || return 1
       image_revision="$(docker image inspect --format \
-        '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$reference")"
+        '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$reference")" \
+        || return 1
       [[ "$image_revision" == "$revision" ]] || return 1
       docker image rm -- "$reference" >/dev/null || return 1
     done
     docker image prune --force \
       --filter "label=org.opencontainers.image.revision=$revision" >/dev/null || return 1
   fi
-  mapfile -t container_ids < <(revision_project_container_ids "$revision")
+  container_output="$(revision_project_container_ids "$revision")" || return 1
+  container_ids=()
+  if [[ -n "$container_output" ]]; then
+    mapfile -t container_ids <<<"$container_output" || return 1
+  fi
   (( ${#container_ids[@]} == 0 ))
 }
 
@@ -245,12 +376,13 @@ bound_build_cache() {
 
 wait_for_public_readiness() {
   local deadline hostname public_health
-  hostname="$(read_environment_value BUSINESS_FINLYNQ_HOSTNAME)"
+  hostname="$(read_environment_value BUSINESS_FINLYNQ_HOSTNAME)" \
+    || fail "BUSINESS_FINLYNQ_HOSTNAME could not be read"
   [[ "$hostname" == dev.business.finlynq.com ]] \
     || fail "public acceptance requires the exact development hostname"
   deadline=$((SECONDS + 120))
   while (( SECONDS < deadline )); do
-    if public_health="$(curl --connect-timeout 2 --max-time 5 --fail --silent \
+    if public_health="$(curl --disable --noproxy '*' --connect-timeout 2 --max-time 5 --fail --silent \
       "https://$hostname/api/health" 2>/dev/null)" \
       && jq -e '.status == "ready" and (has("checks") | not) and (has("revision") | not)' \
         <<<"$public_health" >/dev/null; then
@@ -261,28 +393,39 @@ wait_for_public_readiness() {
   fail "public development route did not become ready before browser acceptance"
 }
 
-[[ "$(git_as_deploy rev-parse --show-toplevel)" == "$repository" ]] \
+repository_root="$(git_as_deploy rev-parse --show-toplevel)" \
+  || fail "the canonical development repository root could not be read"
+[[ "$repository_root" == "$repository" ]] \
   || fail "the canonical development repository root changed"
-[[ "$(git_as_deploy symbolic-ref --short HEAD)" == dev ]] \
+repository_branch="$(git_as_deploy symbolic-ref --short HEAD)" \
+  || fail "the development checkout branch could not be read"
+[[ "$repository_branch" == dev ]] \
   || fail "the development checkout is not on dev"
-[[ "$(git_as_deploy remote get-url origin)" == "$expected_origin" ]] \
+repository_origin="$(git_as_deploy remote get-url origin)" \
+  || fail "the development origin could not be read"
+[[ "$repository_origin" == "$expected_origin" ]] \
   || fail "the development origin is not the reviewed repository"
-[[ -z "$(git_as_deploy status --porcelain=v1 --untracked-files=all)" ]] \
+repository_status="$(git_as_deploy status --porcelain=v1 --untracked-files=all)" \
+  || fail "the development checkout status could not be read"
+[[ -z "$repository_status" ]] \
   || fail "the development checkout is not clean"
 
 git_as_deploy fetch --prune --force --no-tags origin \
   '+refs/heads/dev:refs/remotes/origin/dev' \
   '+refs/tags/deploy-development-*:refs/tags/deploy-development-*'
 
-source_revision="$(git_as_deploy rev-parse HEAD)"
-candidate_revision="$(git_as_deploy rev-parse refs/remotes/origin/dev)"
+source_revision="$(git_as_deploy rev-parse HEAD)" \
+  || fail "the deployed development revision could not be read"
+candidate_revision="$(git_as_deploy rev-parse refs/remotes/origin/dev)" \
+  || fail "the fetched development revision could not be read"
 validate_revision "$source_revision"
 validate_revision "$candidate_revision"
 git_as_deploy merge-base --is-ancestor "$source_revision" "$candidate_revision" \
   || fail "origin/dev is not a fast-forward descendant of the deployed revision"
 
 signal_tag="deploy-development-$candidate_revision"
-signal_revision="$(git_as_deploy rev-parse "refs/tags/$signal_tag^{commit}" 2>/dev/null || true)"
+signal_revision="$(git_as_deploy rev-parse "refs/tags/$signal_tag^{commit}" 2>/dev/null)" \
+  || fail "the immutable development deployment signal is unavailable"
 [[ "$signal_revision" == "$candidate_revision" ]] \
   || fail "the successful quality gate has not published the immutable development deployment signal"
 
@@ -294,18 +437,28 @@ expected_resources=(
 )
 
 verify_compose_boundary() {
-  local rendered resource expected found app_port app_origin app_alias
+  local rendered resource expected app_port app_origin app_alias found_resource_output
+  local -a found_resources
   rendered="$(compose config --format json)" \
     || fail "development Compose configuration could not be rendered"
-  app_port="$(jq -r '.services.app.ports[0].published' <<<"$rendered")"
-  app_origin="$(jq -r '.services.app.environment.APP_ORIGIN' <<<"$rendered")"
-  app_alias="$(jq -r '.services.app.networks.business_finlynq_edge.aliases[0]' <<<"$rendered")"
+  app_port="$(jq -er '.services.app.ports[0].published' <<<"$rendered")" \
+    || fail "development app port could not be read from Compose"
+  app_origin="$(jq -er '.services.app.environment.APP_ORIGIN' <<<"$rendered")" \
+    || fail "development APP_ORIGIN could not be read from Compose"
+  app_alias="$(jq -er '.services.app.networks.business_finlynq_edge.aliases[0]' <<<"$rendered")" \
+    || fail "development edge alias could not be read from Compose"
   [[ "$app_port" == 3200 ]] || fail "development app must bind loopback port 3200"
   [[ "$app_origin" == https://dev.business.finlynq.com ]] \
     || fail "development APP_ORIGIN must use the exact HTTPS development hostname"
   [[ "$app_alias" == development-app ]] \
     || fail "development app must expose only its dedicated edge alias"
-  mapfile -t found_resources < <(jq -r '.volumes[].name, .networks[].name' <<<"$rendered" | sort -u)
+  found_resource_output="$(jq -er '.volumes[].name, .networks[].name' <<<"$rendered" \
+    | sort -u)" \
+    || fail "development Compose resource inventory could not be rendered"
+  [[ -n "$found_resource_output" ]] \
+    || fail "development Compose resource inventory is empty"
+  mapfile -t found_resources <<<"$found_resource_output" \
+    || fail "development Compose resource inventory could not be parsed"
   for expected in "${expected_resources[@]}"; do
     printf '%s\n' "${found_resources[@]}" | grep -Fxq "$expected" \
       || fail "development resource is not isolated: $expected"
@@ -317,27 +470,61 @@ verify_compose_boundary() {
 }
 
 document_provider_configuration_matches() {
-  local container="$1" rendered="$2" provider setting expected actual source target mounts \
-    expected_digest actual_digest
+  local container="$1" rendered="$2" provider setting expected_record actual_record source target \
+    mounts expected_digest actual_digest provider_record
   mounts="$(docker inspect --format '{{json .Mounts}}' "$container")" || return 1
   for provider in GOOGLE MICROSOFT; do
     for setting in "DOCUMENT_${provider}_CLIENT_ID" "DOCUMENT_${provider}_CLIENT_SECRET_FILE"; do
-      expected="$(jq -r --arg setting "$setting" '.services.app.environment[$setting] // ""' <<<"$rendered")"
-      actual="$(docker inspect --format '{{json .Config.Env}}' "$container" \
-        | jq -r --arg prefix "$setting=" '.[] | select(startswith($prefix)) | ltrimstr($prefix)')" || return 1
-      [[ "$actual" == "$expected" ]] || return 1
+      expected_record="$(jq -ce --arg setting "$setting" '
+        .services.app.environment as $environment |
+        if ($environment | has($setting)) then
+          {present: true, value: ($environment[$setting] | tostring)}
+        else
+          {present: false, value: ""}
+        end
+      ' <<<"$rendered")" || return 1
+      actual_record="$(docker inspect --format '{{json .Config.Env}}' "$container" \
+        | jq -ce --arg prefix "$setting=" '
+          [.[] | select(startswith($prefix)) | ltrimstr($prefix)] as $values |
+          if ($values | length) == 1 then
+            {present: true, value: $values[0]}
+          elif ($values | length) == 0 then
+            {present: false, value: ""}
+          else
+            error("duplicate container environment setting")
+          end
+        ')" || return 1
+      [[ "$actual_record" == "$expected_record" ]] || return 1
     done
-    target="$(jq -r --arg setting "DOCUMENT_${provider}_CLIENT_SECRET_FILE" '.services.app.environment[$setting] // ""' <<<"$rendered")"
+    provider_record="$(jq -ce \
+      --arg id "DOCUMENT_${provider}_CLIENT_ID" \
+      --arg secret "DOCUMENT_${provider}_CLIENT_SECRET_FILE" '
+        .services.app.environment as $environment |
+        {
+          idPresent: ($environment | has($id)),
+          secretPresent: ($environment | has($secret)),
+          target: (if ($environment | has($secret)) then ($environment[$secret] | tostring) else "" end)
+        }
+      ' <<<"$rendered")" || return 1
     # Recovery to a revision predating cloud storage has no provider mounts.
-    if [[ -z "$target" ]] && jq -e --arg id "DOCUMENT_${provider}_CLIENT_ID" --arg secret "DOCUMENT_${provider}_CLIENT_SECRET_FILE" \
-      '.services.app.environment | (has($id) or has($secret)) | not' <<<"$rendered" >/dev/null; then
+    if jq -e '.idPresent == false and .secretPresent == false and .target == ""' \
+      <<<"$provider_record" >/dev/null; then
       continue
     fi
+    jq -e '.idPresent == true and .secretPresent == true' <<<"$provider_record" >/dev/null \
+      || return 1
+    target="$(jq -er '.target' <<<"$provider_record")" || return 1
     [[ -n "$target" ]] || return 1
     # Compose versions render secret targets as either a filename or the
     # full /run/secrets path. Accept those two exact forms, not any basename.
-    source="$(jq -r --arg target "$target" \
-      '. as $config | .services.app.secrets[] | select((.target // .source) == $target or (.target // .source) == ($target | split("/") | last)) | $config.secrets[.source].file' <<<"$rendered")"
+    source="$(jq -er --arg target "$target" '
+      . as $config |
+      [.services.app.secrets[] |
+        select((.target // .source) == $target or
+          (.target // .source) == ($target | split("/") | last)) |
+        $config.secrets[.source].file] |
+      if length == 1 then .[0] else error("secret mount source is not unique") end
+    ' <<<"$rendered")" || return 1
     [[ -f "$source" && ! -L "$source" ]] || return 1
     jq -e --arg source "$source" --arg target "$target" \
       '[.[] | select(.Source == $source and .Destination == $target and .RW == false)] | length == 1' \
@@ -355,16 +542,22 @@ document_provider_configuration_matches() {
 
 release_is_accepted() {
   local expected_revision="$1" app_container app_environment actual expected detailed_health \
-    public_health rendered hostname require_public setting
+    public_health rendered hostname require_public setting app_container_output app_revision
   local -a app_containers
   validate_revision "$expected_revision"
-  mapfile -t app_containers < <(docker ps --no-trunc --quiet \
+  app_container_output="$(docker ps --no-trunc --quiet \
     --filter label=com.docker.compose.project="$project" \
-    --filter label=com.docker.compose.service=app)
+    --filter label=com.docker.compose.service=app)" || return 1
+  app_containers=()
+  if [[ -n "$app_container_output" ]]; then
+    mapfile -t app_containers <<<"$app_container_output" || return 1
+  fi
   [[ "${#app_containers[@]}" == 1 ]] || return 1
   app_container="${app_containers[0]}"
-  [[ "$(docker inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' \
-    "$app_container")" == "$expected_revision" ]] || return 1
+  app_revision="$(docker inspect --format \
+    '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$app_container")" \
+    || return 1
+  [[ "$app_revision" == "$expected_revision" ]] || return 1
   rendered="$(compose config --format json)" || return 1
   document_provider_configuration_matches "$app_container" "$rendered" || return 1
   app_environment="$(docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' \
@@ -374,10 +567,15 @@ release_is_accepted() {
     AUTH_EMAIL_REPLY_TO SIGNUP_TURNSTILE_ENABLED SIGNUP_TURNSTILE_SITE_KEY \
     BUSINESS_WRITES_ENABLED BANK_FEEDS_ENABLED YAHOO_FX_ENABLED DOCUMENT_INBOX_MAX_DEPTH \
     DOCUMENT_INBOX_MAX_PROVIDER_CALLS; do
-    expected="$(jq -r --arg setting "$setting" \
-      '.services.app.environment[$setting] // ""' <<<"$rendered")"
+    expected="$(jq -er --arg setting "$setting" '
+      .services.app.environment as $environment |
+      if ($environment | has($setting)) then ($environment[$setting] | tostring)
+      else error("missing Compose environment setting") end
+    ' <<<"$rendered")" || return 1
     actual="$(awk -F= -v setting="$setting" \
-      '$1 == setting { sub(/^[^=]*=/, ""); print; exit }' <<<"$app_environment")"
+      '$1 == setting { count++; sub(/^[^=]*=/, ""); value = $0 }
+       END { if (count != 1) exit 42; printf "%s", value }' <<<"$app_environment")" \
+      || return 1
     [[ "$actual" == "$expected" ]] || return 1
   done
   detailed_health="$(curl --noproxy '*' --fail --silent --show-error --max-time 20 \
@@ -386,12 +584,12 @@ release_is_accepted() {
   jq -e --arg revision "$expected_revision" \
     '.status == "ready" and .revision == $revision' <<<"$detailed_health" >/dev/null \
     || return 1
-  require_public="$(read_environment_value DEVELOPMENT_REQUIRE_PUBLIC_ACCEPTANCE)"
+  require_public="$(read_environment_value DEVELOPMENT_REQUIRE_PUBLIC_ACCEPTANCE)" || return 1
   [[ "$require_public" == true || "$require_public" == false ]] || return 1
   if [[ "$require_public" == true ]]; then
-    hostname="$(read_environment_value BUSINESS_FINLYNQ_HOSTNAME)"
+    hostname="$(read_environment_value BUSINESS_FINLYNQ_HOSTNAME)" || return 1
     [[ "$hostname" == dev.business.finlynq.com ]] || return 1
-    public_health="$(curl --fail --silent --show-error --max-time 30 \
+    public_health="$(curl --disable --noproxy '*' --fail --silent --show-error --max-time 30 \
       "https://$hostname/api/health")" || return 1
     jq -e '.status == "ready" and (has("checks") | not) and (has("revision") | not)' \
       <<<"$public_health" >/dev/null || return 1
@@ -399,19 +597,23 @@ release_is_accepted() {
 }
 
 ensure_revision_runtime_images() {
-  local revision="$1" reference image_revision needs_build=false
+  local revision="$1" reference image_revision needs_build=false account_login_enabled
   local -a services references
   validate_revision "$revision"
   services=(database app)
   references=("business-finlynq-database:$revision" "business-finlynq-app:$revision")
-  if [[ "$(read_environment_value ACCOUNT_LOGIN_ENABLED)" == true ]]; then
+  account_login_enabled="$(read_environment_value ACCOUNT_LOGIN_ENABLED)" || return 1
+  [[ "$account_login_enabled" == true || "$account_login_enabled" == false ]] || return 1
+  if [[ "$account_login_enabled" == true ]]; then
     services+=(auth_email_worker)
     references+=("business-finlynq-auth-worker:$revision")
   fi
 
   for reference in "${references[@]}"; do
-    image_revision="$(docker image inspect --format \
-      '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$reference" 2>/dev/null || true)"
+    if ! image_revision="$(docker image inspect --format \
+      '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$reference" 2>/dev/null)"; then
+      image_revision=""
+    fi
     [[ "$image_revision" == "$revision" ]] || needs_build=true
   done
   if [[ "$needs_build" == true ]]; then
@@ -419,15 +621,19 @@ ensure_revision_runtime_images() {
   fi
   for reference in "${references[@]}"; do
     image_revision="$(docker image inspect --format \
-      '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$reference" 2>/dev/null || true)"
+      '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$reference" 2>/dev/null)" \
+      || return 1
     [[ "$image_revision" == "$revision" ]] || return 1
   done
 }
 
 start_revision_runtime() {
+  local account_login_enabled
   compose up --detach --wait --no-deps --no-build database || return 1
   compose up --detach --wait --no-deps --no-build app || return 1
-  if [[ "$(read_environment_value ACCOUNT_LOGIN_ENABLED)" == true ]]; then
+  account_login_enabled="$(read_environment_value ACCOUNT_LOGIN_ENABLED)" || return 1
+  [[ "$account_login_enabled" == true || "$account_login_enabled" == false ]] || return 1
+  if [[ "$account_login_enabled" == true ]]; then
     compose --profile auth-email up --detach --wait --no-deps --no-build auth_email_worker \
       || return 1
   else
@@ -436,7 +642,8 @@ start_revision_runtime() {
 }
 
 restore_accepted_revision() {
-  local failed_revision="$1" recovery_revision="$2" current_head current_environment_revision
+  local failed_revision="$1" recovery_revision="$2" current_head current_environment_revision \
+    repository_status
   validate_revision "$failed_revision"
   validate_revision "$recovery_revision"
   [[ "$failed_revision" != "$recovery_revision" ]] || return 1
@@ -448,9 +655,11 @@ restore_accepted_revision() {
   elif [[ "$current_head" != "$recovery_revision" ]]; then
     return 1
   fi
-  [[ -z "$(git_as_deploy status --porcelain=v1 --untracked-files=all)" ]] || return 1
+  repository_status="$(git_as_deploy status --porcelain=v1 --untracked-files=all)" || return 1
+  [[ -z "$repository_status" ]] || return 1
 
-  current_environment_revision="$(read_environment_value BUSINESS_FINLYNQ_IMAGE_REVISION)"
+  current_environment_revision="$(read_environment_value BUSINESS_FINLYNQ_IMAGE_REVISION)" \
+    || return 1
   if [[ "$current_environment_revision" == "$failed_revision" ]]; then
     replace_environment_revision "$failed_revision" "$recovery_revision" || return 1
   elif [[ "$current_environment_revision" != "$recovery_revision" ]]; then
@@ -478,16 +687,21 @@ run_public_acceptance() {
 verify_compose_boundary
 
 if [[ -e "$hard_failure_latch" || -L "$hard_failure_latch" ]]; then
-  [[ "$(read_state_value "$hard_failure_latch" kind)" == hard ]] \
+  hard_failure_kind="$(read_state_value "$hard_failure_latch" kind)" \
+    || fail "the protected hard-failure kind could not be read"
+  [[ "$hard_failure_kind" == hard ]] \
     || fail "the protected hard-failure state has an invalid kind"
-  hard_candidate="$(read_state_value "$hard_failure_latch" candidateRevision)"
+  hard_candidate="$(read_state_value "$hard_failure_latch" candidateRevision)" \
+    || fail "the hard-failure candidate revision could not be read"
   validate_revision "$hard_candidate"
   fail "development recovery could not be verified for $hard_candidate; inspect it and clear the exact hard failure explicitly"
 fi
 
 if [[ -e "$legacy_failure_latch" || -L "$legacy_failure_latch" ]]; then
-  legacy_source="$(read_state_value "$legacy_failure_latch" sourceRevision)"
-  legacy_candidate="$(read_state_value "$legacy_failure_latch" candidateRevision)"
+  legacy_source="$(read_state_value "$legacy_failure_latch" sourceRevision)" \
+    || fail "the legacy source revision could not be read"
+  legacy_candidate="$(read_state_value "$legacy_failure_latch" candidateRevision)" \
+    || fail "the legacy candidate revision could not be read"
   validate_revision "$legacy_source"
   validate_revision "$legacy_candidate"
   git_as_deploy merge-base --is-ancestor "$legacy_source" "$legacy_candidate" \
@@ -525,7 +739,8 @@ fi
 
 accepted_revision=""
 if [[ -e "$accepted_revision_file" || -L "$accepted_revision_file" ]]; then
-  accepted_revision="$(read_state_value "$accepted_revision_file" revision)"
+  accepted_revision="$(read_state_value "$accepted_revision_file" revision)" \
+    || fail "the accepted development revision could not be read"
   validate_revision "$accepted_revision"
   git_as_deploy merge-base --is-ancestor "$accepted_revision" "$candidate_revision" \
     || fail "the accepted development revision is not an ancestor of the candidate"
@@ -536,9 +751,15 @@ if [[ -z "$accepted_revision" ]]; then
     write_accepted_revision "$source_revision"
     accepted_revision="$source_revision"
   else
-    mapfile -t existing_app_containers < <(docker ps --all --no-trunc --quiet \
+    existing_app_container_output="$(docker ps --all --no-trunc --quiet \
       --filter label=com.docker.compose.project="$project" \
-      --filter label=com.docker.compose.service=app)
+      --filter label=com.docker.compose.service=app)" \
+      || fail "the existing development app container inventory could not be read"
+    existing_app_containers=()
+    if [[ -n "$existing_app_container_output" ]]; then
+      mapfile -t existing_app_containers <<<"$existing_app_container_output" \
+        || fail "the existing development app container inventory could not be parsed"
+    fi
     if [[ "$source_revision" != "$candidate_revision" || ${#existing_app_containers[@]} != 0 ]]; then
       write_failure_state "$hard_failure_latch" hard "$source_revision" "$candidate_revision" \
         accepted-state-initialization "" false
@@ -566,11 +787,16 @@ elif [[ "$source_revision" != "$accepted_revision" ]]; then
 fi
 
 if [[ -e "$quarantine_file" || -L "$quarantine_file" ]]; then
-  [[ "$(read_state_value "$quarantine_file" kind)" == quarantine ]] \
+  quarantine_kind="$(read_state_value "$quarantine_file" kind)" \
+    || fail "the protected quarantine kind could not be read"
+  [[ "$quarantine_kind" == quarantine ]] \
     || fail "the protected quarantine state has an invalid kind"
-  quarantined_source="$(read_state_value "$quarantine_file" sourceRevision)"
-  quarantined_candidate="$(read_state_value "$quarantine_file" candidateRevision)"
-  quarantined_stage="$(read_state_value "$quarantine_file" stage)"
+  quarantined_source="$(read_state_value "$quarantine_file" sourceRevision)" \
+    || fail "the quarantined source revision could not be read"
+  quarantined_candidate="$(read_state_value "$quarantine_file" candidateRevision)" \
+    || fail "the quarantined candidate revision could not be read"
+  quarantined_stage="$(read_state_value "$quarantine_file" stage)" \
+    || fail "the quarantined deployment stage could not be read"
   validate_revision "$quarantined_source"
   validate_revision "$quarantined_candidate"
   [[ "$quarantined_candidate" != "$accepted_revision" ]] \
@@ -599,6 +825,14 @@ fi
 
 if [[ "$source_revision" == "$candidate_revision" ]]; then
   if release_is_accepted "$candidate_revision"; then
+    require_public_acceptance="$(read_environment_value DEVELOPMENT_REQUIRE_PUBLIC_ACCEPTANCE)" \
+      || fail "DEVELOPMENT_REQUIRE_PUBLIC_ACCEPTANCE could not be read"
+    [[ "$require_public_acceptance" == true || "$require_public_acceptance" == false ]] \
+      || fail "DEVELOPMENT_REQUIRE_PUBLIC_ACCEPTANCE must be true or false"
+    if [[ "$require_public_acceptance" == true ]]; then
+      run_public_acceptance || fail "same-revision development public acceptance failed twice"
+      verify_external_edge_if_selected
+    fi
     write_accepted_revision "$candidate_revision"
     printf 'Development already runs accepted dev revision %s.\n' "$candidate_revision"
     exit 0
@@ -639,8 +873,11 @@ trap cleanup EXIT INT TERM
 mutated=true
 deployment_stage=checkout
 git_as_deploy merge --ff-only "$candidate_revision"
-[[ "$(git_as_deploy rev-parse HEAD)" == "$candidate_revision" \
-  && -z "$(git_as_deploy status --porcelain=v1 --untracked-files=all)" ]] \
+checked_out_revision="$(git_as_deploy rev-parse HEAD)" \
+  || fail "the post-merge development revision could not be read"
+repository_status="$(git_as_deploy status --porcelain=v1 --untracked-files=all)" \
+  || fail "the post-merge development checkout status could not be read"
+[[ "$checked_out_revision" == "$candidate_revision" && -z "$repository_status" ]] \
   || fail "the development checkout did not move cleanly to the candidate"
 replace_environment_revision "$source_revision" "$candidate_revision" \
   || fail "could not atomically select the candidate image revision"
@@ -657,21 +894,32 @@ compose up --detach --wait --no-build app
 
 # Compose detects client-ID and mount-path changes. A secret replaced at the
 # same path can retain the old bind mount, so recreate only the app if needed.
-document_app_container="$(compose ps --quiet app)"
-document_rendered="$(compose config --format json)"
+document_app_container="$(compose ps --quiet app)" \
+  || fail "the development app container could not be identified"
+document_rendered="$(compose config --format json)" \
+  || fail "the development Compose configuration could not be rendered after apply"
 if ! document_provider_configuration_matches "$document_app_container" "$document_rendered"; then
   compose up --detach --wait --no-deps --no-build --force-recreate app
 fi
 
-if [[ "$(read_environment_value ACCOUNT_LOGIN_ENABLED)" == true ]]; then
+account_login_enabled="$(read_environment_value ACCOUNT_LOGIN_ENABLED)" \
+  || fail "ACCOUNT_LOGIN_ENABLED could not be read"
+[[ "$account_login_enabled" == true || "$account_login_enabled" == false ]] \
+  || fail "ACCOUNT_LOGIN_ENABLED must be true or false"
+if [[ "$account_login_enabled" == true ]]; then
   compose --profile auth-email up --detach --wait --no-deps --no-build auth_email_worker
 else
   compose --profile auth-email rm --force --stop auth_email_worker >/dev/null 2>&1 || true
 fi
 
-if [[ "$(read_environment_value DEVELOPMENT_REQUIRE_PUBLIC_ACCEPTANCE)" == true ]]; then
+require_public_acceptance="$(read_environment_value DEVELOPMENT_REQUIRE_PUBLIC_ACCEPTANCE)" \
+  || fail "DEVELOPMENT_REQUIRE_PUBLIC_ACCEPTANCE could not be read"
+[[ "$require_public_acceptance" == true || "$require_public_acceptance" == false ]] \
+  || fail "DEVELOPMENT_REQUIRE_PUBLIC_ACCEPTANCE must be true or false"
+if [[ "$require_public_acceptance" == true ]]; then
   deployment_stage=public-acceptance
   run_public_acceptance || fail "development public acceptance failed twice"
+  verify_external_edge_if_selected
 fi
 
 deployment_stage=final-verification
