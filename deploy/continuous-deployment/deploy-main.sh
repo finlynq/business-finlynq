@@ -256,7 +256,8 @@ bash "$repository/deploy/release/run-release.sh" \
   --operations-environment "$operations_environment" \
   --evidence-root "$evidence_root" \
   --run-id "$run_id" \
-  --scheduler systemd
+  --scheduler systemd \
+  --host-lock-fd 8
 
 release_is_accepted || fail "the release runner returned without an accepted live revision"
 bash "$repository/deploy/edge/reconcile-shared-edge.sh"

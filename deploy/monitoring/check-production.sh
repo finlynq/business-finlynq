@@ -20,6 +20,7 @@ MONITOR_EXTERNAL_EDGE_NETWORK="${MONITOR_EXTERNAL_EDGE_NETWORK:-business_finlynq
 MONITOR_EXPECT_AUTH_EMAIL_WORKER="${MONITOR_EXPECT_AUTH_EMAIL_WORKER:-false}"
 MONITOR_EXPECT_OUTBOX_PUBLISHER="${MONITOR_EXPECT_OUTBOX_PUBLISHER:-false}"
 MONITOR_REQUIRE_OFFSITE="${MONITOR_REQUIRE_OFFSITE:-true}"
+MONITOR_EXPECT_SCHEDULERS_ACTIVE="${MONITOR_EXPECT_SCHEDULERS_ACTIVE:-true}"
 MONITOR_MAINTENANCE_SCHEDULER="${MONITOR_MAINTENANCE_SCHEDULER:-systemd}"
 readonly monitor_cron_schedule_file="/home/deploy/business-finlynq/deploy/cron/managed-crontab"
 readonly monitor_cron_maintenance_lock_file="/home/deploy/.local/state/business-finlynq/cron/demo-sandbox-maintenance.lock"
@@ -81,6 +82,8 @@ fi
 [[ "$MONITOR_EXPECT_OUTBOX_PUBLISHER" == "true" || "$MONITOR_EXPECT_OUTBOX_PUBLISHER" == "false" ]] || exit 2
 [[ "$MONITOR_EXPECT_DEMO_MAINTENANCE" == "true" || "$MONITOR_EXPECT_DEMO_MAINTENANCE" == "false" ]] || exit 2
 [[ "$MONITOR_REQUIRE_OFFSITE" == "true" || "$MONITOR_REQUIRE_OFFSITE" == "false" ]] || exit 2
+[[ "$MONITOR_EXPECT_SCHEDULERS_ACTIVE" == "true" \
+  || "$MONITOR_EXPECT_SCHEDULERS_ACTIVE" == "false" ]] || exit 2
 [[ "$MONITOR_MAINTENANCE_SCHEDULER" == "systemd" || "$MONITOR_MAINTENANCE_SCHEDULER" == "cron" ]] || {
   printf '%s\n' "MONITOR_MAINTENANCE_SCHEDULER must be systemd or cron" >&2
   exit 2
@@ -513,21 +516,46 @@ if [[ "$MONITOR_MAINTENANCE_SCHEDULER" == "systemd" ]]; then
     business-finlynq-demo-reconcile.timer
   )
   for timer_name in "${systemd_timers[@]}"; do
-    systemctl is-enabled --quiet "$timer_name" 2>/dev/null \
-      || record_failure "scheduled operations timer is not enabled: $timer_name"
-    if systemctl is-active --quiet "$timer_name" 2>/dev/null; then
+    if [[ "$MONITOR_EXPECT_SCHEDULERS_ACTIVE" == "true" ]]; then
+      systemctl is-enabled --quiet "$timer_name" 2>/dev/null \
+        || record_failure "scheduled operations timer is not enabled: $timer_name"
+    else
+      timer_enabled_state=""
+      timer_enabled_status=0
+      if timer_enabled_state="$(systemctl is-enabled "$timer_name" 2>/dev/null)"; then
+        timer_enabled_status=0
+      else
+        timer_enabled_status=$?
+      fi
+      [[ "$timer_enabled_status" == "1" && "$timer_enabled_state" == "disabled" ]] \
+        || record_failure "deferred scheduled operations timer is not exactly disabled: $timer_name"
+    fi
+    timer_active_state=""
+    timer_active_status=0
+    if timer_active_state="$(systemctl is-active "$timer_name" 2>/dev/null)"; then
+      timer_active_status=0
+    else
+      timer_active_status=$?
+    fi
+    if [[ "$timer_active_status" == "0" && "$timer_active_state" == "active" ]]; then
       if [[ "$timer_name" == "business-finlynq-backup.timer" ]]; then
         backup_timer_active=1
       elif [[ "$timer_name" == "business-finlynq-demo-reconcile.timer" ]]; then
         demo_timer_active=1
       fi
+      [[ "$MONITOR_EXPECT_SCHEDULERS_ACTIVE" == "true" ]] \
+        || record_failure "deferred scheduled operations timer is active: $timer_name"
     else
       if [[ "$timer_name" == "business-finlynq-backup.timer" ]]; then
         backup_timer_active=0
       elif [[ "$timer_name" == "business-finlynq-demo-reconcile.timer" ]]; then
         demo_timer_active=0
       fi
-      record_failure "scheduled operations timer is not active: $timer_name"
+      if [[ "$MONITOR_EXPECT_SCHEDULERS_ACTIVE" == "true" ]]; then
+        record_failure "scheduled operations timer is not active: $timer_name"
+      elif [[ "$timer_active_status" != "3" || "$timer_active_state" != "inactive" ]]; then
+        record_failure "deferred scheduled operations timer is not exactly inactive: $timer_name"
+      fi
     fi
   done
 

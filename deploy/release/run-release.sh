@@ -21,6 +21,12 @@ candidate_started="false"
 schedulers_paused="false"
 rehearsal_cleaned="false"
 schedulers_resumed="false"
+initial_schedulers_verified="false"
+initial_schedule_installed="false"
+initial_state="fresh"
+initial_resume_run_id=""
+prior_evidence_directory=""
+host_lock_fd=""
 operations_environment_sha256=""
 compose_environment_sha256=""
 canonical_environment_file=""
@@ -49,9 +55,21 @@ Usage:
   run-release.sh --mode rehearsal --revision <full-sha> --environment <rehearsal.env> \
     --evidence-root <directory> --run-id rehearsal-<id>
 
+  run-release.sh --mode initial --revision <full-sha> --environment <compose.env> \
+    --operations-environment <operations.env> --evidence-root <directory> \
+    --run-id initial-<id> --scheduler systemd \
+    [--resume-initial <prior-initial-run-id>]
+
+  A parent that already holds the shared deployment lock passes
+  --host-lock-fd <inherited-fd>.
+
 The matching RELEASE_EXECUTION_ACK is mandatory:
   release:<sha>:<run-id>
+  initial:<sha>:<run-id>
   rehearsal:<sha>:<run-id>
+
+Resuming an interrupted initial run also requires:
+  INITIAL_RESUME_ACK=resume:<sha>:<prior-run-id>:<new-run-id>
 USAGE
 }
 
@@ -81,7 +99,7 @@ assert_clean_checkout() {
 
 while (( $# > 0 )); do
   case "$1" in
-    --mode|--revision|--environment|--operations-environment|--evidence-root|--run-id|--scheduler)
+    --mode|--revision|--environment|--operations-environment|--evidence-root|--run-id|--scheduler|--host-lock-fd)
       (( $# >= 2 )) || fail "$1 requires a value"
       case "$1" in
         --mode) mode="$2" ;;
@@ -91,6 +109,7 @@ while (( $# > 0 )); do
         --evidence-root) evidence_root="$2" ;;
         --run-id) run_id="$2" ;;
         --scheduler) scheduler_mode="$2" ;;
+        --host-lock-fd) host_lock_fd="$2" ;;
       esac
       shift 2
       ;;
@@ -98,22 +117,45 @@ while (( $# > 0 )); do
       usage
       exit 0
       ;;
+    --resume-initial)
+      (( $# >= 2 )) || fail "--resume-initial requires the prior failed run ID"
+      initial_state="resume"
+      initial_resume_run_id="$2"
+      shift 2
+      ;;
     *) fail "unknown argument: $1" ;;
   esac
 done
 
-[[ "$mode" == "release" || "$mode" == "rehearsal" ]] || fail "--mode must be release or rehearsal"
+[[ "$mode" == "release" || "$mode" == "initial" || "$mode" == "rehearsal" ]] \
+  || fail "--mode must be release, initial, or rehearsal"
 [[ "$revision" =~ ^[a-f0-9]{40}$ && ! "$revision" =~ ^0+$ ]] || fail "--revision must be a non-zero full 40-character Git SHA"
 [[ "$run_id" =~ ^[a-z0-9][a-z0-9._-]{2,30}$ ]] || fail "--run-id must be 3-31 lowercase safe characters"
 [[ -n "$environment_file" && -n "$evidence_root" ]] || fail "--environment and --evidence-root are required"
 [[ "${RELEASE_EXECUTION_ACK:-}" == "$mode:$revision:$run_id" ]] \
   || fail "RELEASE_EXECUTION_ACK must exactly acknowledge mode, revision, and run ID"
 
-if [[ "$mode" == "release" ]]; then
-  [[ -n "$operations_environment_file" ]] || fail "--operations-environment is required for a release"
+if [[ "$mode" == "release" || "$mode" == "initial" ]]; then
+  [[ -n "$operations_environment_file" ]] \
+    || fail "--operations-environment is required for production modes"
   [[ "$scheduler_mode" == "systemd" || "$scheduler_mode" == "cron" ]] \
-    || fail "--scheduler must be systemd or cron for a release"
+    || fail "--scheduler must be systemd or cron for production modes"
+  if [[ "$mode" == "initial" ]]; then
+    [[ "$run_id" == initial-* ]] || fail "an initial run ID must begin with initial-"
+    [[ "$scheduler_mode" == "systemd" ]] \
+      || fail "initial mode supports only the root-managed systemd scheduler"
+    if [[ "$initial_state" == "resume" ]]; then
+      [[ "$initial_resume_run_id" =~ ^initial-[a-z0-9][a-z0-9._-]{2,22}$ ]] \
+        || fail "--resume-initial must name a safe prior initial run ID"
+      [[ "$initial_resume_run_id" != "$run_id" ]] \
+        || fail "an initial resume must use a new immutable run ID"
+      [[ "${INITIAL_RESUME_ACK:-}" == \
+        "resume:$revision:$initial_resume_run_id:$run_id" ]] \
+        || fail "INITIAL_RESUME_ACK must exactly acknowledge the interrupted initial retry"
+    fi
+  fi
 else
+  [[ "$initial_state" == "fresh" ]] || fail "--resume-initial is valid only in initial mode"
   [[ "$run_id" == rehearsal-* ]] || fail "a rehearsal run ID must begin with rehearsal-"
   [[ -z "$operations_environment_file" && -z "$scheduler_mode" ]] \
     || fail "rehearsal mode does not operate production schedulers or an operations environment"
@@ -192,12 +234,12 @@ if [[ "$edge_mode_count" == 1 ]]; then
 fi
 [[ "$edge_mode" == compose || "$edge_mode" == external ]] \
   || fail "BUSINESS_FINLYNQ_EDGE_MODE must be compose or external"
-if [[ "$mode" == "release" ]]; then
+if [[ "$mode" != "rehearsal" ]]; then
   operations_environment_file="$(validate_secret_environment_file "$operations_environment_file" "operations environment")"
   reject_repository_path "$operations_environment_file" "operations environment"
   canonical_operations_environment_file="$operations_environment_file"
   [[ "$repository_root" == "/home/deploy/business-finlynq" ]] \
-    || fail "production releases must run from the checkout used by the installed scheduler"
+    || fail "production modes must run from the checkout used by the installed scheduler"
   if [[ "$scheduler_mode" == "systemd" ]]; then
     [[ "$(id -u)" == "0" ]] || fail "systemd releases must run as root"
     [[ "$operations_environment_file" == "/etc/business-finlynq/operations.env" ]] \
@@ -214,7 +256,7 @@ if [[ "$mode" == "release" ]]; then
     || fail "operations environment checksum is invalid"
 fi
 
-if [[ "$mode" == "release" ]]; then
+if [[ "$mode" != "rehearsal" ]]; then
   compose_project="business-finlynq"
 else
   compose_project="business-finlynq-${run_id//_/-}"
@@ -258,11 +300,40 @@ acquire_release_coordination_lock() {
     || fail "another release, rehearsal for this project, or rollback already holds the coordination lock"
 }
 
-if [[ "$mode" == "release" ]]; then
+if [[ "$mode" != "rehearsal" ]]; then
   acquire_release_coordination_lock "production-release-rollback.lock"
 else
   acquire_release_coordination_lock "rehearsal-$compose_project.lock"
 fi
+
+acquire_host_deployment_lock() {
+  local state_directory="/var/lib/business-finlynq" lock_file deploy_gid
+  deploy_gid="$(id -g deploy 2>/dev/null)" \
+    || fail "host deployment coordination requires the deploy account"
+  [[ -d "$state_directory" && ! -L "$state_directory" \
+    && "$(readlink -f -- "$state_directory")" == "$state_directory" \
+    && "$(stat -c '%u:%g:%a' -- "$state_directory")" == "0:$deploy_gid:775" ]] \
+    || fail "shared deployment state directory must be root:deploy mode 0775"
+  lock_file="$state_directory/deployment-host.lock"
+  if [[ -n "$host_lock_fd" ]]; then
+    [[ "$host_lock_fd" =~ ^[3-9]$ \
+      && -e "/proc/self/fd/$host_lock_fd" \
+      && "$(readlink -f -- "/proc/self/fd/$host_lock_fd")" == "$lock_file" ]] \
+      || fail "inherited deployment-host lock descriptor is invalid"
+    flock --exclusive --nonblock "$host_lock_fd" \
+      || fail "the inherited deployment-host lock is not held by this process tree"
+    return 0
+  fi
+  [[ ! -L "$lock_file" ]] || fail "shared deployment-host lock is symbolic"
+  exec 8>"$lock_file"
+  chmod 0600 -- "$lock_file"
+  [[ -f "$lock_file" && ! -L "$lock_file" ]] \
+    || fail "shared deployment-host lock is unavailable"
+  flock --exclusive --nonblock 8 \
+    || fail "another production or development deployment is active"
+}
+
+acquire_host_deployment_lock
 
 verify_scheduler_boundary_bootstrap() {
   [[ "$mode" == "release" ]] || return 0
@@ -354,7 +425,7 @@ run_compose() {
     controlled_environment+=("RELEASE_REHEARSAL_PROJECT=$compose_project")
     compose_files+=(-f "$candidate_source_root/deploy/release/docker-compose.rehearsal.yml")
   fi
-  if [[ "$mode" == "release" && "$edge_mode" == "external" ]]; then
+  if [[ "$mode" != "rehearsal" && "$edge_mode" == "external" ]]; then
     compose_files+=(-f "$candidate_source_root/deploy/edge/docker-compose.external.yml")
   fi
   if [[ "$release_images_pinned" == "true" ]]; then
@@ -765,6 +836,60 @@ capture_rehearsal_database_failure() {
   chmod 0600 -- "$evidence_directory/98-rehearsal-database.log" 2>/dev/null || true
 }
 
+contain_initial_schedule_on_failure() {
+  local unit_name load_state enabled_state active_state enabled_status active_status
+  local -a timer_units=(
+    business-finlynq-backup.timer
+    business-finlynq-monitor.timer
+    business-finlynq-accounting-evidence.timer
+    business-finlynq-demo-reconcile.timer
+    business-finlynq-continuous-deployment.timer
+  )
+  local -a service_units=(
+    business-finlynq-backup.service
+    business-finlynq-monitor.service
+    business-finlynq-accounting-evidence.service
+    business-finlynq-demo-reconcile.service
+    business-finlynq-continuous-deployment.service
+  )
+  command -v systemctl >/dev/null 2>&1 || return 1
+  for unit_name in "${timer_units[@]}"; do
+    load_state="$(systemctl show --property=LoadState --value "$unit_name" 2>/dev/null)" \
+      || return 1
+    [[ -n "$load_state" && "$load_state" != error ]] || return 1
+    [[ "$load_state" == not-found ]] && continue
+    systemctl disable --now "$unit_name" >/dev/null 2>&1 || return 1
+    enabled_state=""; enabled_status=0
+    if enabled_state="$(systemctl is-enabled "$unit_name" 2>/dev/null)"; then
+      enabled_status=0
+    else
+      enabled_status=$?
+    fi
+    [[ "$enabled_status" == "1" && "$enabled_state" == "disabled" ]] || return 1
+    active_state=""; active_status=0
+    if active_state="$(systemctl is-active "$unit_name" 2>/dev/null)"; then
+      active_status=0
+    else
+      active_status=$?
+    fi
+    [[ "$active_status" == "3" && "$active_state" == "inactive" ]] || return 1
+  done
+  for unit_name in "${service_units[@]}"; do
+    load_state="$(systemctl show --property=LoadState --value "$unit_name" 2>/dev/null)" \
+      || return 1
+    [[ -n "$load_state" && "$load_state" != error ]] || return 1
+    [[ "$load_state" == not-found ]] && continue
+    systemctl stop "$unit_name" >/dev/null 2>&1 || return 1
+    active_state=""; active_status=0
+    if active_state="$(systemctl is-active "$unit_name" 2>/dev/null)"; then
+      active_status=0
+    else
+      active_status=$?
+    fi
+    [[ "$active_status" == "3" && "$active_state" == "inactive" ]] || return 1
+  done
+}
+
 restore_stopped_previous_app_anchor() {
   local anchor_container anchor_image anchor_status
 
@@ -810,6 +935,15 @@ on_exit() {
       fi
       schedulers_resumed="false"
     fi
+    if [[ "$mode" == "initial" && "$initial_schedule_installed" == "true" ]]; then
+      if contain_initial_schedule_on_failure; then
+        initial_schedulers_verified="true"
+      else
+        initial_schedulers_verified="false"
+        printf '%s\n' \
+          "URGENT: initial-production failure could not prove all scheduled timers disabled." >&2
+      fi
+    fi
     if [[ "$candidate_started" == "true" ]]; then
       compose --profile auth-email stop --timeout 30 app auth_email_worker >/dev/null 2>&1 || true
       if [[ "$mode" == "release" ]]; then
@@ -828,7 +962,8 @@ on_exit() {
       --arg stage "$stage" \
       --argjson exitCode "$status" \
       --arg schedulersPaused "$schedulers_paused" \
-      '{schemaVersion: 1, product: "business-finlynq", status: "failed", failedAt: $at, mode: $mode, revision: $revision, runId: $runId, stage: $stage, exitCode: $exitCode, schedulersRemainPaused: ($schedulersPaused == "true")}' \
+      --arg initialTimersDisabled "$initial_schedulers_verified" \
+      '{schemaVersion: 1, product: "business-finlynq", status: "failed", failedAt: $at, mode: $mode, revision: $revision, runId: $runId, stage: $stage, exitCode: $exitCode, schedulersRemainPaused: ($schedulersPaused == "true"), initialTimersRemainDisabled: (if $mode == "initial" then ($initialTimersDisabled == "true") else null end)}' \
       >"$evidence_directory/99-failure.json" 2>/dev/null || true
     chmod 0600 -- "$evidence_directory/99-failure.json" 2>/dev/null || true
     capture_rehearsal_database_failure || true
@@ -899,7 +1034,7 @@ install -m 0600 -- "$canonical_environment_file" "$environment_snapshot_file"
 [[ "$(sha256sum "$environment_snapshot_file" | awk '{print $1}')" == "$compose_environment_sha256" ]] \
   || fail "private Compose environment snapshot differs from its validated source"
 environment_file="$environment_snapshot_file"
-if [[ "$mode" == "release" ]]; then
+if [[ "$mode" != "rehearsal" ]]; then
   operations_environment_snapshot_file="$(mktemp)"
   install -m 0600 -- "$canonical_operations_environment_file" "$operations_environment_snapshot_file"
   [[ "$(sha256sum "$operations_environment_snapshot_file" | awk '{print $1}')" == "$operations_environment_sha256" ]] \
@@ -932,7 +1067,9 @@ app_origin="$(jq -r '.services.app.environment.APP_ORIGIN // empty' <<<"$rendere
 session_cookie_name="$(jq -r '.services.app.environment.SESSION_COOKIE_NAME // empty' <<<"$rendered_compose")"
 public_base_url=""
 
-for gate in DEMO_LOGIN_ENABLED DEMO_WRITES_ENABLED ACCOUNT_LOGIN_ENABLED ACCOUNT_SIGNUP_ENABLED BUSINESS_WRITES_ENABLED BANK_FEEDS_ENABLED; do
+for gate in DEMO_LOGIN_ENABLED DEMO_WRITES_ENABLED ACCOUNT_LOGIN_ENABLED \
+  ACCOUNT_SIGNUP_ENABLED AUTH_EMAIL_DELIVERY_ENABLED SIGNUP_TURNSTILE_ENABLED \
+  BUSINESS_WRITES_ENABLED BANK_FEEDS_ENABLED YAHOO_FX_ENABLED; do
   gate_value="$(jq -r --arg gate "$gate" '.services.app.environment[$gate] // empty' <<<"$rendered_compose")"
   [[ "$gate_value" == "true" || "$gate_value" == "false" ]] || fail "app gate $gate is not an explicit boolean"
   printf -v "release_$gate" '%s' "$gate_value"
@@ -940,6 +1077,9 @@ done
 
 backup_directory="$(jq -r '.services.backup.volumes[] | select(.target == "/backups") | .source' <<<"$rendered_compose")"
 verify_backup_directory="$(jq -r '.services.verify_latest_backup.volumes[] | select(.target == "/backups") | .source' <<<"$rendered_compose")"
+scanner_image_reference="$(jq -r '.services.evidence_scanner.image // empty' <<<"$rendered_compose")"
+[[ "$scanner_image_reference" =~ ^clamav/clamav@sha256:[a-f0-9]{64}$ ]] \
+  || fail "evidence scanner is not pinned to the reviewed ClamAV digest"
 [[ -n "$backup_directory" && "$backup_directory" == "$verify_backup_directory" ]] \
   || fail "backup writer and verifier do not use the same host directory"
 [[ "$backup_directory" == /* ]] || fail "backup directory must resolve to an absolute host path"
@@ -969,7 +1109,7 @@ read_compose_value() {
   printf '%s' "$value"
 }
 
-if [[ "$mode" == "release" ]]; then
+if [[ "$mode" != "rehearsal" ]]; then
   [[ "$(read_operations_value BUSINESS_FINLYNQ_IMAGE_REVISION)" == "$revision" ]] \
     || fail "operations image revision does not match the candidate"
   [[ "$(read_operations_value MONITOR_EXPECT_REVISION)" == "$revision" ]] || fail "operations monitor revision does not match the candidate"
@@ -1008,6 +1148,7 @@ if [[ "$mode" == "release" ]]; then
   MONITOR_EXPECT_AUTH_EMAIL_WORKER="$(read_operations_value MONITOR_EXPECT_AUTH_EMAIL_WORKER)"
   MONITOR_EXPECT_OUTBOX_PUBLISHER="$(read_operations_value MONITOR_EXPECT_OUTBOX_PUBLISHER)"
   MONITOR_REQUIRE_OFFSITE="$(read_operations_value MONITOR_REQUIRE_OFFSITE)"
+  MONITOR_EXPECT_SCHEDULERS_ACTIVE="$(read_operations_value MONITOR_EXPECT_SCHEDULERS_ACTIVE)"
   MONITOR_EXPECT_DEMO_MAINTENANCE="$(read_operations_value MONITOR_EXPECT_DEMO_MAINTENANCE)"
   export BUSINESS_FINLYNQ_IMAGE_REVISION MONITOR_EXPECT_REVISION MONITOR_MAINTENANCE_SCHEDULER \
     MONITOR_BASE_URL MONITOR_HOSTNAME MONITOR_BACKUP_DIR MONITOR_MAX_BACKUP_AGE_HOURS \
@@ -1018,9 +1159,11 @@ if [[ "$mode" == "release" ]]; then
     MONITOR_EXTERNAL_EDGE_PROJECT MONITOR_EXTERNAL_EDGE_SERVICE MONITOR_EXTERNAL_EDGE_NETWORK \
     MONITOR_EXPECT_AUTH_EMAIL_WORKER \
     MONITOR_EXPECT_OUTBOX_PUBLISHER MONITOR_REQUIRE_OFFSITE \
+    MONITOR_EXPECT_SCHEDULERS_ACTIVE \
     MONITOR_EXPECT_DEMO_MAINTENANCE
   for explicit_boolean in MONITOR_EXPECT_EDGE MONITOR_EXPECT_AUTH_EMAIL_WORKER \
-    MONITOR_EXPECT_OUTBOX_PUBLISHER MONITOR_REQUIRE_OFFSITE MONITOR_EXPECT_DEMO_MAINTENANCE; do
+    MONITOR_EXPECT_OUTBOX_PUBLISHER MONITOR_REQUIRE_OFFSITE \
+    MONITOR_EXPECT_SCHEDULERS_ACTIVE MONITOR_EXPECT_DEMO_MAINTENANCE; do
     [[ "${!explicit_boolean}" == "true" || "${!explicit_boolean}" == "false" ]] \
       || fail "$explicit_boolean must be explicitly true or false in the canonical operations environment"
   done
@@ -1050,7 +1193,86 @@ if [[ "$mode" == "release" ]]; then
       && "$MONITOR_EXTERNAL_EDGE_NETWORK" == "$(read_compose_value BUSINESS_FINLYNQ_EDGE_NETWORK)" ]] \
       || fail "monitor external-edge identity differs from the Compose contract"
   fi
-  [[ "$MONITOR_REQUIRE_OFFSITE" == "true" ]] || fail "production release requires off-site backup verification"
+  if [[ "$mode" == "release" ]]; then
+    [[ "$MONITOR_REQUIRE_OFFSITE" == "true" ]] \
+      || fail "production release requires off-site backup verification"
+    [[ "$MONITOR_EXPECT_SCHEDULERS_ACTIVE" == "true" ]] \
+      || fail "production release requires active scheduled operations"
+  else
+    [[ "$edge_mode" == "external" ]] \
+      || fail "initial production requires the externally managed edge contract"
+    [[ "$MONITOR_REQUIRE_OFFSITE" == "false" ]] \
+      || fail "initial production must explicitly defer off-site backup verification"
+    [[ "$MONITOR_EXPECT_SCHEDULERS_ACTIVE" == "false" ]] \
+      || fail "initial production must leave every scheduled timer disabled"
+    [[ "$release_DEMO_LOGIN_ENABLED" == "true" \
+      && "$release_DEMO_WRITES_ENABLED" == "true" \
+      && "$release_ACCOUNT_LOGIN_ENABLED" == "false" \
+      && "$release_ACCOUNT_SIGNUP_ENABLED" == "false" \
+      && "$release_AUTH_EMAIL_DELIVERY_ENABLED" == "false" \
+      && "$release_SIGNUP_TURNSTILE_ENABLED" == "false" \
+      && "$release_BUSINESS_WRITES_ENABLED" == "false" \
+      && "$release_BANK_FEEDS_ENABLED" == "false" \
+      && "$release_YAHOO_FX_ENABLED" == "false" ]] \
+      || fail "initial production requires the contained synthetic-demo gate posture"
+    [[ "$(jq -r '.services.backup.environment.BACKUP_REQUIRE_OFFSITE // empty' \
+      <<<"$rendered_compose")" == "false" ]] \
+      || fail "initial production backup must explicitly disable off-site delivery"
+    [[ "$(jq -r '.services.verify_latest_backup.environment.BACKUP_REQUIRE_OFFSITE_MARKER // empty' \
+      <<<"$rendered_compose")" == "false" ]] \
+      || fail "initial production backup verification must explicitly defer the off-site marker"
+    jq -e '
+      .volumes.business_finlynq_pgdata.name == "business_finlynq_pgdata" and
+      .volumes.business_finlynq_clamav.name == "business_finlynq_pgdata_clamav" and
+      .volumes.business_finlynq_caddy_data.name == "business_finlynq_caddy_data" and
+      .volumes.business_finlynq_caddy_config.name == "business_finlynq_caddy_config" and
+      .networks.business_finlynq_private.name == "business_finlynq_private" and
+      .networks.business_finlynq_evidence.name == "business_finlynq_private_evidence" and
+      .networks.business_finlynq_egress.name == "business_finlynq_egress" and
+      .networks.business_finlynq_scanner_egress.name == "business_finlynq_egress_scanner" and
+      .networks.business_finlynq_edge.name == "business_finlynq_edge" and
+      .networks.business_finlynq_edge.external == true and
+      .networks.business_finlynq_restore_drill.name == "business_finlynq_restore_drill"
+    ' <<<"$rendered_compose" >/dev/null \
+      || fail "initial production must use the canonical production resource names"
+    while IFS= read -r secret_source; do
+      [[ "$secret_source" == /* ]] \
+        || fail "initial production secret sources must use durable absolute host paths"
+      reject_repository_path "$secret_source" "initial production secret source"
+    done < <(jq -r '.secrets[]?.file // empty' <<<"$rendered_compose")
+    initial_disabled_secret_source="$(jq -r '
+      [
+        .secrets.business_finlynq_document_google_secret.file,
+        .secrets.business_finlynq_document_microsoft_secret.file,
+        .secrets.business_finlynq_resend_api_key.file,
+        .secrets.business_finlynq_turnstile_secret_key.file,
+        .secrets.business_finlynq_rclone_config.file,
+        .secrets.business_finlynq_backup_receiver_ssh_private_key.file,
+        .secrets.business_finlynq_backup_receiver_known_hosts.file,
+        .secrets.business_finlynq_backup_receiver_receipt_public_key.file,
+        .secrets.business_finlynq_backup_age_identity.file,
+        .secrets.business_finlynq_restore_db_password.file
+      ] | unique | if length == 1 then .[0] else "" end
+    ' <<<"$rendered_compose")"
+    [[ -n "$initial_disabled_secret_source" \
+      && -f "$initial_disabled_secret_source" && ! -L "$initial_disabled_secret_source" \
+      && ! -s "$initial_disabled_secret_source" ]] \
+      || fail "disabled initial providers and recovery inputs must share one durable empty placeholder"
+    for required_secret in business_finlynq_app_db_password \
+      business_finlynq_root_kek business_finlynq_identity_secret \
+      business_finlynq_auth_worker_db_password business_finlynq_backup_db_password \
+      business_finlynq_backup_age_recipient; do
+      required_secret_source="$(jq -r --arg secret "$required_secret" \
+        '.secrets[$secret].file // empty' <<<"$rendered_compose")"
+      [[ -n "$required_secret_source" && -f "$required_secret_source" \
+        && ! -L "$required_secret_source" && -s "$required_secret_source" ]] \
+        || fail "required initial secret material is unavailable: $required_secret"
+    done
+    if ! initial_secret_sources="$(jq -r '.secrets[]?.file // empty' \
+      <<<"$rendered_compose" | sort -u)"; then
+      fail "initial secret-source inventory could not be rendered"
+    fi
+  fi
   [[ "$MONITOR_EXPECT_AUTH_EMAIL_WORKER" == "$release_ACCOUNT_LOGIN_ENABLED" ]] \
     || fail "auth-worker monitor expectation must match the account-login gate"
   [[ "$MONITOR_BACKUP_DIR" == "$backup_directory" ]] || fail "operations monitor and Compose backup directory differ"
@@ -1093,14 +1315,383 @@ jq -n \
   --arg runId "$run_id" \
   --arg project "$compose_project" \
   --arg composeSha256 "$compose_hash" \
+  --arg operationsEnvironmentSha256 "$operations_environment_sha256" \
+  --arg initialState "$initial_state" \
+  --arg initialResumeRunId "$initial_resume_run_id" \
   --arg candidateTreeId "$candidate_tree_id" \
   --arg gitTreeManifestSha256 "$(sha256sum "$evidence_directory/03-candidate-git-tree.txt" | awk '{print $1}')" \
   --arg stagedTreeManifestSha256 "$(sha256sum "$evidence_directory/04-staged-tree-sha256.txt" | awk '{print $1}')" \
   --arg baseUrl "$public_base_url" \
   --argjson cleanEnvironment "$([[ "$mode" == "rehearsal" ]] && echo true || echo false)" \
-  '{schemaVersion: 1, product: "business-finlynq", status: "started", startedAt: $startedAt, mode: $mode, revision: $revision, runId: $runId, candidateTreeId: $candidateTreeId, gitTreeManifestSha256: $gitTreeManifestSha256, stagedTreeManifestSha256: $stagedTreeManifestSha256, composeProject: $project, composeConfigurationSha256: $composeSha256, acceptanceBaseUrl: $baseUrl, cleanEnvironment: $cleanEnvironment}' \
+  '{schemaVersion: 1, product: "business-finlynq", status: "started", startedAt: $startedAt, mode: $mode, revision: $revision, runId: $runId, candidateTreeId: $candidateTreeId, gitTreeManifestSha256: $gitTreeManifestSha256, stagedTreeManifestSha256: $stagedTreeManifestSha256, composeProject: $project, composeConfigurationSha256: $composeSha256, operationsEnvironmentSha256: (if $operationsEnvironmentSha256 == "" then null else $operationsEnvironmentSha256 end), acceptanceBaseUrl: $baseUrl, cleanEnvironment: $cleanEnvironment, initialState: (if $mode == "initial" then $initialState else null end), resumedFromRunId: (if $initialResumeRunId == "" then null else $initialResumeRunId end)}' \
   >"$evidence_directory/00-release-plan.json"
 chmod 0600 -- "$evidence_directory/00-release-plan.json"
+
+record_initial_input_attestations() {
+  [[ "$mode" == "initial" ]] || return 0
+  local secret_source metadata owner_uid group_gid mode_bits byte_size secret_sha256
+  local secret_attestations='[]'
+  while IFS= read -r secret_source; do
+    [[ -n "$secret_source" && -f "$secret_source" && ! -L "$secret_source" ]] \
+      || fail "initial secret-source attestation found an unsafe path"
+    metadata="$(stat -c '%u|%g|%a|%s' -- "$secret_source")"
+    IFS='|' read -r owner_uid group_gid mode_bits byte_size <<<"$metadata"
+    [[ "$owner_uid" == "0" && "$group_gid" =~ ^[0-9]+$ \
+      && "$mode_bits" =~ ^[0-7]{3,4}$ && "$byte_size" =~ ^[0-9]+$ ]] \
+      || fail "initial secret-source metadata is invalid"
+    (( (8#$mode_bits & 8#007) == 0 )) \
+      || fail "initial secret source is accessible by other users: $secret_source"
+    secret_sha256="$(sha256sum "$secret_source" | awk '{print $1}')"
+    [[ "$secret_sha256" =~ ^[a-f0-9]{64}$ ]] \
+      || fail "initial secret-source checksum is invalid"
+    secret_attestations="$(jq -c --arg path "$secret_source" \
+      --arg sha256 "$secret_sha256" --argjson ownerUid "$owner_uid" \
+      --argjson groupGid "$group_gid" --arg mode "$mode_bits" \
+      --argjson bytes "$byte_size" \
+      '. + [{path: $path, sha256: $sha256, ownerUid: $ownerUid,
+        groupGid: $groupGid, mode: $mode, bytes: $bytes}]' \
+      <<<"$secret_attestations")"
+  done <<<"$initial_secret_sources"
+  (( $(jq 'length' <<<"$secret_attestations") > 0 )) \
+    || fail "initial secret-source attestation is empty"
+  jq -n --arg revision "$revision" --arg composeEnvironmentSha256 "$compose_environment_sha256" \
+    --arg operationsEnvironmentSha256 "$operations_environment_sha256" \
+    --argjson secrets "$secret_attestations" \
+    '{schemaVersion: 1, product: "business-finlynq", revision: $revision,
+      composeEnvironmentSha256: $composeEnvironmentSha256,
+      operationsEnvironmentSha256: $operationsEnvironmentSha256, secrets: $secrets}' \
+    >"$evidence_directory/06-initial-inputs.json"
+  chmod 0600 -- "$evidence_directory/06-initial-inputs.json"
+}
+
+record_initial_input_attestations
+
+quiesce_and_verify_initial_schedulers() {
+  [[ "$mode" == "initial" ]] || return 0
+  command -v systemctl >/dev/null 2>&1 \
+    || fail "systemctl is unavailable for initial scheduler containment"
+  local unit_name load_state enabled_state active_state enabled_status active_status
+  local -a timer_units=(
+    business-finlynq-backup.timer
+    business-finlynq-monitor.timer
+    business-finlynq-accounting-evidence.timer
+    business-finlynq-demo-reconcile.timer
+    business-finlynq-continuous-deployment.timer
+  )
+  local -a service_units=(
+    business-finlynq-backup.service
+    business-finlynq-monitor.service
+    business-finlynq-accounting-evidence.service
+    business-finlynq-demo-reconcile.service
+    business-finlynq-continuous-deployment.service
+  )
+
+  for unit_name in "${timer_units[@]}"; do
+    load_state="$(systemctl show --property=LoadState --value "$unit_name" 2>/dev/null)" \
+      || fail "initial scheduler unit state could not be inspected: $unit_name"
+    [[ "$load_state" != "error" && -n "$load_state" ]] \
+      || fail "initial scheduler unit returned an invalid load state: $unit_name"
+    [[ "$load_state" == "not-found" ]] && continue
+    systemctl disable --now "$unit_name" \
+      || fail "initial scheduler timer could not be disabled: $unit_name"
+    enabled_state=""; enabled_status=0
+    if enabled_state="$(systemctl is-enabled "$unit_name" 2>/dev/null)"; then
+      enabled_status=0
+    else
+      enabled_status=$?
+    fi
+    [[ "$enabled_status" == "1" && "$enabled_state" == "disabled" ]] \
+      || fail "initial scheduler timer is not exactly disabled: $unit_name"
+    active_state=""; active_status=0
+    if active_state="$(systemctl is-active "$unit_name" 2>/dev/null)"; then
+      active_status=0
+    else
+      active_status=$?
+    fi
+    [[ "$active_status" == "3" && "$active_state" == "inactive" ]] \
+      || fail "initial scheduler timer is not exactly inactive: $unit_name"
+  done
+  for unit_name in "${service_units[@]}"; do
+    load_state="$(systemctl show --property=LoadState --value "$unit_name" 2>/dev/null)" \
+      || fail "initial scheduler service state could not be inspected: $unit_name"
+    [[ "$load_state" != "error" && -n "$load_state" ]] \
+      || fail "initial scheduler service returned an invalid load state: $unit_name"
+    [[ "$load_state" == "not-found" ]] && continue
+    systemctl stop "$unit_name" \
+      || fail "initial scheduler service could not be stopped: $unit_name"
+    active_state=""; active_status=0
+    if active_state="$(systemctl is-active "$unit_name" 2>/dev/null)"; then
+      active_status=0
+    else
+      active_status=$?
+    fi
+    [[ "$active_status" == "3" && "$active_state" == "inactive" ]] \
+      || fail "initial scheduler service is not exactly inactive: $unit_name"
+  done
+
+  for unit_name in business-finlynq-development-deployment.timer \
+    business-finlynq-development-deployment.service; do
+    if systemctl is-active --quiet "$unit_name" 2>/dev/null \
+      || systemctl is-enabled --quiet "$unit_name" 2>/dev/null; then
+      fail "development deployment automation must remain inactive during production bootstrap"
+    fi
+  done
+  initial_schedulers_verified="true"
+  printf '%s\n' "Production operation/deployment schedulers are disabled and services are quiescent."
+}
+
+verify_initial_state_contract() {
+  [[ "$mode" == "initial" ]] || return 0
+  local resource_name container_id container_contract service_name image_revision
+  local expected_volume_label expected_network_label expected_network_internal prior_record
+  local logical_image expected_resume_image_id
+  local prior_failure_record prior_plan prior_rollback
+  local failed_initial_record=""
+  local -a project_containers=()
+  local -a forbidden_volumes=(
+    business_finlynq_pgdata
+    business_finlynq_pgdata_clamav
+    business_finlynq_caddy_data
+    business_finlynq_caddy_config
+  )
+  local -a forbidden_networks=(
+    business_finlynq_private
+    business_finlynq_private_evidence
+    business_finlynq_egress
+    business_finlynq_egress_scanner
+    business_finlynq_restore_drill
+  )
+
+  initial_schedule_installed="true"
+  quiesce_and_verify_initial_schedulers
+
+  read_docker_output "initial production project containers" ps --all --quiet --no-trunc \
+    --filter 'label=com.docker.compose.project=business-finlynq'
+  while IFS= read -r container_id; do
+    [[ -z "$container_id" ]] && continue
+    [[ "$container_id" =~ ^[a-f0-9]{64}$ ]] \
+      || fail "Docker returned an invalid initial production container ID"
+    project_containers+=("$container_id")
+  done <<<"$docker_query_output"
+
+  if [[ "$initial_state" == "fresh" ]]; then
+    (( ${#project_containers[@]} == 0 )) \
+      || fail "fresh initial production requires no preexisting Business Finlynq production containers"
+  else
+    prior_evidence_directory="$evidence_root/$revision/$initial_resume_run_id"
+    [[ -d "$prior_evidence_directory" && ! -L "$prior_evidence_directory" \
+      && "$(readlink -f -- "$prior_evidence_directory")" == "$prior_evidence_directory" \
+      && "$(stat -c '%u:%a' -- "$prior_evidence_directory")" == "0:700" ]] \
+      || fail "acknowledged prior initial evidence directory is unavailable or unsafe"
+    prior_failure_record="$prior_evidence_directory/99-failure.json"
+    prior_plan="$prior_evidence_directory/00-release-plan.json"
+    prior_rollback="$prior_evidence_directory/12-rollback-artifact.json"
+    for prior_record in "$prior_failure_record" "$prior_plan" "$prior_rollback" \
+      "$prior_evidence_directory/06-initial-inputs.json" \
+      "$prior_evidence_directory/11-images.json" \
+      "$prior_evidence_directory/SHA256SUMS"; do
+      [[ -f "$prior_record" && ! -L "$prior_record" \
+        && "$(stat -c '%u:%a' -- "$prior_record")" == "0:600" ]] \
+        || fail "acknowledged prior initial evidence is incomplete or unsafe"
+    done
+    [[ ! -e "$prior_evidence_directory/90-release-complete.json" \
+      && ! -L "$prior_evidence_directory/90-release-complete.json" ]] \
+      || fail "an accepted initial run cannot authorize resume"
+    if ! awk '
+      NF != 2 || $1 !~ /^[a-f0-9]{64}$/ || $2 !~ /^\.\/[A-Za-z0-9][A-Za-z0-9._-]*$/ {
+        exit 1
+      }
+    ' "$prior_evidence_directory/SHA256SUMS"; then
+      fail "acknowledged prior initial checksum inventory is unsafe"
+    fi
+    (
+      cd -- "$prior_evidence_directory"
+      sha256sum --check --strict --quiet SHA256SUMS
+    ) || fail "acknowledged prior initial evidence failed checksum verification"
+    jq -e --arg revision "$revision" --arg priorRunId "$initial_resume_run_id" '
+      .schemaVersion == 1 and .product == "business-finlynq" and
+      .status == "failed" and .mode == "initial" and .revision == $revision and
+      .runId == $priorRunId and .initialTimersRemainDisabled == true
+    ' "$prior_failure_record" >/dev/null \
+      || fail "acknowledged prior failure record does not match the resume contract"
+    jq -e --arg revision "$revision" --arg priorRunId "$initial_resume_run_id" \
+      --arg composeSha256 "$compose_hash" \
+      --arg operationsSha256 "$operations_environment_sha256" '
+      .schemaVersion == 1 and .product == "business-finlynq" and
+      .status == "started" and .mode == "initial" and .revision == $revision and
+      .runId == $priorRunId and .composeConfigurationSha256 == $composeSha256 and
+      .operationsEnvironmentSha256 == $operationsSha256
+    ' "$prior_plan" >/dev/null \
+      || fail "acknowledged prior initial environment hashes differ from this resume"
+    jq -e --arg revision "$revision" '
+      .schemaVersion == 1 and .previous == null and
+      .candidate.revision == $revision and .databaseRollback == "forward-repair-only"
+    ' "$prior_rollback" >/dev/null \
+      || fail "acknowledged prior initial rollback evidence is invalid"
+    cmp -s -- "$prior_evidence_directory/06-initial-inputs.json" \
+      "$evidence_directory/06-initial-inputs.json" \
+      || fail "initial secret/input attestations changed since the acknowledged failure"
+    failed_initial_record="$prior_failure_record"
+
+    for container_id in "${project_containers[@]}"; do
+      read_docker_output "resumable initial container contract" inspect --format \
+        '{"project":{{json (index .Config.Labels "com.docker.compose.project")}},"service":{{json (index .Config.Labels "com.docker.compose.service")}},"revision":{{json (index .Config.Labels "org.opencontainers.image.revision")}},"imageReference":{{json .Config.Image}},"imageId":{{json .Image}},"running":{{json .State.Running}},"status":{{json .State.Status}},"health":{{if .State.Health}}{{json .State.Health.Status}}{{else}}null{{end}}}' \
+        "$container_id"
+      container_contract="$docker_query_output"
+      service_name="$(jq -r '.service // empty' <<<"$container_contract")"
+      image_revision="$(jq -r '.revision // empty' <<<"$container_contract")"
+      [[ "$(jq -r '.project // empty' <<<"$container_contract")" == business-finlynq ]] \
+        || fail "resumable container escaped the production Compose project"
+      case "$service_name" in
+        database|backup|provision_auth_worker_role|migrate|reconcile_runtime_grants|reconcile_auth_worker_grants|reconcile_backup_grants|verify_database_contract|bootstrap_demo|provision_backup|verify_accounting_evidence|app|release_acceptance|verify_latest_backup)
+          [[ "$image_revision" == "$revision" ]] \
+            || fail "resumable $service_name container is not from the interrupted revision"
+          logical_image=operations
+          case "$service_name" in
+            database) logical_image=database ;;
+            app) logical_image=app ;;
+            migrate|bootstrap_demo) logical_image=migrator ;;
+            release_acceptance) logical_image=acceptance ;;
+          esac
+          expected_resume_image_id="$(jq -r --arg name "$logical_image" \
+            '.images[] | select(.name == $name) | .imageId' \
+            "$prior_evidence_directory/11-images.json")"
+          [[ "$expected_resume_image_id" =~ ^sha256:[a-f0-9]{64}$ \
+            && "$(jq -r '.imageId // empty' <<<"$container_contract")" \
+              == "$expected_resume_image_id" ]] \
+            || fail "resumable $service_name container image ID differs from prior evidence"
+          ;;
+        evidence_scanner)
+          read_docker_output "resumable pinned scanner image" image inspect --format '{{.Id}}' \
+            "$scanner_image_reference"
+          [[ "$(jq -r '.imageReference // empty' <<<"$container_contract")" == "$scanner_image_reference" \
+            && "$(jq -r '.imageId // empty' <<<"$container_contract")" == "$docker_query_output" ]] \
+            || fail "resumable evidence scanner does not use the pinned image reference"
+          ;;
+        *) fail "initial resume found an unexpected production service: ${service_name:-missing}" ;;
+      esac
+      if [[ "$service_name" == database || "$service_name" == evidence_scanner ]]; then
+        if [[ "$(jq -r '.running' <<<"$container_contract")" == true ]]; then
+          [[ "$(jq -r '.health // empty' <<<"$container_contract")" == healthy ]] \
+            || fail "running resumable $service_name container is not healthy"
+        fi
+      elif [[ "$(jq -r '.running' <<<"$container_contract")" == true ]]; then
+        read_docker_output "stopped resumable $service_name container" stop --time 30 "$container_id"
+        [[ "$docker_query_output" == "$container_id" || "$docker_query_output" == "${container_id:0:12}" ]] \
+          || fail "resumable $service_name container returned an unexpected stop identity"
+        read_docker_output "quiescent resumable $service_name container" inspect \
+          --format '{{.State.Running}}|{{.State.Status}}' "$container_id"
+        [[ "$docker_query_output" == false\|exited ]] \
+          || fail "resumable $service_name container could not be proven quiescent"
+      fi
+    done
+  fi
+
+  read_docker_output "Docker volumes before initial production" volume ls --format '{{.Name}}'
+  for resource_name in "${forbidden_volumes[@]}"; do
+    if grep -Fxq -- "$resource_name" <<<"$docker_query_output"; then
+      if [[ "$initial_state" == "fresh" \
+        || ( "$resource_name" != business_finlynq_pgdata \
+          && "$resource_name" != business_finlynq_pgdata_clamav ) ]]; then
+        fail "initial production found a disallowed preexisting production volume: $resource_name"
+      fi
+      expected_volume_label=business_finlynq_pgdata
+      [[ "$resource_name" == business_finlynq_pgdata_clamav ]] \
+        && expected_volume_label=business_finlynq_clamav
+      read_docker_output "resumable production volume $resource_name" volume inspect "$resource_name"
+      jq -e --arg name "$resource_name" --arg logical "$expected_volume_label" '
+        length == 1 and .[0].Name == $name and .[0].Driver == "local" and
+        .[0].Scope == "local" and (.Options == null or .Options == {}) and
+        (.[0].Mountpoint | type == "string" and endswith("/volumes/" + $name + "/_data")) and
+        .[0].Labels["com.docker.compose.project"] == "business-finlynq" and
+        .[0].Labels["com.docker.compose.volume"] == $logical
+      ' <<<"$docker_query_output" >/dev/null \
+        || fail "resumable production volume ownership is invalid: $resource_name"
+    fi
+  done
+  read_docker_output "Compose-owned volumes before initial production" volume ls \
+    --filter 'label=com.docker.compose.project=business-finlynq' --format '{{.Name}}'
+  while IFS= read -r resource_name; do
+    [[ -z "$resource_name" ]] && continue
+    if [[ "$initial_state" == "fresh" \
+      || ( "$resource_name" != business_finlynq_pgdata \
+        && "$resource_name" != business_finlynq_pgdata_clamav ) ]]; then
+      fail "initial production found an unexpected Compose-owned volume: $resource_name"
+    fi
+  done <<<"$docker_query_output"
+
+  read_docker_output "Docker networks before initial production" network ls --format '{{.Name}}'
+  for resource_name in "${forbidden_networks[@]}"; do
+    if grep -Fxq -- "$resource_name" <<<"$docker_query_output"; then
+      if [[ "$initial_state" == "fresh" || "$resource_name" == business_finlynq_restore_drill ]]; then
+        fail "initial production found a disallowed preexisting production network: $resource_name"
+      fi
+      expected_network_label=business_finlynq_private
+      expected_network_internal=false
+      case "$resource_name" in
+        business_finlynq_private)
+          expected_network_label=business_finlynq_private
+          expected_network_internal=true
+          ;;
+        business_finlynq_private_evidence)
+          expected_network_label=business_finlynq_evidence
+          expected_network_internal=true
+          ;;
+        business_finlynq_egress)
+          expected_network_label=business_finlynq_egress
+          ;;
+        business_finlynq_egress_scanner)
+          expected_network_label=business_finlynq_scanner_egress
+          ;;
+      esac
+      read_docker_output "resumable production network $resource_name" network inspect "$resource_name"
+      jq -e --arg name "$resource_name" --arg logical "$expected_network_label" \
+        --arg internal "$expected_network_internal" '
+        length == 1 and .[0].Name == $name and .[0].Driver == "bridge" and
+        .[0].Scope == "local" and .[0].Internal == ($internal == "true") and
+        .[0].Attachable == false and .[0].Ingress == false and
+        (.[0].IPAM.Driver == "default") and
+        (.[0].IPAM.Config | type == "array" and length == 1) and
+        .[0].Labels["com.docker.compose.project"] == "business-finlynq" and
+        .[0].Labels["com.docker.compose.network"] == $logical
+      ' <<<"$docker_query_output" >/dev/null \
+        || fail "resumable production network ownership is invalid: $resource_name"
+    fi
+  done
+  grep -Fxq -- business_finlynq_edge <<<"$docker_query_output" \
+    || fail "initial production requires the pre-created external production ingress network"
+  read_docker_output "Compose-owned networks before initial production" network ls \
+    --filter 'label=com.docker.compose.project=business-finlynq' --format '{{.Name}}'
+  while IFS= read -r resource_name; do
+    [[ -z "$resource_name" ]] && continue
+    if [[ "$initial_state" == "fresh" ]]; then
+      fail "fresh initial production found an unexpected Compose-owned network: $resource_name"
+    fi
+    case "$resource_name" in
+      business_finlynq_private|business_finlynq_private_evidence|business_finlynq_egress|business_finlynq_egress_scanner) ;;
+      *) fail "initial resume found an unexpected Compose-owned network: $resource_name" ;;
+    esac
+  done <<<"$docker_query_output"
+
+  [[ ! -e /home/deploy/.local/state/business-finlynq/release-locks/scheduler-maintenance \
+    && ! -L /home/deploy/.local/state/business-finlynq/release-locks/scheduler-maintenance ]] \
+    || fail "initial production cannot begin with a scheduler-maintenance marker"
+  if [[ "$initial_state" == "fresh" ]]; then
+    bash "$repository_root/deploy/edge/verify-external-edge.sh" --scope preflight
+    printf '%s\n' \
+      "Fresh production state accepted; only the attested external ingress network is pre-created."
+  else
+    bash "$repository_root/deploy/edge/verify-external-edge.sh" --scope development
+    printf 'Interrupted initial state accepted for exact-revision replay from %s.\n' \
+      "$failed_initial_record"
+  fi
+}
+
+if [[ "$mode" == "initial" ]]; then
+  stage="initial-fresh-state-contract"
+  run_logged 01-initial-fresh-state.log verify_initial_state_contract
+  write_checkpoint 02-initial-fresh-state.json initial-state-accepted
+fi
 
 if [[ "$mode" == "rehearsal" ]]; then
   stage="clean-rehearsal-environment"
@@ -1195,6 +1786,105 @@ jq -n --argjson images "$image_evidence" --arg pinnedComposeSha256 "$pinned_comp
   '{schemaVersion: 1, pinnedComposeConfigurationSha256: $pinnedComposeSha256, images: $images}' \
   >"$evidence_directory/11-images.json"
 chmod 0600 -- "$evidence_directory/11-images.json"
+if [[ "$mode" == "initial" && "$initial_state" == "resume" ]]; then
+  cmp -s -- "$prior_evidence_directory/11-images.json" "$evidence_directory/11-images.json" \
+    || fail "initial resume rebuilt image IDs or pinned Compose configuration differently"
+fi
+
+attest_initial_evidence_scanner() {
+  local scanner_container scanner_runtime expected_scanner_image_id now signature_record
+  local signature_path signature_uid signature_gid signature_mode signature_mtime
+  local signature_count=0 signature_inventory signature_evidence='[]'
+
+  capture_compose_container_id "running evidence-scanner container" ps --quiet evidence_scanner
+  scanner_container="$captured_compose_container_id"
+  read_docker_output "evidence-scanner runtime contract" inspect \
+    --format '{"imageId":{{json .Image}},"user":{{json .Config.User}},"readOnly":{{json .HostConfig.ReadonlyRootfs}},"status":{{json .State.Status}},"healthy":{{json .State.Health.Status}},"mounts":{{json .Mounts}},"networks":{{json .NetworkSettings.Networks}}}' \
+    "$scanner_container"
+  scanner_runtime="$docker_query_output"
+  read_docker_output "pinned evidence-scanner image" image inspect --format '{{.Id}}' \
+    "$scanner_image_reference"
+  expected_scanner_image_id="$docker_query_output"
+  jq -e --arg imageId "$expected_scanner_image_id" '
+    type == "object" and
+    .imageId == $imageId and .user == "100:101" and .readOnly == true and
+    .status == "running" and .healthy == "healthy" and
+    ([.networks | keys[]] | sort) ==
+      ["business_finlynq_egress_scanner", "business_finlynq_private_evidence"] and
+    (.mounts | length) == 1 and .mounts[0].Type == "volume" and
+    .mounts[0].Name == "business_finlynq_pgdata_clamav" and
+    .mounts[0].Destination == "/var/lib/clamav" and .mounts[0].RW == true
+  ' <<<"$scanner_runtime" >/dev/null \
+    || fail "evidence scanner runtime differs from the pinned non-root healthy contract"
+
+  signature_inventory="$(compose exec -T evidence_scanner /bin/sh -ec '
+    found=false
+    for path in /var/lib/clamav/*.cvd /var/lib/clamav/*.cld; do
+      [ -f "$path" ] || continue
+      found=true
+      stat -c "%n|%u|%g|%a|%Y" "$path"
+    done
+    [ "$found" = true ]
+  ')" || fail "evidence scanner signature inventory could not be read"
+  now="$(date +%s)"
+  [[ "$now" =~ ^[1-9][0-9]*$ ]] || fail "current time is invalid during scanner attestation"
+  while IFS='|' read -r signature_path signature_uid signature_gid signature_mode signature_mtime; do
+    [[ "$signature_path" =~ ^/var/lib/clamav/[A-Za-z0-9_.-]+\.(cvd|cld)$ \
+      && "$signature_uid" == "100" && "$signature_gid" == "101" \
+      && "$signature_mode" =~ ^[0-7]{3,4}$ \
+      && "$signature_mtime" =~ ^[1-9][0-9]*$ ]] \
+      || fail "evidence scanner returned unsafe signature metadata"
+    (( (8#$signature_mode & 8#002) == 0 )) \
+      || fail "evidence scanner signature is writable by other users"
+    (( signature_mtime <= now + 300 && now - signature_mtime <= 604800 )) \
+      || fail "evidence scanner signature is stale or future-dated"
+    signature_evidence="$(jq -c \
+      --arg path "$signature_path" --argjson uid "$signature_uid" \
+      --argjson gid "$signature_gid" --arg mode "$signature_mode" \
+      --argjson modifiedAtUnixtime "$signature_mtime" \
+      '. + [{path: $path, uid: $uid, gid: $gid, mode: $mode,
+        modifiedAtUnixtime: $modifiedAtUnixtime}]' <<<"$signature_evidence")"
+    signature_count=$((signature_count + 1))
+  done <<<"$signature_inventory"
+  (( signature_count > 0 )) || fail "evidence scanner has no accepted signature databases"
+
+  jq -n --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    --arg containerId "$scanner_container" --arg imageReference "$scanner_image_reference" \
+    --arg imageId "$expected_scanner_image_id" --argjson signatures "$signature_evidence" \
+    '{schemaVersion: 1, product: "business-finlynq", verifiedAt: $at,
+      containerId: $containerId, imageReference: $imageReference, imageId: $imageId,
+      runtimeUser: "100:101", readOnlyRootFilesystem: true, signatures: $signatures}' \
+    >"$evidence_directory/14-evidence-scanner.json"
+  chmod 0600 -- "$evidence_directory/14-evidence-scanner.json"
+}
+
+probe_initial_evidence_scanner() {
+  compose run --rm --no-deps -T app node -e '
+    const net = require("node:net");
+    function query(parts) {
+      return new Promise((resolve, reject) => {
+        const socket = net.createConnection({ host: "evidence_scanner", port: 3310 });
+        const chunks = [];
+        const deadline = setTimeout(() => { socket.destroy(); reject(new Error("scanner probe timed out")); }, 15000);
+        socket.on("connect", () => { for (const part of parts) socket.write(part); });
+        socket.on("data", (part) => {
+          chunks.push(part);
+          if (part.includes(0)) { clearTimeout(deadline); socket.destroy(); resolve(Buffer.concat(chunks).toString("utf8").replace(/\0.*$/s, "")); }
+        });
+        socket.on("error", (error) => { clearTimeout(deadline); reject(error); });
+        socket.on("end", () => { clearTimeout(deadline); resolve(Buffer.concat(chunks).toString("utf8").replace(/\0.*$/s, "")); });
+      });
+    }
+    (async () => {
+      const version = await query([Buffer.from("zVERSION\0", "binary")]);
+      const sample = Buffer.from("X5O!P%@AP[4\\PZX54(P^)7CC)7}$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*");
+      const length = Buffer.alloc(4); length.writeUInt32BE(sample.length);
+      const result = await query([Buffer.from("zINSTREAM\0", "binary"), length, sample, Buffer.alloc(4)]);
+      if (!/^ClamAV\//.test(version) || !/EICAR/i.test(result) || !/FOUND/.test(result)) process.exit(1);
+      console.log(JSON.stringify({ versionAccepted: true, eicarDetected: true, response: result.trim() }));
+    })().catch((error) => { console.error(error.message); process.exit(1); });
+  '
+}
 
 record_running_database_image() {
   local output_file="$1"
@@ -1255,6 +1945,16 @@ jq -n \
   '{schemaVersion: 1, previous: (if $previousImageId == "" then null else {imageId: $previousImageId, revision: $previousRevision} end), candidate: {imageId: $candidateImageId, revision: $candidateRevision}, databaseRollback: $schemaRollback, rollbackTool: $rollbackTool}' \
   >"$evidence_directory/12-rollback-artifact.json"
 chmod 0600 -- "$evidence_directory/12-rollback-artifact.json"
+
+if [[ "$mode" == "initial" ]]; then
+  stage="initial-evidence-scanner-bootstrap"
+  run_logged 13-evidence-scanner-start.log compose_timed 15m up --detach --wait \
+    --no-build --force-recreate evidence_scanner
+  run_logged 14-evidence-scanner-attestation.log attest_initial_evidence_scanner
+  stage="initial-evidence-scanner-eicar-boundary"
+  run_logged 15-evidence-scanner-eicar.log probe_initial_evidence_scanner
+  write_checkpoint 16-evidence-scanner-eicar.json evidence-scanner-eicar-boundary-passed
+fi
 
 pause_schedulers() {
   local pause_mode="${1:-strict}"
@@ -1384,6 +2084,55 @@ install_and_verify_systemd_schedule() {
   done
   systemctl daemon-reload
   bash "$candidate_source_root/deploy/systemd/verify-backup-schedule.sh"
+}
+
+disable_and_verify_initial_schedule() {
+  [[ "$mode" == "initial" && "$scheduler_mode" == "systemd" ]] \
+    || fail "disabled initial schedule verification was requested outside initial systemd mode"
+  local unit_name enabled_state active_state enabled_status active_status
+  local -a timer_units=(
+    business-finlynq-backup.timer
+    business-finlynq-monitor.timer
+    business-finlynq-accounting-evidence.timer
+    business-finlynq-demo-reconcile.timer
+  )
+  local -a service_units=(
+    business-finlynq-backup.service
+    business-finlynq-monitor.service
+    business-finlynq-accounting-evidence.service
+    business-finlynq-demo-reconcile.service
+  )
+
+  systemctl disable --now "${timer_units[@]}"
+  for unit_name in "${timer_units[@]}"; do
+    enabled_state=""; enabled_status=0
+    if enabled_state="$(systemctl is-enabled "$unit_name" 2>/dev/null)"; then
+      enabled_status=0
+    else
+      enabled_status=$?
+    fi
+    [[ "$enabled_status" == "1" && "$enabled_state" == "disabled" ]] \
+      || fail "initial scheduled timer is not exactly disabled: $unit_name"
+    active_state=""; active_status=0
+    if active_state="$(systemctl is-active "$unit_name" 2>/dev/null)"; then
+      active_status=0
+    else
+      active_status=$?
+    fi
+    [[ "$active_status" == "3" && "$active_state" == "inactive" ]] \
+      || fail "initial scheduled timer is not exactly inactive: $unit_name"
+  done
+  for unit_name in "${service_units[@]}"; do
+    active_state=""; active_status=0
+    if active_state="$(systemctl is-active "$unit_name" 2>/dev/null)"; then
+      active_status=0
+    else
+      active_status=$?
+    fi
+    [[ "$active_status" == "3" && "$active_state" == "inactive" ]] \
+      || fail "initial scheduled service is not quiescent: $unit_name"
+  done
+  printf '%s\n' "All four production operation timers are installed, disabled, and inactive."
 }
 
 systemd_property_value=""
@@ -1752,10 +2501,19 @@ if [[ "$mode" == "rehearsal" ]]; then
   run_logged 29-rehearsal-database-start.log compose_timed 10m up --detach --wait --no-build database
   record_running_database_image "$evidence_directory/29-rehearsal-database-image.json"
   backup_source_revision="$revision"
-else
+elif [[ "$mode" == "release" ]]; then
   backup_source_revision="$previous_app_revision"
+else
+  backup_source_revision="$revision"
+  jq -n \
+    --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    --arg revision "$revision" \
+    '{schemaVersion: 1, product: "business-finlynq", recordedAt: $at,
+      revision: $revision, preMigrationBackup: "not-applicable",
+      reason: "fresh-empty-database", previousApplication: null}' \
+    >"$evidence_directory/27-initial-pre-migration-backup-boundary.json"
+  chmod 0600 -- "$evidence_directory/27-initial-pre-migration-backup-boundary.json"
 fi
-run_logged 30-provision-backup-role.log compose --profile operations run --rm --no-deps provision_backup
 cleanup_failed_backup_containers() {
   local container_id
   local -a backup_containers=()
@@ -1790,7 +2548,6 @@ run_backup() (
     || fail "timed-out backup container could not be contained and removed"
   return "$backup_status"
 )
-run_logged 31-encrypted-backup.log run_backup
 verify_backup_and_record_evidence() {
   local verifier_output evidence_json
   local -a evidence_lines=()
@@ -1829,10 +2586,19 @@ verify_backup_and_record_evidence() {
   jq '.' <<<"$evidence_json" >"$evidence_directory/33-backup-evidence.json"
   chmod 0600 -- "$evidence_directory/33-backup-evidence.json"
 }
-run_logged 32-backup-verification.log verify_backup_and_record_evidence
+if [[ "$mode" != "initial" ]]; then
+  run_logged 30-provision-backup-role.log compose --profile operations run --rm --no-deps provision_backup
+  run_logged 31-encrypted-backup.log run_backup
+  run_logged 32-backup-verification.log verify_backup_and_record_evidence
+fi
 
 stage="activate-reviewed-database-image"
-run_logged 34-database-start.log compose_timed 10m up --detach --wait --no-build database
+start_reviewed_database() {
+  local -a recreate_arguments=()
+  [[ "$mode" == "initial" ]] && recreate_arguments+=(--force-recreate)
+  compose_timed 10m up --detach --wait --no-build "${recreate_arguments[@]}" database
+}
+run_logged 34-database-start.log start_reviewed_database
 record_running_database_image "$evidence_directory/35-database-image.json"
 
 stage="pre-traffic-migration-and-contract-verification"
@@ -1927,6 +2693,22 @@ jq -n --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --argjson services "$pretraffic_
   >"$evidence_directory/53-pretraffic-verification.json"
 chmod 0600 -- "$evidence_directory/53-pretraffic-verification.json"
 
+if [[ "$mode" == "initial" ]]; then
+  stage="initial-post-migration-local-backup"
+  run_logged 59-initial-provision-backup-role.log \
+    compose --profile operations run --rm --no-deps provision_backup
+  run_logged 59-initial-encrypted-backup.log run_backup
+  run_logged 59-initial-backup-verification.log verify_backup_and_record_evidence
+  jq -n \
+    --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    --arg revision "$revision" \
+    '{schemaVersion: 1, product: "business-finlynq", recordedAt: $at,
+      revision: $revision, localEncryptedBackup: "verified", offsiteDelivery: "deferred",
+      offsiteRequired: false}' \
+    >"$evidence_directory/59-initial-backup-deferral.json"
+  chmod 0600 -- "$evidence_directory/59-initial-backup-deferral.json"
+fi
+
 stage="candidate-readiness-with-writes-disabled"
 run_quiesced_app() (
   compose_with_overrides \
@@ -2015,7 +2797,7 @@ jq -e 'type == "object" and keys == ["status"] and .status == "ready"' "$public_
 grep -Eiq '^cache-control:.*no-store' "$public_headers" || fail "public readiness is missing no-store"
 chmod 0600 -- "$public_headers" "$public_body"
 
-if [[ "$mode" == release && "$edge_mode" == external ]]; then
+if [[ "$mode" != rehearsal && "$edge_mode" == external ]]; then
   stage="external-edge-contract"
   run_logged 67-external-edge-contract.log \
     bash "$repository_root/deploy/edge/verify-external-edge.sh"
@@ -2134,6 +2916,41 @@ if [[ "$mode" == "release" ]]; then
   write_checkpoint 83-production-monitor.json installed-scheduled-monitor-passed
   stage="record-scheduler-boundary-version"
   record_scheduler_boundary_version
+elif [[ "$mode" == "initial" ]]; then
+  stage="initial-scheduler-contract"
+  verify_live_checkout_matches_candidate
+  [[ "$(validate_secret_environment_file "$canonical_operations_environment_file" "canonical operations environment")" \
+    == "$canonical_operations_environment_file" ]] \
+    || fail "canonical operations environment resolved unexpectedly"
+  [[ "$(sha256sum "$canonical_operations_environment_file" | awk '{print $1}')" \
+    == "$operations_environment_sha256" ]] \
+    || fail "canonical operations environment changed during initial production"
+  run_logged 78-scheduler-state-contract.log prepare_scheduler_state_directory
+  run_logged 79-backup-schedule-contract.log install_and_verify_systemd_schedule
+  initial_schedule_installed="true"
+  run_logged 80-initial-schedulers-disabled.log disable_and_verify_initial_schedule
+  initial_schedulers_verified="true"
+  verify_live_checkout_matches_candidate
+  stage="initial-accounting-evidence-seed"
+  run_logged 81-accounting-evidence-seed.log run_installed_accounting_evidence
+  verify_live_checkout_matches_candidate
+  stage="initial-production-monitor-acceptance"
+  run_logged 82-production-monitor.log run_installed_monitor
+  verify_live_checkout_matches_candidate
+  run_logged 83-initial-schedulers-still-disabled.log disable_and_verify_initial_schedule
+  write_checkpoint 84-production-monitor.json contained-initial-monitor-passed
+  stage="record-initial-scheduler-boundary-version"
+  record_scheduler_boundary_version
+  jq -n \
+    --arg recordedAt "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    --arg revision "$revision" \
+    '{schemaVersion: 1, product: "business-finlynq", recordedAt: $recordedAt,
+      revision: $revision, scheduler: "systemd", timersInstalled: true,
+      timersEnabled: false, timersActive: false, scheduledExecution: "deferred",
+      offsiteBackup: "deferred", localEncryptedBackup: "verified",
+      activationRequiresReviewedRelease: true}' \
+    >"$evidence_directory/85-contained-initial-deferrals.json"
+  chmod 0600 -- "$evidence_directory/85-contained-initial-deferrals.json"
 else
   stage="clean-rehearsal-project"
   run_logged 80-clean-rehearsal.log compose --profile operations --profile auth-email --profile acceptance down --volumes --remove-orphans --timeout 30
@@ -2154,8 +2971,9 @@ jq -n \
   --arg runId "$run_id" \
   --arg candidateImageId "${image_ids[app]}" \
   --arg previousImageId "$previous_app_id" \
+  --arg containedInitial "$([[ "$mode" == "initial" ]] && printf true || printf false)" \
   --arg browserLogSha256 "$(sha256sum "$evidence_directory/70-browser-acceptance.log" | awk '{print $1}')" \
-  '{schemaVersion: 1, product: "business-finlynq", status: "accepted", completedAt: $completedAt, mode: $mode, revision: $revision, runId: $runId, candidateAppImageId: $candidateImageId, previousAppImageId: (if $previousImageId == "" then null else $previousImageId end), preTrafficDatabaseContractVerified: true, postBootstrapAccountingEvidenceVerified: true, browserAcceptancePassed: true, browserLogSha256: $browserLogSha256, databaseRollback: "forward-repair-only"}' \
+  '{schemaVersion: 1, product: "business-finlynq", status: "accepted", completedAt: $completedAt, mode: $mode, revision: $revision, runId: $runId, candidateAppImageId: $candidateImageId, previousAppImageId: (if $previousImageId == "" then null else $previousImageId end), preTrafficDatabaseContractVerified: true, postBootstrapAccountingEvidenceVerified: true, browserAcceptancePassed: true, browserLogSha256: $browserLogSha256, databaseRollback: "forward-repair-only", containedInitial: ($containedInitial == "true"), localEncryptedBackupVerified: ($containedInitial == "true"), offsiteBackupDeferred: ($containedInitial == "true"), schedulerActivationDeferred: ($containedInitial == "true")}' \
   >"$evidence_directory/90-release-complete.json"
 chmod 0600 -- "$evidence_directory/90-release-complete.json"
 refresh_checksums
