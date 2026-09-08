@@ -1,10 +1,19 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
+set +x
 
 umask 077
 
-readonly script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
-readonly repository_root="$(cd -- "$script_dir/../.." && pwd -P)"
+script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)" || {
+  printf 'Business Finlynq release failed: could not resolve the script directory\n' >&2
+  exit 1
+}
+readonly script_dir
+repository_root="$(cd -- "$script_dir/../.." && pwd -P)" || {
+  printf 'Business Finlynq release failed: could not resolve the repository directory\n' >&2
+  exit 1
+}
+readonly repository_root
 
 mode=""
 revision=""
@@ -21,6 +30,9 @@ candidate_started="false"
 schedulers_paused="false"
 rehearsal_cleaned="false"
 schedulers_resumed="false"
+scheduler_pause_attempted="false"
+write_surface_containment_armed="false"
+detached_mutator_containment_armed="false"
 initial_schedulers_verified="false"
 initial_schedule_installed="false"
 initial_state="fresh"
@@ -44,6 +56,7 @@ scheduler_boundary_bootstrap_source_revision=""
 scheduler_boundary_bootstrap_receipt=""
 scheduler_boundary_bootstrap_receipt_sha256=""
 edge_mode="compose"
+declare -a detached_mutator_services=()
 
 usage() {
   cat <<'USAGE'
@@ -76,6 +89,22 @@ USAGE
 fail() {
   printf 'Business Finlynq release failed: %s\n' "$1" >&2
   exit 1
+}
+
+checked_utc_timestamp() {
+  local timestamp
+  timestamp="$(date -u +%Y-%m-%dT%H:%M:%SZ)" || return 1
+  [[ "$timestamp" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] \
+    || return 1
+  printf '%s' "$timestamp"
+}
+
+checked_file_sha256() {
+  local selected_file="$1" checksum_output digest remainder
+  checksum_output="$(sha256sum -- "$selected_file")" || return 1
+  read -r digest remainder <<<"$checksum_output" || return 1
+  [[ "$digest" =~ ^[a-f0-9]{64}$ && -n "$remainder" ]] || return 1
+  printf '%s' "$digest"
 }
 
 git_command_output=""
@@ -161,7 +190,7 @@ else
     || fail "rehearsal mode does not operate production schedulers or an operations environment"
 fi
 
-for command_name in awk bash chmod chown curl date docker env find flock git grep id install jq mkdir mktemp readlink rm sed sha256sum sleep sort stat tar tee timeout touch xargs; do
+for command_name in awk bash chmod chown curl date docker env find flock git grep id install jq mkdir mktemp readlink rm sed sha256sum sleep sort stat sync tar tee timeout touch xargs; do
   command -v "$command_name" >/dev/null 2>&1 || fail "required command is unavailable: $command_name"
 done
 docker compose version >/dev/null 2>&1 || fail "Docker Compose v2 is unavailable"
@@ -221,9 +250,8 @@ assert_deploy_cron_identity() {
 environment_file="$(validate_secret_environment_file "$environment_file" "Compose environment")"
 reject_repository_path "$environment_file" "Compose environment"
 canonical_environment_file="$environment_file"
-compose_environment_sha256="$(sha256sum "$canonical_environment_file" | awk '{print $1}')"
-[[ "$compose_environment_sha256" =~ ^[a-f0-9]{64}$ ]] \
-  || fail "Compose environment checksum is invalid"
+compose_environment_sha256="$(checked_file_sha256 "$canonical_environment_file")" \
+  || fail "Compose environment checksum could not be read"
 edge_mode_count="$(awk -F= '$1 == "BUSINESS_FINLYNQ_EDGE_MODE" { count++ } END { print count + 0 }' \
   "$canonical_environment_file")"
 [[ "$edge_mode_count" == 0 || "$edge_mode_count" == 1 ]] \
@@ -251,9 +279,9 @@ if [[ "$mode" != "rehearsal" ]]; then
     [[ "$(stat -c '%u' -- "$operations_environment_file")" == "$(id -u)" ]] \
       || fail "cron operations environment must be owned by the deploy account"
   fi
-  operations_environment_sha256="$(sha256sum "$canonical_operations_environment_file" | awk '{print $1}')"
-  [[ "$operations_environment_sha256" =~ ^[a-f0-9]{64}$ ]] \
-    || fail "operations environment checksum is invalid"
+  operations_environment_sha256="$(checked_file_sha256 \
+    "$canonical_operations_environment_file")" \
+    || fail "operations environment checksum could not be read"
 fi
 
 if [[ "$mode" != "rehearsal" ]]; then
@@ -385,9 +413,8 @@ verify_scheduler_boundary_bootstrap() {
     || fail "the pre-checkout scheduler-boundary receipt does not match this release"
   scheduler_boundary_bootstrap_source_revision="$(jq -r '.sourceRevision' "$receipt_file")"
   scheduler_boundary_bootstrap_receipt="$receipt_file"
-  scheduler_boundary_bootstrap_receipt_sha256="$(sha256sum "$receipt_file" | awk '{print $1}')"
-  [[ "$scheduler_boundary_bootstrap_receipt_sha256" =~ ^[a-f0-9]{64}$ ]] \
-    || fail "the pre-checkout scheduler-boundary receipt checksum is invalid"
+  scheduler_boundary_bootstrap_receipt_sha256="$(checked_file_sha256 "$receipt_file")" \
+    || fail "the pre-checkout scheduler-boundary receipt checksum could not be read"
 }
 
 verify_scheduler_boundary_bootstrap
@@ -518,8 +545,11 @@ read_compose_output() {
 write_checkpoint() {
   local filename="$1"
   local checkpoint="$2"
+  local completed_at
+  completed_at="$(checked_utc_timestamp)" \
+    || fail "checkpoint timestamp could not be generated"
   jq -n \
-    --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    --arg at "$completed_at" \
     --arg mode "$mode" \
     --arg revision "$revision" \
     --arg runId "$run_id" \
@@ -530,28 +560,66 @@ write_checkpoint() {
 }
 
 refresh_checksums() {
-  [[ -n "$evidence_directory" && -d "$evidence_directory" ]] || return 0
+  [[ -n "$evidence_directory" && -d "$evidence_directory" \
+    && ! -L "$evidence_directory" ]] || return 1
   (
-    cd -- "$evidence_directory"
-    find . -maxdepth 1 -type f ! -name SHA256SUMS ! -name .SHA256SUMS.partial -print0 \
+    cd -- "$evidence_directory" || exit 1
+    if ! find . -maxdepth 1 -type f ! -name SHA256SUMS \
+      ! -name .SHA256SUMS.partial \
+      ! -name .90-release-complete.json.partial \
+      ! -name .99-failure.json.partial -print0 \
       | sort -z \
-      | xargs -0 -r sha256sum >.SHA256SUMS.partial
-    mv -f -- .SHA256SUMS.partial SHA256SUMS
-    chmod 0600 SHA256SUMS
+      | xargs -0 -r sha256sum >.SHA256SUMS.partial; then
+      rm -f -- .SHA256SUMS.partial
+      exit 1
+    fi
+    mv -f -- .SHA256SUMS.partial SHA256SUMS || exit 1
+    chmod 0600 SHA256SUMS || exit 1
   )
+}
+
+sync_evidence_inventory() {
+  [[ -n "$evidence_directory" && -d "$evidence_directory" \
+    && -f "$evidence_directory/SHA256SUMS" \
+    && ! -L "$evidence_directory/SHA256SUMS" ]] \
+    || return 1
+  # GNU sync -f uses syncfs for the containing filesystem. Sync the inventory
+  # itself first, then the directory/filesystem so terminal evidence and its
+  # directory entry are durable before a wrapper can publish completion.
+  sync -f -- "$evidence_directory/SHA256SUMS" \
+    && sync -f -- "$evidence_directory"
 }
 
 run_logged() {
   local filename="$1"
   shift
-  local status=0
-  if "$@" 2>&1 | tee "$evidence_directory/$filename"; then
-    status=0
+  local command_status=0 display_status=0 chmod_status=0
+  # Keep fail()/exit inside an isolated command scope so the parent EXIT trap
+  # cannot run while its diagnostics are still redirected to this log. Capture
+  # first, then display through a separately checked tee so either evidence I/O
+  # boundary can fail the release. Parent-owned recovery state is established
+  # explicitly at each call site after its durable postcondition is verified.
+  set +e
+  (
+    trap - EXIT ERR INT TERM
+    set -Eeuo pipefail
+    "$@"
+  ) >"$evidence_directory/$filename" 2>&1
+  command_status=$?
+  set -e
+  if tee <"$evidence_directory/$filename"; then
+    display_status=0
   else
-    status="${PIPESTATUS[0]}"
+    display_status=$?
   fi
-  chmod 0600 -- "$evidence_directory/$filename"
-  return "$status"
+  if chmod 0600 -- "$evidence_directory/$filename"; then
+    chmod_status=0
+  else
+    chmod_status=$?
+  fi
+  (( command_status == 0 )) || return "$command_status"
+  (( display_status == 0 )) || return "$display_status"
+  (( chmod_status == 0 )) || return "$chmod_status"
 }
 
 captured_compose_container_id=""
@@ -784,7 +852,8 @@ wait_for_captured_containers() {
           errorPresent: (if $inspectionSucceeded == "true" then ($errorPresent == "true") else null end),
           finalQuiescent: ($finalQuiescent == "true")
         }]
-      ' <<<"$container_evidence")"
+      ' <<<"$container_evidence")" \
+      || fail "$description container evidence could not be assembled"
   done
   jq -n \
     --arg description "$description" \
@@ -801,8 +870,10 @@ wait_for_captured_containers() {
         cleanupAttempted: ($cleanupAttempted == "true"),
         containers: $containers
       }
-    ' >"$evidence_directory/$state_evidence_filename"
-  chmod 0600 -- "$evidence_directory/$state_evidence_filename"
+    ' >"$evidence_directory/$state_evidence_filename" \
+    || fail "$description state evidence could not be written"
+  chmod 0600 -- "$evidence_directory/$state_evidence_filename" \
+    || fail "$description state evidence permissions could not be set"
 
   [[ "$cleanup_status" == "0" ]] \
     || fail "$description containers could not be proven quiescent after failure"
@@ -891,7 +962,7 @@ contain_initial_schedule_on_failure() {
 }
 
 restore_stopped_previous_app_anchor() {
-  local anchor_container anchor_image anchor_status
+  local anchor_container anchor_image anchor_status restored_at
 
   [[ "$mode" == "release" \
     && "${previous_app_id:-}" =~ ^sha256:[a-f0-9]{64}$ \
@@ -912,8 +983,9 @@ restore_stopped_previous_app_anchor() {
   anchor_image="$(docker inspect --format '{{.Image}}' "$anchor_container" 2>/dev/null)"
   anchor_status="$(docker inspect --format '{{.State.Status}}' "$anchor_container" 2>/dev/null)"
   [[ "$anchor_image" == "$previous_app_id" && "$anchor_status" == "created" ]] || return 1
+  restored_at="$(checked_utc_timestamp)" || return 1
   jq -n \
-    --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    --arg at "$restored_at" \
     --arg containerId "$anchor_container" \
     --arg imageId "$anchor_image" \
     --arg revision "$previous_app_revision" \
@@ -922,10 +994,71 @@ restore_stopped_previous_app_anchor() {
   chmod 0600 -- "$evidence_directory/97-failure-rollback-anchor.json" || return 1
 }
 
+contain_project_services_on_failure() {
+  local service_name query container_id contract running observed_project observed_service
+  local containment_status=0
+  for service_name in "$@"; do
+    if ! query="$(docker ps --all --quiet --no-trunc \
+      --filter "label=com.docker.compose.project=$compose_project" \
+      --filter "label=com.docker.compose.service=$service_name" 2>/dev/null)"; then
+      containment_status=1
+      continue
+    fi
+    while IFS= read -r container_id; do
+      [[ -z "$container_id" ]] && continue
+      if [[ ! "$container_id" =~ ^[a-f0-9]{64}$ ]]; then
+        containment_status=1
+        continue
+      fi
+      contract="$(docker inspect --format \
+        '{{ index .Config.Labels "com.docker.compose.project" }}|{{ index .Config.Labels "com.docker.compose.service" }}|{{.State.Running}}' \
+        "$container_id" 2>/dev/null)" || {
+          containment_status=1
+          continue
+        }
+      IFS='|' read -r observed_project observed_service running <<<"$contract"
+      if [[ "$observed_project" != "$compose_project" \
+        || "$observed_service" != "$service_name" ]]; then
+        containment_status=1
+        continue
+      fi
+      if [[ "$running" == true ]]; then
+        docker stop --time 30 "$container_id" >/dev/null 2>&1 || true
+      fi
+      running="$(docker inspect --format '{{.State.Running}}' \
+        "$container_id" 2>/dev/null)" || {
+          containment_status=1
+          continue
+        }
+      if [[ "$running" == true ]]; then
+        docker kill "$container_id" >/dev/null 2>&1 || true
+        running="$(docker inspect --format '{{.State.Running}}' \
+          "$container_id" 2>/dev/null)" || {
+            containment_status=1
+            continue
+          }
+      fi
+      [[ "$running" == false ]] || containment_status=1
+    done <<<"$query"
+  done
+  return "$containment_status"
+}
+
 on_exit() {
-  local status=$?
+  local status=$? failure_at="" failure_record_temporary=""
+  local failure_record_published="false"
   trap - EXIT ERR INT TERM
   if (( status != 0 )); then
+    if [[ "$mode" == "release" && "$scheduler_pause_attempted" == "true" \
+      && "$schedulers_paused" != "true" ]]; then
+      if pause_schedulers allow-already-paused >/dev/null 2>&1; then
+        schedulers_paused="true"
+      else
+        schedulers_paused="false"
+        printf '%s\n' \
+          "URGENT: release failure occurred during scheduler pause and containment retry failed." >&2
+      fi
+    fi
     if [[ "$mode" == "release" && "$schedulers_resumed" == "true" ]]; then
       if pause_schedulers allow-already-paused >/dev/null 2>&1; then
         schedulers_paused="true"
@@ -944,8 +1077,20 @@ on_exit() {
           "URGENT: initial-production failure could not prove all scheduled timers disabled." >&2
       fi
     fi
+    if [[ "$detached_mutator_containment_armed" == "true" ]]; then
+      if ! contain_project_services_on_failure "${detached_mutator_services[@]}"; then
+        printf '%s\n' \
+          "URGENT: failed release could not prove detached database mutators quiescent." >&2
+      fi
+    fi
+    if [[ "$write_surface_containment_armed" == "true" \
+      || "$candidate_started" == "true" ]]; then
+      if ! contain_project_services_on_failure app auth_email_worker; then
+        printf '%s\n' \
+          "URGENT: failed release could not prove application write surfaces quiescent." >&2
+      fi
+    fi
     if [[ "$candidate_started" == "true" ]]; then
-      compose --profile auth-email stop --timeout 30 app auth_email_worker >/dev/null 2>&1 || true
       if [[ "$mode" == "release" ]]; then
         if restore_stopped_previous_app_anchor; then
           printf '%s\n' "Stopped previous-application rollback anchor restored for a safe retry." >&2
@@ -954,21 +1099,62 @@ on_exit() {
         fi
       fi
     fi
-    jq -n \
-      --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-      --arg mode "$mode" \
-      --arg revision "$revision" \
-      --arg runId "$run_id" \
-      --arg stage "$stage" \
-      --argjson exitCode "$status" \
-      --arg schedulersPaused "$schedulers_paused" \
-      --arg initialTimersDisabled "$initial_schedulers_verified" \
-      '{schemaVersion: 1, product: "business-finlynq", status: "failed", failedAt: $at, mode: $mode, revision: $revision, runId: $runId, stage: $stage, exitCode: $exitCode, schedulersRemainPaused: ($schedulersPaused == "true"), initialTimersRemainDisabled: (if $mode == "initial" then ($initialTimersDisabled == "true") else null end)}' \
-      >"$evidence_directory/99-failure.json" 2>/dev/null || true
-    chmod 0600 -- "$evidence_directory/99-failure.json" 2>/dev/null || true
+    if failure_at="$(checked_utc_timestamp)"; then
+      failure_record_temporary="$evidence_directory/.99-failure.json.partial"
+      if [[ -e "$failure_record_temporary" || -L "$failure_record_temporary" \
+        || -e "$evidence_directory/99-failure.json" \
+        || -L "$evidence_directory/99-failure.json" ]]; then
+        printf '%s\n' \
+          "URGENT: failed release evidence path already exists; this run is not resumable." >&2
+      elif jq -n \
+        --arg at "$failure_at" \
+        --arg mode "$mode" \
+        --arg revision "$revision" \
+        --arg runId "$run_id" \
+        --arg stage "$stage" \
+        --argjson exitCode "$status" \
+        --arg schedulersPaused "$schedulers_paused" \
+        --arg initialTimersDisabled "$initial_schedulers_verified" \
+        '{schemaVersion: 1, product: "business-finlynq", status: "failed", failedAt: $at, mode: $mode, revision: $revision, runId: $runId, stage: $stage, exitCode: $exitCode, schedulersRemainPaused: ($schedulersPaused == "true"), initialTimersRemainDisabled: (if $mode == "initial" then ($initialTimersDisabled == "true") else null end)}' \
+        >"$failure_record_temporary" 2>/dev/null \
+        && chmod 0600 -- "$failure_record_temporary" 2>/dev/null \
+        && mv -- "$failure_record_temporary" \
+          "$evidence_directory/99-failure.json" 2>/dev/null; then
+        failure_record_published="true"
+      else
+        rm -f -- "$failure_record_temporary" >/dev/null 2>&1 || true
+        printf '%s\n' \
+          "URGENT: failed release record could not be published atomically; this run is not resumable." >&2
+      fi
+    else
+      printf '%s\n' \
+        "URGENT: failed release timestamp could not be generated; this run is not resumable." >&2
+    fi
+    if [[ -e "$evidence_directory/.90-release-complete.json.partial" \
+      || -L "$evidence_directory/.90-release-complete.json.partial" ]]; then
+      if [[ -f "$evidence_directory/.90-release-complete.json.partial" \
+        && ! -L "$evidence_directory/.90-release-complete.json.partial" \
+        && "$(stat -c '%u:%a:%h' -- \
+          "$evidence_directory/.90-release-complete.json.partial" 2>/dev/null)" \
+          == 0:600:1 ]]; then
+        rm -- "$evidence_directory/.90-release-complete.json.partial" \
+          >/dev/null 2>&1 || printf '%s\n' \
+          "URGENT: incomplete terminal-evidence staging file could not be removed." >&2
+      else
+        printf '%s\n' \
+          "URGENT: unsafe terminal-evidence staging path remains in the evidence directory." >&2
+      fi
+    fi
     capture_rehearsal_database_failure || true
     rehearsal_cleanup
-    refresh_checksums || true
+    if ! refresh_checksums || ! sync_evidence_inventory; then
+      printf '%s\n' \
+        "URGENT: failed release evidence could not be checksummed and durably synchronized; do not use it for resume." >&2
+    fi
+    if [[ "$failure_record_published" != "true" ]]; then
+      printf '%s\n' \
+        "URGENT: no durable failure record exists; do not use this evidence for resume." >&2
+    fi
     if [[ "$mode" == "release" && "$schedulers_paused" == "true" ]]; then
       printf '%s\n' "Release failed after schedulers were paused. They remain paused; do not re-enable writes until the evidence is reviewed." >&2
     fi
@@ -994,7 +1180,10 @@ trap on_exit EXIT
 if [[ "$scheduler_boundary_bootstrap_required" == "true" ]]; then
   install -m 0600 -- "$scheduler_boundary_bootstrap_receipt" \
     "$evidence_directory/05-scheduler-boundary-bootstrap.json"
-  [[ "$(sha256sum "$evidence_directory/05-scheduler-boundary-bootstrap.json" | awk '{print $1}')" \
+  retained_scheduler_receipt_sha256="$(checked_file_sha256 \
+    "$evidence_directory/05-scheduler-boundary-bootstrap.json")" \
+    || fail "retained scheduler-boundary bootstrap receipt could not be hashed"
+  [[ "$retained_scheduler_receipt_sha256" \
     == "$scheduler_boundary_bootstrap_receipt_sha256" ]] \
     || fail "retained scheduler-boundary bootstrap receipt differs from the protected source"
 fi
@@ -1031,13 +1220,18 @@ chmod 0600 -- "$evidence_directory/03-candidate-git-tree.txt" "$evidence_directo
 stage="snapshot-release-environments"
 environment_snapshot_file="$(mktemp)"
 install -m 0600 -- "$canonical_environment_file" "$environment_snapshot_file"
-[[ "$(sha256sum "$environment_snapshot_file" | awk '{print $1}')" == "$compose_environment_sha256" ]] \
+environment_snapshot_sha256="$(checked_file_sha256 "$environment_snapshot_file")" \
+  || fail "private Compose environment snapshot could not be hashed"
+[[ "$environment_snapshot_sha256" == "$compose_environment_sha256" ]] \
   || fail "private Compose environment snapshot differs from its validated source"
 environment_file="$environment_snapshot_file"
 if [[ "$mode" != "rehearsal" ]]; then
   operations_environment_snapshot_file="$(mktemp)"
   install -m 0600 -- "$canonical_operations_environment_file" "$operations_environment_snapshot_file"
-  [[ "$(sha256sum "$operations_environment_snapshot_file" | awk '{print $1}')" == "$operations_environment_sha256" ]] \
+  operations_environment_snapshot_sha256="$(checked_file_sha256 \
+    "$operations_environment_snapshot_file")" \
+    || fail "private operations environment snapshot could not be hashed"
+  [[ "$operations_environment_snapshot_sha256" == "$operations_environment_sha256" ]] \
     || fail "private operations environment snapshot differs from its validated source"
   operations_environment_file="$operations_environment_snapshot_file"
 fi
@@ -1235,11 +1429,17 @@ if [[ "$mode" != "rehearsal" ]]; then
       .networks.business_finlynq_restore_drill.name == "business_finlynq_restore_drill"
     ' <<<"$rendered_compose" >/dev/null \
       || fail "initial production must use the canonical production resource names"
+    if ! initial_secret_sources="$(jq -r '.secrets[]?.file // empty' \
+      <<<"$rendered_compose" | sort -u)"; then
+      fail "initial secret-source inventory could not be rendered"
+    fi
+    [[ -n "$initial_secret_sources" ]] \
+      || fail "initial secret-source inventory is empty"
     while IFS= read -r secret_source; do
       [[ "$secret_source" == /* ]] \
         || fail "initial production secret sources must use durable absolute host paths"
       reject_repository_path "$secret_source" "initial production secret source"
-    done < <(jq -r '.secrets[]?.file // empty' <<<"$rendered_compose")
+    done <<<"$initial_secret_sources"
     initial_disabled_secret_source="$(jq -r '
       [
         .secrets.business_finlynq_document_google_secret.file,
@@ -1253,7 +1453,8 @@ if [[ "$mode" != "rehearsal" ]]; then
         .secrets.business_finlynq_backup_age_identity.file,
         .secrets.business_finlynq_restore_db_password.file
       ] | unique | if length == 1 then .[0] else "" end
-    ' <<<"$rendered_compose")"
+    ' <<<"$rendered_compose")" \
+      || fail "disabled initial secret-source contract could not be read"
     [[ -n "$initial_disabled_secret_source" \
       && -f "$initial_disabled_secret_source" && ! -L "$initial_disabled_secret_source" \
       && ! -s "$initial_disabled_secret_source" ]] \
@@ -1263,15 +1464,12 @@ if [[ "$mode" != "rehearsal" ]]; then
       business_finlynq_auth_worker_db_password business_finlynq_backup_db_password \
       business_finlynq_backup_age_recipient; do
       required_secret_source="$(jq -r --arg secret "$required_secret" \
-        '.secrets[$secret].file // empty' <<<"$rendered_compose")"
+        '.secrets[$secret].file // empty' <<<"$rendered_compose")" \
+        || fail "required initial secret source could not be read: $required_secret"
       [[ -n "$required_secret_source" && -f "$required_secret_source" \
         && ! -L "$required_secret_source" && -s "$required_secret_source" ]] \
         || fail "required initial secret material is unavailable: $required_secret"
     done
-    if ! initial_secret_sources="$(jq -r '.secrets[]?.file // empty' \
-      <<<"$rendered_compose" | sort -u)"; then
-      fail "initial secret-source inventory could not be rendered"
-    fi
   fi
   [[ "$MONITOR_EXPECT_AUTH_EMAIL_WORKER" == "$release_ACCOUNT_LOGIN_ENABLED" ]] \
     || fail "auth-worker monitor expectation must match the account-login gate"
@@ -1306,10 +1504,23 @@ else
   public_base_url="$app_origin"
 fi
 
-compose_hash="$(printf '%s' "$rendered_compose" | sha256sum | awk '{print $1}')"
+compose_hash="$(printf '%s' "$rendered_compose" | sha256sum | awk '{print $1}')" \
+  || fail "rendered Compose configuration checksum could not be computed"
+[[ "$compose_hash" =~ ^[a-f0-9]{64}$ ]] \
+  || fail "rendered Compose configuration checksum is invalid"
 unset rendered_compose
+plan_started_at="$(checked_utc_timestamp)" \
+  || fail "release-plan timestamp could not be generated"
+git_tree_manifest_sha256="$(checked_file_sha256 \
+  "$evidence_directory/03-candidate-git-tree.txt")" \
+  || fail "candidate Git-tree manifest checksum could not be read"
+staged_tree_manifest_sha256="$(checked_file_sha256 \
+  "$evidence_directory/04-staged-tree-sha256.txt")" \
+  || fail "staged-tree manifest checksum could not be read"
+clean_environment=false
+[[ "$mode" == rehearsal ]] && clean_environment=true
 jq -n \
-  --arg startedAt "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+  --arg startedAt "$plan_started_at" \
   --arg mode "$mode" \
   --arg revision "$revision" \
   --arg runId "$run_id" \
@@ -1319,10 +1530,10 @@ jq -n \
   --arg initialState "$initial_state" \
   --arg initialResumeRunId "$initial_resume_run_id" \
   --arg candidateTreeId "$candidate_tree_id" \
-  --arg gitTreeManifestSha256 "$(sha256sum "$evidence_directory/03-candidate-git-tree.txt" | awk '{print $1}')" \
-  --arg stagedTreeManifestSha256 "$(sha256sum "$evidence_directory/04-staged-tree-sha256.txt" | awk '{print $1}')" \
+  --arg gitTreeManifestSha256 "$git_tree_manifest_sha256" \
+  --arg stagedTreeManifestSha256 "$staged_tree_manifest_sha256" \
   --arg baseUrl "$public_base_url" \
-  --argjson cleanEnvironment "$([[ "$mode" == "rehearsal" ]] && echo true || echo false)" \
+  --argjson cleanEnvironment "$clean_environment" \
   '{schemaVersion: 1, product: "business-finlynq", status: "started", startedAt: $startedAt, mode: $mode, revision: $revision, runId: $runId, candidateTreeId: $candidateTreeId, gitTreeManifestSha256: $gitTreeManifestSha256, stagedTreeManifestSha256: $stagedTreeManifestSha256, composeProject: $project, composeConfigurationSha256: $composeSha256, operationsEnvironmentSha256: (if $operationsEnvironmentSha256 == "" then null else $operationsEnvironmentSha256 end), acceptanceBaseUrl: $baseUrl, cleanEnvironment: $cleanEnvironment, initialState: (if $mode == "initial" then $initialState else null end), resumedFromRunId: (if $initialResumeRunId == "" then null else $initialResumeRunId end)}' \
   >"$evidence_directory/00-release-plan.json"
 chmod 0600 -- "$evidence_directory/00-release-plan.json"
@@ -1341,16 +1552,16 @@ record_initial_input_attestations() {
       || fail "initial secret-source metadata is invalid"
     (( (8#$mode_bits & 8#007) == 0 )) \
       || fail "initial secret source is accessible by other users: $secret_source"
-    secret_sha256="$(sha256sum "$secret_source" | awk '{print $1}')"
-    [[ "$secret_sha256" =~ ^[a-f0-9]{64}$ ]] \
-      || fail "initial secret-source checksum is invalid"
+    secret_sha256="$(checked_file_sha256 "$secret_source")" \
+      || fail "initial secret-source checksum could not be read"
     secret_attestations="$(jq -c --arg path "$secret_source" \
       --arg sha256 "$secret_sha256" --argjson ownerUid "$owner_uid" \
       --argjson groupGid "$group_gid" --arg mode "$mode_bits" \
       --argjson bytes "$byte_size" \
       '. + [{path: $path, sha256: $sha256, ownerUid: $ownerUid,
         groupGid: $groupGid, mode: $mode, bytes: $bytes}]' \
-      <<<"$secret_attestations")"
+      <<<"$secret_attestations")" \
+      || fail "initial secret-source attestation could not be assembled"
   done <<<"$initial_secret_sources"
   (( $(jq 'length' <<<"$secret_attestations") > 0 )) \
     || fail "initial secret-source attestation is empty"
@@ -1386,47 +1597,77 @@ quiesce_and_verify_initial_schedulers() {
     business-finlynq-continuous-deployment.service
   )
 
+  # Refresh systemd before inspecting exact units. This closes the failure
+  # boundary where a partial unit copy happened before the installer's own
+  # daemon-reload and prevents a stale not-found cache from hiding an enabled
+  # wants symlink.
+  systemctl daemon-reload \
+    || fail "systemd could not reload before initial scheduler containment"
+
   for unit_name in "${timer_units[@]}"; do
     load_state="$(systemctl show --property=LoadState --value "$unit_name" 2>/dev/null)" \
       || fail "initial scheduler unit state could not be inspected: $unit_name"
     [[ "$load_state" != "error" && -n "$load_state" ]] \
       || fail "initial scheduler unit returned an invalid load state: $unit_name"
-    [[ "$load_state" == "not-found" ]] && continue
-    systemctl disable --now "$unit_name" \
-      || fail "initial scheduler timer could not be disabled: $unit_name"
+    if [[ "$load_state" != "not-found" ]]; then
+      systemctl disable --now "$unit_name" \
+        || fail "initial scheduler timer could not be disabled: $unit_name"
+    fi
     enabled_state=""; enabled_status=0
     if enabled_state="$(systemctl is-enabled "$unit_name" 2>/dev/null)"; then
       enabled_status=0
     else
       enabled_status=$?
     fi
-    [[ "$enabled_status" == "1" && "$enabled_state" == "disabled" ]] \
-      || fail "initial scheduler timer is not exactly disabled: $unit_name"
+    if [[ "$load_state" == "not-found" ]]; then
+      [[ "$enabled_status" != "0" && "$enabled_state" != "enabled" \
+        && ! -e "/etc/systemd/system/$unit_name" \
+        && ! -L "/etc/systemd/system/$unit_name" ]] \
+        || fail "not-found initial timer still has installed or enabled state: $unit_name"
+    else
+      [[ "$enabled_status" == "1" && "$enabled_state" == "disabled" ]] \
+        || fail "initial scheduler timer is not exactly disabled: $unit_name"
+    fi
     active_state=""; active_status=0
     if active_state="$(systemctl is-active "$unit_name" 2>/dev/null)"; then
       active_status=0
     else
       active_status=$?
     fi
-    [[ "$active_status" == "3" && "$active_state" == "inactive" ]] \
-      || fail "initial scheduler timer is not exactly inactive: $unit_name"
+    if [[ "$load_state" == "not-found" ]]; then
+      [[ "$active_status" != "0" && "$active_state" != "active" ]] \
+        || fail "not-found initial timer is unexpectedly active: $unit_name"
+    else
+      [[ "$active_status" == "3" && "$active_state" == "inactive" ]] \
+        || fail "initial scheduler timer is not exactly inactive: $unit_name"
+    fi
   done
   for unit_name in "${service_units[@]}"; do
     load_state="$(systemctl show --property=LoadState --value "$unit_name" 2>/dev/null)" \
       || fail "initial scheduler service state could not be inspected: $unit_name"
     [[ "$load_state" != "error" && -n "$load_state" ]] \
       || fail "initial scheduler service returned an invalid load state: $unit_name"
-    [[ "$load_state" == "not-found" ]] && continue
-    systemctl stop "$unit_name" \
-      || fail "initial scheduler service could not be stopped: $unit_name"
+    if [[ "$load_state" != "not-found" ]]; then
+      systemctl stop "$unit_name" \
+        || fail "initial scheduler service could not be stopped: $unit_name"
+    else
+      [[ ! -e "/etc/systemd/system/$unit_name" \
+        && ! -L "/etc/systemd/system/$unit_name" ]] \
+        || fail "not-found initial service still has an installed unit: $unit_name"
+    fi
     active_state=""; active_status=0
     if active_state="$(systemctl is-active "$unit_name" 2>/dev/null)"; then
       active_status=0
     else
       active_status=$?
     fi
-    [[ "$active_status" == "3" && "$active_state" == "inactive" ]] \
-      || fail "initial scheduler service is not exactly inactive: $unit_name"
+    if [[ "$load_state" == "not-found" ]]; then
+      [[ "$active_status" != "0" && "$active_state" != "active" ]] \
+        || fail "not-found initial service is unexpectedly active: $unit_name"
+    else
+      [[ "$active_status" == "3" && "$active_state" == "inactive" ]] \
+        || fail "initial scheduler service is not exactly inactive: $unit_name"
+    fi
   done
 
   for unit_name in business-finlynq-development-deployment.timer \
@@ -1538,9 +1779,38 @@ verify_initial_state_contract() {
         '{"project":{{json (index .Config.Labels "com.docker.compose.project")}},"service":{{json (index .Config.Labels "com.docker.compose.service")}},"revision":{{json (index .Config.Labels "org.opencontainers.image.revision")}},"imageReference":{{json .Config.Image}},"imageId":{{json .Image}},"running":{{json .State.Running}},"status":{{json .State.Status}},"health":{{if .State.Health}}{{json .State.Health.Status}}{{else}}null{{end}}}' \
         "$container_id"
       container_contract="$docker_query_output"
-      service_name="$(jq -r '.service // empty' <<<"$container_contract")"
-      image_revision="$(jq -r '.revision // empty' <<<"$container_contract")"
-      [[ "$(jq -r '.project // empty' <<<"$container_contract")" == business-finlynq ]] \
+      jq -e '
+        type == "object" and
+        keys == ["health", "imageId", "imageReference", "project", "revision",
+          "running", "service", "status"] and
+        .project == "business-finlynq" and
+        (.service | type == "string" and length > 0) and
+        (.revision == null or (.revision | type == "string")) and
+        (.imageReference | type == "string" and length > 0) and
+        (.imageId | type == "string" and test("^sha256:[a-f0-9]{64}$")) and
+        (.running | type == "boolean") and
+        ((.running == true and .status == "running") or
+          (.running == false and (.status == "exited" or .status == "created"))) and
+        (.health == null or (.health | type == "string"))
+      ' <<<"$container_contract" >/dev/null \
+        || fail "resumable container contract is malformed or escaped the project"
+      project_name="$(jq -er '.project' <<<"$container_contract")" \
+        || fail "resumable container project could not be parsed"
+      service_name="$(jq -er '.service' <<<"$container_contract")" \
+        || fail "resumable container service could not be parsed"
+      image_revision="$(jq -r '.revision // ""' <<<"$container_contract")" \
+        || fail "resumable container revision could not be parsed"
+      image_reference="$(jq -er '.imageReference' <<<"$container_contract")" \
+        || fail "resumable container image reference could not be parsed"
+      image_id="$(jq -er '.imageId' <<<"$container_contract")" \
+        || fail "resumable container image ID could not be parsed"
+      container_running="$(jq -er '.running' <<<"$container_contract")" \
+        || fail "resumable container running state could not be parsed"
+      container_status="$(jq -er '.status' <<<"$container_contract")" \
+        || fail "resumable container lifecycle state could not be parsed"
+      container_health="$(jq -r '.health // ""' <<<"$container_contract")" \
+        || fail "resumable container health could not be parsed"
+      [[ "$project_name" == business-finlynq ]] \
         || fail "resumable container escaped the production Compose project"
       case "$service_name" in
         database|backup|provision_auth_worker_role|migrate|reconcile_runtime_grants|reconcile_auth_worker_grants|reconcile_backup_grants|verify_database_contract|bootstrap_demo|provision_backup|verify_accounting_evidence|app|release_acceptance|verify_latest_backup)
@@ -1555,27 +1825,27 @@ verify_initial_state_contract() {
           esac
           expected_resume_image_id="$(jq -r --arg name "$logical_image" \
             '.images[] | select(.name == $name) | .imageId' \
-            "$prior_evidence_directory/11-images.json")"
+            "$prior_evidence_directory/11-images.json")" \
+            || fail "prior image inventory could not be parsed for $logical_image"
           [[ "$expected_resume_image_id" =~ ^sha256:[a-f0-9]{64}$ \
-            && "$(jq -r '.imageId // empty' <<<"$container_contract")" \
-              == "$expected_resume_image_id" ]] \
+            && "$image_id" == "$expected_resume_image_id" ]] \
             || fail "resumable $service_name container image ID differs from prior evidence"
           ;;
         evidence_scanner)
           read_docker_output "resumable pinned scanner image" image inspect --format '{{.Id}}' \
             "$scanner_image_reference"
-          [[ "$(jq -r '.imageReference // empty' <<<"$container_contract")" == "$scanner_image_reference" \
-            && "$(jq -r '.imageId // empty' <<<"$container_contract")" == "$docker_query_output" ]] \
+          [[ "$image_reference" == "$scanner_image_reference" \
+            && "$image_id" == "$docker_query_output" ]] \
             || fail "resumable evidence scanner does not use the pinned image reference"
           ;;
         *) fail "initial resume found an unexpected production service: ${service_name:-missing}" ;;
       esac
       if [[ "$service_name" == database || "$service_name" == evidence_scanner ]]; then
-        if [[ "$(jq -r '.running' <<<"$container_contract")" == true ]]; then
-          [[ "$(jq -r '.health // empty' <<<"$container_contract")" == healthy ]] \
+        if [[ "$container_running" == true ]]; then
+          [[ "$container_health" == healthy ]] \
             || fail "running resumable $service_name container is not healthy"
         fi
-      elif [[ "$(jq -r '.running' <<<"$container_contract")" == true ]]; then
+      elif [[ "$container_running" == true ]]; then
         read_docker_output "stopped resumable $service_name container" stop --time 30 "$container_id"
         [[ "$docker_query_output" == "$container_id" || "$docker_query_output" == "${container_id:0:12}" ]] \
           || fail "resumable $service_name container returned an unexpected stop identity"
@@ -1601,7 +1871,7 @@ verify_initial_state_contract() {
       read_docker_output "resumable production volume $resource_name" volume inspect "$resource_name"
       jq -e --arg name "$resource_name" --arg logical "$expected_volume_label" '
         length == 1 and .[0].Name == $name and .[0].Driver == "local" and
-        .[0].Scope == "local" and (.Options == null or .Options == {}) and
+        .[0].Scope == "local" and (.[0].Options == null or .[0].Options == {}) and
         (.[0].Mountpoint | type == "string" and endswith("/volumes/" + $name + "/_data")) and
         .[0].Labels["com.docker.compose.project"] == "business-finlynq" and
         .[0].Labels["com.docker.compose.volume"] == $logical
@@ -1677,11 +1947,11 @@ verify_initial_state_contract() {
     && ! -L /home/deploy/.local/state/business-finlynq/release-locks/scheduler-maintenance ]] \
     || fail "initial production cannot begin with a scheduler-maintenance marker"
   if [[ "$initial_state" == "fresh" ]]; then
-    bash "$repository_root/deploy/edge/verify-external-edge.sh" --scope preflight
+    bash "$candidate_source_root/deploy/edge/verify-external-edge.sh" --scope preflight
     printf '%s\n' \
       "Fresh production state accepted; only the attested external ingress network is pre-created."
   else
-    bash "$repository_root/deploy/edge/verify-external-edge.sh" --scope development
+    bash "$candidate_source_root/deploy/edge/verify-external-edge.sh" --scope development
     printf 'Interrupted initial state accepted for exact-revision replay from %s.\n' \
       "$failed_initial_record"
   fi
@@ -1689,7 +1959,15 @@ verify_initial_state_contract() {
 
 if [[ "$mode" == "initial" ]]; then
   stage="initial-fresh-state-contract"
+  # Arm containment in the parent before the first scheduler mutation. Keep
+  # the successful attestation flag in the parent so any later failure can
+  # publish a truthful, resumable timer boundary.
+  initial_schedule_installed="true"
+  if [[ "$initial_state" == "resume" ]]; then
+    prior_evidence_directory="$evidence_root/$revision/$initial_resume_run_id"
+  fi
   run_logged 01-initial-fresh-state.log verify_initial_state_contract
+  initial_schedulers_verified="true"
   write_checkpoint 02-initial-fresh-state.json initial-state-accepted
 fi
 
@@ -1779,7 +2057,8 @@ for pinned_service_contract in \
     == "${image_ids[$pinned_logical_image]}" ]] \
     || fail "pinned Compose configuration does not bind the immutable image for $pinned_service"
 done
-pinned_compose_hash="$(printf '%s' "$pinned_compose" | sha256sum | awk '{print $1}')"
+pinned_compose_hash="$(printf '%s' "$pinned_compose" | sha256sum | awk '{print $1}')" \
+  || fail "pinned Compose configuration checksum could not be computed"
 unset pinned_compose
 [[ "$pinned_compose_hash" =~ ^[a-f0-9]{64}$ ]] || fail "pinned Compose configuration checksum is invalid"
 jq -n --argjson images "$image_evidence" --arg pinnedComposeSha256 "$pinned_compose_hash" \
@@ -1794,7 +2073,7 @@ fi
 attest_initial_evidence_scanner() {
   local scanner_container scanner_runtime expected_scanner_image_id now signature_record
   local signature_path signature_uid signature_gid signature_mode signature_mtime
-  local signature_count=0 signature_inventory signature_evidence='[]'
+  local signature_count=0 signature_inventory signature_evidence='[]' verified_at
 
   capture_compose_container_id "running evidence-scanner container" ps --quiet evidence_scanner
   scanner_container="$captured_compose_container_id"
@@ -1826,7 +2105,8 @@ attest_initial_evidence_scanner() {
     done
     [ "$found" = true ]
   ')" || fail "evidence scanner signature inventory could not be read"
-  now="$(date +%s)"
+  now="$(date +%s)" \
+    || fail "current time could not be read during scanner attestation"
   [[ "$now" =~ ^[1-9][0-9]*$ ]] || fail "current time is invalid during scanner attestation"
   while IFS='|' read -r signature_path signature_uid signature_gid signature_mode signature_mtime; do
     [[ "$signature_path" =~ ^/var/lib/clamav/[A-Za-z0-9_.-]+\.(cvd|cld)$ \
@@ -1843,19 +2123,24 @@ attest_initial_evidence_scanner() {
       --argjson gid "$signature_gid" --arg mode "$signature_mode" \
       --argjson modifiedAtUnixtime "$signature_mtime" \
       '. + [{path: $path, uid: $uid, gid: $gid, mode: $mode,
-        modifiedAtUnixtime: $modifiedAtUnixtime}]' <<<"$signature_evidence")"
+        modifiedAtUnixtime: $modifiedAtUnixtime}]' <<<"$signature_evidence")" \
+      || fail "evidence scanner signature evidence could not be assembled"
     signature_count=$((signature_count + 1))
   done <<<"$signature_inventory"
   (( signature_count > 0 )) || fail "evidence scanner has no accepted signature databases"
 
-  jq -n --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+  verified_at="$(checked_utc_timestamp)" \
+    || fail "evidence-scanner attestation timestamp could not be generated"
+  jq -n --arg at "$verified_at" \
     --arg containerId "$scanner_container" --arg imageReference "$scanner_image_reference" \
     --arg imageId "$expected_scanner_image_id" --argjson signatures "$signature_evidence" \
     '{schemaVersion: 1, product: "business-finlynq", verifiedAt: $at,
       containerId: $containerId, imageReference: $imageReference, imageId: $imageId,
       runtimeUser: "100:101", readOnlyRootFilesystem: true, signatures: $signatures}' \
-    >"$evidence_directory/14-evidence-scanner.json"
-  chmod 0600 -- "$evidence_directory/14-evidence-scanner.json"
+    >"$evidence_directory/14-evidence-scanner.json" \
+    || fail "evidence-scanner attestation could not be written"
+  chmod 0600 -- "$evidence_directory/14-evidence-scanner.json" \
+    || fail "evidence-scanner attestation permissions could not be set"
 }
 
 probe_initial_evidence_scanner() {
@@ -1888,7 +2173,7 @@ probe_initial_evidence_scanner() {
 
 record_running_database_image() {
   local output_file="$1"
-  local database_container actual_image_id
+  local database_container actual_image_id verified_at
   [[ "$output_file" == "$evidence_directory"/* && ! -e "$output_file" && ! -L "$output_file" ]] \
     || fail "database image evidence target is unsafe or already exists"
   database_container="$(compose ps --quiet database)"
@@ -1897,8 +2182,10 @@ record_running_database_image() {
   actual_image_id="$(docker inspect --format '{{.Image}}' "$database_container")"
   [[ "$actual_image_id" == "${image_ids[database]}" ]] \
     || fail "running database does not use the immutable reviewed database image"
+  verified_at="$(checked_utc_timestamp)" \
+    || fail "database-image attestation timestamp could not be generated"
   jq -n \
-    --arg verifiedAt "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    --arg verifiedAt "$verified_at" \
     --arg revision "$revision" \
     --arg imageId "$actual_image_id" \
     '{schemaVersion: 1, product: "business-finlynq", service: "database", verifiedAt: $verifiedAt, revision: $revision, imageId: $imageId}' \
@@ -1924,7 +2211,10 @@ if [[ "$mode" == "release" ]]; then
   if [[ "$scheduler_boundary_bootstrap_required" == "true" ]]; then
     [[ "$scheduler_boundary_bootstrap_source_revision" == "$previous_app_revision" ]] \
       || fail "pre-checkout scheduler bootstrap source does not match the deployed application revision"
-    [[ "$(sha256sum "$scheduler_boundary_bootstrap_receipt" | awk '{print $1}')" \
+    current_scheduler_receipt_sha256="$(checked_file_sha256 \
+      "$scheduler_boundary_bootstrap_receipt")" \
+      || fail "protected scheduler-boundary bootstrap receipt could not be hashed"
+    [[ "$current_scheduler_receipt_sha256" \
       == "$scheduler_boundary_bootstrap_receipt_sha256" ]] \
       || fail "the protected scheduler-boundary bootstrap receipt changed during release"
   fi
@@ -2142,7 +2432,7 @@ read_systemd_property() {
     || "$service_name" == "business-finlynq-monitor.service" ]] \
     || fail "release acceptance requested an unsupported systemd service"
   case "$property_name" in
-    ExecMainStartTimestampMonotonic|ExecMainExitTimestampMonotonic|Result|ExecMainStatus) ;;
+    ExecMainStartTimestampMonotonic|ExecMainExitTimestampMonotonic|InvocationID|Result|ExecMainStatus) ;;
     *) fail "release acceptance requested an unsupported systemd property" ;;
   esac
   if ! systemd_property_value="$(systemctl show --property="$property_name" --value "$service_name")"; then
@@ -2154,17 +2444,24 @@ read_systemd_property() {
 
 run_fresh_systemd_oneshot() {
   local service_name="$1" description="$2"
-  local previous_start current_start current_exit result main_status
+  local previous_start previous_invocation current_start current_exit
+  local current_invocation result main_status
   read_systemd_property "$service_name" ExecMainStartTimestampMonotonic
   previous_start="$systemd_property_value"
   [[ "$previous_start" =~ ^[0-9]+$ ]] \
     || fail "$description has an invalid previous systemd start timestamp"
+  previous_invocation="$(systemctl show --property=InvocationID --value "$service_name")" \
+    || fail "could not inspect the previous InvocationID for $service_name"
+  [[ -z "$previous_invocation" || "$previous_invocation" =~ ^[a-f0-9]{32}$ ]] \
+    || fail "$description has an invalid previous systemd InvocationID"
   systemctl start "$service_name" \
     || fail "$description could not be started"
   read_systemd_property "$service_name" ExecMainStartTimestampMonotonic
   current_start="$systemd_property_value"
   read_systemd_property "$service_name" ExecMainExitTimestampMonotonic
   current_exit="$systemd_property_value"
+  read_systemd_property "$service_name" InvocationID
+  current_invocation="$systemd_property_value"
   read_systemd_property "$service_name" Result
   result="$systemd_property_value"
   read_systemd_property "$service_name" ExecMainStatus
@@ -2173,18 +2470,21 @@ run_fresh_systemd_oneshot() {
     || fail "$description did not execute a fresh systemd invocation"
   [[ "$current_exit" =~ ^[1-9][0-9]*$ && "$current_exit" -gt "$current_start" ]] \
     || fail "$description has no valid systemd exit timestamp after its fresh start"
+  [[ "$current_invocation" =~ ^[a-f0-9]{32}$ \
+    && "$current_invocation" != "$previous_invocation" ]] \
+    || fail "$description did not receive a fresh systemd InvocationID"
   [[ "$result" == "success" ]] \
     || fail "$description did not report systemd Result=success"
   [[ "$main_status" == "0" ]] \
     || fail "$description exited with a nonzero systemd ExecMainStatus"
   systemctl show --no-pager --property=ExecMainStartTimestampMonotonic \
-    --property=ExecMainExitTimestampMonotonic --property=Result \
+    --property=ExecMainExitTimestampMonotonic --property=InvocationID --property=Result \
     --property=ExecMainStatus "$service_name"
 }
 
 verify_fresh_cron_job_status() {
   local job_name="$1" started_at="$2"
-  local deploy_uid status_directory status_file completed_at now
+  local deploy_uid status_directory status_file completed_at now accepted_timestamp
   [[ "$job_name" == "accounting-evidence" || "$job_name" == "monitor" ]] \
     || fail "release cron acceptance requested an unsupported job"
   [[ "$started_at" =~ ^[1-9][0-9]*$ ]] \
@@ -2215,8 +2515,10 @@ verify_fresh_cron_job_status() {
   ' "$status_file" >/dev/null \
     || fail "cron $job_name did not produce a fresh successful completion record"
   completed_at="$(jq -r '.completedAtUnixtime' "$status_file")"
+  accepted_timestamp="$(checked_utc_timestamp)" \
+    || fail "cron completion acceptance timestamp could not be generated"
   printf 'Cron %s completion record accepted at %s (completedAt=%s).\n' \
-    "$job_name" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$completed_at"
+    "$job_name" "$accepted_timestamp" "$completed_at"
 }
 
 clear_cron_job_status() {
@@ -2375,7 +2677,7 @@ verify_fresh_host_monitor_metrics() {
 }
 
 run_installed_monitor() {
-  local started_at
+  local started_at completed_timestamp
   if [[ "$scheduler_mode" == "cron" ]]; then
     clear_cron_job_status monitor
   fi
@@ -2392,12 +2694,14 @@ run_installed_monitor() {
     verify_fresh_cron_job_status monitor "$started_at"
   fi
   verify_fresh_host_monitor_metrics "$started_at"
+  completed_timestamp="$(checked_utc_timestamp)" \
+    || fail "monitor acceptance timestamp could not be generated"
   printf 'Installed %s monitor acceptance completed at %s.\n' \
-    "$scheduler_mode" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    "$scheduler_mode" "$completed_timestamp"
 }
 
 run_installed_accounting_evidence() {
-  local started_at
+  local started_at completed_timestamp
   if [[ "$scheduler_mode" == "cron" ]]; then
     clear_cron_job_status accounting-evidence
   fi
@@ -2414,12 +2718,14 @@ run_installed_accounting_evidence() {
     verify_fresh_cron_job_status accounting-evidence "$started_at"
   fi
   verify_fresh_accounting_metrics "$started_at"
+  completed_timestamp="$(checked_utc_timestamp)" \
+    || fail "accounting-evidence acceptance timestamp could not be generated"
   printf 'Installed %s accounting-evidence seed completed at %s.\n' \
-    "$scheduler_mode" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    "$scheduler_mode" "$completed_timestamp"
 }
 
 record_scheduler_boundary_version() {
-  local deploy_uid lock_directory boundary_file temporary_file
+  local deploy_uid lock_directory boundary_file temporary_file accepted_at
   deploy_uid="$(id -u deploy)"
   lock_directory="/home/deploy/.local/state/business-finlynq/release-locks"
   boundary_file="$lock_directory/scheduler-boundary.json"
@@ -2427,12 +2733,14 @@ record_scheduler_boundary_version() {
     && ( ! -e "$boundary_file" \
       || ( -f "$boundary_file" && "$(stat -c '%u:%a' -- "$boundary_file")" == "$deploy_uid:600" ) ) ]] \
     || fail "installed scheduler boundary record became unsafe"
+  accepted_at="$(checked_utc_timestamp)" \
+    || fail "scheduler-boundary timestamp could not be generated"
   temporary_file="$(mktemp "$lock_directory/.scheduler-boundary.XXXXXX")"
   jq -n \
     --arg product business-finlynq \
     --arg installedRevision "$revision" \
     --arg scheduler "$scheduler_mode" \
-    --arg acceptedAt "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    --arg acceptedAt "$accepted_at" \
     '{schemaVersion: 1, product: $product, boundaryVersion: 1, installedRevision: $installedRevision, scheduler: $scheduler, acceptedAt: $acceptedAt}' \
     >"$temporary_file"
   chmod 0600 -- "$temporary_file"
@@ -2450,7 +2758,10 @@ record_scheduler_boundary_version() {
   ' "$boundary_file" >/dev/null \
     || fail "durable scheduler boundary record could not be verified"
   if [[ "$scheduler_boundary_bootstrap_required" == "true" ]]; then
-    [[ "$(sha256sum "$scheduler_boundary_bootstrap_receipt" | awk '{print $1}')" \
+    current_scheduler_receipt_sha256="$(checked_file_sha256 \
+      "$scheduler_boundary_bootstrap_receipt")" \
+      || fail "scheduler-boundary bootstrap receipt could not be hashed before acceptance"
+    [[ "$current_scheduler_receipt_sha256" \
       == "$scheduler_boundary_bootstrap_receipt_sha256" ]] \
       || fail "the scheduler-boundary bootstrap receipt changed before acceptance"
     rm -- "$scheduler_boundary_bootstrap_receipt"
@@ -2463,15 +2774,21 @@ record_scheduler_boundary_version() {
 
 if [[ "$mode" == "release" ]]; then
   stage="pause-schedulers"
+  scheduler_pause_attempted="true"
   run_logged 20-pause-schedulers.log pause_schedulers
   schedulers_paused="true"
   write_checkpoint 21-schedulers-paused.json schedulers-paused
   if [[ "$scheduler_mode" == "cron" ]]; then
+    previous_schedule_sha256="$(checked_file_sha256 "$previous_cron_schedule_file")" \
+      || fail "previous cron schedule checksum could not be read"
+    candidate_schedule_sha256="$(checked_file_sha256 \
+      "$candidate_source_root/deploy/cron/managed-crontab")" \
+      || fail "candidate cron schedule checksum could not be read"
     jq -n \
       --arg previousRevision "$previous_app_revision" \
-      --arg previousScheduleSha256 "$(sha256sum "$previous_cron_schedule_file" | awk '{print $1}')" \
+      --arg previousScheduleSha256 "$previous_schedule_sha256" \
       --arg candidateRevision "$revision" \
-      --arg candidateScheduleSha256 "$(sha256sum "$candidate_source_root/deploy/cron/managed-crontab" | awk '{print $1}')" \
+      --arg candidateScheduleSha256 "$candidate_schedule_sha256" \
       '{schemaVersion: 1, previousRevision: $previousRevision, previousScheduleSha256: $previousScheduleSha256, candidateRevision: $candidateRevision, candidateScheduleSha256: $candidateScheduleSha256, previousScheduleRemoved: true}' \
       >"$evidence_directory/22-cron-schedule-transition.json"
     chmod 0600 -- "$evidence_directory/22-cron-schedule-transition.json"
@@ -2493,6 +2810,7 @@ stop_write_surfaces() {
   [[ -z "$compose_query_output" ]] || fail "authentication worker is still running"
   printf '%s\n' "Application and authentication-worker write surfaces are stopped."
 }
+write_surface_containment_armed="true"
 run_logged 25-stop-write-surfaces.log stop_write_surfaces
 write_checkpoint 26-write-surfaces-stopped.json write-surfaces-stopped-before-backup
 
@@ -2505,8 +2823,10 @@ elif [[ "$mode" == "release" ]]; then
   backup_source_revision="$previous_app_revision"
 else
   backup_source_revision="$revision"
+  initial_backup_boundary_at="$(checked_utc_timestamp)" \
+    || fail "initial backup-boundary timestamp could not be generated"
   jq -n \
-    --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    --arg at "$initial_backup_boundary_at" \
     --arg revision "$revision" \
     '{schemaVersion: 1, product: "business-finlynq", recordedAt: $at,
       revision: $revision, preMigrationBackup: "not-applicable",
@@ -2549,7 +2869,7 @@ run_backup() (
   return "$backup_status"
 )
 verify_backup_and_record_evidence() {
-  local verifier_output evidence_json
+  local verifier_output evidence_records evidence_json
   local -a evidence_lines=()
   if ! verifier_output="$(compose --profile operations run --rm --no-deps -T \
     verify_latest_backup \
@@ -2558,10 +2878,12 @@ verify_backup_and_record_evidence() {
     return 1
   fi
   printf '%s\n' "$verifier_output"
-  mapfile -t evidence_lines < <(
-    printf '%s\n' "$verifier_output" \
-      | sed -n 's/^BUSINESS_FINLYNQ_BACKUP_EVIDENCE=//p'
-  )
+  evidence_records="$(printf '%s\n' "$verifier_output" \
+    | sed -n 's/^BUSINESS_FINLYNQ_BACKUP_EVIDENCE=//p')" \
+    || fail "immutable backup evidence lines could not be extracted"
+  [[ -n "$evidence_records" ]] \
+    || fail "immutable backup verifier did not emit exactly one evidence record"
+  mapfile -t evidence_lines <<<"$evidence_records"
   (( ${#evidence_lines[@]} == 1 )) \
     || fail "immutable backup verifier did not emit exactly one evidence record"
   evidence_json="${evidence_lines[0]}"
@@ -2583,8 +2905,10 @@ verify_backup_and_record_evidence() {
     (.sha256 | type == "string" and test("^[a-f0-9]{64}$"))
   ' <<<"$evidence_json" >/dev/null \
     || fail "immutable backup verifier emitted invalid release evidence"
-  jq '.' <<<"$evidence_json" >"$evidence_directory/33-backup-evidence.json"
-  chmod 0600 -- "$evidence_directory/33-backup-evidence.json"
+  jq '.' <<<"$evidence_json" >"$evidence_directory/33-backup-evidence.json" \
+    || fail "immutable backup evidence could not be written"
+  chmod 0600 -- "$evidence_directory/33-backup-evidence.json" \
+    || fail "immutable backup evidence permissions could not be set"
 }
 if [[ "$mode" != "initial" ]]; then
   run_logged 30-provision-backup-role.log compose --profile operations run --rm --no-deps provision_backup
@@ -2612,6 +2936,8 @@ pretraffic_services=(
   verify_accounting_evidence
 )
 run_logged 49-pretraffic-reset.log compose --profile operations rm --force --stop "${pretraffic_services[@]}"
+detached_mutator_services=("${pretraffic_services[@]}")
+detached_mutator_containment_armed="true"
 run_logged 50-pretraffic-up.log compose_timed 30m --profile operations up --detach --no-build \
   verify_database_contract verify_accounting_evidence
 declare -A pretraffic_container_ids=()
@@ -2632,6 +2958,8 @@ run_logged 51-pretraffic-wait.log wait_for_captured_containers \
   --profile operations logs --no-color --timestamps \
     provision_auth_worker_role migrate reconcile_runtime_grants reconcile_auth_worker_grants \
     reconcile_backup_grants verify_database_contract verify_accounting_evidence
+detached_mutator_containment_armed="false"
+detached_mutator_services=()
 
 pretraffic_evidence='[]'
 for service_contract in \
@@ -2655,6 +2983,8 @@ done
 
 stage="demo-bootstrap"
 run_logged 54-bootstrap-reset.log compose rm --force --stop bootstrap_demo
+detached_mutator_services=(bootstrap_demo)
+detached_mutator_containment_armed="true"
 run_logged 55-bootstrap-up.log compose_timed 30m up --detach --no-build bootstrap_demo
 capture_compose_container_id "demo bootstrap container" ps --all --quiet bootstrap_demo
 bootstrap_container="$captured_compose_container_id"
@@ -2662,6 +2992,8 @@ run_logged 56-bootstrap-wait.log wait_for_captured_containers \
   "demo bootstrap" 56-bootstrap-services.log 56-bootstrap-container.json \
   bootstrap_demo "$bootstrap_container" "${image_ids[migrator]}" -- \
   logs --no-color --timestamps bootstrap_demo
+detached_mutator_containment_armed="false"
+detached_mutator_services=()
 [[ -n "$bootstrap_container" && "$(docker inspect --format '{{.State.ExitCode}}' "$bootstrap_container")" == "0" ]] \
   || fail "additive demo bootstrap failed"
 [[ "$(docker inspect --format '{{.Image}}' "$bootstrap_container")" == "${image_ids[migrator]}" ]] \
@@ -2671,6 +3003,8 @@ pretraffic_evidence="$(jq -c --arg imageId "${image_ids[migrator]}" \
 
 stage="post-bootstrap-accounting-verification"
 run_logged 57-post-bootstrap-accounting-reset.log compose --profile operations rm --force --stop verify_accounting_evidence
+detached_mutator_services=(verify_accounting_evidence)
+detached_mutator_containment_armed="true"
 run_logged 58-post-bootstrap-accounting-up.log compose_timed 30m --profile operations up \
   --detach --no-build --no-deps verify_accounting_evidence
 capture_compose_container_id "post-bootstrap accounting verifier container" \
@@ -2681,6 +3015,8 @@ run_logged 59-post-bootstrap-accounting-wait.log wait_for_captured_containers \
   59-post-bootstrap-accounting-container.json \
   verify_accounting_evidence_post_bootstrap "$post_bootstrap_verifier" "${image_ids[operations]}" -- \
   --profile operations logs --no-color --timestamps verify_accounting_evidence
+detached_mutator_containment_armed="false"
+detached_mutator_services=()
 [[ -n "$post_bootstrap_verifier" \
   && "$(docker inspect --format '{{.State.ExitCode}}' "$post_bootstrap_verifier")" == "0" ]] \
   || fail "post-bootstrap accounting evidence verification failed"
@@ -2688,7 +3024,9 @@ run_logged 59-post-bootstrap-accounting-wait.log wait_for_captured_containers \
   || fail "post-bootstrap accounting verifier used an unexpected image"
 pretraffic_evidence="$(jq -c --arg imageId "${image_ids[operations]}" \
   '. + [{service: "verify_accounting_evidence_post_bootstrap", exitCode: 0, imageId: $imageId}]' <<<"$pretraffic_evidence")"
-jq -n --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --argjson services "$pretraffic_evidence" \
+pretraffic_completed_at="$(checked_utc_timestamp)" \
+  || fail "pre-traffic verification timestamp could not be generated"
+jq -n --arg at "$pretraffic_completed_at" --argjson services "$pretraffic_evidence" \
   '{schemaVersion: 1, completedAt: $at, trafficBlocked: true, postBootstrapAccountingEvidenceVerified: true, services: $services, databaseRollback: "forward-repair-only"}' \
   >"$evidence_directory/53-pretraffic-verification.json"
 chmod 0600 -- "$evidence_directory/53-pretraffic-verification.json"
@@ -2699,8 +3037,10 @@ if [[ "$mode" == "initial" ]]; then
     compose --profile operations run --rm --no-deps provision_backup
   run_logged 59-initial-encrypted-backup.log run_backup
   run_logged 59-initial-backup-verification.log verify_backup_and_record_evidence
+  initial_backup_recorded_at="$(checked_utc_timestamp)" \
+    || fail "initial backup-deferral timestamp could not be generated"
   jq -n \
-    --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    --arg at "$initial_backup_recorded_at" \
     --arg revision "$revision" \
     '{schemaVersion: 1, product: "business-finlynq", recordedAt: $at,
       revision: $revision, localEncryptedBackup: "verified", offsiteDelivery: "deferred",
@@ -2800,7 +3140,7 @@ chmod 0600 -- "$public_headers" "$public_body"
 if [[ "$mode" != rehearsal && "$edge_mode" == external ]]; then
   stage="external-edge-contract"
   run_logged 67-external-edge-contract.log \
-    bash "$repository_root/deploy/edge/verify-external-edge.sh"
+    bash "$candidate_source_root/deploy/edge/verify-external-edge.sh"
   write_checkpoint 68-external-edge-contract.json external-edge-accepted
 fi
 
@@ -2880,7 +3220,9 @@ stage="canonical-environment-stability"
 [[ "$(validate_secret_environment_file "$canonical_environment_file" "canonical Compose environment")" \
   == "$canonical_environment_file" ]] \
   || fail "canonical Compose environment resolved unexpectedly"
-[[ "$(sha256sum "$canonical_environment_file" | awk '{print $1}')" == "$compose_environment_sha256" ]] \
+current_compose_environment_sha256="$(checked_file_sha256 "$canonical_environment_file")" \
+  || fail "canonical Compose environment could not be hashed at final acceptance"
+[[ "$current_compose_environment_sha256" == "$compose_environment_sha256" ]] \
   || fail "canonical Compose environment changed during release"
 
 if [[ "$mode" == "release" ]]; then
@@ -2889,7 +3231,10 @@ if [[ "$mode" == "release" ]]; then
   [[ "$(validate_secret_environment_file "$canonical_operations_environment_file" "canonical operations environment")" \
     == "$canonical_operations_environment_file" ]] \
     || fail "canonical operations environment resolved unexpectedly"
-  [[ "$(sha256sum "$canonical_operations_environment_file" | awk '{print $1}')" == "$operations_environment_sha256" ]] \
+  current_operations_environment_sha256="$(checked_file_sha256 \
+    "$canonical_operations_environment_file")" \
+    || fail "canonical operations environment could not be hashed before scheduler resume"
+  [[ "$current_operations_environment_sha256" == "$operations_environment_sha256" ]] \
     || fail "canonical operations environment changed during release; schedulers remain paused"
   [[ "$(read_operations_value BUSINESS_FINLYNQ_IMAGE_REVISION)" == "$revision" ]] \
     || fail "canonical operations image revision changed before scheduler resume"
@@ -2922,8 +3267,10 @@ elif [[ "$mode" == "initial" ]]; then
   [[ "$(validate_secret_environment_file "$canonical_operations_environment_file" "canonical operations environment")" \
     == "$canonical_operations_environment_file" ]] \
     || fail "canonical operations environment resolved unexpectedly"
-  [[ "$(sha256sum "$canonical_operations_environment_file" | awk '{print $1}')" \
-    == "$operations_environment_sha256" ]] \
+  current_operations_environment_sha256="$(checked_file_sha256 \
+    "$canonical_operations_environment_file")" \
+    || fail "canonical operations environment could not be hashed during initial acceptance"
+  [[ "$current_operations_environment_sha256" == "$operations_environment_sha256" ]] \
     || fail "canonical operations environment changed during initial production"
   run_logged 78-scheduler-state-contract.log prepare_scheduler_state_directory
   run_logged 79-backup-schedule-contract.log install_and_verify_systemd_schedule
@@ -2941,8 +3288,10 @@ elif [[ "$mode" == "initial" ]]; then
   write_checkpoint 84-production-monitor.json contained-initial-monitor-passed
   stage="record-initial-scheduler-boundary-version"
   record_scheduler_boundary_version
+  initial_deferral_recorded_at="$(checked_utc_timestamp)" \
+    || fail "initial-deferral timestamp could not be generated"
   jq -n \
-    --arg recordedAt "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    --arg recordedAt "$initial_deferral_recorded_at" \
     --arg revision "$revision" \
     '{schemaVersion: 1, product: "business-finlynq", recordedAt: $recordedAt,
       revision: $revision, scheduler: "systemd", timersInstalled: true,
@@ -2951,6 +3300,30 @@ elif [[ "$mode" == "initial" ]]; then
       activationRequiresReviewedRelease: true}' \
     >"$evidence_directory/85-contained-initial-deferrals.json"
   chmod 0600 -- "$evidence_directory/85-contained-initial-deferrals.json"
+  stage="initial-runtime-pruning"
+  # Compose `up` intentionally retains the completed migration/bootstrap
+  # containers for evidence collection. Once their IDs, images, exit codes,
+  # and logs are sealed above, remove only that exact disposable container
+  # set. Volumes and networks are never touched. This gives wrapper
+  # finalization a small, exact live-runtime set to attest.
+  initial_disposable_services=(
+    provision_auth_worker_role
+    migrate
+    reconcile_runtime_grants
+    reconcile_auth_worker_grants
+    reconcile_backup_grants
+    verify_database_contract
+    verify_accounting_evidence
+    bootstrap_demo
+  )
+  run_logged 86-initial-runtime-pruning.log \
+    compose --profile operations rm --force --stop "${initial_disposable_services[@]}"
+  read_docker_output "contained initial runtime after disposable pruning" ps --all \
+    --format '{{.Label "com.docker.compose.service"}}' \
+    --filter 'label=com.docker.compose.project=business-finlynq'
+  [[ "$(sort <<<"$docker_query_output")" == $'app\ndatabase\nevidence_scanner' ]] \
+    || fail "contained initial runtime retains an unexpected Compose service"
+  write_checkpoint 87-initial-runtime-pruned.json disposable-initial-containers-removed
 else
   stage="clean-rehearsal-project"
   run_logged 80-clean-rehearsal.log compose --profile operations --profile auth-email --profile acceptance down --volumes --remove-orphans --timeout 30
@@ -2964,18 +3337,51 @@ else
 fi
 
 stage="complete-evidence"
+# Seal and sync every prerequisite before publishing the terminal marker. If
+# the host stops between the marker rename and the final inventory refresh, the
+# installer can prove that the old inventory is exact except for that one
+# terminal file and reconcile it under an explicit finalize acknowledgement.
+refresh_checksums \
+  || fail "pre-terminal release evidence could not be checksummed"
+sync_evidence_inventory \
+  || fail "pre-terminal release evidence could not be durably synchronized"
+release_completed_at="$(checked_utc_timestamp)" \
+  || fail "terminal acceptance timestamp could not be generated"
+browser_log_sha256="$(checked_file_sha256 \
+  "$evidence_directory/70-browser-acceptance.log")" \
+  || fail "browser-acceptance log checksum could not be read"
+contained_initial=false
+if [[ "$mode" == initial ]]; then
+  contained_initial=true
+fi
+terminal_evidence_temporary="$evidence_directory/.90-release-complete.json.partial"
+[[ ! -e "$terminal_evidence_temporary" && ! -L "$terminal_evidence_temporary" \
+  && ! -e "$evidence_directory/90-release-complete.json" \
+  && ! -L "$evidence_directory/90-release-complete.json" ]] \
+  || fail "terminal release evidence path already exists"
 jq -n \
-  --arg completedAt "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+  --arg completedAt "$release_completed_at" \
   --arg mode "$mode" \
   --arg revision "$revision" \
   --arg runId "$run_id" \
   --arg candidateImageId "${image_ids[app]}" \
   --arg previousImageId "$previous_app_id" \
-  --arg containedInitial "$([[ "$mode" == "initial" ]] && printf true || printf false)" \
-  --arg browserLogSha256 "$(sha256sum "$evidence_directory/70-browser-acceptance.log" | awk '{print $1}')" \
+  --arg containedInitial "$contained_initial" \
+  --arg browserLogSha256 "$browser_log_sha256" \
   '{schemaVersion: 1, product: "business-finlynq", status: "accepted", completedAt: $completedAt, mode: $mode, revision: $revision, runId: $runId, candidateAppImageId: $candidateImageId, previousAppImageId: (if $previousImageId == "" then null else $previousImageId end), preTrafficDatabaseContractVerified: true, postBootstrapAccountingEvidenceVerified: true, browserAcceptancePassed: true, browserLogSha256: $browserLogSha256, databaseRollback: "forward-repair-only", containedInitial: ($containedInitial == "true"), localEncryptedBackupVerified: ($containedInitial == "true"), offsiteBackupDeferred: ($containedInitial == "true"), schedulerActivationDeferred: ($containedInitial == "true")}' \
-  >"$evidence_directory/90-release-complete.json"
-chmod 0600 -- "$evidence_directory/90-release-complete.json"
-refresh_checksums
+  >"$terminal_evidence_temporary" \
+  || fail "terminal release evidence could not be staged"
+chmod 0600 -- "$terminal_evidence_temporary" \
+  || fail "terminal release evidence staging permissions could not be set"
+sync -f -- "$terminal_evidence_temporary" \
+  || fail "terminal release evidence staging file could not be synchronized"
+mv -- "$terminal_evidence_temporary" "$evidence_directory/90-release-complete.json" \
+  || fail "terminal release evidence could not be published atomically"
+sync -f -- "$evidence_directory" \
+  || fail "terminal release evidence directory entry could not be synchronized"
+refresh_checksums \
+  || fail "accepted release evidence could not be checksummed"
+sync_evidence_inventory \
+  || fail "accepted release evidence could not be durably synchronized"
 release_completed="true"
 printf 'Business Finlynq %s accepted for %s. Evidence: %s\n' "$mode" "$revision" "$evidence_directory"

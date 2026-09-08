@@ -1,15 +1,21 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
+set +x
 
 umask 077
 
-readonly script_directory="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+script_directory="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)" || {
+  printf 'Business Finlynq development installation failed: could not resolve the script directory\n' >&2
+  exit 1
+}
+readonly script_directory
 readonly repository="/home/deploy/business-finlynq-development"
 readonly expected_origin="https://github.com/finlynq/business-finlynq.git"
 readonly configuration_directory="/etc/business-finlynq-development"
 readonly secret_directory="$configuration_directory/secrets"
 readonly compose_environment="$configuration_directory/compose.env"
 readonly state_directory="/var/lib/business-finlynq-development"
+readonly shared_state_directory="/var/lib/business-finlynq"
 readonly development_edge_network="business_finlynq_development_edge"
 readonly deploy_target="/usr/local/sbin/business-finlynq-deploy-development"
 readonly service_target="/etc/systemd/system/business-finlynq-development-deployment.service"
@@ -19,6 +25,24 @@ readonly sudoers_target="/etc/sudoers.d/business-finlynq-development-deployment"
 fail() {
   printf 'Business Finlynq development installation failed: %s\n' "$*" >&2
   exit 1
+}
+
+checked_random_hex_32() {
+  local value
+  value="$(openssl rand -hex 32)" \
+    || fail "could not generate a development database credential"
+  [[ "$value" =~ ^[a-f0-9]{64}$ ]] \
+    || fail "OpenSSL returned an invalid development database credential"
+  printf '%s' "$value"
+}
+
+checked_random_base64_32() {
+  local value
+  value="$(openssl rand -base64 32)" \
+    || fail "could not generate the development organization root key"
+  [[ "$value" =~ ^[A-Za-z0-9+/]{43}=$ ]] \
+    || fail "OpenSSL returned an invalid development organization root key"
+  printf '%s' "$value"
 }
 
 enable_timer=false
@@ -85,7 +109,7 @@ fi
 
 [[ "$(id -u)" == 0 ]] || fail "run this installer as root"
 for command_name in awk chmod chown docker getent git id install mktemp mv openssl rm runuser \
-  stat sync systemctl visudo; do
+  stat sync systemctl visudo wc; do
   command -v "$command_name" >/dev/null 2>&1 \
     || fail "required command is unavailable: $command_name"
 done
@@ -121,12 +145,18 @@ development_branch="$(runuser -u deploy -- git -C "$repository" symbolic-ref --s
 install -d -o root -g deploy -m 0750 -- "$configuration_directory"
 install -d -o root -g business-finlynq-secrets -m 0750 -- "$secret_directory"
 install -d -o root -g root -m 0700 -- "$state_directory"
+install -d -o root -g deploy -m 0775 -- "$shared_state_directory"
+[[ -d "$shared_state_directory" && ! -L "$shared_state_directory" \
+  && "$(stat -c '%U:%G:%a' -- "$shared_state_directory")" == root:deploy:775 ]] \
+  || fail "the shared deployment-lock directory is unsafe"
 
 if [[ ! -e "$compose_environment" ]]; then
-  owner_password="$(openssl rand -hex 32)"
-  app_password="$(openssl rand -hex 32)"
-  auth_worker_password="$(openssl rand -hex 32)"
-  backup_password="$(openssl rand -hex 32)"
+  owner_password="$(checked_random_hex_32)" || fail "could not prepare the database owner credential"
+  app_password="$(checked_random_hex_32)" || fail "could not prepare the app database credential"
+  auth_worker_password="$(checked_random_hex_32)" \
+    || fail "could not prepare the auth-worker database credential"
+  backup_password="$(checked_random_hex_32)" \
+    || fail "could not prepare the backup database credential"
   initial_revision="$(runuser -u deploy -- git -C "$repository" rev-parse HEAD)"
   [[ "$initial_revision" =~ ^[a-f0-9]{40}$ && ! "$initial_revision" =~ ^0+$ ]] \
     || fail "the initial development revision is invalid"
@@ -174,8 +204,15 @@ if [[ ! -e "$compose_environment" ]]; then
 
   root_key_temporary="$(mktemp "$secret_directory/.organization-root-kek.XXXXXX")"
   identity_temporary="$(mktemp "$secret_directory/.identity-secret.XXXXXX")"
-  printf '%s\n' "$(openssl rand -base64 32)" >"$root_key_temporary"
-  openssl rand 64 | openssl base64 -A >"$identity_temporary"
+  root_key="$(checked_random_base64_32)" \
+    || fail "could not prepare the development organization root key"
+  printf '%s\n' "$root_key" >"$root_key_temporary"
+  unset root_key
+  if ! openssl rand 64 | openssl base64 -A >"$identity_temporary"; then
+    fail "could not generate the development identity secret"
+  fi
+  [[ "$(wc -c <"$identity_temporary")" == 88 ]] \
+    || fail "OpenSSL returned an invalid development identity secret"
   printf '\n' >>"$identity_temporary"
   printf '%s\n' "$app_password" >"$secret_directory/app-db-password"
   printf '%s\n' "$auth_worker_password" >"$secret_directory/auth-worker-db-password"

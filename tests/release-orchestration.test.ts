@@ -491,7 +491,7 @@ describe("commit-addressed release orchestration", () => {
     expect(release).not.toContain("latest_backup_manifest");
     expect(release).not.toContain('find "$backup_directory"');
     expect(release).toContain('read_operations_value BUSINESS_FINLYNQ_IMAGE_REVISION');
-    expect(release).toContain('operations_environment_sha256="$(sha256sum "$canonical_operations_environment_file"');
+    expect(release).toContain('operations_environment_sha256="$(checked_file_sha256');
     expect(release).toContain("canonical operations environment changed during release; schedulers remain paused");
     expect(release).toContain("canonical operations image revision changed before scheduler resume");
     expect(release).toContain("run_installed_monitor");
