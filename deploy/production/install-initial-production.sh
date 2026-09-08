@@ -629,7 +629,13 @@ create_protected_directories() {
   install -d -o root -g deploy -m 0750 -- "$rehearsal_configuration_directory"
   install -d -o root -g root -m 0700 -- \
     "$release_evidence_root" "$rehearsal_evidence_root"
-  install -d -o 70 -g 70 -m 0700 -- "$backup_directory" \
+  # Ubuntu 26.04's uutils install rejects unmapped numeric -o/-g IDs. Create
+  # as root first, then use chown's explicitly numeric identity syntax.
+  install -d -o root -g root -m 0700 -- "$backup_directory" \
+    "$rehearsal_evidence_root/backups" \
+    "$rehearsal_evidence_root/backups/first" \
+    "$rehearsal_evidence_root/backups/second"
+  chown -- +70:+70 "$backup_directory" \
     "$rehearsal_evidence_root/backups" \
     "$rehearsal_evidence_root/backups/first" \
     "$rehearsal_evidence_root/backups/second"

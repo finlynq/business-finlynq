@@ -36,6 +36,29 @@ describe("externally managed edge contract", () => {
     expect(routes.match(/log_skip \/api\/document-storage\/callback\/\*/gu)).toHaveLength(2);
   });
 
+  it("preserves the production security policy on unavailable-backend errors", () => {
+    const productionRoute = routes.slice(
+      routes.indexOf("business.finlynq.com {"),
+      routes.indexOf("dev.business.finlynq.com {"),
+    );
+    expect(productionRoute).toContain("handle_errors {");
+    expect(productionRoute).toContain('respond "" {err.status_code}');
+    for (const header of [
+      'X-Request-Id "{http.request.uuid}"',
+      'Strict-Transport-Security "max-age=31536000; includeSubDomains"',
+      'X-Content-Type-Options "nosniff"',
+      'X-Frame-Options "DENY"',
+      'Referrer-Policy "strict-origin-when-cross-origin"',
+      "-Server",
+    ]) {
+      expect(productionRoute.split(header)).toHaveLength(3);
+    }
+    expect(verifier).toContain(
+      'verify_security_headers "$production_hostname" "$preflight_headers"',
+    );
+    expect(verifier).not.toContain("production preflight response is missing HSTS");
+  });
+
   it("attests the exact EPM owner, image, listeners, mounts, networks, and loaded config", () => {
     for (const network of [
       "business_finlynq_edge",

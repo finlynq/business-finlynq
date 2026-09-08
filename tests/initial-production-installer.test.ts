@@ -42,6 +42,27 @@ describe("fresh production bootstrap installer", () => {
     expect(installer).toContain(".Attachable == false");
   });
 
+  it("uses portable numeric ownership for container-writable backup directories", () => {
+    for (const line of installer.split(/\r?\n/u)) {
+      expect(line).not.toMatch(/\binstall\b.*\s-[og]\s+\+?[0-9]+\b/u);
+    }
+    const creation = installer.indexOf(
+      'install -d -o root -g root -m 0700 -- "$backup_directory"',
+    );
+    const ownership = installer.indexOf('chown -- +70:+70 "$backup_directory"');
+    expect(creation).toBeGreaterThan(-1);
+    expect(ownership).toBeGreaterThan(creation);
+    for (const path of [
+      '$backup_directory',
+      '$rehearsal_evidence_root/backups',
+      '$rehearsal_evidence_root/backups/first',
+      '$rehearsal_evidence_root/backups/second',
+    ]) {
+      expect(installer.slice(creation, ownership)).toContain(path);
+      expect(installer.slice(ownership, ownership + 400)).toContain(path);
+    }
+  });
+
   it("bridges only a protected root-managed external edge contract", () => {
     expect(installer).toContain("--external-edge-contract-file <root-managed-contract>");
     expect(installer).toContain("external edge contract source must be a root:root mode 0400");
