@@ -48,6 +48,7 @@ operations_environment_snapshot_file=""
 candidate_staging_root=""
 candidate_source_root=""
 candidate_tree_id=""
+candidate_source_date_epoch=""
 previous_cron_schedule_file=""
 release_backup_timeout_seconds="5400"
 release_images_pinned="false"
@@ -194,6 +195,13 @@ for command_name in awk bash chmod chown curl date docker env find flock git gre
   command -v "$command_name" >/dev/null 2>&1 || fail "required command is unavailable: $command_name"
 done
 docker compose version >/dev/null 2>&1 || fail "Docker Compose v2 is unavailable"
+compose_build_help="$(env -i "PATH=$PATH" docker compose build --help 2>/dev/null)" \
+  || fail "Docker Compose build capabilities could not be inspected"
+grep -F -- '--provenance' <<<"$compose_build_help" >/dev/null \
+  || fail "Docker Compose build does not support explicit provenance control"
+grep -F -- '--sbom' <<<"$compose_build_help" >/dev/null \
+  || fail "Docker Compose build does not support explicit SBOM control"
+unset compose_build_help
 
 # Production releases always use the local Docker socket and the explicitly
 # selected Compose files/environment. Do not let DOCKER_*, COMPOSE_*, or
@@ -1215,6 +1223,10 @@ git --no-optional-locks -c safe.directory="$repository_root" -C "$repository_roo
 read_git_output "$repository_root" "candidate Git tree" rev-parse "$revision^{tree}"
 candidate_tree_id="$git_command_output"
 [[ "$candidate_tree_id" =~ ^([a-f0-9]{40}|[a-f0-9]{64})$ ]] || fail "candidate Git tree ID is invalid"
+read_git_output "$repository_root" "candidate commit timestamp" show -s --format=%ct "$revision"
+candidate_source_date_epoch="$git_command_output"
+[[ "$candidate_source_date_epoch" =~ ^[1-9][0-9]{0,11}$ ]] \
+  || fail "candidate commit timestamp is invalid"
 install -m 0600 -- "$candidate_git_tree_file" "$evidence_directory/03-candidate-git-tree.txt"
 (
   cd -- "$candidate_source_root"
@@ -2007,6 +2019,8 @@ stage="candidate-image-build"
 assert_clean_checkout "$repository_root" \
   "the checkout changed after release evidence initialization and before image build"
 run_logged 10-image-build.log compose --profile operations --profile auth-email --profile acceptance build \
+  --provenance=false --sbom=false \
+  --build-arg "SOURCE_DATE_EPOCH=$candidate_source_date_epoch" \
   database app migrate auth_email_worker backup release_acceptance
 assert_clean_checkout "$repository_root" \
   "the checkout changed while commit-addressed images were being built"

@@ -196,8 +196,8 @@ compose_major="${BASH_REMATCH[1]}"
 compose_minor="${BASH_REMATCH[2]}"
 compose_patch="${BASH_REMATCH[3]}"
 (( compose_major > 2 || (compose_major == 2 && \
-  (compose_minor > 24 || (compose_minor == 24 && compose_patch >= 4))) )) \
-  || fail "Docker Compose 2.24.4 or newer is required for fail-closed overlay tags"
+  (compose_minor > 39 || (compose_minor == 39 && compose_patch >= 0))) )) \
+  || fail "Docker Compose 2.39.0 or newer is required for fail-closed image attestations and overlay tags"
 
 getent passwd deploy >/dev/null || fail "the deploy account is unavailable"
 getent group business-finlynq-secrets >/dev/null \
