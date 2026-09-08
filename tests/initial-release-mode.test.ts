@@ -2,12 +2,21 @@ import { spawnSync } from "node:child_process";
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { runInNewContext } from "node:vm";
 import { describe, expect, it } from "vitest";
 
 const source = (path: string) => readFileSync(path, "utf8");
 const runner = source("deploy/release/run-release.sh");
 const monitor = source("deploy/monitoring/check-production.sh");
 const deployMain = source("deploy/continuous-deployment/deploy-main.sh");
+
+function loadedClamdFreshnessCheck() {
+  const match = runner.match(
+    /    function acceptedClamdDatabaseUpdatedAt\(version, now = Date\.now\(\)\) \{[\s\S]*?\n    \}/,
+  );
+  if (!match) throw new Error("ClamD freshness function is unavailable");
+  return runInNewContext(`(${match[0].trim()})`) as (version: string, now?: number) => string;
+}
 
 describe("contained initial production release", () => {
   it("has an explicit, acknowledged initial and exact-parent resume contract", () => {
@@ -65,7 +74,10 @@ describe("contained initial production release", () => {
     expect(scanner).toBeLessThan(eicar);
     expect(eicar).toBeLessThan(app);
     expect(runner).toContain("--no-build --force-recreate evidence_scanner");
-    expect(runner).toContain("now - signature_mtime <= 604800");
+    expect(runner).toContain("signature_mtime <= now + 300");
+    expect(runner).not.toContain("now - signature_mtime <= 604800");
+    expect(runner).toContain("acceptedClamdDatabaseUpdatedAt(version)");
+    expect(runner).toContain("databaseUpdatedAt");
     expect(runner).toContain("EICAR-STANDARD-ANTIVIRUS-TEST-FILE");
     expect(runner).toContain("eicarDetected: true");
     expect(runner).toContain('if [[ "$mode" == "initial" || "$mode" == "rehearsal" ]]');
@@ -74,6 +86,31 @@ describe("contained initial production release", () => {
     expect(runner).toContain('--arg volumeName "$scanner_volume_name"');
     expect(runner).toContain('--arg evidenceNetwork "$scanner_evidence_network_name"');
     expect(runner).toContain('--arg egressNetwork "$scanner_egress_network_name"');
+  });
+
+  it("uses the live ClamD database timestamp for the seven-day freshness boundary", () => {
+    const acceptedUpdatedAt = loadedClamdFreshnessCheck();
+    const now = Date.UTC(2026, 8, 8, 12, 0, 0);
+    expect(acceptedUpdatedAt(
+      "ClamAV 1.5.4/28117/Tue Sep  8 06:26:31 2026",
+      now,
+    )).toBe("2026-09-08T06:26:31.000Z");
+    expect(acceptedUpdatedAt(
+      "ClamAV 1.5.4/28110/Tue Sep  1 12:00:00 2026",
+      now,
+    )).toBe("2026-09-01T12:00:00.000Z");
+    expect(acceptedUpdatedAt(
+      "ClamAV 1.5.4/28118/Tue Sep  8 12:05:00 2026",
+      now,
+    )).toBe("2026-09-08T12:05:00.000Z");
+    for (const rejected of [
+      "ClamAV 1.5.4/28109/Tue Sep  1 11:59:59 2026",
+      "ClamAV 1.5.4/28118/Tue Sep  8 12:05:01 2026",
+      "ClamAV 1.5.4",
+      "ClamAV 1.5.4/28117/not-a-date",
+      "ClamAV 1.5.4/28117/Tue Feb 31 06:26:31 2026",
+      "ClamAV 1.5.4/28117/Mon Sep  8 06:26:31 2026",
+    ]) expect(() => acceptedUpdatedAt(rejected, now)).toThrow(/unavailable, stale, or future-dated/);
   });
 
   it("backs up only after fresh migrations and never invents a prior app", () => {

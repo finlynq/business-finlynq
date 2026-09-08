@@ -157,8 +157,12 @@ Compose adds a digest-pinned official ClamAV service with a 3 GiB limit,
 non-root UID, read-only root filesystem, no credentials or published ports,
 a private app/scanner network, separate signature-update egress, and a
 project-scoped signature volume. The app waits for scanner health. Freshclam
-checks 12 times/day; the application rejects signature databases older than
-seven days. Scan limits are in `deploy/evidence/clamd.conf`. Compose embeds the same non-secret
+checks 12 times/day; the application, release, and terminal-recovery gates reject ClamD's
+loaded daily signature database when its signed build timestamp is older than
+seven days. The independently published main and bytecode databases may have
+older build times, while release attestation still checks every database file's
+owner, mode, and future-dated filesystem timestamp. Scan limits are in
+`deploy/evidence/clamd.conf`. Compose embeds the same non-secret
 configuration and writes it to the scanner\'s bounded tmpfs at startup, so a
 restrictive deployment-checkout umask cannot block the non-root daemon. The
 Compose verifier checks that the embedded configuration matches the reviewed file. Review and update
