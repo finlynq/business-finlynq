@@ -2137,8 +2137,8 @@ attest_evidence_scanner() {
       || fail "evidence scanner returned unsafe signature metadata"
     (( (8#$signature_mode & 8#002) == 0 )) \
       || fail "evidence scanner signature is writable by other users"
-    (( signature_mtime <= now + 300 && now - signature_mtime <= 604800 )) \
-      || fail "evidence scanner signature is stale or future-dated"
+    (( signature_mtime <= now + 300 )) \
+      || fail "evidence scanner signature is future-dated"
     signature_evidence="$(jq -c \
       --arg path "$signature_path" --argjson uid "$signature_uid" \
       --argjson gid "$signature_gid" --arg mode "$signature_mode" \
@@ -2181,13 +2181,30 @@ probe_evidence_scanner() {
         socket.on("end", () => { clearTimeout(deadline); resolve(Buffer.concat(chunks).toString("utf8").replace(/\0.*$/s, "")); });
       });
     }
+    function acceptedClamdDatabaseUpdatedAt(version, now = Date.now()) {
+      const match = /^ClamAV [^/\s]+\/[1-9]\d*\/((?:Sun|Mon|Tue|Wed|Thu|Fri|Sat) (?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) (?: [1-9]|[12]\d|3[01]) (?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d \d{4})$/.exec(version);
+      const updatedAt = match ? Date.parse(`${match[1]} UTC`) : Number.NaN;
+      const parsed = Number.isFinite(updatedAt) ? new Date(updatedAt) : null;
+      const weekdays = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+      const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
+        "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+      const canonical = parsed
+        ? `${weekdays[parsed.getUTCDay()]} ${months[parsed.getUTCMonth()]} ${String(parsed.getUTCDate()).padStart(2, " ")} ${String(parsed.getUTCHours()).padStart(2, "0")}:${String(parsed.getUTCMinutes()).padStart(2, "0")}:${String(parsed.getUTCSeconds()).padStart(2, "0")} ${parsed.getUTCFullYear()}`
+        : "";
+      if (!match || canonical !== match[1] || now - updatedAt > 7 * 86400_000 || updatedAt > now + 300_000) {
+        throw new Error("scanner signatures are unavailable, stale, or future-dated");
+      }
+      return parsed.toISOString();
+    }
     (async () => {
       const version = await query([Buffer.from("zVERSION\0", "binary")]);
+      const databaseUpdatedAt = acceptedClamdDatabaseUpdatedAt(version);
       const sample = Buffer.from("X5O!P%@AP[4\\PZX54(P^)7CC)7}$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*");
       const length = Buffer.alloc(4); length.writeUInt32BE(sample.length);
       const result = await query([Buffer.from("zINSTREAM\0", "binary"), length, sample, Buffer.alloc(4)]);
-      if (!/^ClamAV\//.test(version) || !/EICAR/i.test(result) || !/FOUND/.test(result)) process.exit(1);
-      console.log(JSON.stringify({ versionAccepted: true, eicarDetected: true, response: result.trim() }));
+      if (!/EICAR/i.test(result) || !/FOUND/.test(result)) process.exit(1);
+      console.log(JSON.stringify({ versionAccepted: true, version, databaseUpdatedAt,
+        eicarDetected: true, response: result.trim() }));
     })().catch((error) => { console.error(error.message); process.exit(1); });
   '
 }

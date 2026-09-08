@@ -50,6 +50,20 @@ checked_utc_timestamp() {
   printf '%s' "$timestamp"
 }
 
+clamd_database_is_fresh() {
+  local version="$1" now="$2" database_date database_mtime canonical_date
+  local pattern='^ClamAV [^/[:space:]]+/[1-9][0-9]*/((Sun|Mon|Tue|Wed|Thu|Fri|Sat) (Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) ( [1-9]|[12][0-9]|3[01]) ([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9] [0-9]{4})$'
+  [[ "$now" =~ ^[1-9][0-9]*$ && "$version" =~ $pattern ]] || return 1
+  database_date="${BASH_REMATCH[1]}"
+  database_mtime="$(LC_ALL=C TZ=UTC date --date="$database_date UTC" +%s 2>/dev/null)" \
+    || return 1
+  canonical_date="$(LC_ALL=C TZ=UTC date --date="$database_date UTC" \
+    '+%a %b %e %H:%M:%S %Y' 2>/dev/null)" || return 1
+  [[ "$database_mtime" =~ ^[1-9][0-9]*$ && "$canonical_date" == "$database_date" ]] \
+    || return 1
+  (( database_mtime <= now + 300 && now - database_mtime <= 604800 ))
+}
+
 checked_compact_utc_timestamp() {
   local timestamp
   timestamp="$(date -u +%Y%m%d%H%M%S)" || return 1
@@ -2545,6 +2559,7 @@ recover_accepted_stopped_app() {
   local app_state start_output readiness health_state
   local signature_inventory signature_path signature_uid signature_gid signature_mode
   local signature_mtime now signature_count=0
+  local clamd_version
   local -A recovery_containers=()
   expected_app_image="$(jq -er '.images[] | select(.name == "app") | .imageId' \
     "$accepted_evidence/11-images.json")" \
@@ -2629,13 +2644,17 @@ recover_accepted_stopped_app() {
       && "$signature_mode" =~ ^[0-7]{3,4}$ \
       && "$signature_mtime" =~ ^[1-9][0-9]*$ ]] \
       || fail "terminal-recovery scanner signature metadata is unsafe"
-    (( (8#$signature_mode & 8#002) == 0 \
-      && signature_mtime <= now + 300 && now - signature_mtime <= 604800 )) \
-      || fail "terminal-recovery scanner signature is writable, stale, or future-dated"
+    (( (8#$signature_mode & 8#002) == 0 && signature_mtime <= now + 300 )) \
+      || fail "terminal-recovery scanner signature is writable or future-dated"
     (( signature_count += 1 ))
   done <<<"$signature_inventory"
   (( signature_count > 0 )) \
     || fail "terminal-recovery scanner has no accepted signature database"
+  clamd_version="$(docker exec "${recovery_containers[evidence_scanner]}" \
+    clamdscan --config-file=/tmp/finlynq-clamd.conf --version)" \
+    || fail "terminal-recovery ClamD version could not be queried"
+  clamd_database_is_fresh "$clamd_version" "$now" \
+    || fail "terminal-recovery ClamD loaded signatures are unavailable, stale, or future-dated"
   app_container="${recovery_containers[app]}"
   inspect_json="$(docker inspect "$app_container")" \
     || fail "stopped accepted app could not be inspected"
