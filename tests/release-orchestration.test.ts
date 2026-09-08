@@ -367,6 +367,31 @@ describe("commit-addressed release orchestration", () => {
     expect(backup).toContain('applicationRevision: $revision');
   });
 
+  it("makes repeated release image exports deterministic for one reviewed commit", () => {
+    const release = source("deploy/release/run-release.sh");
+    const timestamp = release.indexOf(
+      'read_git_output "$repository_root" "candidate commit timestamp" show -s --format=%ct "$revision"',
+    );
+    const build = release.indexOf("run_logged 10-image-build.log compose");
+    expect(timestamp).toBeGreaterThan(-1);
+    expect(release).toContain('[[ "$candidate_source_date_epoch" =~ ^[1-9][0-9]{0,11}$ ]]');
+    expect(build).toBeGreaterThan(timestamp);
+    expect(release.slice(build, build + 500)).toContain("--provenance=false");
+    expect(release.slice(build, build + 500)).toContain("--sbom=false");
+    expect(release.slice(build, build + 500)).toContain(
+      '--build-arg "SOURCE_DATE_EPOCH=$candidate_source_date_epoch"',
+    );
+    expect(release).toContain("Docker Compose build does not support explicit provenance control");
+    expect(release).toContain("Docker Compose build does not support explicit SBOM control");
+
+    const continuousIntegration = source(".github/workflows/ci.yml");
+    expect(continuousIntegration).toContain('source_date_epoch="$(git show -s --format=%ct "$BUSINESS_FINLYNQ_IMAGE_REVISION")"');
+    expect(continuousIntegration).toContain("--provenance=false --sbom=false");
+    expect(continuousIntegration).toContain('first_acceptance_image_id="$(docker image inspect');
+    expect(continuousIntegration).toContain("sleep 2");
+    expect(continuousIntegration).toContain('test "$first_acceptance_image_id" = "$second_acceptance_image_id"');
+  });
+
   it("keeps the scripted production sequence fail closed and produces a retained rollback record", () => {
     const release = source("deploy/release/run-release.sh");
     const pauseSchedulers = source("deploy/release/pause-schedulers.sh");
