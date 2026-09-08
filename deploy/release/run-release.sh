@@ -594,11 +594,17 @@ run_logged() {
   local filename="$1"
   shift
   local command_status=0 display_status=0 chmod_status=0
+  local restore_errexit="false"
+  if [[ "$-" == *e* ]]; then
+    restore_errexit="true"
+  fi
   # Keep fail()/exit inside an isolated command scope so the parent EXIT trap
   # cannot run while its diagnostics are still redirected to this log. Capture
   # first, then display through a separately checked tee so either evidence I/O
-  # boundary can fail the release. Parent-owned recovery state is established
-  # explicitly at each call site after its durable postcondition is verified.
+  # boundary can fail the release. Preserve the caller's errexit state while
+  # collecting the isolated command status. Parent-owned recovery state is
+  # established explicitly at each call site after its durable postcondition
+  # is verified.
   set +e
   (
     trap - EXIT ERR INT TERM
@@ -606,7 +612,9 @@ run_logged() {
     "$@"
   ) >"$evidence_directory/$filename" 2>&1
   command_status=$?
-  set -e
+  if [[ "$restore_errexit" == "true" ]]; then
+    set -e
+  fi
   if tee <"$evidence_directory/$filename"; then
     display_status=0
   else
