@@ -491,7 +491,7 @@ describe("commit-addressed release orchestration", () => {
     expect(release).not.toContain("latest_backup_manifest");
     expect(release).not.toContain('find "$backup_directory"');
     expect(release).toContain('read_operations_value BUSINESS_FINLYNQ_IMAGE_REVISION');
-    expect(release).toContain('operations_environment_sha256="$(sha256sum "$canonical_operations_environment_file"');
+    expect(release).toContain('operations_environment_sha256="$(checked_file_sha256');
     expect(release).toContain("canonical operations environment changed during release; schedulers remain paused");
     expect(release).toContain("canonical operations image revision changed before scheduler resume");
     expect(release).toContain("run_installed_monitor");
@@ -902,9 +902,14 @@ wait_for_captured_containers 'test operation' service.log 51-state.json \
         "verify_fresh_cron_job_status",
         "clear_cron_job_status",
       ));
+      const timestampFunction = extractFunction(
+        "checked_utc_timestamp",
+        "checked_file_sha256",
+      );
       const result = spawnSync("/bin/bash", ["-c", `
 set -Eeuo pipefail
 fail() { printf '%s\\n' "$1" >&2; exit 1; }
+${timestampFunction}
 ${verifyFunction}
 ${clearFunction}
 install -d -m 0700 -- '${statusDirectory}'
@@ -1010,6 +1015,13 @@ case "$1" in
           changed) printf '%s\\n' 444 ;;
           *) exit 92 ;;
         esac
+        ;;
+      InvocationID)
+        if [[ -e "$FAKE_SYSTEMD_STARTED_MARKER" ]]; then
+          printf '%s\\n' bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+        else
+          printf '%s\\n' aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+        fi
         ;;
       Result) printf '%s\\n' success ;;
       ExecMainStatus) printf '%s\\n' 0 ;;

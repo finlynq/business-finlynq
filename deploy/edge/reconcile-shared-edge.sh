@@ -46,14 +46,6 @@ flock --exclusive --nonblock 7 || fail "another shared-edge reconciliation is ac
 [[ -f "$compose_environment" && ! -L "$compose_environment" \
   && "$(stat -c '%U:%G:%a' -- "$compose_environment")" == "root:deploy:600" ]] \
   || fail "the canonical Compose environment is unavailable or unsafe"
-[[ -f "$repository/deploy/Caddyfile.container" \
-  && ! -L "$repository/deploy/Caddyfile.container" \
-  && "$(stat -c '%U:%G:%a' -- "$repository/deploy/Caddyfile.container")" == "deploy:deploy:644" ]] \
-  || fail "the reviewed Caddy configuration is unavailable or unsafe"
-[[ -f "$external_basic_auth" && ! -L "$external_basic_auth" \
-  && -s "$external_basic_auth" \
-  && "$(stat -c '%U:%G:%a' -- "$external_basic_auth")" == "root:root:400" ]] \
-  || fail "the EPM basic-auth include must be a non-empty root-owned mode-0400 file"
 [[ -z "$(git --no-optional-locks -c safe.directory="$repository" -C "$repository" \
   status --porcelain=v1 --untracked-files=all)" ]] \
   || fail "the canonical production checkout is not clean"
@@ -63,6 +55,28 @@ flock --exclusive --nonblock 7 || fail "another shared-edge reconciliation is ac
 [[ "$(git --no-optional-locks -c safe.directory="$repository" -C "$repository" \
   remote get-url origin)" == "$expected_origin" ]] \
   || fail "the canonical production checkout has an unexpected origin"
+
+edge_mode="$(awk -F= '$1 == "BUSINESS_FINLYNQ_EDGE_MODE" { sub(/^[^=]*=/, ""); print }' \
+  "$compose_environment")"
+edge_mode_count="$(awk -F= '$1 == "BUSINESS_FINLYNQ_EDGE_MODE" { count++ } END { print count + 0 }' \
+  "$compose_environment")"
+[[ "$edge_mode_count" == 0 || "$edge_mode_count" == 1 ]] \
+  || fail "BUSINESS_FINLYNQ_EDGE_MODE must be defined at most once"
+edge_mode="${edge_mode:-compose}"
+[[ "$edge_mode" == compose || "$edge_mode" == external ]] \
+  || fail "BUSINESS_FINLYNQ_EDGE_MODE must be compose or external"
+if [[ "$edge_mode" == external ]]; then
+  exec bash "$repository/deploy/edge/verify-external-edge.sh"
+fi
+
+[[ -f "$repository/deploy/Caddyfile.container" \
+  && ! -L "$repository/deploy/Caddyfile.container" \
+  && "$(stat -c '%U:%G:%a' -- "$repository/deploy/Caddyfile.container")" == "deploy:deploy:644" ]] \
+  || fail "the reviewed Caddy configuration is unavailable or unsafe"
+[[ -f "$external_basic_auth" && ! -L "$external_basic_auth" \
+  && -s "$external_basic_auth" \
+  && "$(stat -c '%U:%G:%a' -- "$external_basic_auth")" == "root:root:400" ]] \
+  || fail "the EPM basic-auth include must be a non-empty root-owned mode-0400 file"
 
 for network_name in business_finlynq_edge business_finlynq_development_edge \
   epm_finlynq_edge consult_finlynq_edge; do

@@ -115,6 +115,64 @@ npm run release:verify-rehearsals -- \
 
 The pair verifier checks the complete runner artifact format, internal identities, image IDs, checkpoints, readiness records, browser-log digest, and file inventory for two distinct runs of one revision. Its local checksums detect accidental corruption but are not a trusted signature: anyone who can rewrite an evidence directory can also rewrite `SHA256SUMS`. Code, a unit-test fixture, verifier output, or an empty evidence directory is therefore not G0-05 acceptance evidence. Retain the two real run directories as immutable CI artifacts or in write-protected operator storage, link the originating CI run or witnessed operator record, and require an independent approver to confirm that both commands actually executed.
 
+### Fresh contained production bootstrap
+
+Use `deploy/production/install-initial-production.sh` only for a fresh production host. Run every phase as root from the clean, pre-cloned `/home/deploy/business-finlynq` checkout at the exact `deploy-production-<full-sha>` tag. The host must be an explicitly supported Ubuntu 24.04 or 26.04 system with synchronized time, Docker Compose 2.24.4 or newer, `jq`, and the required `deploy` account and secret group. Node, npm, Playwright, and browser libraries are not host prerequisites; the immutable acceptance image runs the rehearsal pair verifier.
+
+The bootstrap is deliberately split so the shared EPM-owned edge and development public acceptance can be established before the first production database is created:
+
+```bash
+revision="<full-reviewed-production-sha>"
+
+# Phase 1: creates and attests only business_finlynq_edge.
+sudo bash deploy/production/install-initial-production.sh \
+  --revision "$revision" \
+  --prepare-edge-network-only
+
+# From the exact development checkout/revision, first establish its internally
+# accepted backend and external-owner ingress network. The timer stays off.
+sudo bash deploy/development/install-development.sh \
+  --external-edge --skip-public-acceptance
+sudo /usr/local/sbin/business-finlynq-deploy-development
+
+# Apply the separately reviewed root-owned shared-edge handoff now. It must
+# promote the Business route as root:root 0444, attach the edge owner to the
+# exact four-network set, recreate it, and write the protected contract source.
+# The production route may return 502/503 until the production app joins.
+
+# Phase 2: installs durable contained configuration but starts no service.
+sudo bash deploy/production/install-initial-production.sh \
+  --revision "$revision" \
+  --prepare-configuration-only \
+  --backup-age-recipient-file /root/business-finlynq-backup-age-recipient.txt \
+  --external-edge-contract-file \
+    /var/lib/business-finlynq-ovh-edge-handoff/active/edge-contract.env
+
+# From the exact development checkout/revision, recreate the existing dev
+# configuration with external edge plus strict public acceptance. This changes
+# only the edge/public-acceptance setting; all other reviewed development gates
+# retain their existing development values.
+sudo bash deploy/development/install-development.sh \
+  --external-edge --require-public-acceptance
+sudo /usr/local/sbin/business-finlynq-deploy-development
+
+# Phase 3: reattests dev/shared edge, runs two isolated rehearsals, and performs
+# the contained initial production release.
+sudo bash deploy/production/install-initial-production.sh \
+  --revision "$revision" \
+  --run-provisioned
+```
+
+The only age material installed on the VPS is the public recipient. Initial mode enables only synthetic demo login and demo writes. Account login/signup, email delivery, Turnstile, real business writes, bank feeds, Yahoo FX, and external providers remain disabled. It migrates a fresh database, starts and probes the pinned evidence scanner, creates and verifies a local encrypted backup, records off-site delivery as deferred, runs fresh accounting and monitor one-shots, and installs all four operation timers but leaves them disabled and inactive. Production continuous deployment is not installed or enabled, and the development deployment timer remains disabled.
+
+Configuration preparation is journaled and retryable with the exact same recipient and edge-contract inputs. Rehearsal failures retain immutable evidence; rerunning `--run-provisioned` before any production initial attempt starts a new timestamped two-rehearsal batch. Once an initial attempt exists, never delete or alter its evidence:
+
+- For an exact failure before production resources were created and before the full resume inventory exists, review its `99-failure.json`, then use `--retry-pristine-initial <failed-run-id>`. The installer requires an allowlisted early stage, exact checksums, an empty production runtime, and disabled deployment automation, and writes a protected authorization receipt before assigning the new run ID.
+- For a later failed initial with the full input/image/rollback inventory, use `--resume-initial <failed-run-id>`. The runner binds the retry to that exact parent evidence, configuration and secret hashes, image IDs, labeled resources, and stopped/healthy container posture.
+- If the runner produced checksummed accepted evidence but the wrapper could not publish `initial-install-complete.json`, use `--finalize-accepted-initial <accepted-run-id>`. This narrowly accepts a terminal `99-failure.json` only at `complete-evidence`, rechecks the exact evidence inventory, rehearsals, live image IDs, loopback port, mounts, networks, contained gates, shared edge, fresh accounting/monitor one-shots, and disabled timers before atomically recording completion.
+
+All recovery commands take the shared deployment-host lock and fail closed if development or production automation overlaps. Do not enable any timer, continuous-deployment receiver, real/customer gate, provider credential, or off-site requirement as part of this contained initial procedure; those are separate reviewed post-migration changes.
+
 ## Deployment
 
 The sequence below explains the controls enforced by the scripted path. Do not substitute an ad hoc copy/paste deployment for `run-release.sh`.

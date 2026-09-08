@@ -18,6 +18,7 @@ candidate_staging_root=""
 candidate_source_root=""
 candidate_tree_id=""
 candidate_tree_manifest_sha256=""
+edge_mode="compose"
 
 fail() {
   printf 'Business Finlynq application rollback failed: %s\n' "$1" >&2
@@ -116,6 +117,16 @@ canonical_environment_file="$environment_file"
 compose_environment_sha256="$(sha256sum "$canonical_environment_file" | awk '{print $1}')"
 [[ "$compose_environment_sha256" =~ ^[a-f0-9]{64}$ ]] \
   || fail "Compose environment checksum is invalid"
+edge_mode_count="$(awk -F= '$1 == "BUSINESS_FINLYNQ_EDGE_MODE" { count++ } END { print count + 0 }' \
+  "$canonical_environment_file")"
+[[ "$edge_mode_count" == 0 || "$edge_mode_count" == 1 ]] \
+  || fail "Compose environment must define BUSINESS_FINLYNQ_EDGE_MODE at most once"
+if [[ "$edge_mode_count" == 1 ]]; then
+  edge_mode="$(awk -F= '$1 == "BUSINESS_FINLYNQ_EDGE_MODE" { sub(/^[^=]*=/, ""); print }' \
+    "$canonical_environment_file")"
+fi
+[[ "$edge_mode" == compose || "$edge_mode" == external ]] \
+  || fail "BUSINESS_FINLYNQ_EDGE_MODE must be compose or external"
 environment_mode="$(stat -c '%a' -- "$environment_file")"
 environment_owner="$(stat -c '%u' -- "$environment_file")"
 [[ "$environment_mode" =~ ^[0-7]{3,4}$ ]] || fail "Compose environment mode is invalid"
@@ -262,9 +273,13 @@ install -m 0600 -- "$canonical_environment_file" "$environment_snapshot_file"
 environment_file="$environment_snapshot_file"
 
 base_compose() {
+  local -a compose_files=(-f "$candidate_source_root/docker-compose.yml")
+  if [[ "$edge_mode" == external ]]; then
+    compose_files+=(-f "$candidate_source_root/deploy/edge/docker-compose.external.yml")
+  fi
   env -i "PATH=$PATH" docker compose --project-name business-finlynq \
     --project-directory "$candidate_source_root" --env-file "$environment_file" \
-    -f "$candidate_source_root/docker-compose.yml" "$@"
+    "${compose_files[@]}" "$@"
 }
 rendered_current_compose="$(base_compose config --format json)"
 deployed_revision="$(jq -r '.services.app.environment.BUSINESS_FINLYNQ_IMAGE_REVISION // empty' <<<"$rendered_current_compose")"
@@ -307,6 +322,13 @@ fi
 observed_application_state="$observed_application_artifact:$current_app_runtime_status"
 
 rollback_compose() {
+  local -a compose_files=(
+    -f "$candidate_source_root/docker-compose.yml"
+  )
+  if [[ "$edge_mode" == external ]]; then
+    compose_files+=(-f "$candidate_source_root/deploy/edge/docker-compose.external.yml")
+  fi
+  compose_files+=(-f "$candidate_source_root/deploy/release/docker-compose.application-rollback.yml")
   env -i "PATH=$PATH" \
     "BUSINESS_FINLYNQ_ROLLBACK_APP_IMAGE=$previous_image_id" \
     "BUSINESS_FINLYNQ_IMAGE_REVISION=$previous_revision" \
@@ -316,8 +338,7 @@ rollback_compose() {
     BUSINESS_WRITES_ENABLED=false BANK_FEEDS_ENABLED=false \
     docker compose --project-name business-finlynq --project-directory "$candidate_source_root" \
     --env-file "$environment_file" \
-    -f "$candidate_source_root/docker-compose.yml" \
-    -f "$candidate_source_root/deploy/release/docker-compose.application-rollback.yml" "$@"
+    "${compose_files[@]}" "$@"
 }
 
 contain_failed_rollback() {
