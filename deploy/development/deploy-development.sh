@@ -177,7 +177,7 @@ verify_external_edge_if_selected() {
   [[ "$observed_sha" =~ ^[a-f0-9]{64}$ && -n "$observed_remainder" \
     && "$observed_sha" == "$expected_sha" && "$observed_bytes" == "$expected_bytes" ]] \
     || fail "the protected external-edge verifier differs from the install-state inventory"
-  "$protected_external_edge_verifier" --scope development
+  "$protected_external_edge_verifier" --scope development --warmup-host development
 }
 
 state_file_is_safe() {

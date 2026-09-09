@@ -4,6 +4,8 @@ on:
   workflow_run:
     workflows:
       - quality-gate
+    branches:
+      - main
     types:
       - completed
 

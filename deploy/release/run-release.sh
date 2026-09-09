@@ -108,6 +108,34 @@ checked_file_sha256() {
   printf '%s' "$digest"
 }
 
+canonical_compose_sha256() {
+  local rendered_configuration="$1" normalized_configuration checksum_output
+  local digest remainder
+  local stable_root="/__business_finlynq_candidate_source__"
+  [[ -n "$candidate_source_root" && "$candidate_source_root" == /* ]] || return 1
+  # The private materialization root is intentionally random. Compose resolves
+  # build contexts and bind sources through that root, so hash a canonical JSON
+  # representation without weakening the immutable candidate-tree boundary.
+  jq -e --arg stableRoot "$stable_root" '
+    all(.. | strings;
+      (. != $stableRoot and (startswith($stableRoot + "/") | not)))
+  ' <<<"$rendered_configuration" >/dev/null || return 1
+  normalized_configuration="$(jq -cS \
+    --arg sourceRoot "$candidate_source_root" --arg stableRoot "$stable_root" '
+      walk(
+        if type == "string" and
+          (. == $sourceRoot or startswith($sourceRoot + "/"))
+        then $stableRoot + .[($sourceRoot | length):]
+        else .
+        end
+      )
+    ' <<<"$rendered_configuration")" || return 1
+  checksum_output="$(printf '%s' "$normalized_configuration" | sha256sum)" || return 1
+  read -r digest remainder <<<"$checksum_output" || return 1
+  [[ "$digest" =~ ^[a-f0-9]{64}$ && -n "$remainder" ]] || return 1
+  printf '%s' "$digest"
+}
+
 git_command_output=""
 read_git_output() {
   local selected_repository="$1" description="$2"
@@ -1570,7 +1598,7 @@ scanner_egress_network_name="$(jq -r '.networks.business_finlynq_scanner_egress.
   && -n "$scanner_egress_network_name" ]] \
   || fail "evidence-scanner resource names are missing"
 
-compose_hash="$(printf '%s' "$rendered_compose" | sha256sum | awk '{print $1}')" \
+compose_hash="$(canonical_compose_sha256 "$rendered_compose")" \
   || fail "rendered Compose configuration checksum could not be computed"
 [[ "$compose_hash" =~ ^[a-f0-9]{64}$ ]] \
   || fail "rendered Compose configuration checksum is invalid"
@@ -1736,13 +1764,37 @@ quiesce_and_verify_initial_schedulers() {
     fi
   done
 
-  for unit_name in business-finlynq-development-deployment.timer \
-    business-finlynq-development-deployment.service; do
-    if systemctl is-active --quiet "$unit_name" 2>/dev/null \
-      || systemctl is-enabled --quiet "$unit_name" 2>/dev/null; then
-      fail "development deployment automation must remain inactive during production bootstrap"
-    fi
-  done
+  unit_name=business-finlynq-development-deployment.timer
+  active_state=""; active_status=0
+  if active_state="$(systemctl is-active "$unit_name" 2>/dev/null)"; then
+    active_status=0
+  else
+    active_status=$?
+  fi
+  [[ "$active_status" != "0" && "$active_state" != "active" ]] \
+    || fail "development deployment timer must remain inactive during production bootstrap"
+  enabled_state=""; enabled_status=0
+  if enabled_state="$(systemctl is-enabled "$unit_name" 2>/dev/null)"; then
+    enabled_status=0
+  else
+    enabled_status=$?
+  fi
+  [[ "$enabled_status" != "0" \
+    && ( "$enabled_state" == "disabled" || "$enabled_state" == "not-found" ) ]] \
+    || fail "development deployment timer must remain disabled during production bootstrap"
+
+  # A service with no [Install] section is reported as static by systemd and
+  # `is-enabled --quiet` succeeds for that classification. Only its active
+  # state is meaningful; the timer above is the independently enabled unit.
+  unit_name=business-finlynq-development-deployment.service
+  active_state=""; active_status=0
+  if active_state="$(systemctl is-active "$unit_name" 2>/dev/null)"; then
+    active_status=0
+  else
+    active_status=$?
+  fi
+  [[ "$active_status" != "0" && "$active_state" != "active" ]] \
+    || fail "development deployment service must remain inactive during production bootstrap"
   initial_schedulers_verified="true"
   printf '%s\n' "Production operation/deployment schedulers are disabled and services are quiescent."
 }
@@ -1751,7 +1803,7 @@ verify_initial_state_contract() {
   [[ "$mode" == "initial" ]] || return 0
   local resource_name container_id container_contract service_name image_revision
   local expected_volume_label expected_network_label expected_network_internal prior_record
-  local logical_image expected_resume_image_id
+  local logical_image expected_resume_image_id volume_names network_names
   local prior_failure_record prior_plan prior_rollback
   local failed_initial_record=""
   local -a project_containers=()
@@ -1870,7 +1922,12 @@ verify_initial_state_contract() {
         || fail "resumable container image reference could not be parsed"
       image_id="$(jq -er '.imageId' <<<"$container_contract")" \
         || fail "resumable container image ID could not be parsed"
-      container_running="$(jq -er '.running' <<<"$container_contract")" \
+      container_running="$(jq -r '
+        if (.running | type) == "boolean"
+        then (.running | tostring)
+        else error("running is not boolean")
+        end
+      ' <<<"$container_contract")" \
         || fail "resumable container running state could not be parsed"
       container_status="$(jq -er '.status' <<<"$container_contract")" \
         || fail "resumable container lifecycle state could not be parsed"
@@ -1924,8 +1981,9 @@ verify_initial_state_contract() {
   fi
 
   read_docker_output "Docker volumes before initial production" volume ls --format '{{.Name}}'
+  volume_names="$docker_query_output"
   for resource_name in "${forbidden_volumes[@]}"; do
-    if grep -Fxq -- "$resource_name" <<<"$docker_query_output"; then
+    if grep -Fxq -- "$resource_name" <<<"$volume_names"; then
       if [[ "$initial_state" == "fresh" \
         || ( "$resource_name" != business_finlynq_pgdata \
           && "$resource_name" != business_finlynq_pgdata_clamav ) ]]; then
@@ -1957,8 +2015,9 @@ verify_initial_state_contract() {
   done <<<"$docker_query_output"
 
   read_docker_output "Docker networks before initial production" network ls --format '{{.Name}}'
+  network_names="$docker_query_output"
   for resource_name in "${forbidden_networks[@]}"; do
-    if grep -Fxq -- "$resource_name" <<<"$docker_query_output"; then
+    if grep -Fxq -- "$resource_name" <<<"$network_names"; then
       if [[ "$initial_state" == "fresh" || "$resource_name" == business_finlynq_restore_drill ]]; then
         fail "initial production found a disallowed preexisting production network: $resource_name"
       fi
@@ -1994,7 +2053,7 @@ verify_initial_state_contract() {
         || fail "resumable production network ownership is invalid: $resource_name"
     fi
   done
-  grep -Fxq -- business_finlynq_edge <<<"$docker_query_output" \
+  grep -Fxq -- business_finlynq_edge <<<"$network_names" \
     || fail "initial production requires the pre-created external production ingress network"
   read_docker_output "Compose-owned networks before initial production" network ls \
     --filter 'label=com.docker.compose.project=business-finlynq' --format '{{.Name}}'
@@ -2128,7 +2187,7 @@ for pinned_service_contract in \
     == "${image_ids[$pinned_logical_image]}" ]] \
     || fail "pinned Compose configuration does not bind the immutable image for $pinned_service"
 done
-pinned_compose_hash="$(printf '%s' "$pinned_compose" | sha256sum | awk '{print $1}')" \
+pinned_compose_hash="$(canonical_compose_sha256 "$pinned_compose")" \
   || fail "pinned Compose configuration checksum could not be computed"
 unset pinned_compose
 [[ "$pinned_compose_hash" =~ ^[a-f0-9]{64}$ ]] || fail "pinned Compose configuration checksum is invalid"
@@ -2524,61 +2583,29 @@ disable_and_verify_initial_schedule() {
   printf '%s\n' "All four production operation timers are installed, disabled, and inactive."
 }
 
-systemd_property_value=""
-read_systemd_property() {
-  local service_name="$1" property_name="$2"
-  [[ "$service_name" == "business-finlynq-accounting-evidence.service" \
-    || "$service_name" == "business-finlynq-monitor.service" ]] \
-    || fail "release acceptance requested an unsupported systemd service"
-  case "$property_name" in
-    ExecMainStartTimestampMonotonic|ExecMainExitTimestampMonotonic|InvocationID|Result|ExecMainStatus) ;;
-    *) fail "release acceptance requested an unsupported systemd property" ;;
-  esac
-  if ! systemd_property_value="$(systemctl show --property="$property_name" --value "$service_name")"; then
-    fail "could not inspect $property_name for $service_name"
-  fi
-  [[ -n "$systemd_property_value" ]] \
-    || fail "systemd returned an empty $property_name for $service_name"
-}
-
 run_fresh_systemd_oneshot() {
   local service_name="$1" description="$2"
-  local previous_start previous_invocation current_start current_exit
-  local current_invocation result main_status
-  read_systemd_property "$service_name" ExecMainStartTimestampMonotonic
-  previous_start="$systemd_property_value"
-  [[ "$previous_start" =~ ^[0-9]+$ ]] \
-    || fail "$description has an invalid previous systemd start timestamp"
-  previous_invocation="$(systemctl show --property=InvocationID --value "$service_name")" \
-    || fail "could not inspect the previous InvocationID for $service_name"
-  [[ -z "$previous_invocation" || "$previous_invocation" =~ ^[a-f0-9]{32}$ ]] \
-    || fail "$description has an invalid previous systemd InvocationID"
+  local active_state active_status
+  case "$service_name" in
+    business-finlynq-accounting-evidence.service|business-finlynq-monitor.service) ;;
+    *) fail "release acceptance requested an unsupported systemd service" ;;
+  esac
+  # systemd 259 clears InvocationID and ExecMain*TimestampMonotonic when a
+  # Type=oneshot unit without RemainAfterExit returns to inactive. The caller
+  # removes the prior metric first and validates a newly written, timestamped,
+  # success metric after this synchronous start; that durable output is the
+  # cross-version proof that this exact invocation ran successfully.
   systemctl start "$service_name" \
     || fail "$description could not be started"
-  read_systemd_property "$service_name" ExecMainStartTimestampMonotonic
-  current_start="$systemd_property_value"
-  read_systemd_property "$service_name" ExecMainExitTimestampMonotonic
-  current_exit="$systemd_property_value"
-  read_systemd_property "$service_name" InvocationID
-  current_invocation="$systemd_property_value"
-  read_systemd_property "$service_name" Result
-  result="$systemd_property_value"
-  read_systemd_property "$service_name" ExecMainStatus
-  main_status="$systemd_property_value"
-  [[ "$current_start" =~ ^[1-9][0-9]*$ && "$current_start" != "$previous_start" ]] \
-    || fail "$description did not execute a fresh systemd invocation"
-  [[ "$current_exit" =~ ^[1-9][0-9]*$ && "$current_exit" -gt "$current_start" ]] \
-    || fail "$description has no valid systemd exit timestamp after its fresh start"
-  [[ "$current_invocation" =~ ^[a-f0-9]{32}$ \
-    && "$current_invocation" != "$previous_invocation" ]] \
-    || fail "$description did not receive a fresh systemd InvocationID"
-  [[ "$result" == "success" ]] \
-    || fail "$description did not report systemd Result=success"
-  [[ "$main_status" == "0" ]] \
-    || fail "$description exited with a nonzero systemd ExecMainStatus"
-  systemctl show --no-pager --property=ExecMainStartTimestampMonotonic \
-    --property=ExecMainExitTimestampMonotonic --property=InvocationID --property=Result \
-    --property=ExecMainStatus "$service_name"
+  active_state=""; active_status=0
+  if active_state="$(systemctl is-active "$service_name" 2>/dev/null)"; then
+    active_status=0
+  else
+    active_status=$?
+  fi
+  [[ "$active_status" == "3" && "$active_state" == "inactive" ]] \
+    || fail "$description did not return to the expected inactive one-shot state"
+  printf 'Started %s; durable metric verification follows.\n' "$service_name"
 }
 
 verify_fresh_cron_job_status() {
@@ -3239,7 +3266,8 @@ chmod 0600 -- "$public_headers" "$public_body"
 if [[ "$mode" != rehearsal && "$edge_mode" == external ]]; then
   stage="external-edge-contract"
   run_logged 67-external-edge-contract.log \
-    bash "$candidate_source_root/deploy/edge/verify-external-edge.sh"
+    bash "$candidate_source_root/deploy/edge/verify-external-edge.sh" \
+      --scope full --warmup-host production
   write_checkpoint 68-external-edge-contract.json external-edge-accepted
 fi
 

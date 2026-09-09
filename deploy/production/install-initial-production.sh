@@ -1972,7 +1972,8 @@ authorize_pristine_retry() {
 }
 
 verify_contained_initial_terminal_evidence_records() {
-  local initial_run_id="$1" initial_evidence="$release_evidence_root/$revision/$initial_run_id"
+  local initial_run_id="$1"
+  local initial_evidence="$release_evidence_root/$revision/$initial_run_id"
   local terminal_record="${2:-$initial_evidence/90-release-complete.json}"
   local expected_app_image browser_log_sha compose_environment_sha operations_environment_sha
   local secret_records secret_record secret_path secret_sha secret_bytes
@@ -2223,7 +2224,8 @@ recover_accepted_terminal_inventory_gap() {
 }
 
 verify_install_completion_for_run() {
-  local initial_run_id="$1" initial_evidence="$release_evidence_root/$revision/$initial_run_id"
+  local initial_run_id="$1"
+  local initial_evidence="$release_evidence_root/$revision/$initial_run_id"
   local evidence_inventory_sha install_state_sha rehearsal_acceptance_sha
   [[ -f "$install_completion" && ! -L "$install_completion" \
     && "$(stat -c '%u:%g:%a:%h' -- "$install_completion")" == 0:0:600:1 ]] \
@@ -2264,7 +2266,8 @@ verify_install_completion_for_run() {
 }
 
 write_install_completion() {
-  local initial_run_id="$1" initial_evidence="$release_evidence_root/$revision/$initial_run_id"
+  local initial_run_id="$1"
+  local initial_evidence="$release_evidence_root/$revision/$initial_run_id"
   local temporary completed_at evidence_inventory_sha install_state_sha
   local rehearsal_acceptance_sha
   verify_contained_initial_terminal_evidence "$initial_run_id"
@@ -2366,41 +2369,115 @@ run_initial_release() {
 }
 
 run_fresh_installed_oneshot() {
-  local service_name="$1" previous_start previous_invocation
-  local current_start current_exit current_invocation result main_status
+  local service_name="$1" metric_file metric_directory description
+  local deploy_uid deploy_gid owner group mode_bits started_at modified_at now
+  local active_state active_status success_metric last_run_metric last_success_metric
   case "$service_name" in
-    business-finlynq-accounting-evidence.service|business-finlynq-monitor.service) ;;
+    business-finlynq-accounting-evidence.service)
+      metric_file="$state_directory/accounting-evidence.prom"
+      description="accounting-evidence metric"
+      ;;
+    business-finlynq-monitor.service)
+      metric_file="$state_directory/host.prom"
+      description="host-monitor metric"
+      ;;
     *) fail "unsupported finalization one-shot service: $service_name" ;;
   esac
-  previous_start="$(systemctl show --property=ExecMainStartTimestampMonotonic \
-    --value "$service_name")" \
-    || fail "could not inspect the previous $service_name invocation"
-  [[ "$previous_start" =~ ^[0-9]+$ ]] \
-    || fail "$service_name returned an invalid previous invocation timestamp"
-  previous_invocation="$(systemctl show --property=InvocationID --value "$service_name")" \
-    || fail "could not inspect the previous $service_name InvocationID"
-  [[ -z "$previous_invocation" || "$previous_invocation" =~ ^[a-f0-9]{32}$ ]] \
-    || fail "$service_name returned an invalid previous InvocationID"
+  deploy_uid="$(id -u deploy)" || fail "deploy uid is unavailable for $description"
+  deploy_gid="$(id -g deploy)" || fail "deploy gid is unavailable for $description"
+  [[ "$deploy_uid" =~ ^[0-9]+$ && "$deploy_gid" =~ ^[0-9]+$ ]] \
+    || fail "deploy identity is invalid for $description"
+  metric_directory="${metric_file%/*}"
+  owner="$(stat -c '%u' -- "$metric_directory" 2>/dev/null)" \
+    || fail "$description directory ownership could not be read"
+  [[ -d "$metric_directory" && ! -L "$metric_directory" \
+    && "$(readlink -f -- "$metric_directory")" == "$metric_directory" \
+    && ( "$owner" == "0" || "$owner" == "$deploy_uid" ) \
+    && "$(stat -c '%g:%a' -- "$metric_directory")" == "$deploy_gid:775" ]] \
+    || fail "$description directory is unsafe"
+  if [[ -e "$metric_file" || -L "$metric_file" ]]; then
+    owner="$(stat -c '%u' -- "$metric_file" 2>/dev/null)" \
+      || fail "existing $description ownership could not be read"
+    group="$(stat -c '%g' -- "$metric_file" 2>/dev/null)" \
+      || fail "existing $description group could not be read"
+    mode_bits="$(stat -c '%a' -- "$metric_file" 2>/dev/null)" \
+      || fail "existing $description mode could not be read"
+    [[ -f "$metric_file" && ! -L "$metric_file" \
+      && "$(readlink -f -- "$metric_file")" == "$metric_file" \
+      && ( "$owner" == "0" || "$owner" == "$deploy_uid" ) \
+      && "$group" == "$deploy_gid" && "$mode_bits" == "644" ]] \
+      || fail "existing $description is unsafe"
+    rm -- "$metric_file" || fail "existing $description could not be cleared"
+  fi
+  [[ ! -e "$metric_file" && ! -L "$metric_file" ]] \
+    || fail "$description could not be cleared before finalization"
+  started_at="$(date +%s)" || fail "$description start time could not be read"
+  [[ "$started_at" =~ ^[1-9][0-9]*$ ]] || fail "$description start time is invalid"
   systemctl start "$service_name" \
     || fail "$service_name failed during accepted-initial finalization"
-  current_start="$(systemctl show --property=ExecMainStartTimestampMonotonic \
-    --value "$service_name")" \
-    || fail "could not inspect the new $service_name start"
-  current_exit="$(systemctl show --property=ExecMainExitTimestampMonotonic \
-    --value "$service_name")" \
-    || fail "could not inspect the new $service_name exit"
-  current_invocation="$(systemctl show --property=InvocationID --value "$service_name")" \
-    || fail "could not inspect the new $service_name InvocationID"
-  result="$(systemctl show --property=Result --value "$service_name")" \
-    || fail "could not inspect the new $service_name result"
-  main_status="$(systemctl show --property=ExecMainStatus --value "$service_name")" \
-    || fail "could not inspect the new $service_name exit status"
-  [[ "$current_start" =~ ^[1-9][0-9]*$ && "$current_start" != "$previous_start" \
-    && "$current_exit" =~ ^[1-9][0-9]*$ && "$current_exit" -gt "$current_start" \
-    && "$current_invocation" =~ ^[a-f0-9]{32}$ \
-    && "$current_invocation" != "$previous_invocation" \
-    && "$result" == success && "$main_status" == 0 ]] \
-    || fail "$service_name did not complete one fresh successful invocation"
+  active_state=""; active_status=0
+  if active_state="$(systemctl is-active "$service_name" 2>/dev/null)"; then
+    active_status=0
+  else
+    active_status=$?
+  fi
+  [[ "$active_status" == "3" && "$active_state" == "inactive" ]] \
+    || fail "$service_name did not return to the expected inactive one-shot state"
+  [[ -f "$metric_file" && ! -L "$metric_file" \
+    && "$(readlink -f -- "$metric_file")" == "$metric_file" ]] \
+    || fail "$service_name did not publish a fresh safe $description"
+  owner="$(stat -c '%u' -- "$metric_file")"
+  group="$(stat -c '%g' -- "$metric_file")"
+  mode_bits="$(stat -c '%a' -- "$metric_file")"
+  modified_at="$(stat -c '%Y' -- "$metric_file")"
+  now="$(date +%s)"
+  [[ ( "$owner" == "0" || "$owner" == "$deploy_uid" ) \
+    && "$group" == "$deploy_gid" && "$mode_bits" == "644" \
+    && "$modified_at" =~ ^[1-9][0-9]*$ && "$now" =~ ^[1-9][0-9]*$ \
+    && "$modified_at" -ge "$started_at" && "$modified_at" -le "$now" ]] \
+    || fail "$service_name did not freshly replace the expected $description"
+  if [[ "$service_name" == business-finlynq-accounting-evidence.service ]]; then
+    success_metric="$(awk '$1 == "business_finlynq_accounting_evidence_verification_success" { count++; if (NF != 2) invalid=1; value=$2 } END { if (count != 1 || invalid) exit 1; print value }' "$metric_file")" \
+      || fail "$description success value is missing or duplicated"
+    last_run_metric="$(awk '$1 == "business_finlynq_accounting_evidence_verification_last_run_unixtime" { count++; if (NF != 2) invalid=1; value=$2 } END { if (count != 1 || invalid) exit 1; print value }' "$metric_file")" \
+      || fail "$description last-run value is missing or duplicated"
+    last_success_metric="$(awk '$1 == "business_finlynq_accounting_evidence_verification_last_success_unixtime" { count++; if (NF != 2) invalid=1; value=$2 } END { if (count != 1 || invalid) exit 1; print value }' "$metric_file")" \
+      || fail "$description last-success value is missing or duplicated"
+    [[ "$success_metric" == "1" && "$last_run_metric" =~ ^[1-9][0-9]*$ \
+      && "$last_success_metric" =~ ^[1-9][0-9]*$ \
+      && "$last_run_metric" -ge "$started_at" && "$last_run_metric" -le "$now" \
+      && "$last_success_metric" -ge "$started_at" \
+      && "$last_success_metric" -le "$now" ]] \
+      || fail "$description does not prove a fresh successful invocation"
+  else
+    success_metric="$(awk '$1 == "business_finlynq_host_monitor_success" { count++; if (NF != 2) invalid=1; value=$2 } END { if (count != 1 || invalid) exit 1; print value }' "$metric_file")" \
+      || fail "$description success value is missing or duplicated"
+    last_run_metric="$(awk '$1 == "business_finlynq_host_monitor_last_run_unixtime" { count++; if (NF != 2) invalid=1; value=$2 } END { if (count != 1 || invalid) exit 1; print value }' "$metric_file")" \
+      || fail "$description last-run value is missing or duplicated"
+    [[ "$success_metric" == "1" && "$last_run_metric" =~ ^[1-9][0-9]*$ \
+      && "$last_run_metric" -ge "$started_at" && "$last_run_metric" -le "$now" ]] \
+      || fail "$description does not prove a fresh successful invocation"
+  fi
+}
+
+verify_database_mount_contract() {
+  local inspect_json="$1" description="$2"
+  jq -e --arg secretDirectory "$secret_directory" '
+    length == 1 and
+    (.[0].Mounts | type == "array" and length == 2) and
+    ([.[0].Mounts[] |
+      select(.Type == "volume" and
+        .Name == "business_finlynq_pgdata" and
+        .Destination == "/var/lib/postgresql/data" and .RW == true)] |
+      length) == 1 and
+    ([.[0].Mounts[] |
+      select(.Type == "bind" and
+        .Source == ($secretDirectory + "/app-db-password") and
+        .Destination == "/run/secrets/business_finlynq_app_db_password" and
+        .RW == false)] | length) == 1 and
+    ([.[0].Mounts[].Destination] | unique | length) == 2
+  ' <<<"$inspect_json" >/dev/null \
+    || fail "$description mount contract differs from the accepted contained runtime"
 }
 
 verify_live_accepted_initial_runtime() {
@@ -2514,12 +2591,10 @@ verify_live_accepted_initial_runtime() {
           .[0].HostConfig.RestartPolicy.Name == "unless-stopped" and
           ((.[0].HostConfig.PortBindings // {}) | length) == 0 and
           (.[0].HostConfig.SecurityOpt | index("no-new-privileges:true") != null) and
-          ([.[0].NetworkSettings.Networks | keys[]] | sort) == ["business_finlynq_private"] and
-          (.[0].Mounts | length) == 1 and
-          ([.[0].Mounts[] | select(.Destination == "/var/lib/postgresql/data") |
-            [.Type, .Name, .RW]] == [["volume", "business_finlynq_pgdata", true]])
+          ([.[0].NetworkSettings.Networks | keys[]] | sort) == ["business_finlynq_private"]
         ' <<<"$inspect_json" >/dev/null \
           || fail "live database differs from the accepted contained runtime"
+        verify_database_mount_contract "$inspect_json" "live database"
         ;;
       evidence_scanner)
         jq -e --arg imageId "$expected_scanner_image" '
@@ -2601,12 +2676,10 @@ recover_accepted_stopped_app() {
     .[0].Config.Labels["com.docker.compose.service"] == "database" and
     .[0].State.Status == "running" and .[0].State.Health.Status == "healthy" and
     ((.[0].HostConfig.PortBindings // {}) | length) == 0 and
-    ([.[0].NetworkSettings.Networks | keys[]] | sort) == ["business_finlynq_private"] and
-    (.[0].Mounts | length) == 1 and
-    ([.[0].Mounts[] | select(.Destination == "/var/lib/postgresql/data") |
-      [.Type, .Name, .RW]] == [["volume", "business_finlynq_pgdata", true]])
+    ([.[0].NetworkSettings.Networks | keys[]] | sort) == ["business_finlynq_private"]
   ' <<<"$supporting_inspect" >/dev/null \
     || fail "terminal-recovery database differs from accepted runtime"
+  verify_database_mount_contract "$supporting_inspect" "terminal-recovery database"
   supporting_inspect="$(docker inspect "${recovery_containers[evidence_scanner]}")" \
     || fail "terminal-recovery scanner could not be inspected"
   jq -e --arg imageId "$expected_scanner_image" '

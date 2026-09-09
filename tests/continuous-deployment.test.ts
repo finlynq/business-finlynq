@@ -26,9 +26,51 @@ const receiverInstaller = read(
 );
 
 describe("continuous deployment safety boundary", () => {
+  it("runs branch pushes deliberately and cancels only stale pull-request checks", () => {
+    expect(qualityGateWorkflow).toContain([
+      "on:",
+      "  push:",
+      "    branches:",
+      "      - main",
+      "      - dev",
+      "  pull_request:",
+    ].join("\n"));
+    expect(qualityGateWorkflow).toContain(
+      "group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}",
+    );
+    expect(qualityGateWorkflow).toContain(
+      "cancel-in-progress: ${{ github.event_name == 'pull_request' }}",
+    );
+  });
+
+  it("reuses only the incremental Next.js build cache across matching dependencies", () => {
+    const cacheStart = qualityGateWorkflow.indexOf("- name: Restore Next.js build cache");
+    const cacheEnd = qualityGateWorkflow.indexOf("\n      - ", cacheStart + 1);
+    const cacheBlock = qualityGateWorkflow.slice(cacheStart, cacheEnd);
+    const buildStart = qualityGateWorkflow.indexOf("- run: npm run build");
+
+    expect(cacheStart).toBeGreaterThan(-1);
+    expect(cacheStart).toBeLessThan(buildStart);
+    expect(cacheBlock).toContain("uses: actions/cache@v4");
+    expect(cacheBlock).toContain("path: ${{ github.workspace }}/.next/cache");
+    expect(cacheBlock).toContain("hashFiles('package-lock.json')");
+    expect(cacheBlock).toContain(
+      "hashFiles('**/*.js', '**/*.jsx', '**/*.ts', '**/*.tsx')",
+    );
+    expect(cacheBlock).toContain(
+      "${{ runner.os }}-nextjs-${{ hashFiles('package-lock.json') }}-",
+    );
+    expect(cacheBlock).not.toMatch(/node_modules|test-results|evidence|security/i);
+  });
+
   it("signals only a successful same-repository main quality gate", () => {
     expect(workflow).toContain("workflow_run:");
     expect(workflow).toContain("- quality-gate");
+    expect(workflow).toContain([
+      "    branches:",
+      "      - main",
+      "    types:",
+    ].join("\n"));
     expect(workflow).toContain("workflow_run.conclusion == 'success'");
     expect(workflow).toContain("workflow_run.event == 'push'");
     expect(workflow).toContain("workflow_run.head_branch == 'main'");

@@ -62,7 +62,56 @@ describe("contained initial production release", () => {
     expect(runner).toContain('verify-external-edge.sh" --scope preflight');
     expect(runner).toContain('verify-external-edge.sh" --scope development');
     expect(runner).toContain("resumable $service_name container image ID differs from prior evidence");
+    expect(runner).toContain('volume_names="$docker_query_output"');
+    expect(runner).toContain('<<<"$volume_names"');
+    expect(runner).toContain('network_names="$docker_query_output"');
+    expect(runner).toContain('<<<"$network_names"');
+    expect(runner).toContain('business_finlynq_edge <<<"$network_names"');
   });
+
+  it("accepts both Boolean resume states without jq -e treating false as failure", () => {
+    expect(runner).toContain('if (.running | type) == "boolean"');
+    expect(runner).toContain('then (.running | tostring)');
+    expect(runner).not.toContain("jq -er '.running'");
+  });
+
+  it("normalizes only the random candidate-root prefix before Compose hashing", () => {
+    expect(runner).toContain("canonical_compose_sha256() {");
+    expect(runner).toContain('local stable_root="/__business_finlynq_candidate_source__"');
+    expect(runner).toContain('. == $sourceRoot or startswith($sourceRoot + "/")');
+    expect(runner).toContain('compose_hash="$(canonical_compose_sha256 "$rendered_compose")"');
+    expect(runner).toContain('pinned_compose_hash="$(canonical_compose_sha256 "$pinned_compose")"');
+    expect(runner).not.toContain('compose_hash="$(printf \'%s\' "$rendered_compose"');
+  });
+
+  it.skipIf(process.platform === "win32")(
+    "produces stable Compose hashes across private staging roots without hiding real drift",
+    () => {
+      const start = runner.indexOf("canonical_compose_sha256() {");
+      const end = runner.indexOf("\n}\n", start);
+      expect(start).toBeGreaterThanOrEqual(0);
+      expect(end).toBeGreaterThan(start);
+      const helper = runner.slice(start, end + 2);
+      const result = spawnSync("/bin/bash", ["-c", `
+set -Eeuo pipefail
+${helper}
+candidate_source_root=/tmp/business-finlynq-release.aaaa/repository
+first='{"build":"/tmp/business-finlynq-release.aaaa/repository","bind":"/tmp/business-finlynq-release.aaaa/repository/deploy/file","middle":"prefix:/tmp/business-finlynq-release.aaaa/repository"}'
+first_hash="$(canonical_compose_sha256 "$first")"
+candidate_source_root=/tmp/business-finlynq-release.bbbb/repository
+second='{"middle":"prefix:/tmp/business-finlynq-release.aaaa/repository","bind":"/tmp/business-finlynq-release.bbbb/repository/deploy/file","build":"/tmp/business-finlynq-release.bbbb/repository"}'
+second_hash="$(canonical_compose_sha256 "$second")"
+[[ "$first_hash" == "$second_hash" ]]
+changed='{"middle":"prefix:/tmp/business-finlynq-release.aaaa/repository","bind":"/tmp/business-finlynq-release.bbbb/repository/deploy/other","build":"/tmp/business-finlynq-release.bbbb/repository"}'
+changed_hash="$(canonical_compose_sha256 "$changed")"
+[[ "$changed_hash" != "$second_hash" ]]
+if canonical_compose_sha256 '{"path":"/__business_finlynq_candidate_source__/collision"}' >/dev/null 2>&1; then
+  exit 1
+fi
+`], { encoding: "utf8" });
+      expect(result.status, result.stderr).toBe(0);
+    },
+  );
 
   it("validates inactive initial resources through a combined all-profile render", () => {
     expect(runner).toContain(
@@ -183,7 +232,11 @@ describe("contained initial production release", () => {
     expect(runner).toContain("business-finlynq-continuous-deployment.timer");
     expect(runner).toContain('initial_schedule_installed="true"');
     expect(runner).toContain("contain_initial_schedule_on_failure");
-    expect(runner).toContain('current_invocation" != "$previous_invocation');
+    expect(runner).toContain("systemd 259 clears InvocationID");
+    expect(runner).toContain("durable metric verification follows");
+    expect(runner).not.toContain('current_invocation" != "$previous_invocation');
+    expect(runner).toContain("development deployment timer must remain disabled");
+    expect(runner).toContain("development deployment service must remain inactive");
     expect(runner).toContain('timersEnabled: false, timersActive: false');
     expect(monitor).toContain('MONITOR_EXPECT_SCHEDULERS_ACTIVE="${MONITOR_EXPECT_SCHEDULERS_ACTIVE:-true}"');
     expect(monitor).toContain("deferred scheduled operations timer is not exactly disabled");
