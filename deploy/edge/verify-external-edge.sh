@@ -18,6 +18,9 @@ readonly production_project="business-finlynq"
 readonly development_project="business-finlynq-development"
 readonly development_network="business_finlynq_development_edge"
 readonly minimum_tls_seconds="$((21 * 24 * 60 * 60))"
+readonly public_warmup_attempts=15
+readonly public_warmup_retry_seconds=2
+readonly public_warmup_request_timeout_seconds=2
 readonly clean_path="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 readonly expected_edge_networks=(
   business_finlynq_edge
@@ -26,6 +29,7 @@ readonly expected_edge_networks=(
   epm_finlynq_edge_egress
 )
 scope="full"
+warmup_host="none"
 
 fail() {
   printf 'Business Finlynq external-edge verification failed: %s\n' "$*" >&2
@@ -161,21 +165,61 @@ verify_security_headers() {
   ! grep -Eiq '^server:' "$headers" || fail "$hostname exposed the edge server header"
 }
 
-public_contract_is_valid() {
-  local hostname="$1" address="$2" headers body status request_id metrics_status
-  headers="$(mktemp)"
-  body="$(mktemp)"
-  temporary_files+=("$headers" "$body")
-  status="$(curl --disable --noproxy '*' --silent --show-error --max-time 20 \
-    --resolve "$hostname:443:$address" --dump-header "$headers" \
-    --output "$body" --write-out '%{http_code}' "https://$hostname/api/live")" \
-    || fail "$hostname liveness route is unavailable through the external edge on $address"
-  [[ "$status" == 200 ]] || fail "$hostname liveness route returned HTTP $status"
+wait_for_public_liveness() {
+  local hostname="$1" address="$2" headers="$3" body="$4" attempt_limit="$5"
+  local attempt curl_exit status
+  [[ "$attempt_limit" =~ ^[1-9][0-9]*$ \
+    && "$attempt_limit" -le "$public_warmup_attempts" ]] \
+    || fail "$hostname liveness retry limit is invalid"
+  for (( attempt = 1; attempt <= attempt_limit; attempt++ )); do
+    : >"$headers" || fail "could not reset the $hostname liveness response headers"
+    : >"$body" || fail "could not reset the $hostname liveness response body"
+    if status="$(curl --disable --noproxy '*' --silent --show-error \
+      --max-time "$public_warmup_request_timeout_seconds" \
+      --resolve "$hostname:443:$address" --dump-header "$headers" \
+      --output "$body" --write-out '%{http_code}' "https://$hostname/api/live")"; then
+      case "$status" in
+        200) return 0 ;;
+        502|503) ;;
+        *) fail "$hostname liveness route returned HTTP $status" ;;
+      esac
+    else
+      curl_exit=$?
+      case "$curl_exit" in
+        5|6|7|16|18|28|35|52|55|56|92|95) ;;
+        *) fail "$hostname liveness request failed with non-retryable curl status $curl_exit" ;;
+      esac
+    fi
+    if (( attempt == attempt_limit )); then
+      fail "$hostname liveness route did not become available after $attempt_limit attempts"
+    fi
+    sleep "$public_warmup_retry_seconds" \
+      || fail "could not wait before retrying the $hostname liveness route"
+  done
+  fail "$hostname liveness retry loop ended unexpectedly"
+}
+
+verify_public_liveness_contract() {
+  local hostname="$1" address="$2" headers="$3" body="$4" attempt_limit="$5"
+  wait_for_public_liveness "$hostname" "$address" "$headers" "$body" "$attempt_limit"
   jq -e 'type == "object" and keys == ["status"] and .status == "live"' "$body" \
     >/dev/null || fail "$hostname returned an unexpected liveness response"
   grep -Eiq '^cache-control:.*no-store' "$headers" \
     || fail "$hostname liveness response is missing no-store"
   verify_security_headers "$hostname" "$headers"
+}
+
+public_contract_is_valid() {
+  local hostname="$1" address="$2" headers body status request_id metrics_status
+  local attempt_limit=1
+  headers="$(mktemp)"
+  body="$(mktemp)"
+  temporary_files+=("$headers" "$body")
+  if [[ ( "$warmup_host" == production && "$hostname" == "$production_hostname" ) \
+    || ( "$warmup_host" == development && "$hostname" == "$development_hostname" ) ]]; then
+    attempt_limit="$public_warmup_attempts"
+  fi
+  verify_public_liveness_contract "$hostname" "$address" "$headers" "$body" "$attempt_limit"
 
   status="$(curl --disable --noproxy '*' --silent --show-error --max-time 20 \
     --resolve "$hostname:443:$address" \
@@ -213,11 +257,23 @@ while (( $# > 0 )); do
       scope="$2"
       shift 2
       ;;
+    --warmup-host)
+      (( $# >= 2 )) || fail "--warmup-host requires production or development"
+      warmup_host="$2"
+      shift 2
+      ;;
     *) fail "unknown argument: $1" ;;
   esac
 done
 [[ "$scope" == preflight || "$scope" == development || "$scope" == full ]] \
   || fail "--scope must be preflight, development, or full"
+[[ "$warmup_host" == none || "$warmup_host" == production \
+  || "$warmup_host" == development ]] \
+  || fail "--warmup-host must be production or development"
+[[ "$warmup_host" != production || "$scope" == full ]] \
+  || fail "production warmup is valid only for the full scope"
+[[ "$warmup_host" != development || "$scope" == development ]] \
+  || fail "development warmup is valid only for the development scope"
 [[ "$(id -u)" == 0 ]] || fail "run this command as root"
 for command_name in awk bash curl date docker env grep id jq mktemp openssl rm sha256sum \
   sleep sort stat timeout wc; do

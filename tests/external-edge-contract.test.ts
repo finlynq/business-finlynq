@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
 const read = (path: string) => readFileSync(path, "utf8");
@@ -12,6 +12,100 @@ const rollback = read("deploy/release/run-application-rollback.sh");
 const monitor = read("deploy/monitoring/check-production.sh");
 const developmentInstaller = read("deploy/development/install-development.sh");
 const developmentDeployer = read("deploy/development/deploy-development.sh");
+const gitBash = "C:\\Program Files\\Git\\bin\\bash.exe";
+const bashExecutable =
+  process.platform === "win32" ? (existsSync(gitBash) ? gitBash : null) : "/bin/bash";
+
+const extractShellFunction = (source: string, name: string) => {
+  const start = source.indexOf(`${name}() {`);
+  if (start < 0) {
+    throw new Error(`missing shell function: ${name}`);
+  }
+  const end = source.indexOf("\n}\n", start);
+  if (end < 0) {
+    throw new Error(`unterminated shell function: ${name}`);
+  }
+  return source.slice(start, end + 3);
+};
+
+const publicLivenessFixture = (
+  responses: string,
+  options: { body?: string; omitHeader?: string } = {},
+) =>
+  spawnSync(
+    bashExecutable ?? "/bin/bash",
+    [
+      "-c",
+      `
+set -Eeuo pipefail
+public_warmup_attempts=3
+public_warmup_retry_seconds=0
+public_warmup_request_timeout_seconds=1
+request_count_file="$(mktemp)"
+headers="$(mktemp)"
+body="$(mktemp)"
+printf '0' >"$request_count_file"
+trap 'rm -f -- "$request_count_file" "$headers" "$body"' EXIT
+fail() {
+  printf 'failure=%s\nrequests=%s\n' "$*" "$(<"$request_count_file")" >&2
+  exit 1
+}
+sleep() { return 0; }
+jq() {
+  local input_path
+  input_path="\${!#}"
+  [[ "$(<"$input_path")" == '{"status":"live"}' ]]
+}
+curl() {
+  local dump_header="" output_file="" request_count response
+  local -a fixture_responses=()
+  while (( $# > 0 )); do
+    case "$1" in
+      --dump-header) dump_header="$2"; shift 2 ;;
+      --output) output_file="$2"; shift 2 ;;
+      *) shift ;;
+    esac
+  done
+  request_count="$(<"$request_count_file")"
+  (( request_count += 1 ))
+  printf '%s' "$request_count" >"$request_count_file"
+  IFS=',' read -r -a fixture_responses <<<"$FIXTURE_RESPONSES"
+  response="\${fixture_responses[request_count - 1]}"
+  if [[ "$response" == transport ]]; then
+    return 7
+  fi
+  {
+    printf 'HTTP/2 %s\r\n' "$response"
+    [[ "$FIXTURE_OMIT_HEADER" == cache-control ]] || printf 'cache-control: no-store\r\n'
+    [[ "$FIXTURE_OMIT_HEADER" == strict-transport-security ]] \
+      || printf 'strict-transport-security: max-age=31536000; includeSubDomains\r\n'
+    [[ "$FIXTURE_OMIT_HEADER" == x-content-type-options ]] \
+      || printf 'x-content-type-options: nosniff\r\n'
+    [[ "$FIXTURE_OMIT_HEADER" == x-frame-options ]] || printf 'x-frame-options: DENY\r\n'
+    [[ "$FIXTURE_OMIT_HEADER" == referrer-policy ]] \
+      || printf 'referrer-policy: strict-origin-when-cross-origin\r\n'
+    printf '\r\n'
+  } >"$dump_header"
+  printf '%s\n' "$FIXTURE_BODY" >"$output_file"
+  printf '%s' "$response"
+}
+${extractShellFunction(verifier, "verify_security_headers")}
+${extractShellFunction(verifier, "wait_for_public_liveness")}
+${extractShellFunction(verifier, "verify_public_liveness_contract")}
+verify_public_liveness_contract example.test 192.0.2.10 "$headers" "$body" 3
+printf 'requests=%s\n' "$(<"$request_count_file")"
+`,
+    ],
+    {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        FIXTURE_BODY: options.body ?? '{"status":"live"}',
+        FIXTURE_OMIT_HEADER: options.omitHeader ?? "",
+        FIXTURE_RESPONSES: responses,
+      },
+    },
+  );
 
 describe("externally managed edge contract", () => {
   it("makes the inherited edge profile incapable of owning a listener", () => {
@@ -103,6 +197,68 @@ describe("externally managed edge contract", () => {
     expect(verifier.match(/curl --disable --noproxy '\*'/gu)).toHaveLength(8);
   });
 
+  it.skipIf(bashExecutable === null)(
+    "accepts public liveness after bounded 503 warmup responses",
+    () => {
+      const result = publicLivenessFixture("503,503,200");
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.stdout).toContain("requests=3");
+    },
+  );
+
+  it.skipIf(bashExecutable === null)(
+    "fails after the bounded public liveness warmup is exhausted",
+    () => {
+      const result = publicLivenessFixture("503,503,503");
+      expect(result.status).not.toBe(0);
+      expect(result.stderr).toContain("did not become available after 3 attempts");
+      expect(result.stderr).toContain("requests=3");
+    },
+  );
+
+  it.skipIf(bashExecutable === null)(
+    "fails immediately on a hard public liveness response",
+    () => {
+      const result = publicLivenessFixture("401,200,200");
+      expect(result.status).not.toBe(0);
+      expect(result.stderr).toContain("liveness route returned HTTP 401");
+      expect(result.stderr).toContain("requests=1");
+    },
+  );
+
+  it.skipIf(bashExecutable === null)(
+    "retries a transient curl transport failure",
+    () => {
+      const result = publicLivenessFixture("transport,200");
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.stdout).toContain("requests=2");
+    },
+  );
+
+  it.skipIf(bashExecutable === null)(
+    "rejects an invalid liveness body without retrying a successful HTTP response",
+    () => {
+      const result = publicLivenessFixture("200,200,200", {
+        body: '{"status":"warming"}',
+      });
+      expect(result.status).not.toBe(0);
+      expect(result.stderr).toContain("returned an unexpected liveness response");
+      expect(result.stderr).toContain("requests=1");
+    },
+  );
+
+  it.skipIf(bashExecutable === null)(
+    "rejects invalid security headers without retrying a successful HTTP response",
+    () => {
+      const result = publicLivenessFixture("200,200,200", {
+        omitHeader: "x-frame-options",
+      });
+      expect(result.status).not.toBe(0);
+      expect(result.stderr).toContain("missing the reviewed frame policy");
+      expect(result.stderr).toContain("requests=1");
+    },
+  );
+
   it("keeps public and TLS checks mandatory in release and monitoring", () => {
     expect(release).toContain('MONITOR_EDGE_MODE" == "$edge_mode"');
     expect(release).toContain("67-external-edge-contract.log");
@@ -111,6 +267,8 @@ describe("externally managed edge contract", () => {
     expect(monitor).toContain("MONITOR_EXPECT_EDGE\" == true");
     expect(monitor).toContain("verify-external-edge.sh");
     expect(monitor).toContain("--scope full");
+    expect(release).toContain("--scope full --warmup-host production");
+    expect(monitor).not.toContain("--warmup-host");
     expect(reconciler).toContain('if [[ "$edge_mode" == external ]]');
   });
 
@@ -149,7 +307,7 @@ describe("externally managed edge contract", () => {
     expect(developmentInstaller).toContain("com.business-finlynq.edge-owner=external");
     expect(developmentDeployer).toContain("deploy/edge/docker-compose.external.yml");
     expect(developmentDeployer).toContain(
-      '"$protected_external_edge_verifier" --scope development',
+      '"$protected_external_edge_verifier" --scope development --warmup-host development',
     );
     expect(developmentDeployer).toContain("same-revision development public acceptance failed twice");
   });

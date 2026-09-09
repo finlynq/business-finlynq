@@ -552,10 +552,11 @@ describe("commit-addressed release orchestration", () => {
     expect(release).toContain('bash "$repository_root/deploy/cron/run-job.sh" accounting-evidence');
     expect(release).toContain("run_fresh_systemd_oneshot business-finlynq-monitor.service");
     expect(release).toContain('bash "$repository_root/deploy/cron/run-job.sh" monitor');
-    expect(release).toContain("ExecMainStartTimestampMonotonic");
-    expect(release).toContain("ExecMainExitTimestampMonotonic");
-    expect(release).toContain('"$current_start" != "$previous_start"');
-    expect(release).toContain('"$current_exit" -gt "$current_start"');
+    expect(release).not.toContain("ExecMainStartTimestampMonotonic");
+    expect(release).not.toContain("ExecMainExitTimestampMonotonic");
+    expect(release).toContain("systemd 259 clears InvocationID");
+    expect(release).toContain('verify_fresh_accounting_metrics "$started_at"');
+    expect(release).toContain('verify_fresh_host_monitor_metrics "$started_at"');
     expect(release).toContain('status_directory="/home/deploy/.local/state/business-finlynq/cron/job-status"');
     expect(release).toContain('"$(stat -c \'%u:%a\' -- "$status_file")" == "$deploy_uid:600"');
     expect(release).toContain(
@@ -1020,7 +1021,6 @@ fi
       const currentGid = process.getgid?.() ?? 1000;
       const normalizedMetricsFile = metricsFile.replaceAll("\\", "/");
       const helpers = [
-        extractFunction("read_systemd_property", "run_fresh_systemd_oneshot"),
         extractFunction("run_fresh_systemd_oneshot", "verify_fresh_cron_job_status"),
         extractFunction("resolve_release_metric_file", "assert_release_metric_path_safety"),
         extractFunction("assert_release_metric_path_safety", "clear_release_metric_file"),
@@ -1041,42 +1041,18 @@ esac
 case "$1" in
   start)
     : >"$FAKE_SYSTEMD_STARTED_MARKER"
+    [[ "$FAKE_SYSTEMD_MODE" != start-failure ]] || exit 42
     exit 0
     ;;
-  show)
-    [[ "$*" != *"--no-pager"* ]] || exit 0
-    property=""
-    for argument in "$@"; do
-      case "$argument" in --property=*) property="\${argument#--property=}" ;; esac
-    done
-    case "$property" in
-      ExecMainStartTimestampMonotonic)
-        case "$FAKE_SYSTEMD_MODE" in
-          zero) printf '%s\\n' 0 ;;
-          unchanged) printf '%s\\n' 111 ;;
-          changed) [[ -e "$FAKE_SYSTEMD_STARTED_MARKER" ]] && printf '%s\\n' 333 || printf '%s\\n' 111 ;;
-          *) exit 91 ;;
-        esac
-        ;;
-      ExecMainExitTimestampMonotonic)
-        case "$FAKE_SYSTEMD_MODE" in
-          zero) printf '%s\\n' 1 ;;
-          unchanged) printf '%s\\n' 222 ;;
-          changed) printf '%s\\n' 444 ;;
-          *) exit 92 ;;
-        esac
-        ;;
-      InvocationID)
-        if [[ -e "$FAKE_SYSTEMD_STARTED_MARKER" ]]; then
-          printf '%s\\n' bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
-        else
-          printf '%s\\n' aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
-        fi
-        ;;
-      Result) printf '%s\\n' success ;;
-      ExecMainStatus) printf '%s\\n' 0 ;;
-      *) exit 93 ;;
-    esac
+  is-active)
+    if [[ "$FAKE_SYSTEMD_MODE" == active ]]; then
+      printf '%s\\n' active
+      exit 0
+    fi
+    # Ubuntu 26.04/systemd 259 returns an inactive one-shot and clears its
+    # invocation/timestamp properties immediately after successful exit.
+    printf '%s\\n' inactive
+    exit 3
     ;;
   *) exit 94 ;;
 esac
@@ -1091,12 +1067,11 @@ read_operations_value() {
   [[ "$1" == MONITOR_METRICS_FILE ]] || exit 97
   printf '%s' "$FAKE_MONITOR_METRICS_FILE"
 }
-systemd_property_value=""
 release_metric_file=""
 metric_value=""
 ${helpers}
 `;
-      const runSystemdCase = (mode: "zero" | "unchanged" | "changed", script: string) => {
+      const runSystemdCase = (mode: "start-failure" | "active" | "systemd259", script: string) => {
         const startedMarker = join(root, `${mode}.started`).replaceAll("\\", "/");
         return spawnSync("/bin/bash", ["-c", `${commonScript}\n${script}`], {
           encoding: "utf8",
@@ -1110,7 +1085,7 @@ ${helpers}
         });
       };
 
-      for (const mode of ["zero", "unchanged"] as const) {
+      for (const mode of ["start-failure", "active"] as const) {
         const rejected = runSystemdCase(mode, `
 printf '%s\\n' 'stale metric' >'${normalizedMetricsFile}'
 chmod 0644 -- '${normalizedMetricsFile}'
@@ -1119,10 +1094,12 @@ clear_release_metric_file MONITOR_METRICS_FILE /var/lib/business-finlynq/host.pr
 run_fresh_systemd_oneshot business-finlynq-monitor.service 'systemd monitor acceptance'
 `);
         expect(rejected.status).not.toBe(0);
-        expect(rejected.stderr).toContain("did not execute a fresh systemd invocation");
+        expect(rejected.stderr).toContain(
+          mode === "start-failure" ? "could not be started" : "did not return to the expected inactive one-shot state",
+        );
       }
 
-      const accepted = runSystemdCase("changed", `
+      const accepted = runSystemdCase("systemd259", `
 printf '%s\\n' 'unsafe old metric' >'${normalizedMetricsFile}'
 chmod 0600 -- '${normalizedMetricsFile}'
 if (clear_release_metric_file MONITOR_METRICS_FILE /var/lib/business-finlynq/host.prom 'host-monitor metric') >/dev/null 2>&1; then

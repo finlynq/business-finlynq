@@ -2,6 +2,16 @@
 
 Use this checklist for every Business Finlynq release. Releases are commit-addressed and migrations are forward-only.
 
+Before pushing the candidate, run `npm run check:predeploy`. This portable local
+preflight catches Drizzle declaration and journal-seed drift, lint and type
+errors, ordinary test failures, and production-build failures without waiting
+for a hosted runner. It does not replace the authoritative `quality-gate`,
+which additionally verifies the Compose and systemd contracts, a live
+PostgreSQL migration and grant lifecycle, hardened container builds, and the
+Playwright browser release gate. Windows preflight runs skip the Unix-only
+Bash/jq document-provider deployment fixtures; the Linux quality gate runs
+them before it can publish a deployment signal.
+
 ## Required evidence before deployment
 
 - CI passed lint, type checking, all unit/PostgreSQL tests, production build, high-severity production dependency audit, and Playwright release gates.

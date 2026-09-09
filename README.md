@@ -49,12 +49,18 @@ npm install
 npm run dev
 ```
 
-Quality checks:
+Before pushing a deployment candidate, run the portable local preflight:
 
 ```bash
-npm run check
-npm run build
+npm run check:predeploy
 ```
+
+It checks Drizzle declaration drift, the generated journal-type seed, lint,
+types, the ordinary Vitest suite, and the production build in one command.
+GitHub's `quality-gate` remains authoritative for the environment-dependent
+Compose and systemd contracts, live PostgreSQL checks, hardened container
+builds, and the Playwright browser gate. On Windows, Vitest also skips the
+Unix-only Bash/jq document-provider deployment fixtures; Linux CI runs them.
 
 ### Database integration tests
 

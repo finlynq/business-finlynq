@@ -1,7 +1,16 @@
 import { spawnSync } from "node:child_process";
-import { readFileSync } from "node:fs";
-import { posix } from "node:path";
-import { describe, expect, it } from "vitest";
+import {
+  chmodSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { join, posix } from "node:path";
+import { afterEach, describe, expect, it } from "vitest";
 
 const read = (path: string) => readFileSync(path, "utf8");
 const installer = read("deploy/production/install-initial-production.sh");
@@ -11,6 +20,13 @@ const developmentInstaller = read("deploy/development/install-development.sh");
 const developmentDeployer = read("deploy/development/deploy-development.sh");
 const externalEdgeVerifier = read("deploy/edge/verify-external-edge.sh");
 const rehearsalCompose = read("deploy/release/docker-compose.rehearsal.yml");
+const temporaryDirectories: string[] = [];
+
+afterEach(() => {
+  for (const directory of temporaryDirectories.splice(0)) {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
 
 function shellFunction(source: string, name: string) {
   const start = source.indexOf(`${name}() {`);
@@ -218,9 +234,15 @@ describe("fresh production bootstrap installer", () => {
     expect(disarm).toBeLessThan(output);
     expect(installer).toContain('if [[ -e "$install_completion" || -L "$install_completion" ]]; then');
     expect(installer).toContain("existing initial installation completion could not be synchronized");
+    expect(installer).not.toMatch(
+      /local initial_run_id="\$1"[^\n]*initial_evidence=[^\n]*\$initial_run_id/u,
+    );
+    expect(
+      (installer.match(/local initial_run_id="\$1"\r?\n\s+local initial_evidence=/gu) ?? []).length,
+    ).toBeGreaterThanOrEqual(3);
   });
 
-  it("binds wrapper completion to the live contained runtime and fresh one-shots", () => {
+  it("binds wrapper completion to the live contained runtime and durable one-shot evidence", () => {
     expect(installer).toContain("verify_live_accepted_initial_runtime");
     expect(installer).toContain("11-images.json");
     expect(installer).toContain("14-evidence-scanner.json");
@@ -228,14 +250,249 @@ describe("fresh production bootstrap installer", () => {
     expect(installer).toContain("live app differs from the accepted contained runtime");
     expect(installer).toContain("business-finlynq-accounting-evidence.service");
     expect(installer).toContain("business-finlynq-monitor.service");
-    expect(installer).toContain("--property=InvocationID");
-    expect(installer).toContain('current_invocation" != "$previous_invocation');
+    expect(installer).not.toContain("--property=InvocationID");
+    expect(installer).not.toContain("ExecMainStartTimestampMonotonic");
+    expect(installer).toContain("accounting-evidence.prom");
+    expect(installer).toContain("business_finlynq_accounting_evidence_verification_success");
+    expect(installer).toContain("business_finlynq_host_monitor_success");
+    expect(installer).toContain("did not publish a fresh safe $description");
     expect(installer).toContain("containedInitial == true");
     expect(installer).toContain("offsiteBackupDeferred == true");
     expect(installer).toContain("schedulerActivationDeferred == true");
     expect(installer).not.toContain("initialTimersEnabled");
     expect(installer).not.toContain("offsiteBackupDelivery");
   });
+
+  it.skipIf(process.platform === "win32")(
+    "accepts systemd 259 one-shots only when they freshly publish exact success metrics",
+    () => {
+      const helper = shellFunction(installer, "run_fresh_installed_oneshot");
+      const root = mkdtempSync(join(tmpdir(), "business-finlynq-initial-oneshot-"));
+      temporaryDirectories.push(root);
+      const fakeBin = join(root, "bin");
+      mkdirSync(fakeBin);
+      const currentUid = process.getuid?.() ?? 1000;
+      const currentGid = process.getgid?.() ?? 1000;
+      const fixedNow = 2_000_000_000;
+
+      writeFileSync(join(fakeBin, "id"), `#!/usr/bin/env bash
+case "$*" in
+  "-u deploy") printf '%s\\n' '${currentUid}' ;;
+  "-g deploy") printf '%s\\n' '${currentGid}' ;;
+  *) /usr/bin/id "$@" ;;
+esac
+`);
+      writeFileSync(join(fakeBin, "date"), `#!/usr/bin/env bash
+[[ "$*" == '+%s' ]] || exit 98
+printf '%s\\n' "$FAKE_NOW"
+`);
+      writeFileSync(join(fakeBin, "systemctl"), `#!/usr/bin/env bash
+printf '%s\\n' "$*" >>"$FAKE_SYSTEMD_LOG"
+
+write_expected_metric() {
+  local metric_file
+  case "$2" in
+    business-finlynq-accounting-evidence.service)
+      metric_file="$FAKE_STATE_DIRECTORY/accounting-evidence.prom"
+      printf 'business_finlynq_accounting_evidence_verification_success 1\\n' >"$metric_file"
+      printf 'business_finlynq_accounting_evidence_verification_last_run_unixtime %s\\n' "$FAKE_NOW" >>"$metric_file"
+      printf 'business_finlynq_accounting_evidence_verification_last_success_unixtime %s\\n' "$FAKE_NOW" >>"$metric_file"
+      ;;
+    business-finlynq-monitor.service)
+      metric_file="$FAKE_STATE_DIRECTORY/host.prom"
+      printf 'business_finlynq_host_monitor_success 1\\n' >"$metric_file"
+      printf 'business_finlynq_host_monitor_last_run_unixtime %s\\n' "$FAKE_NOW" >>"$metric_file"
+      ;;
+    *) exit 96 ;;
+  esac
+  chmod 0644 -- "$metric_file"
+  /usr/bin/touch --date="@$FAKE_NOW" -- "$metric_file"
+  printf '%s\\n' "$metric_file"
+}
+
+case "$1" in
+  start)
+    [[ "$FAKE_SYSTEMD_MODE" != start-failure ]] || exit 42
+    [[ "$FAKE_SYSTEMD_MODE" != no-metric ]] || exit 0
+    metric_file="$(write_expected_metric "$@")"
+    case "$FAKE_SYSTEMD_MODE" in
+      duplicate)
+        printf 'business_finlynq_host_monitor_success 1\\n' >>"$metric_file"
+        ;;
+      stale-file)
+        /usr/bin/touch --date="@$((FAKE_NOW - 1))" -- "$metric_file"
+        ;;
+      stale-value)
+        sed -i "s/last_run_unixtime $FAKE_NOW/last_run_unixtime $((FAKE_NOW - 1))/" "$metric_file"
+        ;;
+      wrong-mode)
+        chmod 0600 -- "$metric_file"
+        ;;
+      wrong-success)
+        sed -i 's/_success 1/_success 0/' "$metric_file"
+        ;;
+    esac
+    if [[ "$FAKE_SYSTEMD_MODE" != stale-file ]]; then
+      /usr/bin/touch --date="@$FAKE_NOW" -- "$metric_file"
+    fi
+    ;;
+  is-active)
+    if [[ "$FAKE_SYSTEMD_MODE" == active ]]; then
+      printf '%s\\n' active
+      exit 0
+    fi
+    # Ubuntu 26.04/systemd 259 clears invocation properties after the
+    # successful one-shot exits, leaving only inactive/status 3 observable.
+    printf '%s\\n' inactive
+    exit 3
+    ;;
+  *) exit 94 ;;
+esac
+`);
+      for (const command of ["id", "date", "systemctl"]) {
+        chmodSync(join(fakeBin, command), 0o755);
+      }
+
+      const runCase = (
+        name: string,
+        mode: string,
+        serviceName = "business-finlynq-monitor.service",
+        prelude = "",
+      ) => {
+        const stateDirectory = join(root, name);
+        const systemdLog = join(root, `${name}.systemctl.log`);
+        mkdirSync(stateDirectory, { mode: 0o775 });
+        chmodSync(stateDirectory, 0o775);
+        const normalizedStateDirectory = stateDirectory.replaceAll("\\", "/");
+        const result = spawnSync("/bin/bash", ["-c", `
+set -Eeuo pipefail
+state_directory='${normalizedStateDirectory}'
+fail() { printf '%s\\n' "$1" >&2; return 1; }
+${helper}
+${prelude}
+run_fresh_installed_oneshot '${serviceName}'
+`], {
+          encoding: "utf8",
+          env: {
+            ...process.env,
+            FAKE_NOW: String(fixedNow),
+            FAKE_STATE_DIRECTORY: normalizedStateDirectory,
+            FAKE_SYSTEMD_LOG: systemdLog.replaceAll("\\", "/"),
+            FAKE_SYSTEMD_MODE: mode,
+            PATH: `${fakeBin}:${process.env.PATH ?? ""}`,
+          },
+        });
+        const metricFile = join(
+          stateDirectory,
+          serviceName === "business-finlynq-accounting-evidence.service"
+            ? "accounting-evidence.prom"
+            : "host.prom",
+        );
+        return { metricFile, result, systemdLog };
+      };
+
+      const acceptedMonitor = runCase(
+        "accepted-monitor",
+        "systemd259",
+        "business-finlynq-monitor.service",
+        `printf '%s\\n' 'stale sentinel' >"$state_directory/host.prom"
+chmod 0644 -- "$state_directory/host.prom"`,
+      );
+      expect(acceptedMonitor.result.status, acceptedMonitor.result.stderr).toBe(0);
+      expect(readFileSync(acceptedMonitor.metricFile, "utf8")).toBe(
+        `business_finlynq_host_monitor_success 1\n` +
+          `business_finlynq_host_monitor_last_run_unixtime ${fixedNow}\n`,
+      );
+      expect(readFileSync(acceptedMonitor.systemdLog, "utf8")).toBe(
+        "start business-finlynq-monitor.service\n" +
+          "is-active business-finlynq-monitor.service\n",
+      );
+      const monitorStat = statSync(acceptedMonitor.metricFile);
+      expect(monitorStat.uid).toBe(currentUid);
+      expect(monitorStat.gid).toBe(currentGid);
+      expect(monitorStat.mode & 0o777).toBe(0o644);
+      expect(Math.floor(monitorStat.mtimeMs / 1000)).toBe(fixedNow);
+
+      const acceptedAccounting = runCase(
+        "accepted-accounting",
+        "systemd259",
+        "business-finlynq-accounting-evidence.service",
+      );
+      expect(acceptedAccounting.result.status, acceptedAccounting.result.stderr).toBe(0);
+      expect(readFileSync(acceptedAccounting.metricFile, "utf8")).toBe(
+        `business_finlynq_accounting_evidence_verification_success 1\n` +
+          `business_finlynq_accounting_evidence_verification_last_run_unixtime ${fixedNow}\n` +
+          `business_finlynq_accounting_evidence_verification_last_success_unixtime ${fixedNow}\n`,
+      );
+
+      for (const [mode, expectedError] of [
+        ["start-failure", "failed during accepted-initial finalization"],
+        ["active", "did not return to the expected inactive one-shot state"],
+        ["no-metric", "did not publish a fresh safe host-monitor metric"],
+        ["duplicate", "success value is missing or duplicated"],
+        ["stale-file", "did not freshly replace the expected host-monitor metric"],
+        ["stale-value", "does not prove a fresh successful invocation"],
+        ["wrong-mode", "did not freshly replace the expected host-monitor metric"],
+        ["wrong-success", "does not prove a fresh successful invocation"],
+      ] as const) {
+        const rejected = runCase(`rejected-${mode}`, mode);
+        expect(rejected.result.status).not.toBe(0);
+        expect(rejected.result.stderr).toContain(expectedError);
+      }
+    },
+  );
+
+  it.skipIf(process.platform === "win32")(
+    "accepts only the exact database data and read-only password mounts",
+    () => {
+      expect(installer).toContain('verify_database_mount_contract "$inspect_json" "live database"');
+      expect(installer).toContain(
+        'verify_database_mount_contract "$supporting_inspect" "terminal-recovery database"',
+      );
+      const helper = shellFunction(installer, "verify_database_mount_contract");
+      const exact = [{ Mounts: [
+        {
+          Type: "volume",
+          Name: "business_finlynq_pgdata",
+          Source: "/var/lib/docker/volumes/business_finlynq_pgdata/_data",
+          Destination: "/var/lib/postgresql/data",
+          RW: true,
+        },
+        {
+          Type: "bind",
+          Source: "/etc/business-finlynq/secrets/app-db-password",
+          Destination: "/run/secrets/business_finlynq_app_db_password",
+          RW: false,
+        },
+      ] }];
+      const rejected = [
+        [{ Mounts: exact[0].Mounts.slice(0, 1) }],
+        [{ Mounts: exact[0].Mounts.map((mount, index) => index === 1 ? { ...mount, RW: true } : mount) }],
+        [{ Mounts: exact[0].Mounts.map((mount, index) => index === 1 ? { ...mount, Source: "/tmp/wrong" } : mount) }],
+        [{ Mounts: exact[0].Mounts.map((mount, index) => index === 1 ? { ...mount, Destination: "/tmp/wrong" } : mount) }],
+        [{ Mounts: exact[0].Mounts.map((mount, index) => index === 1 ? { ...mount, Destination: "/var/lib/postgresql/data" } : mount) }],
+        [{ Mounts: exact[0].Mounts.map((mount, index) => index === 0 ? { ...mount, Name: "wrong" } : mount) }],
+        [{ Mounts: [...exact[0].Mounts, {
+          Type: "bind", Source: "/tmp/extra", Destination: "/tmp/extra", RW: false,
+        }] }],
+      ];
+      const quote = (value: unknown) => `'${JSON.stringify(value)}'`;
+      const negativeChecks = rejected.map((fixture) => `
+if verify_database_mount_contract ${quote(fixture)} rejected >/dev/null 2>&1; then
+  printf '%s\\n' 'unsafe database mount fixture was accepted' >&2
+  exit 1
+fi`).join("\n");
+      const result = spawnSync("/bin/bash", ["-c", `
+set -Eeuo pipefail
+secret_directory=/etc/business-finlynq/secrets
+fail() { printf '%s\\n' "$*" >&2; return 1; }
+${helper}
+verify_database_mount_contract ${quote(exact)} exact
+${negativeChecks}
+`], { encoding: "utf8" });
+      expect(result.status, result.stderr).toBe(0);
+    },
+  );
 
   it("recovers only the exact stopped accepted app and recontains finalization failures", () => {
     expect(installer).toContain("recover_accepted_stopped_app");
