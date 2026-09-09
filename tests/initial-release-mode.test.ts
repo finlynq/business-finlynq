@@ -64,7 +64,7 @@ describe("contained initial production release", () => {
     expect(runner).toContain("resumable $service_name container image ID differs from prior evidence");
   });
 
-  it("validates inactive initial resources without assuming Compose retains unused declarations", () => {
+  it("validates inactive initial resources through a combined all-profile render", () => {
     expect(runner).toContain(
       '"BUSINESS_FINLYNQ_CADDY_DATA_VOLUME:business_finlynq_caddy_data"',
     );
@@ -78,7 +78,8 @@ describe("contained initial production release", () => {
       '.volumes.business_finlynq_caddy_data.name == "business_finlynq_caddy_data"',
     );
     expect(runner).toContain(
-      'initial_restore_compose="$(compose --profile restore-drill config --format json)"',
+      'initial_restore_compose="$(compose --profile operations --profile auth-email \\\n' +
+      '      --profile acceptance --profile restore-drill config --format json)"',
     );
     expect(runner).toContain(
       '.networks.business_finlynq_restore_drill.name == "business_finlynq_restore_drill"',
@@ -86,6 +87,33 @@ describe("contained initial production release", () => {
     expect(runner).toContain(
       '.networks.business_finlynq_restore_drill.internal == true',
     );
+    const recoveryRender = runner.indexOf('initial_restore_compose="$(compose');
+    const secretInventory = runner.indexOf('if ! initial_secret_sources="$(jq -r', recoveryRender);
+    const disabledSecretContract = runner.indexOf('initial_disabled_secret_source="$(jq -r', secretInventory);
+    const releaseRecoveryRender = runner.indexOf('unset initial_restore_compose', recoveryRender);
+    expect(recoveryRender).toBeGreaterThan(-1);
+    expect(secretInventory).toBeGreaterThan(recoveryRender);
+    expect(disabledSecretContract).toBeGreaterThan(secretInventory);
+    expect(releaseRecoveryRender).toBeGreaterThan(disabledSecretContract);
+    expect(runner.slice(secretInventory, disabledSecretContract)).toContain(
+      '<<<"$initial_restore_compose" | sort -u',
+    );
+    const disabledSecretBlock = runner.slice(disabledSecretContract, releaseRecoveryRender);
+    expect(disabledSecretBlock).toContain(
+      '<<<"$initial_restore_compose")',
+    );
+    for (const secretName of [
+      "business_finlynq_document_google_secret",
+      "business_finlynq_document_microsoft_secret",
+      "business_finlynq_resend_api_key",
+      "business_finlynq_turnstile_secret_key",
+      "business_finlynq_rclone_config",
+      "business_finlynq_backup_receiver_ssh_private_key",
+      "business_finlynq_backup_receiver_known_hosts",
+      "business_finlynq_backup_receiver_receipt_public_key",
+      "business_finlynq_backup_age_identity",
+      "business_finlynq_restore_db_password",
+    ]) expect(disabledSecretBlock).toContain(`.secrets.${secretName}.file`);
   });
 
   it("boots, attests, and probes ClamAV before starting the application", () => {
