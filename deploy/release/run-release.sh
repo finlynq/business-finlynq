@@ -1475,7 +1475,8 @@ if [[ "$mode" != "rehearsal" ]]; then
       .networks.business_finlynq_edge.external == true
     ' <<<"$rendered_compose" >/dev/null \
       || fail "initial production must use the canonical production resource names"
-    if ! initial_restore_compose="$(compose --profile restore-drill config --format json)"; then
+    if ! initial_restore_compose="$(compose --profile operations --profile auth-email \
+      --profile acceptance --profile restore-drill config --format json)"; then
       fail "initial production restore-drill Compose configuration could not be rendered"
     fi
     jq -e '
@@ -1483,9 +1484,8 @@ if [[ "$mode" != "rehearsal" ]]; then
       .networks.business_finlynq_restore_drill.internal == true
     ' <<<"$initial_restore_compose" >/dev/null \
       || fail "initial production must use the canonical restore-drill network"
-    unset initial_restore_compose
     if ! initial_secret_sources="$(jq -r '.secrets[]?.file // empty' \
-      <<<"$rendered_compose" | sort -u)"; then
+      <<<"$initial_restore_compose" | sort -u)"; then
       fail "initial secret-source inventory could not be rendered"
     fi
     [[ -n "$initial_secret_sources" ]] \
@@ -1508,12 +1508,13 @@ if [[ "$mode" != "rehearsal" ]]; then
         .secrets.business_finlynq_backup_age_identity.file,
         .secrets.business_finlynq_restore_db_password.file
       ] | unique | if length == 1 then .[0] else "" end
-    ' <<<"$rendered_compose")" \
+    ' <<<"$initial_restore_compose")" \
       || fail "disabled initial secret-source contract could not be read"
     [[ -n "$initial_disabled_secret_source" \
       && -f "$initial_disabled_secret_source" && ! -L "$initial_disabled_secret_source" \
       && ! -s "$initial_disabled_secret_source" ]] \
       || fail "disabled initial providers and recovery inputs must share one durable empty placeholder"
+    unset initial_restore_compose
     for required_secret in business_finlynq_app_db_password \
       business_finlynq_root_kek business_finlynq_identity_secret \
       business_finlynq_auth_worker_db_password business_finlynq_backup_db_password \

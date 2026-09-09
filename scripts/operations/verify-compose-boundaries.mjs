@@ -33,6 +33,24 @@ const backupReceiverPrivateKeySecret = "business_finlynq_backup_receiver_ssh_pri
 const backupReceiverKnownHostsSecret = "business_finlynq_backup_receiver_known_hosts";
 const backupReceiverReceiptPublicKey = "business_finlynq_backup_receiver_receipt_public_key";
 const rootKekSecret = "business_finlynq_root_kek";
+const containedInitialSecretNames = [
+  ...documentSecrets,
+  providerSecret,
+  turnstileSecret,
+  "business_finlynq_rclone_config",
+  backupReceiverPrivateKeySecret,
+  backupReceiverKnownHostsSecret,
+  backupReceiverReceiptPublicKey,
+  "business_finlynq_backup_age_identity",
+  "business_finlynq_restore_db_password",
+];
+
+for (const secretName of containedInitialSecretNames) {
+  if (typeof configuration.secrets?.[secretName]?.file !== "string"
+    || configuration.secrets[secretName].file.length === 0) {
+    fail(`all-profile configuration pruned an initial secret contract: ${secretName}`);
+  }
+}
 
 function secretSources(service) {
   return (service?.secrets ?? []).map((secret) => typeof secret === "string" ? secret : secret.source);
