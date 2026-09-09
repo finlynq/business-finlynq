@@ -6,9 +6,20 @@ import { join, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 
 const repositoryRoot = resolve(__dirname, "..");
+const gitBash = "C:\\Program Files\\Git\\bin\\bash.exe";
+const bashExecutable =
+  process.platform === "win32" ? (existsSync(gitBash) ? gitBash : null) : "/bin/bash";
 
 function source(path: string): string {
   return readFileSync(resolve(repositoryRoot, path), "utf8").replaceAll("\r\n", "\n");
+}
+
+function extractShellFunction(shellSource: string, name: string): string {
+  const start = shellSource.indexOf(`${name}() {`);
+  if (start < 0) throw new Error(`missing shell function: ${name}`);
+  const end = shellSource.indexOf("\n}\n", start);
+  if (end < 0) throw new Error(`unterminated shell function: ${name}`);
+  return shellSource.slice(start, end + 3);
 }
 
 function renderAppEnvironment(
@@ -54,6 +65,8 @@ function writeChecksums(directory: string): void {
 function writeAcceptedRehearsal(directory: string, revision: string, runId: string): void {
   const writeJson = (name: string, value: unknown) => writeFileSync(join(directory, name), `${JSON.stringify(value)}\n`);
   const appImageId = `sha256:${"a".repeat(64)}`;
+  const routerImageId = `sha256:${"4".repeat(64)}`;
+  const routerConfigSha256 = "9".repeat(64);
   const databaseImageId = `sha256:${"6".repeat(64)}`;
   const migratorImageId = `sha256:${"b".repeat(64)}`;
   const authWorkerImageId = `sha256:${"c".repeat(64)}`;
@@ -99,6 +112,7 @@ function writeAcceptedRehearsal(directory: string, revision: string, runId: stri
     pinnedComposeConfigurationSha256: "4".repeat(64),
     images: [
       { name: "database", reference: `business-finlynq-database:${revision}`, imageId: databaseImageId, ociRevision: revision },
+      { name: "router", reference: "business-finlynq-release-router:v1", imageId: routerImageId, ociRevision: "release-router-v1" },
       { name: "app", reference: `business-finlynq-app:${revision}`, imageId: appImageId, ociRevision: revision },
       { name: "migrator", reference: `business-finlynq-migrator:${revision}`, imageId: migratorImageId, ociRevision: revision },
       { name: "authWorker", reference: `business-finlynq-auth-worker:${revision}`, imageId: authWorkerImageId, ociRevision: revision },
@@ -170,6 +184,34 @@ function writeAcceptedRehearsal(directory: string, revision: string, runId: stri
     rollbackTool: "deploy/release/run-application-rollback.sh",
   });
   writeJson("26-write-surfaces-stopped.json", checkpoint("write-surfaces-stopped-before-backup"));
+  const routerRuntime = {
+    schemaVersion: 1,
+    product: "business-finlynq",
+    verifiedAt: completedAt,
+    service: "release_router",
+    containerId: "7".repeat(64),
+    imageId: routerImageId,
+    revision: "release-router-v1",
+    contractVersion: "v1",
+    configSha256: routerConfigSha256,
+    processHealth: "healthy",
+    durableStateVolume: `business-finlynq-${runId}-release-router-state-v1`,
+    durableMode: "maintenance",
+    publicAlias: "production-app",
+    networks: [`business-finlynq-${runId}-edge`, `business-finlynq-${runId}-frontend`],
+  };
+  writeJson("27-release-router-runtime.json", routerRuntime);
+  writeJson("28-release-router-live.json", { status: "live" });
+  writeFileSync(
+    join(directory, "28-release-router-maintenance.headers"),
+    "HTTP/1.1 503 Service Unavailable\nCache-Control: no-store\nRetry-After: 5\n",
+  );
+  writeJson("28-release-router-maintenance.json", { status: "unavailable" });
+  writeFileSync(
+    join(directory, "28-release-router-route.headers"),
+    "HTTP/1.1 503 Service Unavailable\nCache-Control: no-store\nRetry-After: 5\n",
+  );
+  writeFileSync(join(directory, "28-release-router-route.txt"), "Service temporarily unavailable.\n");
   writeJson("33-backup-evidence.json", {
     schemaVersion: 1,
     product: "business-finlynq",
@@ -177,6 +219,7 @@ function writeAcceptedRehearsal(directory: string, revision: string, runId: stri
     applicationRevision: revision,
     sourceApplicationRevision: revision,
     backupToolRevision: revision,
+    manifestBasename: "business_finlynq_20260831T120000Z_business_finlynq.manifest.json",
     encryptedArchive: "business_finlynq_20260831T120000Z_business_finlynq.dump.age",
     encryptedBytes: 1234,
     sha256: "f".repeat(64),
@@ -218,8 +261,12 @@ function writeAcceptedRehearsal(directory: string, revision: string, runId: stri
   writeFileSync(join(directory, "70-browser-acceptance.log"), browserLog);
   writeJson("71-browser-acceptance.json", checkpoint("browser-acceptance-passed"));
   writeJson("73-final-readiness.json", { status: "ready", revision, checks: disabledChecks });
+  writeJson("74-release-router-runtime.json", routerRuntime);
+  writeFileSync(join(directory, "76-final-public-readiness.headers"), "HTTP/1.1 200 OK\nCache-Control: no-store\n");
+  writeJson("76-final-public-readiness.json", { status: "ready" });
   for (const name of [
-    "01-clean-environment.log", "10-image-build.log", "10-operations-image-content.log",
+    "01-clean-environment.log", "10-release-router-build.log", "10-image-build.log", "10-operations-image-content.log",
+    "27-release-router-start.log", "28-release-router-maintenance.log",
     "25-stop-write-surfaces.log",
     "29-rehearsal-database-start.log", "34-database-start.log",
     "30-provision-backup-role.log", "31-encrypted-backup.log", "32-backup-verification.log",
@@ -230,14 +277,21 @@ function writeAcceptedRehearsal(directory: string, revision: string, runId: stri
     "58-post-bootstrap-accounting-up.log", "59-post-bootstrap-accounting-wait.log",
     "59-post-bootstrap-accounting-services.log",
     "60-quiesced-app-start.log", "63-app-start.log",
-    "72-final-app-start.log", "80-clean-rehearsal.log",
+    "72-final-app-start.log", "75-release-router-active.log", "80-clean-rehearsal.log",
   ]) writeFileSync(join(directory, name), `${name} passed\n`);
+  writeFileSync(
+    join(directory, "10-release-router-image-content.log"),
+    `${routerConfigSha256}  -\n`,
+  );
   writeJson("90-release-complete.json", {
     schemaVersion: 1,
     product: "business-finlynq",
     browserAcceptancePassed: true,
     browserLogSha256: createHash("sha256").update(browserLog).digest("hex"),
     candidateAppImageId: appImageId,
+    releaseRouterImageId: routerImageId,
+    releaseRouterConfigSha256: routerConfigSha256,
+    maintenanceConfirmedBeforeSchemaMigration: true,
     previousAppImageId: null,
     completedAt,
     databaseRollback: "forward-repair-only",
@@ -263,6 +317,7 @@ describe("commit-addressed release orchestration", () => {
     for (const image of ["database", "app", "migrator", "auth-worker", "operations", "acceptance"]) {
       expect(compose).toContain(`business-finlynq-${image}:\${BUSINESS_FINLYNQ_IMAGE_REVISION:?set BUSINESS_FINLYNQ_IMAGE_REVISION}`);
     }
+    expect(compose).toContain("business-finlynq-release-router:v1");
     expect(compose).toContain('"127.0.0.1:${BUSINESS_FINLYNQ_APP_PORT:-3100}:3000"');
     expect(compose).not.toContain("BUSINESS_FINLYNQ_APP_BIND_ADDRESS");
 
@@ -270,10 +325,12 @@ describe("commit-addressed release orchestration", () => {
     for (const suffix of ["pgdata", "caddy-data", "caddy-config", "private", "egress", "edge", "restore-drill"]) {
       expect(rehearsal).toContain(`\${RELEASE_REHEARSAL_PROJECT:?set RELEASE_REHEARSAL_PROJECT}-${suffix}`);
     }
+    expect(compose).toContain("${RELEASE_REHEARSAL_PROJECT:-${BUSINESS_FINLYNQ_PRIVATE_NETWORK:-business_finlynq_private}}-release-router-state-v1");
+    expect(compose).toContain("${RELEASE_REHEARSAL_PROJECT:-${BUSINESS_FINLYNQ_PRIVATE_NETWORK:-business_finlynq_private}}-frontend");
 
     const pinned = source("deploy/release/docker-compose.candidate-images.yml");
     for (const service of [
-      "database", "app", "auth_email_worker", "migrate", "verify_database_contract", "bootstrap_demo",
+      "release_router", "database", "app", "auth_email_worker", "migrate", "verify_database_contract", "bootstrap_demo",
       "provision_auth_worker_role", "reconcile_runtime_grants", "reconcile_auth_worker_grants",
       "provision_backup", "reconcile_backup_grants", "backup", "verify_latest_backup",
       "verify_accounting_evidence",
@@ -281,8 +338,8 @@ describe("commit-addressed release orchestration", () => {
     ]) {
       expect(pinned).toMatch(new RegExp(`^  ${service}:$`, "m"));
     }
-    expect(pinned.match(/build: !reset null/g)).toHaveLength(15);
-    expect(pinned.match(/pull_policy: never/g)).toHaveLength(15);
+    expect(pinned.match(/build: !reset null/g)).toHaveLength(16);
+    expect(pinned.match(/pull_policy: never/g)).toHaveLength(16);
   });
 
   it("runs release browser acceptance in a secretless hardened container", () => {
@@ -349,6 +406,8 @@ describe("commit-addressed release orchestration", () => {
   it("embeds the full revision in every release-owned image and retains both backup revision meanings", () => {
     const dockerfile = source("Dockerfile");
     expect(dockerfile.match(/LABEL org\.opencontainers\.image\.revision=\$BUSINESS_FINLYNQ_IMAGE_REVISION/g)).toHaveLength(6);
+    expect(dockerfile).toContain("com.business-finlynq.release-router.contract=v1");
+    expect(dockerfile).toContain("org.opencontainers.image.revision=release-router-v1");
     expect(dockerfile).toContain(
       "FROM mcr.microsoft.com/playwright:v1.62.1-noble@sha256:dcc5531e97840b9b5e794f2814476b21571c5124a3fca2267d73041f56e7580e AS acceptance",
     );
@@ -365,6 +424,69 @@ describe("commit-addressed release orchestration", () => {
     expect(backup).toContain('sourceApplicationRevision: $sourceApplicationRevision');
     expect(backup).toContain('backupToolRevision: $backupToolRevision');
     expect(backup).toContain('applicationRevision: $revision');
+  });
+
+  it("binds every release backup check to the exact committed artifact and bounds public maintenance", () => {
+    const producer = source("deploy/backup/run-backup.sh");
+    const verifier = source("deploy/backup/check-latest-backup.sh");
+    const release = source("deploy/release/run-release.sh");
+
+    expect(producer).toContain("BUSINESS_FINLYNQ_BACKUP_RESULT=");
+    expect(producer.indexOf("backup_committed=true")).toBeLessThan(
+      producer.indexOf("BUSINESS_FINLYNQ_BACKUP_RESULT="),
+    );
+    expect(verifier).toContain("--manifest-basename");
+    expect(verifier).toContain('selected_manifest="$BACKUP_OUTPUT_DIR/$manifest_basename"');
+    expect(verifier).toContain('--arg manifestBasename "$manifest_name"');
+
+    expect(release).toContain("capture_backup_manifest_from_log() {");
+    expect(release).toContain("BUSINESS_FINLYNQ_BACKUP_RESULT=");
+    expect(release).toContain("backup producer did not emit exactly one committed result");
+    expect(release).toMatch(
+      /business-finlynq-check-latest-backup[\s\\]*--manifest-basename "\$manifest_basename" --emit-evidence/,
+    );
+    expect(release).toContain('.manifestBasename == $manifestBasename');
+    expect(release).toContain(
+      '.encryptedArchive == ($manifestBasename | sub("\\\\.manifest\\\\.json$"; ".dump.age"))',
+    );
+    expect(release.match(/capture_backup_manifest_from_log /g)).toHaveLength(1);
+    expect(release.match(/^\s+run_verified_backup_workflow /gm)).toHaveLength(5);
+
+    expect(release).toContain('release_online_backup_timeout_seconds="900"');
+    expect(release).toContain('release_quiesced_backup_timeout_seconds="300"');
+    expect(release).toContain('compose_timed_with_overrides "${timeout_seconds}s"');
+    expect(release).toContain('workflow_deadline_seconds=$((SECONDS + timeout_seconds))');
+    expect(release).toContain(
+      'run_logged "$producer_log" run_backup_before_deadline "$workflow_deadline_seconds"',
+    );
+    expect(release).toContain(
+      '"$backup_manifest_basename" "$evidence_filename" "$workflow_deadline_seconds"',
+    );
+    expect(release).toContain('compose_timed "${verifier_timeout_seconds}s"');
+    expect(release).toContain("cleanup_failed_backup_service_containers verify_latest_backup");
+    expect(release).toContain('docker rm --force -- "${backup_containers[@]}"');
+    expect(release).toContain(
+      "Backup verification exceeded the shared producer/verifier deadline.",
+    );
+    expect(release).toContain('release_online_backup_timeout_seconds=900');
+    expect(release).toContain('release_quiesced_backup_timeout_seconds=300');
+    expect(release).toContain("quiesced-online-ineligible");
+    expect(release).toContain("authentication-worker-active");
+    expect(release).toContain("unlogged-relations");
+    expect(release).toContain("prepared-transactions");
+    expect(release).toContain('"sequences"');
+    expect(release).toContain('"foreign-tables"');
+    expect(release).toContain('"active-client-transactions"');
+    expect(release).toContain("online-no-wal-advance");
+    expect(release).toContain("database-identity-changed");
+    expect(release).toContain("online-reuse-became-ineligible");
+    expect(release).toContain("wal-advanced");
+    expect(release).toContain("pg_current_wal_insert_lsn()");
+    expect(release).toContain("pg_control_system()");
+    expect(release).toContain("pg_control_checkpoint()");
+    expect(release).toContain("databaseContainerId: $containerId");
+    expect(release).toContain('scope: "all-client-backends-in-application-database"');
+    expect(release).toContain("onlineBackupIneligibilityReasons");
   });
 
   it("makes repeated release image exports deterministic for one reviewed commit", () => {
@@ -385,9 +507,16 @@ describe("commit-addressed release orchestration", () => {
       'readonly image_build_compose_project="business-finlynq-build-$revision"',
     );
     expect(release).toContain(
+      'readonly release_router_build_compose_project="business-finlynq-release-router-build-v1"',
+    );
+    expect(release).toContain('readonly release_router_reference="business-finlynq-release-router:v1"');
+    expect(release).toContain('readonly release_router_revision="release-router-v1"');
+    expect(release).toContain('readonly release_router_contract="v1"');
+    expect(release).toContain(
       '[[ "$image_build_compose_project" =~ ^[a-z0-9][a-z0-9-]{2,62}$ ]]',
     );
     expect(release).toContain('run_compose "" "$image_build_compose_project" -- "$@"');
+    expect(release).toContain('run_compose "" "$release_router_build_compose_project" -- "$@"');
     expect(release).toContain('--project-name "$command_project"');
     expect(release).toContain('run_compose "" "$compose_project" -- "$@"');
     expect(release).toContain(
@@ -400,6 +529,9 @@ describe("commit-addressed release orchestration", () => {
     );
     expect(buildHelper).not.toMatch(/(^|\n)\s*compose_project=/);
     expect(release).not.toContain('run_logged 10-image-build.log compose --profile');
+    expect(release).toContain("run_logged 10-release-router-build.log compose_release_router_build build");
+    expect(release).toMatch(/run_logged 10-image-build\.log[\s\S]*?database app migrate auth_email_worker backup release_acceptance/);
+    expect(release).not.toMatch(/run_logged 10-image-build\.log[^\n]*release_router/);
     expect(release).toContain(
       'image_compose_project="$(docker image inspect --format \'{{ index .Config.Labels "com.docker.compose.project" }}\' "$image_reference")"',
     );
@@ -421,22 +553,73 @@ describe("commit-addressed release orchestration", () => {
     const release = source("deploy/release/run-release.sh");
     const pauseSchedulers = source("deploy/release/pause-schedulers.sh");
     const pause = release.indexOf('stage="pause-schedulers"');
+    const prepareBackup = release.indexOf('stage="prepare-pre-migration-backup"');
+    const onlineBackup = release.indexOf('stage="online-pre-migration-backup"');
+    const edgePreflight = release.indexOf('stage="pre-cutover-external-edge"');
     const backup = release.indexOf('stage="pre-migration-backup"');
-    const stopWrites = release.indexOf('stage="stop-write-surfaces"');
+    const enterMaintenance = release.indexOf("run_logged 23-release-router-maintenance.log enter_release_router_maintenance");
+    const stopWrites = release.indexOf("run_logged 25-stop-write-surfaces.log stop_write_surfaces");
+    const bootstrapRouter = release.indexOf('stage="bootstrap-release-router"');
     const migrate = release.indexOf('stage="pre-traffic-migration-and-contract-verification"');
     const start = release.indexOf('stage="candidate-readiness-with-writes-disabled"');
+    const preview = release.indexOf('stage="private-candidate-preview-readiness"');
     const browser = release.indexOf('stage="browser-acceptance"');
     const finalWrites = release.indexOf('stage="activate-reviewed-write-gates"');
+    const activateRouter = release.indexOf('stage="activate-accepted-application"');
+    const proveMaintenance = release.lastIndexOf("verify_release_router_maintenance", activateRouter);
+    const finalPublic = release.indexOf('stage="final-public-readiness"');
+    const externalEdge = release.indexOf('stage="external-edge-contract"');
+    const finalizationPrepared = release.indexOf('stage="prepare-active-finalization"');
     const resume = release.indexOf('stage="resume-schedulers"');
-    expect([pause, stopWrites, backup, migrate, start, browser, finalWrites, resume].every((position) => position >= 0)).toBe(true);
-    expect(pause).toBeLessThan(stopWrites);
-    expect(stopWrites).toBeLessThan(backup);
+    const terminalEvidence = release.indexOf('stage="complete-evidence"');
+    const finalizationAuthorization = release.lastIndexOf(
+      "authorize_active_finalization_marker",
+    );
+    const durableActivation = release.lastIndexOf("commit_release_router_active");
+    const markerRetired = release.lastIndexOf("clear_active_finalization_marker");
+    expect([
+      pause, prepareBackup, onlineBackup, enterMaintenance, stopWrites, bootstrapRouter,
+      proveMaintenance, backup, migrate,
+      start, preview, browser, finalWrites, activateRouter, finalPublic, externalEdge,
+      finalizationPrepared, resume,
+    ]
+      .every((position) => position >= 0)).toBe(true);
+    expect(edgePreflight).toBeGreaterThanOrEqual(0);
+    expect(edgePreflight).toBeLessThan(pause);
+    const edgePreflightFlow = release.slice(edgePreflight, pause);
+    expect(edgePreflightFlow).toContain("--scope production --warmup-host production");
+    expect(edgePreflightFlow).toContain(
+      '--expected-production-revision "$previous_app_revision"',
+    );
+    expect(edgePreflightFlow).not.toContain("--scope development");
+    expect(pause).toBeLessThan(prepareBackup);
+    expect(prepareBackup).toBeLessThan(onlineBackup);
+    expect(onlineBackup).toBeLessThan(enterMaintenance);
+    expect(pause).toBeLessThan(enterMaintenance);
+    expect(enterMaintenance).toBeLessThan(stopWrites);
+    expect(stopWrites).toBeLessThan(bootstrapRouter);
+    expect(bootstrapRouter).toBeLessThan(backup);
     expect(backup).toBeLessThan(migrate);
     expect(migrate).toBeLessThan(start);
+    expect(start).toBeLessThan(preview);
+    expect(preview).toBeLessThan(browser);
     expect(start).toBeLessThan(browser);
     expect(browser).toBeLessThan(finalWrites);
-    expect(finalWrites).toBeLessThan(resume);
-    expect(browser).toBeLessThan(resume);
+    expect(finalWrites).toBeLessThan(proveMaintenance);
+    expect(proveMaintenance).toBeLessThan(finalizationPrepared);
+    expect(finalizationPrepared).toBeLessThan(activateRouter);
+    expect(activateRouter).toBeLessThan(finalPublic);
+    expect(finalPublic).toBeLessThan(externalEdge);
+    expect(externalEdge).toBeLessThan(resume);
+    expect(finalizationPrepared).toBeLessThan(resume);
+    const finalEdgeFlow = release.slice(externalEdge, resume);
+    expect(finalEdgeFlow).toContain("--scope production --warmup-host production");
+    expect(finalEdgeFlow).toContain('--expected-production-revision "$revision"');
+    expect(resume).toBeLessThan(terminalEvidence);
+    expect(terminalEvidence).toBeLessThan(finalizationAuthorization);
+    expect(finalizationAuthorization).toBeLessThan(durableActivation);
+    expect(durableActivation).toBeLessThan(markerRetired);
+    expect(markerRetired).toBeLessThan(release.indexOf('release_completed="true"'));
     expect(release).toContain("They remain paused; do not re-enable writes");
     expect(release).toContain('compose_timed 20s logs --no-color --timestamps --tail 200 database');
     expect(release).toContain('98-rehearsal-database.log');
@@ -454,6 +637,30 @@ describe("commit-addressed release orchestration", () => {
     expect(release).toContain("12-rollback-artifact.json");
     expect(release).toContain("SHA256SUMS");
     expect(release).toContain("10-operations-image-content.log");
+    expect(release).toContain("10-release-router-build.log");
+    expect(release).toContain("10-release-router-image-content.log");
+    expect(release).toContain(
+      "sha256sum Caddyfile Caddyfile.maintenance entrypoint.sh",
+    );
+    expect(release).toContain("BUSINESS_FINLYNQ_RELEASE_ROUTER_IMAGE=${image_ids[router]}");
+    expect(release).toContain("verify_release_router_runtime() {");
+    expect(release).toContain("verify_release_router_maintenance() {");
+    expect(release).toContain("27-release-router-runtime.json");
+    expect(release).toContain("28-release-router-maintenance.json");
+    expect(release).toContain("28-release-router-route.headers");
+    expect(release).toContain("28-release-router-route.txt");
+    expect(release).toContain("maintenanceConfirmedBeforeSchemaMigration: true");
+    expect(release).toContain("74-release-router-runtime.json");
+    expect(release).toContain("75-release-router-active.log");
+    expect(release).toContain("76-final-public-readiness.headers");
+    expect(release).toContain("76-final-public-readiness.json");
+    expect(release).toContain("77-external-edge-contract.log");
+    expect(release).toContain("77-external-edge-contract.json");
+    expect(release).toContain("--allow-production-router-maintenance");
+    expect(release).toContain("contractVersion: $contract");
+    expect(release).toContain("durableStateVolume: $stateVolume");
+    expect(release).toContain("durableMode: $stateMode");
+    expect(release).not.toContain("--force-recreate release_router");
     expect(release).toContain(
       "test -r /usr/local/share/business-finlynq/accounting-evidence-query.sql",
     );
@@ -499,10 +706,12 @@ describe("commit-addressed release orchestration", () => {
     expect(release).toContain("up --no-start --no-deps --no-build --force-recreate app");
     expect(release).toContain("97-failure-rollback-anchor.json");
     expect(release).toContain('for _ in {1..30}; do');
-    expect(release).toContain('public readiness did not become ready (last HTTP ${public_status:-unavailable})');
+    expect(release).toContain('private candidate preview did not become ready (last HTTP ${public_status:-unavailable})');
     expect(release).toContain('quiesced candidate gate is not disabled: $disabled_gate');
     expect(release.indexOf('rehearsal resource can escape its isolated project')).toBeLessThan(release.indexOf('stage="clean-rehearsal-environment"'));
-    expect(release).toContain('if [[ "$mode" == "release" && "$schedulers_resumed" == "true" ]]');
+    expect(release).toMatch(
+      /if \[\[ "\$mode" == "release" && "\$terminal_evidence_committed" != true \\\n\s+&& "\$schedulers_resumed" == "true" \]\]; then/,
+    );
     expect(release).toContain('if pause_schedulers allow-already-paused >/dev/null 2>&1; then');
     expect(release).toContain('[[ "$app_port" == "3100" ]]');
     expect(release).toContain('[[ "$app_port" != "3100" ]]');
@@ -520,23 +729,34 @@ describe("commit-addressed release orchestration", () => {
     expect(release).toContain('acquire_release_coordination_lock "production-release-rollback.lock"');
     expect(release).toContain('acquire_release_coordination_lock "rehearsal-$compose_project.lock"');
     expect(release).toContain("another release, rehearsal for this project, or rollback already holds the coordination lock");
+    expect(release).toContain("validate_opened_host_lock() {");
+    expect(release).toContain("deployment-host lock descriptor identity differs from its protected path");
+    expect(release).toContain("deployment-host lock descriptor metadata differs from its protected path");
+    expect(release).toContain('"0:$deploy_gid:660:1"');
+    expect(release).toContain("deploy requires the pre-existing root-owned deployment-host lock");
+    expect(release).toContain("legacy deployment-host lock is not safe for root normalization");
+    expect(release).toContain("(set -o noclobber; umask 0077;");
+    expect(release).toContain("exec 8<>\"$lock_file\"");
+    expect(release).not.toContain('chmod 0600 -- "$lock_file"');
     expect(release).toContain('MONITOR_EXPECT_OUTBOX_PUBLISHER="$(read_operations_value MONITOR_EXPECT_OUTBOX_PUBLISHER)"');
     expect(release).toContain('SCHEDULED_BACKUP_TIMEOUT_SECONDS="$(read_operations_value SCHEDULED_BACKUP_TIMEOUT_SECONDS)"');
-    expect(release).toContain('compose_timed_with_overrides "${release_backup_timeout_seconds}s"');
+    expect(release).toContain('compose_timed_with_overrides "${timeout_seconds}s"');
     expect(release).toContain('cleanup_failed_backup_containers');
     expect(release).toContain("operations backup runtime settings exceed the reviewed recovery envelope");
     expect(release).toMatch(/for command_name in [^\n]*\bsed\b/);
     expect(release).toContain(
-      "/usr/local/bin/business-finlynq-check-latest-backup --emit-evidence",
+      '--manifest-basename "$manifest_basename" --emit-evidence',
     );
-    expect(release).toContain("compose --profile operations run --rm --no-deps -T");
+    expect(release).toMatch(
+      /compose_timed "\$\{verifier_timeout_seconds\}s"[\s\\]*--profile operations run --rm --no-deps -T/,
+    );
     expect(release).toContain("immutable backup verifier did not emit exactly one evidence record");
     expect(release).toContain("BUSINESS_FINLYNQ_BACKUP_EVIDENCE=");
     expect(release).toContain(
       'keys == ["applicationRevision", "backupToolRevision", "createdAt",',
     );
     expect(release).toContain(
-      '"schemaVersion", "sha256", "sourceApplicationRevision"] and',
+      '"manifestBasename", "product", "schemaVersion", "sha256",',
     );
     expect(release).not.toContain("latest_backup_manifest");
     expect(release).not.toContain('find "$backup_directory"');
@@ -545,6 +765,10 @@ describe("commit-addressed release orchestration", () => {
     expect(release).toContain("canonical operations environment changed during release; schedulers remain paused");
     expect(release).toContain("canonical operations image revision changed before scheduler resume");
     expect(release).toContain("run_installed_monitor");
+    expect(release).toContain(
+      "run_logged 82-production-monitor.log run_installed_monitor transitional-maintenance",
+    );
+    expect(release).toContain("--allow-transitional-router-maintenance");
     expect(release).toContain("run_installed_accounting_evidence");
     expect(release).toContain(
       "run_fresh_systemd_oneshot business-finlynq-accounting-evidence.service",
@@ -606,7 +830,7 @@ describe("commit-addressed release orchestration", () => {
     expect(release).not.toMatch(/docker compose[^\n]*pull/);
     expect(release).toContain('git --no-optional-locks -c safe.directory="$repository_root" -C "$repository_root"');
     expect(release).toContain('archive --format=tar "$revision"');
-    expect(release.match(/git --no-optional-locks/g)).toHaveLength(7);
+    expect(release.match(/git --no-optional-locks/g)).toHaveLength(8);
     expect(release).toContain('--project-directory "$candidate_source_root"');
     expect(release).toContain('env -i "${controlled_environment[@]}" docker compose');
     expect(release).toContain('env -i "PATH=$PATH" bash --noprofile --norc -c');
@@ -671,6 +895,16 @@ describe("commit-addressed release orchestration", () => {
     expect(rollback).toContain("observedApplicationRuntimeStatus");
     expect(rollback).toContain('coordination_lock_file="$coordination_lock_directory/production-release-rollback.lock"');
     expect(rollback).toContain("another production release or rollback already holds the coordination lock");
+    expect(rollback).toContain(
+      'readonly host_deployment_lock="$host_deployment_state_directory/deployment-host.lock"',
+    );
+    expect(rollback).toContain("another production or development deployment is active");
+    expect(rollback.indexOf('exec 8>"$host_deployment_lock"')).toBeLessThan(
+      rollback.indexOf('exec 9>"$coordination_lock_file"'),
+    );
+    expect(rollback.indexOf('exec 9>"$coordination_lock_file"')).toBeLessThan(
+      rollback.indexOf('cd -- "$repository_root"'),
+    );
     expect(rollback).toContain('read_git_output "candidate HEAD" rev-parse HEAD');
     expect(rollback).toContain('[[ "$git_command_output" == "$candidate_revision" ]]');
     expect(rollback).toContain("rollback checkout is not clean");
@@ -679,6 +913,13 @@ describe("commit-addressed release orchestration", () => {
     expect(rollback).toContain("BUSINESS_WRITES_ENABLED=false");
     expect(rollback).toContain('for disabled_gate in DEMO_LOGIN_ENABLED DEMO_WRITES_ENABLED ACCOUNT_LOGIN_ENABLED');
     expect(rollback).toContain('allLoginDeliveryWriteAndFeedGatesDisabled: true');
+    expect(rollback).toContain("verify_candidate_release_router");
+    expect(rollback).toContain("verify_rollback_maintenance");
+    expect(rollback).toContain("maintenanceConfirmedBeforeSwitch");
+    expect(rollback).toContain("finalPublicReadinessAccepted: true");
+    expect(rollback).toContain("--scope production --warmup-host production");
+    expect(rollback).toContain("--allow-production-router-maintenance");
+    expect(rollback).toContain('--expected-production-revision "$previous_revision"');
     expect(rollback).toContain('schedulersPaused: true');
     expect(rollback).toContain('trap contain_failed_rollback EXIT');
     expect(rollback).toContain('git --no-optional-locks -c safe.directory="$repository_root" -C "$repository_root"');
@@ -714,6 +955,320 @@ describe("commit-addressed release orchestration", () => {
     expect(schedulerBootstrap).toContain('--expected-cron-schedule "$deployed_schedule"');
     expect(schedulerBootstrap).toContain('scheduler-boundary-bootstrap.json');
   });
+
+  it("restores and attests the exact authentication worker before recovery readiness", () => {
+    const release = source("deploy/release/run-release.sh");
+    const recoveryStart = release.indexOf("recover_pre_mutation_release() {");
+    const recoveryEnd = release.indexOf("\ncontain_project_services_on_failure() {", recoveryStart);
+    expect(recoveryStart).toBeGreaterThanOrEqual(0);
+    expect(recoveryEnd).toBeGreaterThan(recoveryStart);
+    const recovery = release.slice(recoveryStart, recoveryEnd);
+    const workerStart = recovery.indexOf('docker start "$previous_auth_worker_container"');
+    const workerAttestation = recovery.indexOf('"true|$previous_auth_worker_image_id|$previous_auth_worker_revision"');
+    const appHealthWait = recovery.indexOf("for _ in {1..60}; do");
+    const publicReadiness = recovery.indexOf('"$public_base_url/api/health"');
+    const durableMaintenance = recovery.indexOf("persist_release_router_mode maintenance");
+    const activeReload = recovery.indexOf("reload_release_router_configuration Caddyfile");
+    const failedProof = recovery.indexOf('if [[ "$public_ready" != true ]]');
+    const maintenanceReloadAfterFailedProof = recovery.indexOf(
+      "reload_release_router_configuration Caddyfile.maintenance",
+      failedProof,
+    );
+    const durableActive = recovery.indexOf("persist_release_router_mode active");
+
+    expect(workerStart).toBeGreaterThanOrEqual(0);
+    expect(workerStart).toBeLessThan(workerAttestation);
+    expect(workerAttestation).toBeLessThan(appHealthWait);
+    expect(appHealthWait).toBeLessThan(publicReadiness);
+    expect(durableMaintenance).toBeLessThan(activeReload);
+    expect(activeReload).toBeLessThan(publicReadiness);
+    expect(publicReadiness).toBeLessThan(failedProof);
+    expect(failedProof).toBeLessThan(maintenanceReloadAfterFailedProof);
+    expect(maintenanceReloadAfterFailedProof).toBeLessThan(durableActive);
+    expect(release).toContain(
+      '[[ "$previous_auth_worker_was_running" == "$MONITOR_EXPECT_AUTH_EMAIL_WORKER" ]]',
+    );
+    expect(release).toContain('previous_auth_worker_image_id="$(docker inspect --format');
+    expect(release).toContain('previous_auth_worker_revision="$(docker inspect --format');
+    expect(release).toContain('"$previous_auth_worker_image_id")" == "$previous_auth_worker_image_id"');
+    expect(release).toContain('write_surface_containment_armed="true"');
+    expect(release).toMatch(
+      /write_surfaces_stopped[\s\S]*write_surface_containment_armed[\s\S]*router_maintenance_confirmed/,
+    );
+  });
+
+  it.skipIf(!bashExecutable)(
+    "spends one parent-owned deadline across backup production and exact verification",
+    () => {
+      const release = source("deploy/release/run-release.sh");
+      const helper = [
+        extractShellFunction(release, "remaining_backup_workflow_seconds"),
+        extractShellFunction(release, "run_backup_before_deadline"),
+        extractShellFunction(release, "run_verified_backup_workflow"),
+      ].join("\n");
+      const root = mkdtempSync(join(tmpdir(), "business-finlynq-backup-deadline-"));
+      const evidence = join(root, "evidence");
+      const trace = join(root, "trace.log");
+      mkdirSync(evidence);
+      const normalizedEvidence = evidence.replaceAll("\\", "/");
+      const normalizedTrace = trace.replaceAll("\\", "/");
+      const manifest = "business_finlynq_20260909T120000Z_deadline.manifest.json";
+
+      const runCase = (advance: number) => spawnSync(bashExecutable!, ["-c", `
+set -Eeuo pipefail
+evidence_directory='${normalizedEvidence}'
+trace='${normalizedTrace}'
+fail() { printf '%s\n' "$1" >&2; exit 1; }
+run_backup() { printf 'producer-timeout:%s\n' "$1" >>"$trace"; }
+capture_backup_manifest_from_log() {
+  [[ -f "$evidence_directory/$1" ]] || return 91
+  printf '%s' '${manifest}'
+}
+verify_backup_and_record_evidence() {
+  local remaining
+  remaining="$(remaining_backup_workflow_seconds "$3")" || return $?
+  printf 'verifier:%s:%s:%s\n' "$1" "$2" "$remaining" >>"$trace"
+}
+run_logged() {
+  local filename="$1" status=0; shift
+  if ( "$@" ) >"$evidence_directory/$filename" 2>&1; then status=0; else status=$?; fi
+  if [[ "$filename" == producer.log ]]; then SECONDS=$((SECONDS + ${advance})); fi
+  return "$status"
+}
+${helper}
+SECONDS=100
+set +e
+run_verified_backup_workflow 10 producer.log verifier.log exact-evidence.json
+status=$?
+set -e
+printf 'status:%s\n' "$status" >>"$trace"
+exit 0
+`], { encoding: "utf8" });
+
+      try {
+        const successful = runCase(6);
+        expect(successful.status, successful.stderr).toBe(0);
+        const successfulTrace = readFileSync(trace, "utf8");
+        const producerTimeout = Number(
+          successfulTrace.match(/producer-timeout:(\d+)/)?.[1],
+        );
+        const verifierTimeout = Number(
+          successfulTrace.match(/verifier:[^:]+:exact-evidence\.json:(\d+)/)?.[1],
+        );
+        expect(producerTimeout).toBeGreaterThan(0);
+        expect(producerTimeout).toBeLessThanOrEqual(10);
+        expect(verifierTimeout).toBeGreaterThan(0);
+        expect(verifierTimeout).toBeLessThanOrEqual(producerTimeout - 6);
+        expect(successfulTrace).toContain(`verifier:${manifest}:exact-evidence.json:`);
+        expect(successfulTrace).toContain("status:0");
+
+        writeFileSync(trace, "");
+        const exhausted = runCase(10);
+        expect(exhausted.status, exhausted.stderr).toBe(0);
+        const exhaustedTrace = readFileSync(trace, "utf8");
+        expect(exhaustedTrace).toMatch(/producer-timeout:(9|10)/);
+        expect(exhaustedTrace).not.toContain("verifier:");
+        expect(exhaustedTrace).toContain("status:124");
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it.skipIf(!bashExecutable)(
+    "contains a timed-out exact backup verifier before returning its timeout",
+    () => {
+      const release = source("deploy/release/run-release.sh");
+      const helper = [
+        extractShellFunction(release, "verify_backup_and_record_evidence"),
+        extractShellFunction(release, "remaining_backup_workflow_seconds"),
+      ].join("\n");
+      const root = mkdtempSync(join(tmpdir(), "business-finlynq-verifier-timeout-"));
+      const trace = join(root, "trace.log").replaceAll("\\", "/");
+      const manifest = "business_finlynq_20260909T120000Z_timeout.manifest.json";
+      const result = spawnSync(bashExecutable!, ["-c", `
+set -Eeuo pipefail
+trace='${trace}'
+evidence_directory='${root.replaceAll("\\", "/")}'
+fail() { printf '%s\n' "$1" >&2; exit 1; }
+compose_timed() { printf 'compose:%s\n' "$*" >>"$trace"; return 124; }
+cleanup_failed_backup_verifier_containers() { printf 'cleanup:verify_latest_backup\n' >>"$trace"; }
+${helper}
+SECONDS=100
+set +e
+verify_backup_and_record_evidence '${manifest}' evidence.json $((SECONDS + 10))
+status=$?
+set -e
+printf 'status:%s\n' "$status" >>"$trace"
+`], { encoding: "utf8" });
+
+      try {
+        expect(result.status, result.stderr).toBe(0);
+        const timeoutTrace = readFileSync(trace, "utf8");
+        expect(timeoutTrace).toMatch(
+          /compose:(?:[1-9]|10)s --profile operations run --rm --no-deps -T verify_latest_backup/,
+        );
+        expect(timeoutTrace).toContain(`--manifest-basename ${manifest} --emit-evidence`);
+        expect(timeoutTrace).toContain("cleanup:verify_latest_backup");
+        expect(timeoutTrace).toContain("status:124");
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it.skipIf(!bashExecutable)(
+    "force-removes the exact verifier one-off container and proves it absent",
+    () => {
+      const release = source("deploy/release/run-release.sh");
+      const helper = [
+        extractShellFunction(release, "cleanup_failed_backup_service_containers"),
+        extractShellFunction(release, "cleanup_failed_backup_verifier_containers"),
+      ].join("\n");
+      const root = mkdtempSync(join(tmpdir(), "business-finlynq-verifier-cleanup-"));
+      const fakeBin = join(root, "bin");
+      const trace = join(root, "docker.log").replaceAll("\\", "/");
+      const removed = join(root, "removed").replaceAll("\\", "/");
+      const shellFakeBin = fakeBin.replaceAll("\\", "/").replace(
+        /^([A-Za-z]):\//,
+        (_, drive: string) => `/${drive.toLowerCase()}/`,
+      );
+      const containerId = "e".repeat(64);
+      mkdirSync(fakeBin);
+      writeFileSync(join(fakeBin, "docker"), `#!/usr/bin/env bash
+set -Eeuo pipefail
+printf '%s\n' "$*" >>'${trace}'
+case "$1" in
+  ps)
+    [[ "$*" == *'label=com.docker.compose.project=deadline-project'* ]]
+    [[ "$*" == *'label=com.docker.compose.service=verify_latest_backup'* ]]
+    [[ -e '${removed}' ]] || printf '%s\n' '${containerId}'
+    ;;
+  rm)
+    [[ "$*" == 'rm --force -- ${containerId}' ]]
+    : >'${removed}'
+    ;;
+  *) exit 92 ;;
+esac
+`);
+      chmodSync(join(fakeBin, "docker"), 0o755);
+      const result = spawnSync(bashExecutable!, ["-c", `
+set -Eeuo pipefail
+PATH='${shellFakeBin}:/usr/bin:/bin'
+compose_project=deadline-project
+fail() { printf '%s\n' "$1" >&2; exit 1; }
+${helper}
+cleanup_failed_backup_verifier_containers
+`], { encoding: "utf8" });
+
+      try {
+        expect(result.status, result.stderr).toBe(0);
+        expect(existsSync(removed)).toBe(true);
+        const dockerTrace = readFileSync(trace, "utf8");
+        expect(dockerTrace.match(/ps --all --quiet/g)).toHaveLength(2);
+        expect(dockerTrace).toContain(`rm --force -- ${containerId}`);
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it.skipIf(!bashExecutable)(
+    "restores live maintenance when pre-mutation public recovery proof fails",
+    () => {
+      const release = source("deploy/release/run-release.sh");
+      const recovery = extractShellFunction(release, "recover_pre_mutation_release")
+        .replaceAll("{1..60}", "{1..2}")
+        .replaceAll("{1..30}", "{1..2}");
+      const root = mkdtempSync(join(tmpdir(), "business-finlynq-recovery-proof-"));
+      const trace = join(root, "trace.log").replaceAll("\\", "/");
+      const evidence = join(root, "evidence");
+      mkdirSync(evidence);
+      const container = "a".repeat(64);
+      const router = "b".repeat(64);
+
+      let lastRecoveryScript = "";
+      const runCase = (publicReady: boolean) => {
+        lastRecoveryScript = `
+set -Eeuo pipefail
+trace='${trace}'
+mode=release
+database_mutation_started=false
+previous_app_was_running=true
+previous_container='${container}'
+previous_app_id='sha256:${"c".repeat(64)}'
+previous_app_revision='${"d".repeat(40)}'
+previous_auth_worker_was_running=false
+write_surfaces_stopped=true
+write_surface_containment_armed=true
+router_maintenance_confirmed=true
+router_active_confirmed=false
+router_was_preexisting=true
+release_router_container_id=''
+public_base_url='https://business.finlynq.test'
+evidence_directory='${evidence.replaceAll("\\", "/")}'
+resolve_release_router_container() { release_router_container_id='${router}'; }
+docker() {
+  case "$1" in
+    start) return 0 ;;
+    inspect) printf '%s\\n' 'true|healthy' ;;
+    *) return 92 ;;
+  esac
+}
+persist_release_router_mode() { printf 'persist:%s\\n' "$1" >>"$trace"; }
+reload_release_router_configuration() { printf 'reload:%s\\n' "$1" >>"$trace"; }
+curl() {
+  printf 'public-probe\\n' >>"$trace"
+  ${publicReady ? "printf '%s\\n' '{\"status\":\"ready\"}'; return 0" : "return 22"}
+}
+jq() {
+  if [[ "$1" == -e ]]; then return 0; fi
+  printf '%s\\n' '{}'
+}
+sleep() { :; }
+checked_utc_timestamp() { printf '%s' '2026-09-09T12:00:00Z'; }
+chmod() { :; }
+${recovery}
+set +e
+recover_pre_mutation_release
+status=$?
+set -e
+printf 'status:%s\\n' "$status" >>"$trace"
+`;
+        return spawnSync(bashExecutable!, [], {
+          encoding: "utf8",
+          input: lastRecoveryScript,
+        });
+      };
+
+      try {
+        const failed = runCase(false);
+        expect(failed.status, failed.stderr).toBe(0);
+        const failedTrace = readFileSync(trace, "utf8");
+        expect(failedTrace.indexOf("persist:maintenance")).toBeLessThan(
+          failedTrace.indexOf("reload:Caddyfile\n"),
+        );
+        expect(failedTrace.lastIndexOf("persist:maintenance")).toBeGreaterThan(
+          failedTrace.indexOf("public-probe"),
+        );
+        expect(failedTrace).toContain("reload:Caddyfile.maintenance");
+        expect(failedTrace).not.toContain("persist:active");
+        expect(failedTrace).toContain("status:1");
+
+        writeFileSync(trace, "");
+        const accepted = runCase(true);
+        expect(accepted.status, accepted.stderr).toBe(0);
+        const acceptedTrace = readFileSync(trace, "utf8");
+        expect(acceptedTrace.indexOf("public-probe")).toBeLessThan(
+          acceptedTrace.indexOf("persist:active"),
+        );
+        expect(acceptedTrace).not.toContain("reload:Caddyfile.maintenance");
+        expect(acceptedTrace).toContain("status:0");
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+  );
 
   it.skipIf(process.platform === "win32")(
     "waits on captured IDs, retains state evidence, and force-quiesces adversarial outcomes",
@@ -1415,6 +1970,76 @@ cp "$1" "$FAKE_CRONTAB_SPOOL"
     const waitRejected = spawnSync(process.execPath, [verifier, first, second], { encoding: "utf8" });
     expect(waitRejected.status).not.toBe(0);
     expect(waitRejected.stderr).toContain("51-pretraffic-containers.json has invalid container evidence");
+
+    writeAcceptedRehearsal(second, revision, "rehearsal-second");
+    const imagesPath = join(second, "11-images.json");
+    const images = JSON.parse(readFileSync(imagesPath, "utf8")) as {
+      images: Array<{ name: string; reference: string }>;
+    };
+    images.images.find(({ name }) => name === "router")!.reference = `business-finlynq-release-router:${revision}`;
+    writeFileSync(imagesPath, `${JSON.stringify(images)}\n`);
+    writeChecksums(second);
+    const mutableRouterRejected = spawnSync(process.execPath, [verifier, first, second], { encoding: "utf8" });
+    expect(mutableRouterRejected.status).not.toBe(0);
+    expect(mutableRouterRejected.stderr).toContain("image evidence is invalid");
+
+    writeAcceptedRehearsal(second, revision, "rehearsal-second");
+    const alternateRouterImageId = `sha256:${"8".repeat(64)}`;
+    const divergentImagesPath = join(second, "11-images.json");
+    const divergentImages = JSON.parse(readFileSync(divergentImagesPath, "utf8")) as {
+      images: Array<{ name: string; imageId: string }>;
+    };
+    divergentImages.images.find(({ name }) => name === "router")!.imageId = alternateRouterImageId;
+    writeFileSync(divergentImagesPath, `${JSON.stringify(divergentImages)}\n`);
+    for (const name of ["27-release-router-runtime.json", "74-release-router-runtime.json"]) {
+      const path = join(second, name);
+      const runtime = JSON.parse(readFileSync(path, "utf8")) as { imageId: string };
+      runtime.imageId = alternateRouterImageId;
+      writeFileSync(path, `${JSON.stringify(runtime)}\n`);
+    }
+    const divergentCompletePath = join(second, "90-release-complete.json");
+    const divergentComplete = JSON.parse(readFileSync(divergentCompletePath, "utf8")) as {
+      releaseRouterImageId: string;
+    };
+    divergentComplete.releaseRouterImageId = alternateRouterImageId;
+    writeFileSync(divergentCompletePath, `${JSON.stringify(divergentComplete)}\n`);
+    writeChecksums(second);
+    const divergentRouterRejected = spawnSync(process.execPath, [verifier, first, second], { encoding: "utf8" });
+    expect(divergentRouterRejected.status).not.toBe(0);
+    expect(divergentRouterRejected.stderr).toContain("one immutable stable release router");
+
+    writeAcceptedRehearsal(second, revision, "rehearsal-second");
+    const finalRouterRuntimePath = join(second, "74-release-router-runtime.json");
+    const finalRouterRuntime = JSON.parse(readFileSync(finalRouterRuntimePath, "utf8")) as {
+      durableMode: string;
+    };
+    finalRouterRuntime.durableMode = "active";
+    writeFileSync(finalRouterRuntimePath, `${JSON.stringify(finalRouterRuntime)}\n`);
+    writeChecksums(second);
+    const earlyActivationRejected = spawnSync(process.execPath, [verifier, first, second], { encoding: "utf8" });
+    expect(earlyActivationRejected.status).not.toBe(0);
+    expect(earlyActivationRejected.stderr).toContain("74-release-router-runtime.json does not attest the release router");
+
+    writeAcceptedRehearsal(second, revision, "rehearsal-second");
+    writeFileSync(join(second, "10-release-router-image-content.log"), `${"8".repeat(64)}  -\n`);
+    writeChecksums(second);
+    const splitConfigRejected = spawnSync(process.execPath, [verifier, first, second], { encoding: "utf8" });
+    expect(splitConfigRejected.status).not.toBe(0);
+    expect(splitConfigRejected.stderr).toContain("combined active and maintenance router configuration");
+
+    writeAcceptedRehearsal(second, revision, "rehearsal-second");
+    writeFileSync(
+      join(second, "76-final-public-readiness.json"),
+      `${JSON.stringify({ status: "ready", revision })}\n`,
+    );
+    writeChecksums(second);
+    const detailedPublicReadinessRejected = spawnSync(
+      process.execPath,
+      [verifier, first, second],
+      { encoding: "utf8" },
+    );
+    expect(detailedPublicReadinessRejected.status).not.toBe(0);
+    expect(detailedPublicReadinessRejected.stderr).toContain("final public readiness is not minimal");
 
     writeAcceptedRehearsal(second, revision, "rehearsal-second");
     writeFileSync(join(second, "90-release-complete.json"), "{}\n");

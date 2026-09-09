@@ -27,6 +27,137 @@ readonly monitor_cron_maintenance_lock_file="/home/deploy/.local/state/business-
 readonly monitor_cron_status_directory="/home/deploy/.local/state/business-finlynq/cron/job-status"
 readonly monitor_metrics_file="${MONITOR_METRICS_FILE:-/var/lib/business-finlynq/host.prom}"
 readonly accounting_metrics_file="${ACCOUNTING_EVIDENCE_METRICS_FILE:-/var/lib/business-finlynq/accounting-evidence.prom}"
+readonly release_router_reference="business-finlynq-release-router:v1"
+readonly release_router_revision="release-router-v1"
+readonly release_router_contract="v1"
+readonly release_router_state_volume="business_finlynq_private-release-router-state-v1"
+readonly release_recovery_state_directory="/var/lib/business-finlynq/release-recovery"
+readonly active_finalization_marker="/var/lib/business-finlynq/release-recovery/active-finalization.json"
+readonly production_release_lock_directory="/home/deploy/.local/state/business-finlynq/release-locks"
+readonly production_release_lock="$production_release_lock_directory/production-release-rollback.lock"
+readonly active_finalization_max_age_seconds=1800
+monitor_router_mode="active"
+
+if [[ "${1:-}" == "--allow-transitional-router-maintenance" ]]; then
+  [[ "$#" == 1 ]] || {
+    printf '%s\n' "--allow-transitional-router-maintenance accepts no value" >&2
+    exit 2
+  }
+  monitor_router_mode="active-or-maintenance"
+elif (( $# != 0 )); then
+  printf 'Unknown production monitor argument: %s\n' "$1" >&2
+  exit 2
+fi
+
+production_release_lock_is_held() (
+  set -Eeuo pipefail
+  local deploy_gid deploy_uid descriptor_contract descriptor_identity descriptor_path
+  local lock_fd lock_status path_contract path_identity
+  for command_name in flock id readlink stat; do
+    command -v "$command_name" >/dev/null 2>&1 || return 1
+  done
+  deploy_uid="$(id -u deploy 2>/dev/null)" || return 1
+  deploy_gid="$(id -g deploy 2>/dev/null)" || return 1
+  [[ -d "$production_release_lock_directory" \
+    && ! -L "$production_release_lock_directory" \
+    && "$(readlink -f -- "$production_release_lock_directory")" \
+      == "$production_release_lock_directory" \
+    && "$(stat -Lc '%u:%g:%a' -- "$production_release_lock_directory")" \
+      == "$deploy_uid:$deploy_gid:700" \
+    && -f "$production_release_lock" && ! -L "$production_release_lock" \
+    && "$(readlink -f -- "$production_release_lock")" == "$production_release_lock" \
+    && "$(stat -Lc '%u:%a:%h' -- "$production_release_lock")" \
+      == "$deploy_uid:600:1" ]] || return 1
+
+  path_identity="$(stat -Lc '%d:%i' -- "$production_release_lock")" || return 1
+  exec {lock_fd}<>"$production_release_lock" || return 1
+  descriptor_path="/proc/$BASHPID/fd/$lock_fd"
+  descriptor_identity="$(stat -Lc '%d:%i' -- "$descriptor_path")" || return 1
+  path_contract="$(stat -Lc '%u:%a:%h' -- "$production_release_lock")" \
+    || return 1
+  descriptor_contract="$(stat -Lc '%u:%a:%h' -- "$descriptor_path")" \
+    || return 1
+  [[ "$descriptor_identity" == "$path_identity" \
+    && "$(stat -Lc '%d:%i' -- "$production_release_lock")" == "$path_identity" \
+    && "$path_contract" == "$deploy_uid:600:1" \
+    && "$descriptor_contract" == "$path_contract" ]] || return 1
+
+  set +e
+  flock --exclusive --nonblock --conflict-exit-code 75 "$lock_fd"
+  lock_status=$?
+  set -e
+  [[ "$lock_status" == 75 ]]
+)
+
+active_finalization_marker_allows_scheduled_deferral() {
+  local created_at created_epoch marker_age now
+  for command_name in date jq readlink stat; do
+    command -v "$command_name" >/dev/null 2>&1 || return 1
+  done
+  [[ -d "$release_recovery_state_directory" \
+    && ! -L "$release_recovery_state_directory" \
+    && "$(readlink -f -- "$release_recovery_state_directory")" \
+      == "$release_recovery_state_directory" \
+    && "$(stat -Lc '%u:%g:%a' -- "$release_recovery_state_directory")" \
+      == 0:0:700 \
+    && -f "$active_finalization_marker" && ! -L "$active_finalization_marker" \
+    && "$(readlink -f -- "$active_finalization_marker")" \
+      == "$active_finalization_marker" \
+    && "$(stat -Lc '%u:%g:%a:%h' -- "$active_finalization_marker")" \
+      == 0:0:600:1 ]] || return 1
+  jq -e '
+    type == "object" and
+    ((.phase == "terminal-evidence-pending" and
+      keys == (["app", "createdAt", "kind", "phase", "product", "revision",
+        "router", "runId", "schemaVersion"] | sort)) or
+     (.phase == "active-commit-authorized" and
+      keys == (["app", "authorizedAt", "createdAt", "kind", "phase", "product",
+        "revision", "router", "runId", "schemaVersion",
+        "terminalEvidenceSha256"] | sort))) and
+    .schemaVersion == 1 and .product == "business-finlynq" and
+    .kind == "active-finalization" and
+    (.createdAt | type == "string" and
+      test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$")) and
+    (if .phase == "active-commit-authorized" then
+      (.authorizedAt | type == "string" and
+        test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$")) and
+      (.terminalEvidenceSha256 | type == "string" and test("^[a-f0-9]{64}$"))
+    else true end) and
+    (.revision | type == "string" and test("^[a-f0-9]{40}$") and
+      (test("^0+$") | not)) and
+    (.runId | type == "string" and test("^[a-z0-9][a-z0-9._-]{2,30}$")) and
+    (.app | type == "object" and keys == ["containerId", "imageId"] and
+      (.containerId | type == "string" and test("^[a-f0-9]{64}$")) and
+      (.imageId | type == "string" and test("^sha256:[a-f0-9]{64}$"))) and
+    (.router | type == "object" and keys == ["containerId", "imageId"] and
+      (.containerId | type == "string" and test("^[a-f0-9]{64}$")) and
+      (.imageId | type == "string" and test("^sha256:[a-f0-9]{64}$")))
+  ' "$active_finalization_marker" >/dev/null 2>&1 || return 1
+  created_at="$(jq -er '.createdAt' "$active_finalization_marker")" || return 1
+  created_epoch="$(LC_ALL=C TZ=UTC date --date="$created_at" +%s 2>/dev/null)" \
+    || return 1
+  now="$(date -u +%s)" || return 1
+  [[ "$created_epoch" =~ ^[1-9][0-9]*$ && "$now" =~ ^[1-9][0-9]*$ \
+    && "$created_epoch" -le "$now" ]] || return 1
+  marker_age=$((now - created_epoch))
+  (( marker_age <= active_finalization_max_age_seconds )) || return 1
+  production_release_lock_is_held
+}
+
+# The release runner commits this protected marker shortly before it enables
+# timers, and keeps it until terminal evidence and the durable active sentinel
+# are both committed. A scheduled timer may defer only while that exact,
+# recently-created marker is safe and the production release lock is actively
+# held. A stale, malformed, or orphaned marker therefore cannot suppress the
+# normal monitor (and its failure metric) indefinitely. The explicit
+# transitional invocation below is the sole bypass.
+if [[ "$monitor_router_mode" == active \
+  && ( -e "$active_finalization_marker" || -L "$active_finalization_marker" ) ]] \
+  && active_finalization_marker_allows_scheduled_deferral; then
+  printf '%s\n' \
+    "Business Finlynq scheduled monitor deferred while active finalization is in progress."
+  exit 0
+fi
 
 monitor_run_success=0
 backup_verification_status_metric=-1
@@ -245,7 +376,8 @@ write_host_metrics() {
 
 cleanup() {
   local exit_status=$?
-  trap - EXIT INT TERM
+  trap - EXIT
+  trap '' HUP INT TERM
   set +e
   rm -f -- "$response_body" "$response_headers" "$backup_verification_output" \
     "$backup_schedule_verification_output" "$deploy_crontab_output" "$deploy_crontab_error"
@@ -255,7 +387,10 @@ cleanup() {
   fi
   exit "$exit_status"
 }
-trap cleanup EXIT INT TERM
+trap cleanup EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 spoofed_request_id="00000000-0000-4000-8000-000000000001"
 if [[ -r /proc/sys/kernel/random/uuid ]]; then
@@ -324,6 +459,37 @@ if ! grep -Eiq '^x-request-id:[[:space:]]*[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{
   record_failure "public edge did not replace the metrics request ID"
 fi
 
+release_router_live_status="$(curl \
+  --silent \
+  --show-error \
+  --max-time 10 \
+  --dump-header "$response_headers" \
+  --output "$response_body" \
+  --write-out '%{http_code}' \
+  "http://127.0.0.1:3100/_business-finlynq/release-router/live" || printf '000')"
+if [[ "$release_router_live_status" != "200" ]] \
+  || ! jq -e 'type == "object" and keys == ["status"] and .status == "release-router-live"' \
+    "$response_body" >/dev/null 2>&1; then
+  record_failure "independent release-router liveness endpoint failed (HTTP $release_router_live_status)"
+fi
+if ! grep -Eiq '^cache-control:.*no-store' "$response_headers"; then
+  record_failure "release-router liveness response is missing no-store caching"
+fi
+
+release_router_outer_health_status="$(curl \
+  --silent \
+  --show-error \
+  --max-time 10 \
+  --dump-header "$response_headers" \
+  --output "$response_body" \
+  --write-out '%{http_code}' \
+  "http://127.0.0.1:3100/api/health" || printf '000')"
+if [[ "$release_router_outer_health_status" != "200" ]] \
+  || ! jq -e 'type == "object" and keys == ["status"] and .status == "release-router-live"' \
+    "$response_body" >/dev/null 2>&1; then
+  record_failure "release-router outer active-health response failed (HTTP $release_router_outer_health_status)"
+fi
+
 internal_health_status="$(curl \
   --silent \
   --show-error \
@@ -356,7 +522,7 @@ if ! openssl s_client \
   record_failure "TLS certificate expires within $MONITOR_MIN_TLS_DAYS days or could not be read"
 fi
 
-expected_services=(database app)
+expected_services=(database release_router app)
 if [[ "$MONITOR_EXPECT_EDGE" == "true" && "$MONITOR_EDGE_MODE" == compose ]]; then
   expected_services+=(edge)
 fi
@@ -365,6 +531,7 @@ if [[ "$MONITOR_EXPECT_AUTH_EMAIL_WORKER" == "true" ]]; then
 fi
 app_container_id=""
 database_container_id=""
+release_router_container_id=""
 for service_name in "${expected_services[@]}"; do
   container_id="$(docker compose --profile edge --profile auth-email ps --quiet "$service_name" 2>/dev/null || true)"
   if [[ -z "$container_id" ]]; then
@@ -375,12 +542,127 @@ for service_name in "${expected_services[@]}"; do
     app_container_id="$container_id"
   elif [[ "$service_name" == "database" ]]; then
     database_container_id="$container_id"
+  elif [[ "$service_name" == "release_router" ]]; then
+    release_router_container_id="$container_id"
   fi
   container_state="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$container_id" 2>/dev/null || true)"
   if [[ "$container_state" != "healthy" && "$container_state" != "running" ]]; then
     record_failure "container is not healthy: $service_name ($container_state)"
   fi
 done
+
+if [[ -n "$release_router_container_id" ]]; then
+  release_router_expected_image="$release_router_reference"
+  release_router_inspection="$(docker inspect "$release_router_container_id" 2>/dev/null || true)"
+  if ! jq -e --arg routerRevision "$release_router_revision" \
+      --arg routerContract "$release_router_contract" \
+      --arg stateVolume "$release_router_state_volume" '
+      length == 1
+      and .[0].Config.Labels["com.docker.compose.project"] == "business-finlynq"
+      and .[0].Config.Labels["com.docker.compose.service"] == "release_router"
+      and .[0].Config.Labels["org.opencontainers.image.revision"] == $routerRevision
+      and .[0].Config.Labels["com.business-finlynq.release-router.contract"] == $routerContract
+      and .[0].Config.User == "10001:10001"
+      and .[0].HostConfig.ReadonlyRootfs == true
+      and .[0].HostConfig.Privileged == false
+      and ((.[0].HostConfig.CapDrop // []) | sort) == ["ALL"]
+      and ((.[0].HostConfig.SecurityOpt // []) | sort) == ["no-new-privileges:true"]
+      and .[0].State.Running == true
+      and .[0].State.Health.Status == "healthy"
+      and ((.[0].Mounts // []) | length) == 1
+      and .[0].Mounts[0].Type == "volume"
+      and .[0].Mounts[0].Name == $stateVolume
+      and .[0].Mounts[0].Destination == "/state"
+      and .[0].Mounts[0].RW == true
+      and .[0].Config.Entrypoint == ["/usr/local/bin/release-router-entrypoint"]
+      and .[0].Config.Cmd == ["serve"]
+      and ((.[0].NetworkSettings.Networks | keys | sort)
+        == (["business_finlynq_edge", "business_finlynq_private-frontend"] | sort))
+      and any(.[0].NetworkSettings.Networks["business_finlynq_edge"].Aliases[]?;
+        . == "production-app")
+      and all(.[0].NetworkSettings.Networks["business_finlynq_private-frontend"].Aliases[]?;
+        . != "production-app")
+    ' <<<"$release_router_inspection" >/dev/null 2>&1; then
+    record_failure "release-router image, hardening, health, or network contract differs"
+  fi
+  release_router_observed_image_id="$(jq -r '.[0].Image // empty' \
+    <<<"$release_router_inspection" 2>/dev/null || true)"
+  release_router_full_container_id="$(jq -r '.[0].Id // empty' \
+    <<<"$release_router_inspection" 2>/dev/null || true)"
+  [[ "$release_router_full_container_id" =~ ^[a-f0-9]{64}$ ]] \
+    || record_failure "release-router container ID could not be attested"
+  release_router_tagged_image_id="$(docker image inspect --format '{{.Id}}' \
+    "$release_router_expected_image" 2>/dev/null || true)"
+  if [[ ! "$release_router_observed_image_id" =~ ^sha256:[a-f0-9]{64}$ \
+    || "$release_router_observed_image_id" != "$release_router_tagged_image_id" ]]; then
+    record_failure "release-router does not run the exact locally tagged release image"
+  fi
+  release_router_runtime_uid="$(docker exec "$release_router_container_id" id -u 2>/dev/null || true)"
+  [[ "$release_router_runtime_uid" == 10001 ]] \
+    || record_failure "release-router is not running as the reviewed non-root UID"
+  release_router_durable_mode="$(docker exec "$release_router_container_id" sh -ec '
+    [[ -d /state && ! -L /state && "$(stat -c "%u:%g:%a" /state)" == 10001:10001:700 ]]
+    [[ -f /state/mode && ! -L /state/mode && "$(stat -c "%u:%g:%a" /state/mode)" == 10001:10001:600 ]]
+    cat /state/mode
+  ' 2>/dev/null || true)"
+  [[ "$release_router_durable_mode" == active \
+    || ( "$monitor_router_mode" == active-or-maintenance \
+      && "$release_router_durable_mode" == maintenance ) ]] \
+    || record_failure "release-router durable mode differs from the accepted monitor phase"
+  release_router_alias_owner_count=0
+  release_router_network_query="$(docker ps --all --no-trunc \
+    --filter 'network=business_finlynq_edge' \
+    --format '{{.ID}}' 2>/dev/null || true)"
+  while IFS= read -r network_container_id; do
+    [[ -n "$network_container_id" ]] || continue
+    if [[ ! "$network_container_id" =~ ^[a-f0-9]{64}$ ]]; then
+      record_failure "production ingress network returned an invalid endpoint ID"
+      continue
+    fi
+    network_container_networks="$(docker inspect --format '{{json .NetworkSettings.Networks}}' \
+      "$network_container_id" 2>/dev/null || true)"
+    if jq -e '
+      has("business_finlynq_edge")
+      and any(.business_finlynq_edge.Aliases[]?; . == "production-app")
+    ' <<<"$network_container_networks" >/dev/null 2>&1; then
+      (( release_router_alias_owner_count += 1 ))
+      [[ "$network_container_id" == "$release_router_full_container_id" ]] \
+        || record_failure "production public backend alias is owned by another network endpoint"
+    fi
+  done <<<"$release_router_network_query"
+  [[ "$release_router_alias_owner_count" == 1 ]] \
+    || record_failure "production public backend alias must be owned exactly once by release_router"
+  release_app_alias_owner_count=0
+  release_app_full_container_id=""
+  if [[ -n "$app_container_id" ]]; then
+    release_app_full_container_id="$(docker inspect --format '{{.Id}}' \
+      "$app_container_id" 2>/dev/null || true)"
+  fi
+  [[ "$release_app_full_container_id" =~ ^[a-f0-9]{64}$ ]] \
+    || record_failure "application container ID could not be attested for private alias ownership"
+  release_app_network_query="$(docker ps --all --no-trunc \
+    --filter 'network=business_finlynq_private-frontend' \
+    --format '{{.ID}}' 2>/dev/null || true)"
+  while IFS= read -r network_container_id; do
+    [[ -n "$network_container_id" ]] || continue
+    if [[ ! "$network_container_id" =~ ^[a-f0-9]{64}$ ]]; then
+      record_failure "production private frontend returned an invalid endpoint ID"
+      continue
+    fi
+    network_container_networks="$(docker inspect --format '{{json .NetworkSettings.Networks}}' \
+      "$network_container_id" 2>/dev/null || true)"
+    if jq -e '
+      has("business_finlynq_private-frontend")
+      and any(.["business_finlynq_private-frontend"].Aliases[]?; . == "release-app")
+    ' <<<"$network_container_networks" >/dev/null 2>&1; then
+      (( release_app_alias_owner_count += 1 ))
+      [[ "$network_container_id" == "$release_app_full_container_id" ]] \
+        || record_failure "private application alias is owned by another network endpoint"
+    fi
+  done <<<"$release_app_network_query"
+  [[ "$release_app_alias_owner_count" == 1 ]] \
+    || record_failure "private application alias must be owned exactly once by app"
+fi
 
 if [[ "$MONITOR_EXPECT_EDGE" == true && "$MONITOR_EDGE_MODE" == external ]]; then
   business_edge_container="$(docker ps --all \
@@ -407,9 +689,13 @@ if [[ "$MONITOR_EXPECT_EDGE" == true && "$MONITOR_EDGE_MODE" == external ]]; the
       | jq -e --arg network "$MONITOR_EXTERNAL_EDGE_NETWORK" 'has($network)' >/dev/null \
       || record_failure "external edge is detached from the production ingress network"
   fi
+  external_verifier_arguments=(--scope production)
+  if [[ "$monitor_router_mode" == active-or-maintenance ]]; then
+    external_verifier_arguments+=(--allow-production-router-maintenance)
+  fi
   if ! bash /home/deploy/business-finlynq/deploy/edge/verify-external-edge.sh \
-    --scope full >/dev/null; then
-    record_failure "full external edge ownership, routing, and sibling-preservation attestation failed"
+    "${external_verifier_arguments[@]}" >/dev/null; then
+    record_failure "production external edge ownership and routing attestation failed"
   fi
 fi
 

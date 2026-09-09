@@ -136,6 +136,8 @@ if (scannerNetworks !== "business_finlynq_evidence,business_finlynq_scanner_egre
 const app = services.app;
 if (!app) fail("app service is missing");
 if (dependencyCondition(app, "evidence_scanner") !== "service_healthy" || app.environment?.EVIDENCE_SCANNER_HOST !== "evidence_scanner") fail("app evidence scanning must be mandatory and health-gated");
+const releaseRouter = services.release_router;
+if (!releaseRouter) fail("release router service is missing");
 const expectedReleaseImages = {
   database: `business-finlynq-database:${process.env.BUSINESS_FINLYNQ_IMAGE_REVISION}`,
   app: `business-finlynq-app:${process.env.BUSINESS_FINLYNQ_IMAGE_REVISION}`,
@@ -160,15 +162,205 @@ for (const [serviceName, expectedImage] of Object.entries(expectedReleaseImages)
     fail(`${serviceName} does not embed the full release revision in its OCI label`);
   }
 }
+if (releaseRouter.image !== "business-finlynq-release-router:v1"
+  || releaseRouter.pull_policy !== "never"
+  || Object.keys(releaseRouter.build?.args ?? {}).length !== 0) {
+  fail("release router must use its separately versioned stable v1 image");
+}
 if (app.build?.args?.BUSINESS_FINLYNQ_IMAGE_REVISION !== process.env.BUSINESS_FINLYNQ_IMAGE_REVISION) {
   fail("app image build does not embed the configured release revision");
 }
 if (app.environment?.BUSINESS_FINLYNQ_DB_PASSWORD) fail("app exposes its database password inline");
 
+const expectedAppNetworkAlias = process.env.BUSINESS_FINLYNQ_APP_NETWORK_ALIAS ?? "production-app";
+const appNetworks = Object.keys(app.networks ?? {}).sort();
+if (appNetworks.join(",") !== [
+  "business_finlynq_egress",
+  "business_finlynq_evidence",
+  "business_finlynq_frontend",
+  "business_finlynq_private",
+].join(",") || (app.ports ?? []).length > 0) {
+  fail("app must be unpublished and isolated from the external edge on the internal frontend network");
+}
+if ((app.networks?.business_finlynq_frontend?.aliases ?? []).join(",") !== "release-app") {
+  fail("app does not use the reviewed internal release-app alias");
+}
+if (dependencyCondition(app, "release_router") !== "service_healthy") {
+  fail("app can start before the persistent release router is healthy");
+}
+
+const routerNetworks = Object.keys(releaseRouter.networks ?? {}).sort();
+if (routerNetworks.join(",") !== "business_finlynq_edge,business_finlynq_frontend"
+  || configuration.networks?.business_finlynq_frontend?.internal !== true) {
+  fail("release router has a path outside the internal frontend and reviewed ingress networks");
+}
+if ((releaseRouter.networks?.business_finlynq_edge?.aliases ?? []).join(",") !== expectedAppNetworkAlias) {
+  fail("release router does not exclusively own the reviewed external network alias");
+}
+const externalAliasOwners = Object.entries(services)
+  .filter(([, service]) => (service.networks?.business_finlynq_edge?.aliases ?? [])
+    .includes(expectedAppNetworkAlias))
+  .map(([name]) => name)
+  .sort();
+if (externalAliasOwners.join(",") !== "release_router") {
+  fail(`external application alias must belong only to release_router; found ${externalAliasOwners.join(",") || "none"}`);
+}
+const routerPorts = releaseRouter.ports ?? [];
+if (routerPorts.length !== 1 || routerPorts[0]?.host_ip !== "127.0.0.1"
+  || routerPorts[0]?.target !== 3000
+  || routerPorts[0]?.published !== (process.env.BUSINESS_FINLYNQ_APP_PORT ?? "3100")
+  || routerPorts[0]?.protocol !== "tcp") {
+  fail("release router does not exclusively own the reviewed loopback application port");
+}
+const loopbackAppPortOwners = Object.entries(services)
+  .filter(([, service]) => (service.ports ?? []).some((port) => port.host_ip === "127.0.0.1"
+    && port.target === 3000
+    && port.published === (process.env.BUSINESS_FINLYNQ_APP_PORT ?? "3100")))
+  .map(([name]) => name)
+  .sort();
+if (loopbackAppPortOwners.join(",") !== "release_router") {
+  fail(`loopback application port must belong only to release_router; found ${loopbackAppPortOwners.join(",") || "none"}`);
+}
+if (releaseRouter.build?.target !== "release-router" || releaseRouter.user !== "10001:10001"
+  || releaseRouter.read_only !== true || releaseRouter.init !== true
+  || releaseRouter.restart !== "unless-stopped" || !(releaseRouter.cap_drop ?? []).includes("ALL")
+  || !(releaseRouter.security_opt ?? []).includes("no-new-privileges:true")) {
+  fail("release router is not a separately versioned, persistent, hardened non-root boundary");
+}
+const routerStateMounts = releaseRouter.volumes ?? [];
+const routerStateMount = routerStateMounts[0];
+const expectedRouterStateResourceName = `${process.env.RELEASE_REHEARSAL_PROJECT
+  ?? process.env.BUSINESS_FINLYNQ_PRIVATE_NETWORK
+  ?? "business_finlynq_private"}-release-router-state-v1`;
+if (secretSources(releaseRouter).length > 0 || routerStateMounts.length !== 1
+  || routerStateMount?.type !== "volume"
+  || routerStateMount?.source !== "business_finlynq_release_router_state"
+  || routerStateMount?.target !== "/state" || routerStateMount?.read_only === true
+  || configuration.volumes?.business_finlynq_release_router_state?.name
+    !== expectedRouterStateResourceName
+  || Object.keys(releaseRouter.environment ?? {}).length > 0
+  || Object.keys(releaseRouter.depends_on ?? {}).length > 0) {
+  fail("release router state is not limited to its dedicated non-secret durable mode volume");
+}
+const routerTmpfsTargets = (releaseRouter.tmpfs ?? []).map((entry) => entry.split(":", 1)[0]).sort();
+if (routerTmpfsTargets.join(",") !== "/config,/data,/tmp") {
+  fail("release router writable scratch space is not bounded to its three tmpfs paths");
+}
+const expectedRouterHealthCommand = [
+  "CMD", "wget", "-q", "-T", "2", "-O", "/dev/null",
+  "http://127.0.0.1:3000/_business-finlynq/release-router/live",
+];
+const releaseRouterHealthCommand = releaseRouter.healthcheck?.test ?? [];
+if (releaseRouterHealthCommand.join("\u0000") !== expectedRouterHealthCommand.join("\u0000")
+  || releaseRouterHealthCommand.some((part) => part.includes("/api/live"))) {
+  fail("release router liveness is not distinct from application/public liveness");
+}
+
+const releaseRouterCaddyfile = readFileSync("deploy/release/router/Caddyfile", "utf8")
+  .replaceAll("\r\n", "\n");
+for (const requiredContract of [
+  "admin unix//tmp/caddy-admin.sock|0600",
+  "persist_config off",
+  "grace_period 1m",
+  "auto_https off",
+  "path /_business-finlynq/release-router/live",
+  "@public_live path /api/live",
+  'respond `{"status":"live"}` 200',
+  "header X-Business-Finlynq-Internal-Health *",
+  "header X-Request-Id *",
+  "@outer_active_health path /api/health",
+  'respond `{"status":"release-router-live"}` 200',
+  "reverse_proxy release-app:3000",
+  "lb_try_duration 2s",
+  "keepalive off",
+  "handle_errors",
+  "@health_unavailable path /api/health",
+  'respond `{"status":"unavailable"}` 503',
+  'Cache-Control "no-store, max-age=0"',
+  'Retry-After "5"',
+  'X-Content-Type-Options "nosniff"',
+  'X-Frame-Options "DENY"',
+  'Referrer-Policy "no-referrer"',
+  'Content-Security-Policy "default-src \'none\'; frame-ancestors \'none\'; base-uri \'none\'; form-action \'none\'"',
+  'respond "Service temporarily unavailable.\\n" 503',
+]) {
+  if (!releaseRouterCaddyfile.includes(requiredContract)) {
+    fail(`release router Caddyfile is missing contract: ${requiredContract}`);
+  }
+}
+const maintenanceCaddyfile = readFileSync("deploy/release/router/Caddyfile.maintenance", "utf8")
+  .replaceAll("\r\n", "\n");
+for (const requiredContract of [
+  "admin unix//tmp/caddy-admin.sock|0600",
+  "persist_config off",
+  "grace_period 1m",
+  '@candidate_preview header Authorization "Bearer {$BUSINESS_FINLYNQ_RELEASE_ACCEPTANCE_TOKEN}"',
+  "header_up -Authorization",
+  "keepalive off",
+  "header X-Business-Finlynq-Internal-Health *",
+  'respond `{"status":"live"}` 200',
+  'respond `{"status":"release-router-live"}` 200',
+  'respond `{"status":"unavailable"}` 503',
+  'respond "Service temporarily unavailable.\\n" 503',
+  'Retry-After "5"',
+]) {
+  if (!maintenanceCaddyfile.includes(requiredContract)) {
+    fail(`release-router maintenance Caddyfile is missing contract: ${requiredContract}`);
+  }
+}
+if (maintenanceCaddyfile.indexOf("handle @candidate_preview {")
+  > maintenanceCaddyfile.indexOf("handle @public_health {")) {
+  fail("release-router candidate preview is ordered after public maintenance");
+}
+const orderedRouterRoutes = [
+  "handle @router_live {",
+  "handle @public_live {",
+  "handle @marked_health {",
+  "handle @public_health {",
+  "handle @outer_active_health {",
+];
+const orderedRouterRoutePositions = orderedRouterRoutes.map((marker) =>
+  releaseRouterCaddyfile.indexOf(marker));
+if (orderedRouterRoutePositions.some((position, index) =>
+  position < 0 || (index > 0 && position <= orderedRouterRoutePositions[index - 1]))) {
+  fail("release router route order can mask app-backed readiness or persistent liveness");
+}
+if (!releaseRouterCaddyfile.includes("header_up X-Forwarded-For {http.request.header.X-Forwarded-For}")
+  || !releaseRouterCaddyfile.includes("header_up X-Forwarded-Proto {http.request.header.X-Forwarded-Proto}")) {
+  fail("release router changes the reviewed one-hop forwarded-client contract");
+}
+const routerEntrypoint = readFileSync("deploy/release/router/entrypoint.sh", "utf8")
+  .replaceAll("\r\n", "\n");
+for (const requiredContract of [
+  "readonly state_file=\"$state_directory/mode\"",
+  "mode=maintenance",
+  "state_valid=false",
+  "config=/etc/caddy/Caddyfile.maintenance",
+  "od -An -N32 -tx1 /dev/urandom",
+  "export BUSINESS_FINLYNQ_RELEASE_ACCEPTANCE_TOKEN",
+  "exec caddy run --config \"$config\" --adapter caddyfile",
+]) {
+  if (!routerEntrypoint.includes(requiredContract)) {
+    fail(`release-router fail-closed entrypoint is missing contract: ${requiredContract}`);
+  }
+}
+const dockerfileSource = readFileSync("Dockerfile", "utf8").replaceAll("\r\n", "\n");
+if (!dockerfileSource.includes('ENTRYPOINT ["/usr/local/bin/release-router-entrypoint"]')
+  || !dockerfileSource.includes('CMD ["serve"]')) {
+  fail("release router does not use the fail-closed durable-state entrypoint");
+}
+const routerComposeSource = readFileSync("docker-compose.yml", "utf8").replaceAll("\r\n", "\n");
+if (!/release_router:[\s\S]*?stop_grace_period: 75s\n[\s\S]*?\n  app:/m.test(routerComposeSource)) {
+  fail("release-router stop grace is shorter than its Caddy graceful shutdown window");
+}
+
 const releaseAcceptance = services.release_acceptance;
 if (!releaseAcceptance) fail("release browser-acceptance service is missing");
 if (releaseAcceptance.build?.target !== "acceptance") {
   fail("release browser acceptance does not use the dedicated acceptance image target");
+}
+if (releaseAcceptance.environment?.PLAYWRIGHT_RELEASE_ACCEPTANCE_TOKEN !== "") {
+  fail("release browser acceptance token must be empty outside a controlled cutover stage");
 }
 const expectedAcceptanceCommand = [
   "./node_modules/.bin/playwright",
@@ -726,9 +918,10 @@ for (const resource of [
     fail(`release rehearsal resource is not run-isolated: ${resource.name ?? "unnamed"}`);
   }
 }
-const rehearsalAppPort = (releaseRehearsal.services?.app?.ports ?? []).find((port) => port.target === 3000);
-if (rehearsalAppPort?.host_ip !== "127.0.0.1" || rehearsalAppPort?.published !== "3311") {
-  fail("release rehearsal app is not restricted to its unique loopback port");
+const rehearsalRouterPort = (releaseRehearsal.services?.release_router?.ports ?? [])
+  .find((port) => port.target === 3000);
+if (rehearsalRouterPort?.host_ip !== "127.0.0.1" || rehearsalRouterPort?.published !== "3311") {
+  fail("release rehearsal router is not restricted to its unique loopback port");
 }
 
 const initialResourceEnvironment = {
@@ -765,6 +958,7 @@ const initialActiveResources = {
   business_finlynq_evidence: "business_finlynq_private_evidence",
   business_finlynq_egress: "business_finlynq_egress",
   business_finlynq_scanner_egress: "business_finlynq_egress_scanner",
+  business_finlynq_frontend: "business_finlynq_private-frontend",
   business_finlynq_edge: "business_finlynq_edge",
 };
 for (const [logicalName, resourceName] of Object.entries(initialActiveResources)) {
@@ -810,6 +1004,18 @@ for (const resource of [
   if (!resource.name?.startsWith("business_finlynq_development_")) {
     fail(`development resource is not deployment-isolated: ${resource.name ?? "unnamed"}`);
   }
+}
+const developmentApp = developmentRendered.services?.app;
+const developmentRouter = developmentRendered.services?.release_router;
+const developmentRouterPort = (developmentRouter?.ports ?? []).find((port) => port.target === 3000);
+if (!developmentApp || !developmentRouter || (developmentApp.ports ?? []).length > 0
+  || developmentApp.networks?.business_finlynq_edge
+  || (developmentApp.networks?.business_finlynq_frontend?.aliases ?? []).join(",") !== "release-app"
+  || developmentRouterPort?.host_ip !== "127.0.0.1" || developmentRouterPort?.published !== "3200"
+  || (developmentRouter.networks?.business_finlynq_edge?.aliases ?? []).join(",") !== "development-app"
+  || developmentRendered.networks?.business_finlynq_frontend?.name
+    !== "business_finlynq_development_private-frontend") {
+  fail("development does not preserve the isolated release-router topology");
 }
 
 const rollbackImageId = `sha256:${"b".repeat(64)}`;

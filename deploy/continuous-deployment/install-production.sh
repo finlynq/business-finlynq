@@ -12,6 +12,8 @@ readonly deployment_environment="$configuration_directory/continuous-deployment.
 readonly deploy_target="/usr/local/sbin/business-finlynq-deploy-main"
 readonly service_target="/etc/systemd/system/business-finlynq-continuous-deployment.service"
 readonly timer_target="/etc/systemd/system/business-finlynq-continuous-deployment.timer"
+readonly attestation_cache_parent="/var/cache/business-finlynq"
+readonly attestation_cache_directory="$attestation_cache_parent/github-attestations"
 
 fail() {
   printf 'Business Finlynq production deployment installation failed: %s\n' "$*" >&2
@@ -47,10 +49,30 @@ done
 [[ -f "$known_hosts_input" && ! -L "$known_hosts_input" && -s "$known_hosts_input" ]] \
   || fail "--receiver-known-hosts-file must identify a regular non-empty file"
 
-for command_name in chmod chown cmp getent install mktemp mv readlink rm ssh-keygen \
-  stat systemctl; do
+readonly github_cli="/usr/bin/gh"
+for command_name in awk chmod chown cmp getent grep install mktemp mv readlink rm \
+  ssh-keygen stat systemctl; do
   command -v "$command_name" >/dev/null 2>&1 \
     || fail "required command is unavailable: $command_name"
+done
+[[ -f "$github_cli" && ! -L "$github_cli" \
+  && "$(stat -c '%u:%g:%a' -- "$github_cli")" == 0:0:755 ]] \
+  || fail "GitHub CLI must be the root-owned executable /usr/bin/gh"
+gh_version="$("$github_cli" --version | awk 'NR == 1 { print $3 }')" \
+  || fail "GitHub CLI version could not be read"
+[[ "$gh_version" =~ ^[0-9]+[.][0-9]+[.][0-9]+$ ]] \
+  || fail "GitHub CLI returned an invalid version"
+IFS=. read -r gh_major gh_minor gh_patch <<<"$gh_version" \
+  || fail "GitHub CLI version could not be parsed"
+[[ "$gh_major" =~ ^[0-9]+$ && "$gh_minor" =~ ^[0-9]+$ \
+  && "$gh_patch" =~ ^[0-9]+$ \
+  && ( "$gh_major" -gt 2 || ( "$gh_major" -eq 2 && "$gh_minor" -ge 100 ) ) ]] \
+  || fail "GitHub CLI 2.100.0 or newer is required for safe attestation verification"
+for attestation_flag in --cert-identity --cert-oidc-issuer \
+  --deny-self-hosted-runners --predicate-type --signer-digest --source-digest \
+  --source-ref --bundle; do
+  "$github_cli" attestation verify --help | grep -F -- "$attestation_flag" >/dev/null \
+    || fail "GitHub CLI lacks required attestation policy flag: $attestation_flag"
 done
 for source_file in deploy-main.sh business-finlynq-continuous-deployment.service \
   business-finlynq-continuous-deployment.timer; do
@@ -63,6 +85,16 @@ done
 [[ -f "$configuration_directory/operations.env" \
   && "$(stat -c '%U:%G:%a' -- "$configuration_directory/operations.env")" == root:deploy:600 ]] \
   || fail "the canonical operations environment is unavailable or unsafe"
+
+[[ ! -L "$attestation_cache_parent" && ! -L "$attestation_cache_directory" ]] \
+  || fail "the GitHub attestation cache path is symbolic"
+install -d -o root -g root -m 0700 \
+  -- "$attestation_cache_parent" "$attestation_cache_directory"
+[[ "$(readlink -f -- "$attestation_cache_parent")" == "$attestation_cache_parent" \
+  && "$(readlink -f -- "$attestation_cache_directory")" == "$attestation_cache_directory" \
+  && "$(stat -c '%u:%g:%a' -- "$attestation_cache_parent")" == 0:0:700 \
+  && "$(stat -c '%u:%g:%a' -- "$attestation_cache_directory")" == 0:0:700 ]] \
+  || fail "the GitHub attestation cache is unavailable or unsafe"
 
 ssh-keygen -F "$receiver_host" -f "$known_hosts_input" >/dev/null \
   || fail "the supplied known-hosts file does not pin the receiver host"

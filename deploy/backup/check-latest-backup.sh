@@ -9,12 +9,29 @@ fail() {
 }
 
 emit_evidence="false"
-if (( $# > 1 )); then
-  fail "at most one verifier option is allowed"
-fi
-if (( $# == 1 )); then
-  [[ "$1" == "--emit-evidence" ]] || fail "unknown verifier option"
-  emit_evidence="true"
+manifest_basename=""
+while (( $# > 0 )); do
+  case "$1" in
+    --emit-evidence)
+      [[ "$emit_evidence" == "false" ]] || fail "--emit-evidence may be specified only once"
+      emit_evidence="true"
+      shift
+      ;;
+    --manifest-basename)
+      [[ -z "$manifest_basename" ]] || fail "--manifest-basename may be specified only once"
+      (( $# >= 2 )) || fail "--manifest-basename requires one safe manifest basename"
+      manifest_basename="$2"
+      shift 2
+      ;;
+    *)
+      fail "unknown verifier option"
+      ;;
+  esac
+done
+
+if [[ -n "$manifest_basename" ]]; then
+  [[ "$manifest_basename" =~ ^business_finlynq_[0-9]{8}T[0-9]{6}Z_[A-Za-z0-9_.-]+[.]manifest[.]json$ ]] \
+    || fail "exact manifest basename is unsafe"
 fi
 
 for command_name in awk basename date find flock jq readlink sha256sum stat tr wc; do
@@ -55,29 +72,36 @@ if ! flock --shared --nonblock 9; then
     || fail "backup has held its lock longer than the allowed active window"
   backup_active=true
 fi
-latest_manifest=""
-latest_manifest_name=""
-while IFS= read -r -d '' candidate; do
-  candidate_name="$(basename -- "$candidate")"
-  [[ "$candidate_name" =~ ^business_finlynq_[0-9]{8}T[0-9]{6}Z_[A-Za-z0-9_.-]+\.manifest\.json$ ]] \
-    || continue
-  if [[ -z "$latest_manifest_name" || "$candidate_name" > "$latest_manifest_name" ]]; then
-    latest_manifest="$candidate"
-    latest_manifest_name="$candidate_name"
-  fi
-done < <(find "$BACKUP_OUTPUT_DIR" -maxdepth 1 -type f -name 'business_finlynq_*.manifest.json' -print0)
+selected_manifest=""
+selected_manifest_name=""
+if [[ -n "$manifest_basename" ]]; then
+  selected_manifest="$BACKUP_OUTPUT_DIR/$manifest_basename"
+  selected_manifest_name="$manifest_basename"
+else
+  while IFS= read -r -d '' candidate; do
+    candidate_name="$(basename -- "$candidate")"
+    [[ "$candidate_name" =~ ^business_finlynq_[0-9]{8}T[0-9]{6}Z_[A-Za-z0-9_.-]+\.manifest\.json$ ]] \
+      || continue
+    if [[ -z "$selected_manifest_name" || "$candidate_name" > "$selected_manifest_name" ]]; then
+      selected_manifest="$candidate"
+      selected_manifest_name="$candidate_name"
+    fi
+  done < <(find "$BACKUP_OUTPUT_DIR" -maxdepth 1 -type f -name 'business_finlynq_*.manifest.json' -print0)
+fi
 
-[[ -n "$latest_manifest" && -f "$latest_manifest" && ! -L "$latest_manifest" ]] \
-  || fail "no completed backup manifest exists"
-latest_manifest="$(readlink -f -- "$latest_manifest")"
-case "$latest_manifest" in
+[[ -n "$selected_manifest" && -f "$selected_manifest" && ! -L "$selected_manifest" ]] \
+  || fail "selected completed backup manifest does not exist or is unsafe"
+selected_manifest="$(readlink -f -- "$selected_manifest")"
+case "$selected_manifest" in
   "$BACKUP_OUTPUT_DIR"/*) ;;
   *) fail "backup manifest resolves outside the backup directory" ;;
 esac
 
-manifest_name="$(basename -- "$latest_manifest")"
+manifest_name="$(basename -- "$selected_manifest")"
+[[ -z "$manifest_basename" || "$manifest_name" == "$manifest_basename" ]] \
+  || fail "resolved backup manifest does not match the requested basename"
 [[ "$manifest_name" =~ ^business_finlynq_[0-9]{8}T[0-9]{6}Z_[A-Za-z0-9_.-]+\.manifest\.json$ ]] \
-  || fail "newest backup manifest has an unexpected name"
+  || fail "selected backup manifest has an unexpected name"
 backup_prefix="${manifest_name%.manifest.json}"
 filename_payload="${backup_prefix#business_finlynq_}"
 filename_timestamp="${filename_payload%%_*}"
@@ -85,59 +109,59 @@ archive_name="${backup_prefix}.dump.age"
 checksum_name="${backup_prefix}.sha256"
 uploaded_name="${backup_prefix}.uploaded"
 
-schema_version="$(jq -r '.schemaVersion // empty' "$latest_manifest")"
-product="$(jq -r '.product // empty' "$latest_manifest")"
-manifest_archive="$(jq -r '.encryptedArchive // empty' "$latest_manifest")"
-manifest_sha256="$(jq -r '.sha256 // empty' "$latest_manifest")"
-manifest_bytes="$(jq -r '.encryptedBytes // empty' "$latest_manifest")"
-manifest_created_at="$(jq -r '.createdAt // empty' "$latest_manifest")"
-manifest_revision="$(jq -r '.applicationRevision // empty' "$latest_manifest")"
-manifest_source_revision="$(jq -r '.sourceApplicationRevision // .applicationRevision // empty' "$latest_manifest")"
-manifest_tool_revision="$(jq -r '.backupToolRevision // .applicationRevision // empty' "$latest_manifest")"
-manifest_encryption="$(jq -r '.encryption // empty' "$latest_manifest")"
-manifest_format="$(jq -r '.format // empty' "$latest_manifest")"
+schema_version="$(jq -r '.schemaVersion // empty' "$selected_manifest")"
+product="$(jq -r '.product // empty' "$selected_manifest")"
+manifest_archive="$(jq -r '.encryptedArchive // empty' "$selected_manifest")"
+manifest_sha256="$(jq -r '.sha256 // empty' "$selected_manifest")"
+manifest_bytes="$(jq -r '.encryptedBytes // empty' "$selected_manifest")"
+manifest_created_at="$(jq -r '.createdAt // empty' "$selected_manifest")"
+manifest_revision="$(jq -r '.applicationRevision // empty' "$selected_manifest")"
+manifest_source_revision="$(jq -r '.sourceApplicationRevision // .applicationRevision // empty' "$selected_manifest")"
+manifest_tool_revision="$(jq -r '.backupToolRevision // .applicationRevision // empty' "$selected_manifest")"
+manifest_encryption="$(jq -r '.encryption // empty' "$selected_manifest")"
+manifest_format="$(jq -r '.format // empty' "$selected_manifest")"
 
 [[ "$schema_version" == "1" && "$product" == "business-finlynq" ]] \
-  || fail "newest backup manifest has an invalid schema or product"
+  || fail "selected backup manifest has an invalid schema or product"
 [[ "$manifest_archive" == "$archive_name" ]] \
-  || fail "newest backup manifest references an unexpected archive"
+  || fail "selected backup manifest references an unexpected archive"
 [[ "$manifest_sha256" =~ ^[a-f0-9]{64}$ ]] \
-  || fail "newest backup manifest has an invalid SHA-256"
+  || fail "selected backup manifest has an invalid SHA-256"
 [[ "$manifest_bytes" =~ ^[1-9][0-9]*$ ]] \
-  || fail "newest backup manifest has an invalid encrypted byte count"
+  || fail "selected backup manifest has an invalid encrypted byte count"
 [[ "$manifest_created_at" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] \
-  || fail "newest backup manifest has an invalid creation timestamp"
+  || fail "selected backup manifest has an invalid creation timestamp"
 compact_created_at="${manifest_created_at//-/}"
 compact_created_at="${compact_created_at//:/}"
 [[ "$compact_created_at" == "$filename_timestamp" ]] \
-  || fail "newest backup creation timestamp does not match its filename"
+  || fail "selected backup creation timestamp does not match its filename"
 [[ "$manifest_revision" =~ ^([a-f0-9]{40}|[a-f0-9]{64})$ && ! "$manifest_revision" =~ ^0+$ ]] \
-  || fail "newest backup manifest has an invalid application revision"
+  || fail "selected backup manifest has an invalid application revision"
 [[ "$manifest_source_revision" == "$manifest_revision" ]] \
-  || fail "newest backup source revision is inconsistent with applicationRevision"
+  || fail "selected backup source revision is inconsistent with applicationRevision"
 [[ "$manifest_tool_revision" =~ ^([a-f0-9]{40}|[a-f0-9]{64})$ && ! "$manifest_tool_revision" =~ ^0+$ ]] \
-  || fail "newest backup manifest has an invalid backup-tool revision"
+  || fail "selected backup manifest has an invalid backup-tool revision"
 [[ "$manifest_encryption" == "age" ]] \
-  || fail "newest backup manifest has an unexpected encryption format"
+  || fail "selected backup manifest has an unexpected encryption format"
 [[ "$manifest_format" == "postgres-custom" ]] \
-  || fail "newest backup manifest has an unexpected archive format"
+  || fail "selected backup manifest has an unexpected archive format"
 
 current_epoch="$(date +%s)"
 created_epoch=""
 created_epoch="$(date -u --date="$manifest_created_at" +%s 2>/dev/null)" \
-  || fail "newest backup creation timestamp is not a real UTC date"
+  || fail "selected backup creation timestamp is not a real UTC date"
 [[ "$created_epoch" =~ ^[0-9]+$ && "$created_epoch" -le "$current_epoch" ]] \
-  || fail "newest backup creation timestamp is in the future"
+  || fail "selected backup creation timestamp is in the future"
 age_seconds=$((current_epoch - created_epoch))
 (( age_seconds <= BACKUP_MAX_AGE_HOURS * 3600 )) \
-  || fail "newest backup exceeds the maximum allowed age"
+  || fail "selected backup exceeds the maximum allowed age"
 
 archive_path="$BACKUP_OUTPUT_DIR/$archive_name"
 checksum_path="$BACKUP_OUTPUT_DIR/$checksum_name"
 uploaded_path="$BACKUP_OUTPUT_DIR/$uploaded_name"
 for artifact in "$archive_path" "$checksum_path"; do
   [[ -f "$artifact" && ! -L "$artifact" && -s "$artifact" ]] \
-    || fail "newest backup set is incomplete or contains a symbolic link"
+    || fail "selected backup set is incomplete or contains a symbolic link"
   resolved_artifact="$(readlink -f -- "$artifact")"
   case "$resolved_artifact" in
     "$BACKUP_OUTPUT_DIR"/*) ;;
@@ -148,26 +172,26 @@ done
 checksum_lines="$(wc -l <"$checksum_path" | tr -d '[:space:]')"
 checksum_record="$(<"$checksum_path")"
 [[ "$checksum_lines" == "1" && "$checksum_record" == "$manifest_sha256  $archive_name" ]] \
-  || fail "newest backup checksum file is invalid or inconsistent"
+  || fail "selected backup checksum file is invalid or inconsistent"
 actual_sha256="$(sha256sum "$archive_path" | awk '{print $1}')"
 [[ "$actual_sha256" == "$manifest_sha256" ]] \
-  || fail "newest encrypted backup checksum does not match"
+  || fail "selected encrypted backup checksum does not match"
 actual_bytes="$(stat -c '%s' -- "$archive_path")"
 [[ "$actual_bytes" == "$manifest_bytes" ]] \
-  || fail "newest encrypted backup size does not match its manifest"
+  || fail "selected encrypted backup size does not match its manifest"
 
 if [[ "$BACKUP_REQUIRE_OFFSITE_MARKER" == "true" ]]; then
   [[ -f "$uploaded_path" && ! -L "$uploaded_path" && -s "$uploaded_path" ]] \
-    || fail "newest backup has no verified off-site upload marker"
+    || fail "selected backup has no verified off-site upload marker"
   uploaded_record="$(<"$uploaded_path")"
   [[ "$uploaded_record" == "$manifest_created_at remote="* \
     && "$uploaded_record" != "$manifest_created_at remote=" ]] \
-    || fail "newest backup off-site upload marker is invalid"
+    || fail "selected backup off-site upload marker is invalid"
 fi
 
 if [[ "$backup_active" == "true" ]]; then
   # A running backup is not itself evidence of recoverability. Exit 75 only
-  # after the most recent completed recovery point has independently passed
+  # after the selected completed recovery point has independently passed
   # freshness, checksum, size, and required off-site verification above.
   printf '%s\n' "Backup verification deferred while an encrypted backup is active"
   exit 75
@@ -183,6 +207,7 @@ if [[ "$emit_evidence" == "true" ]]; then
     --arg applicationRevision "$manifest_revision" \
     --arg sourceApplicationRevision "$manifest_source_revision" \
     --arg backupToolRevision "$manifest_tool_revision" \
+    --arg manifestBasename "$manifest_name" \
     --arg encryptedArchive "$manifest_archive" \
     --argjson encryptedBytes "$manifest_bytes" \
     --arg sha256 "$manifest_sha256" \
@@ -191,7 +216,8 @@ if [[ "$emit_evidence" == "true" ]]; then
     '{schemaVersion: $schemaVersion, product: $product, createdAt: $createdAt,
       applicationRevision: $applicationRevision,
       sourceApplicationRevision: $sourceApplicationRevision,
-      backupToolRevision: $backupToolRevision, encryptedArchive: $encryptedArchive,
+      backupToolRevision: $backupToolRevision, manifestBasename: $manifestBasename,
+      encryptedArchive: $encryptedArchive,
       encryptedBytes: $encryptedBytes, sha256: $sha256,
       encryption: $encryption, format: $format}'
 fi

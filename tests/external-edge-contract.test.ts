@@ -107,6 +107,75 @@ printf 'requests=%s\n' "$(<"$request_count_file")"
     },
   );
 
+const publicMaintenanceFixture = (
+  options: {
+    status?: string;
+    body?: string;
+    retryAfter?: string;
+    requestId?: string;
+  } = {},
+) =>
+  spawnSync(
+    bashExecutable ?? "/bin/bash",
+    [
+      "-c",
+      `
+set -Eeuo pipefail
+temporary_files=()
+warmup_host=none
+production_hostname=example.test
+public_warmup_attempts=3
+headers="$(mktemp)"
+trace="$(mktemp)"
+trap 'rm -f -- "\${temporary_files[@]}" "$headers" "$trace"' EXIT
+fail() { printf '%s\n' "$*" >&2; exit 1; }
+verify_public_liveness_contract() { printf 'liveness\n' >>"$trace"; }
+verify_security_headers() { printf 'security\n' >>"$trace"; }
+http_redirect_is_exact() { printf 'redirect\n' >>"$trace"; }
+tls_is_valid() { printf 'tls\n' >>"$trace"; }
+jq() {
+  local input_path
+  input_path="\${!#}"
+  [[ "$(<"$input_path")" == '{"status":"unavailable"}' ]]
+}
+curl() {
+  local dump_header="" output_file=""
+  while (( $# > 0 )); do
+    case "$1" in
+      --dump-header) dump_header="$2"; shift 2 ;;
+      --output) output_file="$2"; shift 2 ;;
+      *) shift ;;
+    esac
+  done
+  {
+    printf 'HTTP/2 %s\r\n' "$FIXTURE_STATUS"
+    printf 'cache-control: no-store, max-age=0\r\n'
+    [[ -z "$FIXTURE_RETRY_AFTER" ]] || printf 'retry-after: %s\r\n' "$FIXTURE_RETRY_AFTER"
+    printf 'content-type: application/json; charset=utf-8\r\n'
+    printf 'x-request-id: %s\r\n' "$FIXTURE_REQUEST_ID"
+    printf '\r\n'
+  } >"$dump_header"
+  printf '%s\n' "$FIXTURE_BODY" >"$output_file"
+  printf '%s' "$FIXTURE_STATUS"
+}
+${extractShellFunction(verifier, "public_maintenance_contract_is_valid")}
+public_maintenance_contract_is_valid example.test 192.0.2.10 '${"a".repeat(64)}'
+cat "$trace"
+`,
+    ],
+    {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        FIXTURE_STATUS: options.status ?? "503",
+        FIXTURE_BODY: options.body ?? '{"status":"unavailable"}',
+        FIXTURE_RETRY_AFTER: options.retryAfter ?? "5",
+        FIXTURE_REQUEST_ID:
+          options.requestId ?? "123e4567-e89b-42d3-a456-426614174000",
+      },
+    },
+  );
+
 describe("externally managed edge contract", () => {
   it("makes the inherited edge profile incapable of owning a listener", () => {
     expect(overlay).toContain("profiles: !override [external-edge-disabled]");
@@ -177,13 +246,17 @@ describe("externally managed edge contract", () => {
     expect(verifier).toContain("== 0:0:444");
     expect(verifier).toContain("BUSINESS_FINLYNQ_EXTERNAL_EDGE_ACTIVE_CONFIG_SHA256");
     expect(verifier).toContain("http://127.0.0.1:2019/config/");
+    expect(verifier).toContain("external edge must keep Caddy credential redaction enabled");
+    expect(verifier).toContain("log_credentials");
+    expect(verifier).toContain('select(has("should_log_credentials"))');
+    expect(verifier).toContain("loaded external edge configuration exposes credential headers");
   });
 
   it("supports a dev-first preflight without weakening full acceptance", () => {
-    expect(verifier).toContain('[[ "$scope" == preflight || "$scope" == development || "$scope" == full ]]');
+    expect(verifier).toContain('[[ "$scope" == preflight || "$scope" == development || "$scope" == production');
     expect(verifier).toContain("production preflight requires an empty Business Compose project");
-    expect(verifier).toContain('if [[ "$scope" == full ]]; then');
-    expect(verifier).toContain("backend_alias_is_present \"$production_project\"");
+    expect(verifier).toContain('if [[ "$scope" == full || "$scope" == production ]]; then');
+    expect(verifier).toContain("verify_release_router_runtime \"$production_project\"");
     expect(verifier).toContain('public_contract_is_valid "$production_hostname"');
     expect(verifier).toContain('public_contract_is_valid "$development_hostname"');
     expect(verifier).toContain('http_redirect_is_exact "$epm_hostname"');
@@ -194,7 +267,156 @@ describe("externally managed edge contract", () => {
     expect(verifier).toContain('--resolve "$hostname:80:$address"');
     expect(verifier).toContain('-connect "$address:443" -servername "$hostname"');
     expect(verifier).toContain('--resolve "$callback_hostname:443:$address"');
-    expect(verifier.match(/curl --disable --noproxy '\*'/gu)).toHaveLength(8);
+    expect(verifier.match(/curl --disable --noproxy '\*'/gu)).toHaveLength(9);
+  });
+
+  it("attests the release router as the exact hardened public-alias owner", () => {
+    expect(verifier).toContain('container_for_service "$project" release_router');
+    expect(verifier).toContain(
+      'readonly release_router_reference="business-finlynq-release-router:v1"',
+    );
+    expect(verifier).toContain('readonly release_router_revision="release-router-v1"');
+    expect(verifier).toContain('readonly release_router_contract="v1"');
+    expect(verifier).toContain('expected_image="$release_router_reference"');
+    expect(verifier).toContain(
+      'Config.Labels["org.opencontainers.image.revision"] == $routerRevision',
+    );
+    expect(verifier).toContain(
+      'Config.Labels["com.business-finlynq.release-router.contract"] == $routerContract',
+    );
+    expect(verifier).toContain('"$router_image_id" == "$tagged_image_id"');
+    expect(verifier).not.toContain('.Config.Image == $image');
+    expect(verifier).toContain('.Config.User == "10001:10001"');
+    expect(verifier).toContain('.HostConfig.ReadonlyRootfs == true');
+    expect(verifier).toContain('.HostConfig.CapDrop // []');
+    expect(verifier).toContain('["no-new-privileges:true"]');
+    expect(verifier).toContain('and ((.[0].Mounts // []) | length) == 1');
+    expect(verifier).toContain('.[0].Mounts[0].Name == $stateVolume');
+    expect(verifier).toContain('.[0].Mounts[0].Destination == "/state"');
+    expect(verifier).toContain('"$router_mode" == "$expected_router_mode"');
+    expect(verifier).toContain('"$expected_router_mode" == active-or-maintenance');
+    const aliasOwnership = extractShellFunction(verifier, "verify_unique_network_alias_owner");
+    expect(aliasOwnership).toContain('--filter "network=$network"');
+    expect(aliasOwnership).not.toContain("com.docker.compose.project");
+    expect(aliasOwnership).toContain('[[ "$container" == "$expected_full_id" ]]');
+    expect(aliasOwnership).toContain("alias must be owned exactly once on $network");
+    expect(verifier).toContain(
+      '"$ingress_network" "$alias" "$router" "$project public backend"',
+    );
+    expect(verifier).toContain(
+      '"$frontend_network" release-app "$app" "$project private application"',
+    );
+    expect(verifier).toContain('/_business-finlynq/release-router/live');
+    expect(verifier).toContain('.status == "release-router-live"');
+    expect(verifier.match(/--header='X-Business-Finlynq-Internal-Health: 1'/gu)).toHaveLength(2);
+    expect(verifier).toContain('http://production-app:3000/api/health');
+    expect(verifier).toContain('http://development-app:3000/api/health');
+    expect(verifier).toContain('.status == "ready" and .revision == $revision');
+    expect(verifier).toContain("production router does not preserve the outer active-health response");
+    expect(verifier).toContain("development router does not preserve the outer active-health response");
+  });
+
+  it("tightly gates first-router forward repair without requiring an application upstream", () => {
+    expect(verifier).toContain("--allow-first-router-forward-repair");
+    expect(verifier).toContain('first_router_forward_repair_journal_sha256="$2"');
+    expect(verifier).toContain('production_router_mode="maintenance"');
+    expect(verifier).toContain('"$scope" == production');
+    expect(verifier).toContain('"$expected_production_revision" == "$configured_production_revision"');
+    expect(verifier).toContain(
+      '"${RELEASE_EXECUTION_ACK:-}" =~ ^release:${configured_production_revision}:[a-z0-9][a-z0-9._-]{2,30}$',
+    );
+    expect(verifier).toContain(
+      '"forward-repair:$configured_production_revision:$first_router_forward_repair_journal_sha256"',
+    );
+    expect(verifier).toContain("maintenance false");
+    expect(verifier).toContain('if [[ "$require_upstream" == true ]]; then');
+    expect(verifier).toContain("public_maintenance_contract_is_valid");
+    expect(verifier).toContain("forward-repair readiness must return deterministic HTTP 503");
+    expect(verifier).toContain('.status == "unavailable"');
+    expect(verifier).toContain("the maintenance router returned an unexpected liveness response");
+  });
+
+  it.skipIf(bashExecutable === null)(
+    "accepts exact public maintenance during journal-authorized forward repair",
+    () => {
+      const result = publicMaintenanceFixture();
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.stdout).toContain("liveness");
+      expect(result.stdout).toContain("security");
+      expect(result.stdout).toContain("redirect");
+      expect(result.stdout).toContain("tls");
+    },
+  );
+
+  it.skipIf(bashExecutable === null)(
+    "rejects a non-maintenance public response during forward repair",
+    () => {
+      const result = publicMaintenanceFixture({ status: "200" });
+      expect(result.status).not.toBe(0);
+      expect(result.stderr).toContain("must return deterministic HTTP 503");
+    },
+  );
+
+  it.skipIf(bashExecutable === null)(
+    "rejects a non-deterministic public maintenance body during forward repair",
+    () => {
+      const result = publicMaintenanceFixture({ body: '{"status":"ready"}' });
+      expect(result.status).not.toBe(0);
+      expect(result.stderr).toContain("body is not deterministic maintenance");
+    },
+  );
+
+  it.skipIf(bashExecutable === null)(
+    "rejects a missing public maintenance retry boundary during forward repair",
+    () => {
+      const result = publicMaintenanceFixture({ retryAfter: "" });
+      expect(result.status).not.toBe(0);
+      expect(result.stderr).toContain("missing the reviewed retry boundary");
+    },
+  );
+
+  it("makes the production monitor require and independently attest the release router", () => {
+    expect(monitor).toContain("expected_services=(database release_router app)");
+    expect(monitor).toContain(
+      'readonly release_router_reference="business-finlynq-release-router:v1"',
+    );
+    expect(monitor).toContain('readonly release_router_revision="release-router-v1"');
+    expect(monitor).toContain('readonly release_router_contract="v1"');
+    expect(monitor).toContain('release_router_expected_image="$release_router_reference"');
+    expect(monitor).toContain(
+      'Config.Labels["org.opencontainers.image.revision"] == $routerRevision',
+    );
+    expect(monitor).toContain(
+      'Config.Labels["com.business-finlynq.release-router.contract"] == $routerContract',
+    );
+    expect(monitor).toContain('"$release_router_observed_image_id" != "$release_router_tagged_image_id"');
+    expect(monitor).not.toContain('.Config.Image == $image');
+    expect(monitor).toContain('.HostConfig.ReadonlyRootfs == true');
+    expect(monitor).toContain('.HostConfig.CapDrop // []');
+    expect(monitor).toContain('["no-new-privileges:true"]');
+    expect(monitor).toContain('and ((.[0].Mounts // []) | length) == 1');
+    expect(monitor).toContain('.[0].Mounts[0].Name == $stateVolume');
+    expect(monitor).toContain('.[0].Mounts[0].Destination == "/state"');
+    expect(monitor).toContain('[[ "$release_router_durable_mode" == active \\');
+    expect(monitor).toContain('monitor_router_mode="active"');
+    expect(monitor).toContain("--allow-transitional-router-maintenance");
+    expect(monitor).toContain("--allow-production-router-maintenance");
+    expect(monitor).toContain('["business_finlynq_edge", "business_finlynq_private-frontend"]');
+    expect(monitor).toContain('. == "production-app"');
+    expect(monitor).toContain("production public backend alias must be owned exactly once by release_router");
+    expect(monitor).toContain("--filter 'network=business_finlynq_edge'");
+    expect(monitor).toContain("--filter 'network=business_finlynq_private-frontend'");
+    expect(monitor).toContain("private application alias must be owned exactly once by app");
+    expect(monitor).toContain('"http://127.0.0.1:3100/_business-finlynq/release-router/live"');
+    expect(monitor).toContain('"http://127.0.0.1:3100/api/health"');
+    expect(monitor).toContain("release-router outer active-health response failed");
+    expect(monitor).toContain('.status == "release-router-live"');
+  });
+
+  it("keeps production reconciliation scoped away from development and EPM health", () => {
+    expect(reconciler).toContain(
+      'exec bash "$repository/deploy/edge/verify-external-edge.sh" --scope production',
+    );
   });
 
   it.skipIf(bashExecutable === null)(
@@ -261,13 +483,13 @@ describe("externally managed edge contract", () => {
 
   it("keeps public and TLS checks mandatory in release and monitoring", () => {
     expect(release).toContain('MONITOR_EDGE_MODE" == "$edge_mode"');
-    expect(release).toContain("67-external-edge-contract.log");
+    expect(release).toContain("77-external-edge-contract.log");
     expect(release).toContain("deploy/edge/docker-compose.external.yml");
     expect(rollback).toContain("deploy/edge/docker-compose.external.yml");
     expect(monitor).toContain("MONITOR_EXPECT_EDGE\" == true");
     expect(monitor).toContain("verify-external-edge.sh");
-    expect(monitor).toContain("--scope full");
-    expect(release).toContain("--scope full --warmup-host production");
+    expect(monitor).toContain("--scope production");
+    expect(release).toContain("--scope production --warmup-host production");
     expect(monitor).not.toContain("--warmup-host");
     expect(reconciler).toContain('if [[ "$edge_mode" == external ]]');
   });
@@ -280,16 +502,35 @@ describe("externally managed edge contract", () => {
     expect(verifier).not.toMatch(/readonly [A-Za-z_][A-Za-z0-9_]*="\$\((?!\()/u);
   });
 
-  it("executes edge acceptance only from root-protected or staged exact sources", () => {
+  it("executes development edge acceptance from candidate-owned exact staged sources", () => {
     expect(developmentDeployer.split(/\r?\n/u).slice(0, 5)).toContain("set +x");
-    expect(developmentDeployer).toContain(
+    expect(developmentDeployer).not.toContain(
       '/usr/local/libexec/business-finlynq/deploy/edge/verify-external-edge.sh',
     );
-    expect(developmentDeployer).toContain("/etc/business-finlynq/initial-install-state.json");
-    expect(developmentDeployer).toContain("protected external-edge verifier differs from the install-state inventory");
+    expect(developmentDeployer).not.toContain("/etc/business-finlynq/initial-install-state.json");
     expect(developmentDeployer).not.toContain(
       "/home/deploy/business-finlynq/deploy/edge/verify-external-edge.sh",
     );
+    expect(developmentDeployer).toContain(
+      '"$state_directory/.candidate-edge-verifier.${verifier_revision}.XXXXXX"',
+    );
+    expect(developmentDeployer).toContain(
+      'git_as_deploy show "$verifier_revision:$relative_path" >"$target_path"',
+    );
+    expect(developmentDeployer).toContain(
+      'git_as_deploy rev-parse',
+    );
+    expect(developmentDeployer).toContain(
+      'git_as_deploy hash-object --stdin <"$target_path"',
+    );
+    expect(developmentDeployer).toContain('chown root:root -- "$verifier_path" "$route_path"');
+    expect(developmentDeployer).toContain('chmod 0500 "$verifier_path"');
+    expect(developmentDeployer).toContain('chmod 0400 "$route_path"');
+    expect(developmentDeployer).toContain(
+      'bash "$verifier_path" --scope development --warmup-host development',
+    );
+    expect(developmentDeployer).toContain("--allow-development-router-maintenance");
+    expect(verifier).toContain("development maintenance mode is valid only for the development scope");
     expect(release).toContain(
       'bash "$candidate_source_root/deploy/edge/verify-external-edge.sh"',
     );
@@ -307,9 +548,44 @@ describe("externally managed edge contract", () => {
     expect(developmentInstaller).toContain("com.business-finlynq.edge-owner=external");
     expect(developmentDeployer).toContain("deploy/edge/docker-compose.external.yml");
     expect(developmentDeployer).toContain(
-      '"$protected_external_edge_verifier" --scope development --warmup-host development',
+      'bash "$verifier_path" --scope development --warmup-host development',
     );
+    expect(developmentDeployer).toContain("--allow-development-router-maintenance");
     expect(developmentDeployer).toContain("same-revision development public acceptance failed twice");
+  });
+
+  it("keeps post-cutover production acceptance independent of development health", () => {
+    expect(release).toContain("--scope production --warmup-host production");
+    expect(verifier).toContain('if [[ "$scope" != production ]]; then');
+    expect(verifier).toContain('[[ "$scope" == production ]] || projects_to_check+=("$development_project")');
+    expect(verifier).toContain('[[ "$scope" == production ]] || networks_to_check+=("$development_network")');
+    expect(verifier).toContain('control_hostname="$production_hostname"');
+    expect(verifier).toContain('[[ "$scope" == production ]] && control_hostname="$production_hostname"');
+    expect(verifier).toContain('if [[ "$scope" == full || "$scope" == production ]]; then');
+    expect(verifier).toContain("--allow-production-router-maintenance");
+    expect(verifier).toContain(
+      "production maintenance mode is valid only for the production scope",
+    );
+    expect(verifier).toContain('expected_production_revision=""');
+    expect(verifier).toContain("--expected-production-revision");
+    expect(verifier).toContain(
+      'production_revision="${expected_production_revision:-$configured_production_revision}"',
+    );
+
+    expect(verifier).toContain(
+      'expected_edge_networks_sorted="$(printf \'%s\\n\' "${expected_full_edge_networks[@]}" | sort)"',
+    );
+    expect(verifier).toContain(
+      '[[ "$actual_edge_networks" == "$expected_edge_networks_sorted" ]]',
+    );
+    expect(verifier).toContain("length == 5");
+    expect(verifier).toContain('--arg secretSource "$epm_secret_source"');
+    expect(verifier).toContain(
+      "external edge mounts differ from the protected full Caddy and EPM inventory",
+    );
+    expect(verifier).toContain(
+      'if [[ "$scope" != production ]]; then\n  development_outer_health=',
+    );
   });
 
   it.skipIf(process.platform === "win32")(

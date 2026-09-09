@@ -261,7 +261,7 @@ for (const expected of [
   "sha256sum",
   "encryptedBytes",
   "applicationRevision",
-  "newest backup off-site upload marker is invalid",
+  "selected backup off-site upload marker is invalid",
 ]) requireText(latestBackupChecker, expected, "isolated latest-backup checker");
 if (latestBackupChecker.includes("flock --unlock 9")) {
   throw new Error("isolated latest-backup checker releases its shared lock before verification completes");

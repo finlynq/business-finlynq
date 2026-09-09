@@ -35,6 +35,19 @@ readonly external_edge_verifier_root="/usr/local/libexec/business-finlynq"
 readonly external_edge_verifier_directory="$external_edge_verifier_root/deploy/edge"
 readonly external_edge_verifier_target="$external_edge_verifier_directory/verify-external-edge.sh"
 readonly external_edge_verifier_route_target="$external_edge_verifier_directory/Caddyfile.business-external"
+readonly release_router_reference="business-finlynq-release-router:v1"
+readonly release_router_revision="release-router-v1"
+readonly release_router_contract="v1"
+readonly release_router_build_project="business-finlynq-release-router-build-v1"
+readonly release_router_state_volume="business_finlynq_private-release-router-state-v1"
+readonly release_router_state_volume_logical="business_finlynq_release_router_state"
+readonly production_signal_repository="finlynq/business-finlynq"
+readonly production_signal_certificate_identity="https://github.com/finlynq/business-finlynq/.github/workflows/signal-production-deployment.yml@refs/heads/main"
+readonly production_signal_workflow_path=".github/workflows/signal-production-deployment.yml"
+readonly production_signal_workflow_sha256="33d8b4baf8c2aa92697f794a92f11da8f057de0670d8a519f1592c64ff836ef7"
+readonly quality_gate_workflow_path=".github/workflows/ci.yml"
+readonly quality_gate_workflow_sha256="8145616f28ec3cf61a4421d8d35874740e517c51167a687433f3d6a7a5a50d4f"
+readonly github_cli="/usr/bin/gh"
 readonly clean_path="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
 fail() {
@@ -76,6 +89,27 @@ checked_file_sha256() {
   checksum_output="$(sha256sum -- "$selected_file")" || return 1
   read -r digest remainder <<<"$checksum_output" || return 1
   [[ "$digest" =~ ^[a-f0-9]{64}$ && -n "$remainder" ]] || return 1
+  printf '%s' "$digest"
+}
+
+checked_release_router_config_sha256() {
+  local router_configuration_directory="$repository/deploy/release/router"
+  local digest
+  [[ -d "$router_configuration_directory" \
+    && ! -L "$router_configuration_directory" \
+    && -f "$router_configuration_directory/Caddyfile" \
+    && ! -L "$router_configuration_directory/Caddyfile" \
+    && -f "$router_configuration_directory/Caddyfile.maintenance" \
+    && ! -L "$router_configuration_directory/Caddyfile.maintenance" \
+    && -f "$router_configuration_directory/entrypoint.sh" \
+    && ! -L "$router_configuration_directory/entrypoint.sh" ]] \
+    || return 1
+  digest="$(
+    cd -- "$router_configuration_directory" \
+      && sha256sum Caddyfile Caddyfile.maintenance entrypoint.sh \
+      | awk '{print $1}' | sha256sum | awk '{print $1}'
+  )" || return 1
+  [[ "$digest" =~ ^[a-f0-9]{64}$ ]] || return 1
   printf '%s' "$digest"
 }
 
@@ -182,11 +216,33 @@ elif [[ -n "$finalize_run_id" ]]; then
 fi
 
 for command_name in awk bash chmod chown cmp curl date df docker env find flock getent git grep id \
-  install jq mktemp mv nproc openssl readlink rm runuser sha256sum sort stat sync \
-  sleep systemctl timedatectl tr; do
+  install jq mkdir mktemp mv nproc openssl readlink rm runuser sha256sum sort stat sync \
+  sleep systemctl timedatectl timeout tr; do
   command -v "$command_name" >/dev/null 2>&1 \
     || fail "required command is unavailable: $command_name"
 done
+[[ -f "$github_cli" && ! -L "$github_cli" \
+  && "$(stat -c '%u:%g:%a' -- "$github_cli")" == 0:0:755 ]] \
+  || fail "GitHub CLI must be the root-owned executable /usr/bin/gh"
+
+require_secure_github_cli() {
+  local attestation_flag gh_version gh_help gh_major gh_minor gh_patch
+  gh_version="$("$github_cli" --version | awk 'NR == 1 { print $3 }')" || return 1
+  [[ "$gh_version" =~ ^[0-9]+[.][0-9]+[.][0-9]+$ ]] || return 1
+  IFS=. read -r gh_major gh_minor gh_patch <<<"$gh_version" || return 1
+  [[ "$gh_major" =~ ^[0-9]+$ && "$gh_minor" =~ ^[0-9]+$ \
+    && "$gh_patch" =~ ^[0-9]+$ ]] || return 1
+  (( gh_major > 2 || (gh_major == 2 && gh_minor >= 100) )) || return 1
+  gh_help="$("$github_cli" attestation verify --help)" || return 1
+  for attestation_flag in --cert-identity --cert-oidc-issuer \
+    --deny-self-hosted-runners --predicate-type --signer-digest --source-digest \
+    --source-ref --bundle; do
+    grep -F -- "$attestation_flag" <<<"$gh_help" >/dev/null || return 1
+  done
+}
+require_secure_github_cli \
+  || fail "GitHub CLI 2.100.0 or newer with complete attestation policy support is required"
+
 compose_version="$(docker compose version --short 2>/dev/null)" \
   || fail "Docker Compose v2 is unavailable"
 compose_version="${compose_version#v}"
@@ -248,6 +304,89 @@ git_as_deploy() {
       -C "$repository" "$@"
 }
 
+verify_ci_approved_production_signal() (
+  set -Eeuo pipefail
+  local bundle_file bundle_size signal_asset signal_directory signal_file
+  cleanup_initial_production_signal() {
+    local cleanup_status=$?
+    trap - EXIT HUP INT TERM
+    [[ -z "${signal_directory:-}" ]] || rm -rf -- "$signal_directory"
+    exit "$cleanup_status"
+  }
+  signal_directory="$(mktemp -d /tmp/business-finlynq-initial-production-signal.XXXXXX)"
+  trap cleanup_initial_production_signal EXIT
+  trap 'exit 129' HUP
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+  mkdir -m 0700 -- "$signal_directory/home" "$signal_directory/config" \
+    "$signal_directory/cache"
+  signal_file="$signal_directory/business-finlynq-production-deployment-v1.txt"
+  printf '%s\nrepository=%s\nrevision=%s\n' \
+    'business-finlynq-production-deployment-v1' \
+    "$production_signal_repository" \
+    "$revision" >"$signal_file"
+  chmod 0600 -- "$signal_file"
+  signal_asset="business-finlynq-production-deployment-$revision.attestation.json"
+  bundle_file="$signal_directory/$signal_asset"
+  env -i PATH="$clean_path" LC_ALL=C LANG=C \
+    timeout --signal=TERM --kill-after=10 45 \
+      curl --disable --proto '=https' --proto-redir '=https' --tlsv1.2 \
+        --fail --silent --show-error --location --max-redirs 3 \
+        --connect-timeout 10 --max-time 30 \
+        --retry 2 --retry-delay 1 --retry-connrefused \
+        --max-filesize 16777216 \
+        "https://github.com/$production_signal_repository/releases/download/production-deployment-signals/$signal_asset" \
+        --output "$bundle_file"
+  chmod 0600 -- "$bundle_file"
+  bundle_size="$(stat -c '%s' -- "$bundle_file")" || return 1
+  [[ "$bundle_size" =~ ^[0-9]+$ \
+    && "$bundle_size" -ge 1 && "$bundle_size" -le 16777216 \
+    && "$(stat -c '%u:%g:%a:%h' -- "$bundle_file")" == 0:0:600:1 ]] \
+    || return 1
+  jq -e '
+    type == "object" and
+    .mediaType == "application/vnd.dev.sigstore.bundle.v0.3+json" and
+    (.verificationMaterial | type == "object") and
+    (.dsseEnvelope | type == "object") and
+    .dsseEnvelope.payloadType == "application/vnd.in-toto+json" and
+    (.dsseEnvelope.payload | type == "string" and length > 0) and
+    (.dsseEnvelope.signatures | type == "array" and length >= 1 and
+      all(.[]; type == "object" and (.sig | type == "string" and length > 0)))
+  ' "$bundle_file" >/dev/null
+  env -i \
+    HOME="$signal_directory/home" \
+    GH_CONFIG_DIR="$signal_directory/config" \
+    XDG_CACHE_HOME="$signal_directory/cache" \
+    GH_PROMPT_DISABLED=1 NO_COLOR=1 PATH="$clean_path" LC_ALL=C LANG=C \
+    timeout --signal=TERM --kill-after=15 90 \
+      "$github_cli" attestation verify "$signal_file" \
+        --repo "$production_signal_repository" \
+        --bundle "$bundle_file" \
+        --cert-identity "$production_signal_certificate_identity" \
+        --cert-oidc-issuer https://token.actions.githubusercontent.com \
+        --signer-digest "$revision" \
+        --source-digest "$revision" \
+        --source-ref refs/heads/main \
+        --deny-self-hosted-runners \
+        --predicate-type https://slsa.dev/provenance/v1 >/dev/null
+)
+
+candidate_uses_trusted_production_workflows() {
+  local checksum_output digest expected path remainder workflow_spec
+  for workflow_spec in \
+    "$production_signal_workflow_path:$production_signal_workflow_sha256" \
+    "$quality_gate_workflow_path:$quality_gate_workflow_sha256"; do
+    path="${workflow_spec%%:*}"
+    expected="${workflow_spec#*:}"
+    checksum_output="$(
+      git_as_deploy cat-file blob "$revision:$path" | sha256sum
+    )" || return 1
+    read -r digest remainder <<<"$checksum_output" || return 1
+    [[ "$digest" =~ ^[a-f0-9]{64}$ && -n "$remainder" \
+      && "$digest" == "$expected" ]] || return 1
+  done
+}
+
 [[ -d "$repository/.git" && ! -L "$repository" \
   && "$(stat -c '%U:%G' -- "$repository")" == deploy:deploy ]] \
   || fail "pre-cloned canonical production checkout is unavailable or unsafe"
@@ -267,19 +406,29 @@ repository_status="$(git_as_deploy status --porcelain=v1 --untracked-files=all)"
   && "$repository_revision" == "$revision" \
   && -z "$repository_status" ]] \
   || fail "canonical production checkout, origin, branch, or revision is not exact"
-tag_revision="$(git_as_deploy rev-parse \
-  "refs/tags/deploy-production-$revision^{commit}" 2>/dev/null)" \
-  || fail "the exact immutable production deployment tag could not be inspected"
-[[ "$tag_revision" == "$revision" ]] \
-  || fail "the exact immutable production deployment tag is unavailable"
+candidate_uses_trusted_production_workflows \
+  || fail "initial revision changes the root-approved production or quality-gate workflow"
+verify_ci_approved_production_signal \
+  || fail "the initial revision lacks an exact GitHub-hosted quality-gate attestation"
 
 install -d -o root -g deploy -m 0775 -- "$state_directory"
 [[ "$(stat -c '%U:%G:%a' -- "$state_directory")" == root:deploy:775 ]] \
   || fail "shared deployment state directory is not root:deploy mode 0775"
 [[ ! -L "$host_lock" ]] || fail "shared deployment lock is symbolic"
+if [[ ! -e "$host_lock" ]]; then
+  install -o root -g "$deploy_gid" -m 0660 -- /dev/null "$host_lock"
+fi
+[[ -f "$host_lock" && ! -L "$host_lock" \
+  && "$(readlink -f -- "$host_lock")" == "$host_lock" ]] \
+  || fail "shared deployment lock is unavailable or unsafe"
+chown root:"$deploy_gid" "$host_lock"
+chmod 0660 "$host_lock"
+[[ "$(stat -c '%u:%g:%a:%h' -- "$host_lock")" == "0:$deploy_gid:660:1" ]] \
+  || fail "shared deployment lock must be root:deploy mode 0660"
 exec 8>"$host_lock"
-chown root:root "$host_lock"
-chmod 0600 "$host_lock"
+[[ "$(readlink -f -- /proc/$$/fd/8)" == "$host_lock" \
+  && "$(stat -Lc '%u:%g:%a:%h' -- /proc/$$/fd/8)" == "0:$deploy_gid:660:1" ]] \
+  || fail "the opened shared deployment lock differs from its protected path"
 flock --exclusive --nonblock 8 \
   || fail "another production or development deployment is active"
 
@@ -292,14 +441,16 @@ assert_empty_production_runtime() {
   query="$(docker volume ls --format '{{.Name}}')" \
     || fail "Docker volumes could not be inspected"
   for resource in business_finlynq_pgdata business_finlynq_pgdata_clamav \
-    business_finlynq_caddy_data business_finlynq_caddy_config; do
+    business_finlynq_caddy_data business_finlynq_caddy_config \
+    "$release_router_state_volume"; do
     ! grep -Fxq "$resource" <<<"$query" \
       || fail "production volume already exists: $resource"
   done
   query="$(docker network ls --format '{{.Name}}')" \
     || fail "Docker networks could not be inspected"
   for resource in business_finlynq_private business_finlynq_private_evidence \
-    business_finlynq_egress business_finlynq_egress_scanner business_finlynq_restore_drill; do
+    business_finlynq_egress business_finlynq_egress_scanner \
+    business_finlynq_private-frontend business_finlynq_restore_drill; do
     ! grep -Fxq "$resource" <<<"$query" \
       || fail "production network already exists: $resource"
   done
@@ -569,12 +720,50 @@ quiesce_bootstrap_schedulers
 
 initial_wrapper_active="false"
 wrapper_stop_app_on_failure="false"
+accepted_recovery_router_container=""
+accepted_recovery_router_image=""
+wrapper_force_router_maintenance_on_failure="false"
 contain_initial_wrapper_failure() {
   local exit_status="$?" unit_name containment_failed=false
   local enabled_state enabled_status active_state active_status
-  local service_name container_output container_id stopped_state
+  local service_name container_output container_id stopped_state router_lifecycle
   [[ "$exit_status" != 0 && "$initial_wrapper_active" == true ]] || return "$exit_status"
   set +e
+  if [[ "$wrapper_force_router_maintenance_on_failure" == true ]]; then
+    if [[ ! "$accepted_recovery_router_container" =~ ^[a-f0-9]{64}$ \
+      || ! "$accepted_recovery_router_image" =~ ^sha256:[a-f0-9]{64}$ ]]; then
+      resolve_accepted_router_containment_target >/dev/null 2>&1 \
+        || containment_failed=true
+    fi
+    if [[ "$accepted_recovery_router_container" =~ ^[a-f0-9]{64}$ \
+      && "$accepted_recovery_router_image" =~ ^sha256:[a-f0-9]{64}$ ]]; then
+      router_lifecycle="$(docker inspect --format \
+        '{{.State.Running}}|{{.State.Status}}' \
+        "$accepted_recovery_router_container" 2>/dev/null)"
+      case "$router_lifecycle" in
+        true\|running)
+          if ! (
+            commit_release_router_mode_online \
+              "$accepted_recovery_router_container" maintenance
+            reload_accepted_release_router \
+              "$accepted_recovery_router_container" Caddyfile.maintenance
+          ) >/dev/null 2>&1; then
+            containment_failed=true
+          fi
+          ;;
+        false\|exited)
+          if ! commit_release_router_maintenance_offline \
+            "$accepted_recovery_router_container" \
+            "$accepted_recovery_router_image" >/dev/null 2>&1; then
+            containment_failed=true
+          fi
+          ;;
+        *) containment_failed=true ;;
+      esac
+    else
+      containment_failed=true
+    fi
+  fi
   systemctl daemon-reload >/dev/null 2>&1 || containment_failed=true
   for unit_name in "${operation_timers[@]}" \
     business-finlynq-continuous-deployment.timer \
@@ -629,6 +818,8 @@ contain_initial_wrapper_failure() {
   return "$exit_status"
 }
 trap contain_initial_wrapper_failure EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 assert_path_absent() {
   local selected_path="$1" description="$2"
@@ -1510,9 +1701,31 @@ render_and_verify_initial_configuration() {
     --profile operations --profile auth-email --profile acceptance \
     config --format json)" \
     || fail "initial production Compose configuration could not be rendered"
-  jq -e --arg revision "$revision" '
+  jq -e --arg revision "$revision" \
+    --arg releaseRouterReference "$release_router_reference" \
+    --arg releaseRouterStateVolume "$release_router_state_volume" '
     .name == "business-finlynq" and
+    .services.release_router.image == $releaseRouterReference and
+    ([.services.release_router.volumes[] |
+      select(.type == "volume" and
+        .source == "business_finlynq_release_router_state" and
+        .target == "/state" and ((.read_only // false) == false))] | length) == 1 and
+    ([.services.release_router.volumes[].target] | unique) == ["/state"] and
+    ([.services.release_router.ports[] |
+      select(.target == 3000 and .host_ip == "127.0.0.1" and .protocol == "tcp") |
+      .published] == ["3100"]) and
+    ([.services.release_router.networks | keys[]] | sort) ==
+      ["business_finlynq_edge", "business_finlynq_frontend"] and
+    .services.release_router.networks.business_finlynq_edge.aliases == ["production-app"] and
     .services.app.image == ("business-finlynq-app:" + $revision) and
+    ((.services.app.ports // []) | length) == 0 and
+    ([.services.app.networks | keys[]] | sort) ==
+      ["business_finlynq_egress", "business_finlynq_evidence",
+        "business_finlynq_frontend", "business_finlynq_private"] and
+    .services.app.networks.business_finlynq_frontend.aliases == ["release-app"] and
+    ([.services | to_entries[] |
+      select(((.value.networks.business_finlynq_edge.aliases // []) |
+        index("production-app")) != null) | .key] | sort) == ["release_router"] and
     .services.app.environment.DEMO_LOGIN_ENABLED == "true" and
     .services.app.environment.DEMO_WRITES_ENABLED == "true" and
     .services.app.environment.ACCOUNT_LOGIN_ENABLED == "false" and
@@ -1525,6 +1738,9 @@ render_and_verify_initial_configuration() {
     (.services | has("edge") | not) and
     .networks.business_finlynq_edge.external == true and
     .networks.business_finlynq_edge.name == "business_finlynq_edge" and
+    .networks.business_finlynq_frontend.internal == true and
+    .networks.business_finlynq_frontend.name == "business_finlynq_private-frontend" and
+    .volumes.business_finlynq_release_router_state.name == $releaseRouterStateVolume and
     .services.backup.environment.BACKUP_REQUIRE_OFFSITE == "false" and
     .services.verify_latest_backup.environment.BACKUP_REQUIRE_OFFSITE_MARKER == "false"
   ' <<<"$rendered" >/dev/null \
@@ -1570,10 +1786,27 @@ render_and_verify_initial_configuration() {
       config --format json)" \
       || fail "rehearsal Compose configuration could not be rendered"
     jq -e --arg revision "$revision" --arg project "$rehearsal_project" \
+      --arg releaseRouterReference "$release_router_reference" \
       --arg port "$rehearsal_port" --arg backup "$rehearsal_backup" '
       .name == $project and
+      .services.release_router.image == $releaseRouterReference and
+      ([.services.release_router.volumes[] |
+        select(.type == "volume" and
+          .source == "business_finlynq_release_router_state" and
+          .target == "/state" and ((.read_only // false) == false))] | length) == 1 and
+      ([.services.release_router.volumes[].target] | unique) == ["/state"] and
+      ([.services.release_router.ports[] |
+        select(.target == 3000 and .host_ip == "127.0.0.1" and .protocol == "tcp") |
+        .published] == [$port]) and
+      ([.services.release_router.networks | keys[]] | sort) ==
+        ["business_finlynq_edge", "business_finlynq_frontend"] and
+      .services.release_router.networks.business_finlynq_edge.aliases == ["production-app"] and
       .services.app.image == ("business-finlynq-app:" + $revision) and
-      ([.services.app.ports[] | select(.target == 3000) | .published] == [$port]) and
+      ((.services.app.ports // []) | length) == 0 and
+      ([.services.app.networks | keys[]] | sort) ==
+        ["business_finlynq_egress", "business_finlynq_evidence",
+          "business_finlynq_frontend", "business_finlynq_private"] and
+      .services.app.networks.business_finlynq_frontend.aliases == ["release-app"] and
       .services.app.environment.APP_ORIGIN == ("http://127.0.0.1:" + $port) and
       .services.app.environment.DEMO_LOGIN_ENABLED == "true" and
       .services.app.environment.DEMO_WRITES_ENABLED == "true" and
@@ -1583,6 +1816,10 @@ render_and_verify_initial_configuration() {
       .services.app.environment.BANK_FEEDS_ENABLED == "false" and
       .services.backup.environment.BACKUP_REQUIRE_OFFSITE == "false" and
       .services.verify_latest_backup.environment.BACKUP_REQUIRE_OFFSITE_MARKER == "false" and
+      .networks.business_finlynq_frontend.internal == true and
+      .networks.business_finlynq_frontend.name == ($project + "-frontend") and
+      .volumes.business_finlynq_release_router_state.name ==
+        ($project + "-release-router-state-v1") and
       ([.volumes[].name, .networks[].name] |
         all(.[]; startswith($project + "-"))) and
       ([.services.backup.volumes[] | select(.target == "/backups") | .source] == [$backup])
@@ -1971,11 +2208,46 @@ authorize_pristine_retry() {
   printf '%s' "$new_run_id"
 }
 
+verify_release_image_inventory() {
+  local inventory_file="$1" description="$2"
+  [[ -f "$inventory_file" && ! -L "$inventory_file" ]] \
+    || fail "$description image inventory is unavailable or unsafe"
+  jq -e --arg revision "$revision" \
+    --arg releaseRouterReference "$release_router_reference" \
+    --arg releaseRouterRevision "$release_router_revision" '
+    type == "object" and
+    keys == ["images", "pinnedComposeConfigurationSha256", "schemaVersion"] and
+    .schemaVersion == 1 and
+    (.pinnedComposeConfigurationSha256 | test("^[a-f0-9]{64}$")) and
+    (.images | type == "array" and length == 7) and
+    ([.images[].name] | sort) ==
+      ["acceptance", "app", "authWorker", "database", "migrator", "operations", "router"] and
+    all(.images[];
+      type == "object" and
+      keys == ["imageId", "name", "ociRevision", "reference"] and
+      (.imageId | test("^sha256:[a-f0-9]{64}$")) and
+      if .name == "router" then
+        .ociRevision == $releaseRouterRevision and
+        .reference == $releaseRouterReference
+      else
+        .ociRevision == $revision and
+        .reference == ("business-finlynq-" +
+          (if .name == "authWorker" then "auth-worker"
+           elif .name == "acceptance" then "acceptance"
+           elif .name == "migrator" then "migrator"
+           elif .name == "operations" then "operations"
+           else .name end) + ":" + $revision)
+      end)
+  ' "$inventory_file" >/dev/null \
+    || fail "$description image inventory is invalid"
+}
+
 verify_contained_initial_terminal_evidence_records() {
   local initial_run_id="$1"
   local initial_evidence="$release_evidence_root/$revision/$initial_run_id"
   local terminal_record="${2:-$initial_evidence/90-release-complete.json}"
-  local expected_app_image browser_log_sha compose_environment_sha operations_environment_sha
+  local expected_app_image expected_router_image expected_router_config_sha
+  local browser_log_sha compose_environment_sha operations_environment_sha
   local secret_records secret_record secret_path secret_sha secret_bytes
   local secret_uid secret_gid_value secret_mode secret_count=0 required_record
   local -A expected_secret_paths=()
@@ -1990,29 +2262,45 @@ verify_contained_initial_terminal_evidence_records() {
   [[ -f "$terminal_record" && ! -L "$terminal_record" \
     && "$(stat -c '%u:%a:%h' -- "$terminal_record")" == 0:600:1 ]] \
     || fail "accepted initial terminal record is unavailable or unsafe"
+  verify_release_image_inventory \
+    "$initial_evidence/11-images.json" "accepted initial"
   expected_app_image="$(jq -er '.images[] | select(.name == "app") | .imageId' \
     "$initial_evidence/11-images.json")" \
     || fail "accepted terminal evidence has no app image identity"
   [[ "$expected_app_image" =~ ^sha256:[a-f0-9]{64}$ ]] \
     || fail "accepted terminal evidence has an invalid app image identity"
+  expected_router_image="$(jq -er '.images[] | select(.name == "router") | .imageId' \
+    "$initial_evidence/11-images.json")" \
+    || fail "accepted terminal evidence has no release-router image identity"
+  [[ "$expected_router_image" =~ ^sha256:[a-f0-9]{64}$ ]] \
+    || fail "accepted terminal evidence has an invalid release-router image identity"
+  expected_router_config_sha="$(checked_release_router_config_sha256)" \
+    || fail "reviewed release-router configuration manifest checksum could not be read"
   browser_log_sha="$(checked_file_sha256 \
     "$initial_evidence/70-browser-acceptance.log")" \
     || fail "accepted browser log checksum could not be read"
   jq -e --arg revision "$revision" --arg runId "$initial_run_id" \
     --arg candidateAppImageId "$expected_app_image" \
+    --arg releaseRouterImageId "$expected_router_image" \
+    --arg releaseRouterConfigSha256 "$expected_router_config_sha" \
     --arg browserLogSha256 "$browser_log_sha" '
     type == "object" and
     keys == ["browserAcceptancePassed", "browserLogSha256", "candidateAppImageId",
       "completedAt", "containedInitial", "databaseRollback",
-      "localEncryptedBackupVerified", "mode", "offsiteBackupDeferred",
+      "localEncryptedBackupVerified", "maintenanceConfirmedBeforeSchemaMigration",
+      "mode", "offsiteBackupDeferred",
       "postBootstrapAccountingEvidenceVerified", "preTrafficDatabaseContractVerified",
-      "previousAppImageId", "product", "revision", "runId",
+      "previousAppImageId", "product", "releaseRouterConfigSha256",
+      "releaseRouterImageId", "revision", "runId",
       "schedulerActivationDeferred", "schemaVersion", "status"] and
     .schemaVersion == 1 and .product == "business-finlynq" and
     .status == "accepted" and .mode == "initial" and
     .revision == $revision and .runId == $runId and
     (.completedAt | type == "string") and
     .candidateAppImageId == $candidateAppImageId and .previousAppImageId == null and
+    .releaseRouterImageId == $releaseRouterImageId and
+    .releaseRouterConfigSha256 == $releaseRouterConfigSha256 and
+    .maintenanceConfirmedBeforeSchemaMigration == true and
     .preTrafficDatabaseContractVerified == true and
     .postBootstrapAccountingEvidenceVerified == true and
     .browserAcceptancePassed == true and .browserLogSha256 == $browserLogSha256 and
@@ -2133,12 +2421,22 @@ refresh_accepted_initial_inventory() {
 write_recovered_initial_terminal_record() {
   local initial_run_id="$1" terminal_record="$2"
   local initial_evidence="$release_evidence_root/$revision/$initial_run_id"
-  local expected_app_image browser_log_sha completed_at
+  local expected_app_image expected_router_image expected_router_config_sha
+  local browser_log_sha completed_at
+  verify_release_image_inventory \
+    "$initial_evidence/11-images.json" "terminal-recovery initial"
   expected_app_image="$(jq -er '.images[] | select(.name == "app") | .imageId' \
     "$initial_evidence/11-images.json")" \
     || fail "accepted app image ID is unavailable for terminal publication recovery"
   [[ "$expected_app_image" =~ ^sha256:[a-f0-9]{64}$ ]] \
     || fail "accepted app image ID is invalid for terminal publication recovery"
+  expected_router_image="$(jq -er '.images[] | select(.name == "router") | .imageId' \
+    "$initial_evidence/11-images.json")" \
+    || fail "accepted release-router image ID is unavailable for terminal publication recovery"
+  [[ "$expected_router_image" =~ ^sha256:[a-f0-9]{64}$ ]] \
+    || fail "accepted release-router image ID is invalid for terminal publication recovery"
+  expected_router_config_sha="$(checked_release_router_config_sha256)" \
+    || fail "release-router configuration manifest checksum could not be read for terminal publication recovery"
   browser_log_sha="$(checked_file_sha256 \
     "$initial_evidence/70-browser-acceptance.log")" \
     || fail "browser log checksum could not be read for terminal publication recovery"
@@ -2146,10 +2444,15 @@ write_recovered_initial_terminal_record() {
     || fail "terminal publication recovery timestamp could not be generated"
   jq -n --arg completedAt "$completed_at" --arg revision "$revision" \
     --arg runId "$initial_run_id" --arg candidateAppImageId "$expected_app_image" \
+    --arg releaseRouterImageId "$expected_router_image" \
+    --arg releaseRouterConfigSha256 "$expected_router_config_sha" \
     --arg browserLogSha256 "$browser_log_sha" '
       {schemaVersion: 1, product: "business-finlynq", status: "accepted",
        completedAt: $completedAt, mode: "initial", revision: $revision, runId: $runId,
        candidateAppImageId: $candidateAppImageId, previousAppImageId: null,
+       releaseRouterImageId: $releaseRouterImageId,
+       releaseRouterConfigSha256: $releaseRouterConfigSha256,
+       maintenanceConfirmedBeforeSchemaMigration: true,
        preTrafficDatabaseContractVerified: true,
        postBootstrapAccountingEvidenceVerified: true,
        browserAcceptancePassed: true, browserLogSha256: $browserLogSha256,
@@ -2333,6 +2636,9 @@ run_initial_release() {
   fi
   initial_wrapper_active="true"
   wrapper_stop_app_on_failure="true"
+  # Arm the independent router resolver before the child can reach its terminal
+  # active commit. This also covers a broken stdout pipe after child acceptance.
+  wrapper_force_router_maintenance_on_failure="true"
   export RELEASE_EXECUTION_ACK="initial:$revision:$new_run_id"
   if [[ -n "$prior_run_id" ]]; then
     export INITIAL_RESUME_ACK="resume:$revision:$prior_run_id:$new_run_id"
@@ -2352,8 +2658,10 @@ run_initial_release() {
       --evidence-root "$release_evidence_root" \
       --run-id "$new_run_id" --scheduler systemd --host-lock-fd 8
   fi
+  arm_accepted_router_failure_containment \
+    "$release_evidence_root/$revision/$new_run_id"
   unset RELEASE_EXECUTION_ACK
-  "$external_edge_verifier_target" --scope full
+  "$external_edge_verifier_target" --scope production
   verify_live_accepted_initial_runtime \
     "$release_evidence_root/$revision/$new_run_id"
   verify_all_bootstrap_automation_disabled
@@ -2364,6 +2672,9 @@ run_initial_release() {
   done
   write_install_completion "$new_run_id"
   wrapper_stop_app_on_failure="false"
+  wrapper_force_router_maintenance_on_failure="false"
+  accepted_recovery_router_container=""
+  accepted_recovery_router_image=""
   initial_wrapper_active="false"
   printf 'Contained initial production accepted. Completion: %s\n' "$install_completion"
 }
@@ -2480,27 +2791,443 @@ verify_database_mount_contract() {
     || fail "$description mount contract differs from the accepted contained runtime"
 }
 
+verify_release_router_image_contract() {
+  local expected_image="$1" description="$2" inspect_json
+  inspect_json="$(docker image inspect "$expected_image")" \
+    || fail "$description image could not be inspected"
+  jq -e --arg imageId "$expected_image" \
+    --arg routerRevision "$release_router_revision" \
+    --arg routerContract "$release_router_contract" \
+    --arg buildProject "$release_router_build_project" '
+    length == 1 and .[0].Id == $imageId and
+    .[0].Config.Labels["org.opencontainers.image.revision"] == $routerRevision and
+    .[0].Config.Labels["com.business-finlynq.release-router.contract"] == $routerContract and
+    .[0].Config.Labels["com.docker.compose.project"] == $buildProject
+  ' <<<"$inspect_json" >/dev/null \
+    || fail "$description image differs from the stable reviewed release-router build"
+}
+
+verify_release_router_runtime_contract() {
+  local inspect_json="$1" expected_image="$2" description="$3"
+  jq -e --arg imageId "$expected_image" \
+    --arg routerRevision "$release_router_revision" \
+    --arg routerContract "$release_router_contract" \
+    --arg routerStateVolume "$release_router_state_volume" '
+    length == 1 and .[0].Image == $imageId and
+    .[0].Config.Labels["com.docker.compose.project"] == "business-finlynq" and
+    .[0].Config.Labels["com.docker.compose.service"] == "release_router" and
+    .[0].Config.Labels["org.opencontainers.image.revision"] == $routerRevision and
+    .[0].Config.Labels["com.business-finlynq.release-router.contract"] == $routerContract and
+    .[0].Config.User == "10001:10001" and
+    .[0].Config.Entrypoint == ["/usr/local/bin/release-router-entrypoint"] and
+    .[0].Config.Cmd == ["serve"] and
+    .[0].Config.Healthcheck.Test ==
+      ["CMD", "wget", "-q", "-T", "2", "-O", "/dev/null",
+        "http://127.0.0.1:3000/_business-finlynq/release-router/live"] and
+    .[0].Config.Healthcheck.Interval == 10000000000 and
+    .[0].Config.Healthcheck.Timeout == 3000000000 and
+    .[0].Config.Healthcheck.Retries == 3 and
+    .[0].Config.Healthcheck.StartPeriod == 5000000000 and
+    .[0].HostConfig.ReadonlyRootfs == true and .[0].HostConfig.Init == true and
+    .[0].HostConfig.Privileged == false and
+    .[0].HostConfig.RestartPolicy == {"Name":"unless-stopped", "MaximumRetryCount":0} and
+    (.[0].HostConfig.CapDrop | sort) == ["ALL"] and
+    (.[0].HostConfig.SecurityOpt | sort) == ["no-new-privileges:true"] and
+    (.[0].HostConfig.PortBindings | keys) == ["3000/tcp"] and
+    .[0].HostConfig.PortBindings["3000/tcp"] ==
+      [{"HostIp":"127.0.0.1", "HostPort":"3100"}] and
+    (.[0].HostConfig.Tmpfs | keys | sort) == ["/config", "/data", "/tmp"] and
+    (.[0].HostConfig.Tmpfs["/tmp"] | split(",") |
+      map(select(. != "rw")) | sort) ==
+      ["gid=10001", "mode=0700", "nodev", "noexec", "nosuid", "size=16m", "uid=10001"] and
+    (.[0].HostConfig.Tmpfs["/config"] | split(",") |
+      map(select(. != "rw")) | sort) ==
+      ["gid=10001", "mode=0700", "nodev", "noexec", "nosuid", "size=1m", "uid=10001"] and
+    (.[0].HostConfig.Tmpfs["/data"] | split(",") |
+      map(select(. != "rw")) | sort) ==
+      ["gid=10001", "mode=0700", "nodev", "noexec", "nosuid", "size=1m", "uid=10001"] and
+    (.[0].Mounts | type == "array" and length == 1) and
+    (.[0].Mounts[0].Type == "volume" and
+      .[0].Mounts[0].Name == $routerStateVolume and
+      .[0].Mounts[0].Destination == "/state" and
+      .[0].Mounts[0].RW == true) and
+    ([.[0].NetworkSettings.Networks | keys[]] | sort) ==
+      ["business_finlynq_edge", "business_finlynq_private-frontend"] and
+    (.[0].NetworkSettings.Networks["business_finlynq_edge"].Aliases |
+      index("production-app")) != null and
+    (.[0].NetworkSettings.Networks["business_finlynq_private-frontend"].Aliases |
+      index("production-app")) == null
+  ' <<<"$inspect_json" >/dev/null \
+    || fail "$description differs from the immutable hardened release-router contract"
+}
+
+verify_unique_network_alias_owner() {
+  local network="$1" alias="$2" expected_container="$3" description="$4"
+  local expected_full_id network_query container networks owner_count=0
+  expected_full_id="$(docker inspect --format '{{.Id}}' "$expected_container")" \
+    || fail "$description expected container identity could not be inspected"
+  [[ "$expected_full_id" =~ ^[a-f0-9]{64}$ ]] \
+    || fail "$description expected container identity is invalid"
+  network_query="$(docker ps --all --no-trunc \
+    --filter "network=$network" --format '{{.ID}}')" \
+    || fail "$description network endpoints could not be enumerated"
+  while IFS= read -r container; do
+    [[ -n "$container" ]] || continue
+    [[ "$container" =~ ^[a-f0-9]{64}$ ]] \
+      || fail "$description network returned an invalid endpoint ID"
+    networks="$(docker inspect --format '{{json .NetworkSettings.Networks}}' \
+      "$container")" \
+      || fail "$description network endpoint could not be inspected"
+    if jq -e --arg network "$network" --arg alias "$alias" '
+      has($network) and any(.[$network].Aliases[]?; . == $alias)
+    ' <<<"$networks" >/dev/null; then
+      (( owner_count += 1 ))
+      [[ "$container" == "$expected_full_id" ]] \
+        || fail "$description alias is owned by another network endpoint"
+    fi
+  done <<<"$network_query"
+  [[ "$owner_count" == 1 ]] \
+    || fail "$description alias must be owned exactly once on $network"
+}
+
+resolve_accepted_router_containment_target() {
+  local router_output container_id inspect_json expected_router_image lifecycle_state
+  router_output="$(docker ps --all --quiet --no-trunc \
+    --filter 'label=com.docker.compose.project=business-finlynq' \
+    --filter 'label=com.docker.compose.service=release_router')" \
+    || return 1
+  [[ "$router_output" =~ ^[a-f0-9]{64}$ && "$router_output" != *$'\n'* ]] \
+    || return 1
+  container_id="$router_output"
+  expected_router_image="$(docker image inspect --format '{{.Id}}' \
+    "$release_router_reference")" \
+    || return 1
+  [[ "$expected_router_image" =~ ^sha256:[a-f0-9]{64}$ ]] || return 1
+  inspect_json="$(docker inspect "$container_id")" || return 1
+  if ! (
+    verify_release_router_image_contract \
+      "$expected_router_image" "accepted containment release router"
+    verify_release_router_runtime_contract \
+      "$inspect_json" "$expected_router_image" \
+      "accepted containment release router"
+  ); then
+    return 1
+  fi
+  lifecycle_state="$(jq -er '.[0].State.Status' <<<"$inspect_json")" \
+    || return 1
+  [[ "$lifecycle_state" == running || "$lifecycle_state" == exited ]] \
+    || return 1
+  accepted_recovery_router_container="$container_id"
+  accepted_recovery_router_image="$expected_router_image"
+  ( verify_unique_network_alias_owner \
+      business_finlynq_edge production-app "$container_id" \
+      "accepted containment public backend" ) || return 1
+}
+
+arm_accepted_router_failure_containment() {
+  local accepted_evidence="$1" expected_router_image inspect_json lifecycle_state
+  wrapper_force_router_maintenance_on_failure="true"
+  resolve_accepted_router_containment_target \
+    || fail "accepted containment requires exactly one attested release-router container"
+  [[ -d "$accepted_evidence" && ! -L "$accepted_evidence" \
+    && "$(readlink -f -- "$accepted_evidence")" == "$accepted_evidence" \
+    && -f "$accepted_evidence/11-images.json" \
+    && ! -L "$accepted_evidence/11-images.json" ]] \
+    || fail "accepted release-router evidence is unavailable or unsafe"
+  verify_protected_evidence_inventory "$accepted_evidence"
+  verify_release_image_inventory \
+    "$accepted_evidence/11-images.json" "accepted containment"
+  expected_router_image="$(jq -er \
+    '.images[] | select(.name == "router") | .imageId' \
+    "$accepted_evidence/11-images.json")" \
+    || fail "accepted containment release-router image ID is unavailable"
+  [[ "$expected_router_image" =~ ^sha256:[a-f0-9]{64}$ ]] \
+    || fail "accepted containment release-router image ID is invalid"
+  [[ "$expected_router_image" == "$accepted_recovery_router_image" ]] \
+    || fail "accepted evidence release-router image differs from the attested runtime"
+  inspect_json="$(docker inspect "$accepted_recovery_router_container")" \
+    || fail "accepted containment release router could not be reinspected"
+  lifecycle_state="$(jq -er '.[0].State.Status' <<<"$inspect_json")" \
+    || fail "accepted containment release-router state could not be read"
+  [[ "$lifecycle_state" == running || "$lifecycle_state" == exited ]] \
+    || fail "accepted containment release router has an unsupported lifecycle state"
+  if [[ "$lifecycle_state" == running ]]; then
+    jq -e '.[0].State.Health.Status == "healthy"' \
+      <<<"$inspect_json" >/dev/null \
+      || fail "accepted containment release router is not healthy"
+    verify_release_router_state_contract \
+      "$accepted_recovery_router_container" active-or-maintenance \
+      "accepted containment release router"
+  fi
+}
+
+verify_release_router_state_contract() {
+  local container_id="$1" expected_mode="$2" description="$3" recorded_mode
+  [[ "$expected_mode" == active || "$expected_mode" == maintenance \
+    || "$expected_mode" == active-or-maintenance ]] \
+    || fail "$description requested an unsupported release-router state"
+  recorded_mode="$(docker exec "$container_id" /bin/sh -ec '
+    test -d /state && test ! -L /state
+    test "$(stat -c "%u:%g:%a" /state)" = "10001:10001:700"
+    test -f /state/mode && test ! -L /state/mode
+    test "$(stat -c "%u:%g:%a" /state/mode)" = "10001:10001:600"
+    mode="$(cat /state/mode)"
+    case "$mode" in active|maintenance) ;; *) exit 1 ;; esac
+    printf "%s" "$mode"
+  ')" || fail "$description durable state is missing, malformed, or unsafe"
+  if [[ "$expected_mode" == active-or-maintenance ]]; then
+    [[ "$recorded_mode" == active || "$recorded_mode" == maintenance ]]
+  else
+    [[ "$recorded_mode" == "$expected_mode" ]]
+  fi || fail "$description durable state is not $expected_mode"
+}
+
+commit_release_router_mode_online() {
+  local container_id="$1" selected_mode="$2"
+  [[ "$container_id" =~ ^[a-f0-9]{12,64}$ \
+    && ( "$selected_mode" == active || "$selected_mode" == maintenance ) ]] \
+    || fail "accepted release-router mode commit requested an invalid target"
+  docker exec "$container_id" sh -ec '
+    set -eu
+    selected_mode="$1"
+    [[ "$selected_mode" == active || "$selected_mode" == maintenance ]]
+    [[ -d /state && ! -L /state \
+      && "$(stat -c "%u:%g:%a" /state)" == 10001:10001:700 ]]
+    temporary="/state/.mode.$$"
+    trap '\''rm -f -- "$temporary"'\'' EXIT INT TERM
+    printf "%s\n" "$selected_mode" >"$temporary"
+    chmod 0600 "$temporary"
+    sync "$temporary" 2>/dev/null || sync
+    mv -f "$temporary" /state/mode
+    sync /state/mode 2>/dev/null || sync
+    sync -f /state 2>/dev/null || sync
+    trap - EXIT INT TERM
+    [[ -f /state/mode && ! -L /state/mode \
+      && "$(stat -c "%u:%g:%a" /state/mode)" == 10001:10001:600 \
+      && "$(cat /state/mode)" == "$selected_mode" ]]
+  ' sh "$selected_mode" \
+    || fail "accepted release-router durable mode could not be committed"
+}
+
+commit_release_router_maintenance_offline() {
+  local container_id="$1" expected_image="$2"
+  docker run --rm --network none --read-only --cap-drop ALL \
+    --security-opt no-new-privileges --pids-limit 32 --memory 32m --cpus 0.25 \
+    --volumes-from "$container_id" --entrypoint sh "$expected_image" -ec '
+      set -eu
+      [[ -d /state && ! -L /state \
+        && "$(stat -c "%u:%g:%a" /state)" == 10001:10001:700 ]]
+      [[ -f /state/mode && ! -L /state/mode \
+        && "$(stat -c "%u:%g:%a" /state/mode)" == 10001:10001:600 ]]
+      prior_mode="$(cat /state/mode)"
+      [[ "$prior_mode" == active || "$prior_mode" == maintenance ]]
+      temporary="/state/.mode.$$"
+      trap '\''rm -f -- "$temporary"'\'' EXIT INT TERM
+      printf "maintenance\n" >"$temporary"
+      chmod 0600 "$temporary"
+      sync "$temporary" 2>/dev/null || sync
+      mv -f "$temporary" /state/mode
+      sync /state/mode 2>/dev/null || sync
+      sync -f /state 2>/dev/null || sync
+      trap - EXIT INT TERM
+      [[ "$(cat /state/mode)" == maintenance ]]
+    ' >/dev/null \
+    || fail "stopped accepted release router could not be committed to maintenance"
+}
+
+reload_accepted_release_router() {
+  local container_id="$1" selected_config="$2" maintenance_token
+  [[ "$selected_config" == Caddyfile || "$selected_config" == Caddyfile.maintenance ]] \
+    || fail "accepted release-router reload requested an invalid configuration"
+  if [[ "$selected_config" == Caddyfile.maintenance ]]; then
+    maintenance_token="$(openssl rand -hex 32)" \
+      || fail "accepted release-router maintenance token could not be generated"
+    [[ "$maintenance_token" =~ ^[a-f0-9]{64}$ ]] \
+      || fail "accepted release-router maintenance token is invalid"
+    docker exec --env \
+      "BUSINESS_FINLYNQ_RELEASE_ACCEPTANCE_TOKEN=$maintenance_token" \
+      "$container_id" caddy reload --config /etc/caddy/Caddyfile.maintenance \
+      --adapter caddyfile --address unix//tmp/caddy-admin.sock \
+      || fail "accepted release router could not enter live maintenance"
+  else
+    docker exec "$container_id" caddy reload --config /etc/caddy/Caddyfile \
+      --adapter caddyfile --address unix//tmp/caddy-admin.sock \
+      || fail "accepted release router could not activate its live configuration"
+  fi
+}
+
+hold_accepted_release_router_in_maintenance() {
+  local container_id="$1" expected_image="$2" lifecycle_state="$3"
+  local start_output health_state="" router_liveness public_origin public_status=""
+  if [[ "$lifecycle_state" == running ]]; then
+    verify_release_router_state_contract \
+      "$container_id" active-or-maintenance "terminal-recovery release router"
+    commit_release_router_mode_online "$container_id" maintenance
+    reload_accepted_release_router "$container_id" Caddyfile.maintenance
+  else
+    commit_release_router_maintenance_offline "$container_id" "$expected_image"
+    start_output="$(docker start "$container_id")" \
+      || fail "exact accepted release-router container could not be restarted"
+    [[ "$start_output" == "$container_id" \
+      || "$start_output" == "${container_id:0:12}" ]] \
+      || fail "Docker returned an unexpected restarted release-router identity"
+  fi
+  for _ in {1..60}; do
+    health_state="$(docker inspect --format \
+      '{{.State.Running}}|{{if .State.Health}}{{.State.Health.Status}}{{end}}' \
+      "$container_id")" \
+      || fail "accepted release-router health could not be inspected"
+    [[ "$health_state" == true\|healthy ]] && break
+    sleep 2
+  done
+  [[ "$health_state" == true\|healthy ]] \
+    || fail "exact accepted release router did not become healthy during terminal recovery"
+  verify_release_router_state_contract \
+    "$container_id" maintenance "terminal-recovery release router"
+  router_liveness="$(curl --fail --silent --show-error --max-time 10 \
+    http://127.0.0.1:3100/_business-finlynq/release-router/live)" \
+    || fail "terminal-recovery release-router liveness endpoint is unavailable"
+  jq -e 'type == "object" and keys == ["status"] and \
+    .status == "release-router-live"' <<<"$router_liveness" >/dev/null \
+    || fail "terminal-recovery release-router liveness response is invalid"
+  public_origin="$(read_unique_environment_value \
+    "$compose_environment" BUSINESS_FINLYNQ_APP_ORIGIN)" \
+    || fail "accepted production origin could not be read"
+  for _ in {1..15}; do
+    public_status="$(curl --silent --show-error --max-time 10 \
+      --header 'X-Request-Id: accepted-initial-maintenance' \
+      --output /dev/null --write-out '%{http_code}' \
+      "$public_origin/api/health")" || public_status=""
+    [[ "$public_status" == 503 ]] && break
+    sleep 2
+  done
+  [[ "$public_status" == 503 ]] \
+    || fail "terminal-recovery release router did not prove public maintenance"
+}
+
+activate_accepted_release_router() {
+  local container_id="$1" runtime_state
+  [[ "$container_id" == "$accepted_recovery_router_container" ]] \
+    || fail "accepted release-router activation target changed after recovery"
+  runtime_state="$(docker inspect --format \
+    '{{ index .Config.Labels "com.docker.compose.project" }}|{{ index .Config.Labels "com.docker.compose.service" }}|{{.State.Running}}|{{if .State.Health}}{{.State.Health.Status}}{{end}}' \
+    "$container_id")" \
+    || fail "accepted release-router activation target could not be inspected"
+  [[ "$runtime_state" == business-finlynq\|release_router\|true\|healthy ]] \
+    || fail "accepted release-router activation target is no longer exact and healthy"
+  verify_release_router_state_contract \
+    "$container_id" maintenance "terminal-recovery release router before activation"
+  # Make the already-accepted app live first while restarts remain fail-closed,
+  # then atomically commit the durable active sentinel.
+  reload_accepted_release_router "$container_id" Caddyfile
+  commit_release_router_mode_online "$container_id" active
+  verify_release_router_state_contract \
+    "$container_id" active "terminal-recovery release router after activation"
+}
+
+verify_accepted_public_readiness() {
+  local public_origin readiness=""
+  public_origin="$(read_unique_environment_value \
+    "$compose_environment" BUSINESS_FINLYNQ_APP_ORIGIN)" \
+    || fail "accepted production origin could not be read"
+  for _ in {1..30}; do
+    readiness="$(curl --fail --silent --show-error --max-time 15 \
+      "$public_origin/api/health" 2>/dev/null)" || readiness=""
+    if jq -e 'type == "object" and keys == ["status"] and .status == "ready"' \
+      <<<"$readiness" >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 2
+  done
+  fail "accepted initial application did not become publicly ready"
+}
+
+verify_initial_resume_router_boundary() {
+  local prior_evidence="$1" expected_router_image router_output container_id inspect_json
+  local router_count=0 frontend_network_present=false router_state_volume_present=false
+  verify_protected_evidence_inventory "$prior_evidence"
+  verify_release_image_inventory \
+    "$prior_evidence/11-images.json" "resumable initial"
+  expected_router_image="$(jq -er \
+    '.images[] | select(.name == "router") | .imageId' \
+    "$prior_evidence/11-images.json")" \
+    || fail "resumable initial release-router image ID is unavailable"
+  router_output="$(docker ps --all --quiet --no-trunc \
+    --filter 'label=com.docker.compose.project=business-finlynq' \
+    --filter 'label=com.docker.compose.service=release_router')" \
+    || fail "resumable initial release-router containers could not be inspected"
+  while IFS= read -r container_id; do
+    [[ -z "$container_id" ]] && continue
+    [[ "$container_id" =~ ^[a-f0-9]{64}$ ]] \
+      || fail "Docker returned an invalid resumable release-router container ID"
+    (( router_count += 1 ))
+    (( router_count == 1 )) \
+      || fail "initial resume found duplicate release-router containers"
+    inspect_json="$(docker inspect "$container_id")" \
+      || fail "resumable initial release router could not be inspected"
+    verify_release_router_image_contract \
+      "$expected_router_image" "resumable initial release router"
+    verify_release_router_runtime_contract \
+      "$inspect_json" "$expected_router_image" "resumable initial release router"
+    jq -e '
+      length == 1 and
+      (.[0].State.Status == "created" or .[0].State.Status == "exited" or
+        (.[0].State.Status == "running" and
+          (.[0].State.Health.Status == "starting" or
+           .[0].State.Health.Status == "healthy" or
+           .[0].State.Health.Status == "unhealthy")))
+    ' <<<"$inspect_json" >/dev/null \
+      || fail "resumable initial release router has an unsupported lifecycle state"
+    if jq -e '.[0].State.Status == "running"' <<<"$inspect_json" >/dev/null; then
+      verify_release_router_state_contract \
+        "$container_id" active-or-maintenance "resumable initial release router"
+    fi
+  done <<<"$router_output"
+
+  if inspect_json="$(docker volume inspect "$release_router_state_volume" 2>/dev/null)"; then
+    router_state_volume_present=true
+    jq -e --arg name "$release_router_state_volume" \
+      --arg logical "$release_router_state_volume_logical" '
+      length == 1 and .[0].Name == $name and .[0].Driver == "local" and
+      .[0].Scope == "local" and
+      (.[0].Options == null or .[0].Options == {}) and
+      (.[0].Mountpoint | type == "string" and
+        endswith("/volumes/" + $name + "/_data")) and
+      .[0].Labels["com.docker.compose.project"] == "business-finlynq" and
+      .[0].Labels["com.docker.compose.volume"] == $logical
+    ' <<<"$inspect_json" >/dev/null \
+      || fail "resumable initial release-router state volume ownership is invalid"
+  fi
+
+  if inspect_json="$(docker network inspect \
+    business_finlynq_private-frontend 2>/dev/null)"; then
+    frontend_network_present=true
+    jq -e '
+      length == 1 and
+      .[0].Name == "business_finlynq_private-frontend" and
+      .[0].Driver == "bridge" and .[0].Scope == "local" and
+      .[0].Internal == true and .[0].Attachable == false and
+      .[0].Ingress == false and
+      (.[0].Options == null or .[0].Options == {}) and
+      .[0].IPAM.Driver == "default" and
+      (.[0].IPAM.Config | type == "array" and length == 1) and
+      .[0].Labels["com.docker.compose.project"] == "business-finlynq" and
+      .[0].Labels["com.docker.compose.network"] == "business_finlynq_frontend"
+    ' <<<"$inspect_json" >/dev/null \
+      || fail "resumable initial frontend network ownership is invalid"
+  fi
+  (( router_count == 0 )) || [[ "$frontend_network_present" == true ]] \
+    || fail "resumable initial release router is missing its private frontend network"
+  (( router_count == 0 )) || [[ "$router_state_volume_present" == true ]] \
+    || fail "resumable initial release router is missing its persistent state volume"
+}
+
 verify_live_accepted_initial_runtime() {
   local accepted_evidence="$1" project_container_output container_id inspect_json service
-  local expected_app_image expected_database_image expected_scanner_image
+  local expected_app_image expected_router_image expected_database_image expected_scanner_image
   local -A service_containers=()
-  jq -e --arg revision "$revision" '
-    .schemaVersion == 1 and
-    (.pinnedComposeConfigurationSha256 | test("^[a-f0-9]{64}$")) and
-    (.images | type == "array" and length == 6) and
-    ([.images[].name] | sort) ==
-      ["acceptance", "app", "authWorker", "database", "migrator", "operations"] and
-    all(.images[];
-      (.imageId | test("^sha256:[a-f0-9]{64}$")) and
-      .ociRevision == $revision and
-      .reference == ("business-finlynq-" +
-        (if .name == "authWorker" then "auth-worker"
-         elif .name == "acceptance" then "acceptance"
-         elif .name == "migrator" then "migrator"
-         elif .name == "operations" then "operations"
-         else .name end) + ":" + $revision))
-  ' "$accepted_evidence/11-images.json" >/dev/null \
-    || fail "accepted image inventory is invalid"
+  verify_release_image_inventory \
+    "$accepted_evidence/11-images.json" "accepted"
   jq -e '
     .schemaVersion == 1 and .product == "business-finlynq" and
     (.imageId | test("^sha256:[a-f0-9]{64}$")) and
@@ -2511,6 +3238,11 @@ verify_live_accepted_initial_runtime() {
   expected_app_image="$(jq -er '.images[] | select(.name == "app") | .imageId' \
     "$accepted_evidence/11-images.json")" \
     || fail "accepted app image ID is unavailable"
+  expected_router_image="$(jq -er '.images[] | select(.name == "router") | .imageId' \
+    "$accepted_evidence/11-images.json")" \
+    || fail "accepted release-router image ID is unavailable"
+  verify_release_router_image_contract \
+    "$expected_router_image" "accepted release router"
   expected_database_image="$(jq -er '.images[] | select(.name == "database") | .imageId' \
     "$accepted_evidence/11-images.json")" \
     || fail "accepted database image ID is unavailable"
@@ -2530,7 +3262,7 @@ verify_live_accepted_initial_runtime() {
       <<<"$inspect_json")" \
       || fail "production container has no Compose service identity"
     case "$service" in
-      app|database|evidence_scanner) ;;
+      app|database|evidence_scanner|release_router) ;;
       *) fail "unexpected container remains in accepted production project: $service" ;;
     esac
     [[ ! -v "service_containers[$service]" ]] \
@@ -2549,9 +3281,7 @@ verify_live_accepted_initial_runtime() {
           .[0].HostConfig.RestartPolicy.Name == "unless-stopped" and
           (.[0].HostConfig.CapDrop | sort) == ["ALL"] and
           (.[0].HostConfig.SecurityOpt | index("no-new-privileges:true") != null) and
-          (.[0].HostConfig.PortBindings | keys) == ["3000/tcp"] and
-          .[0].HostConfig.PortBindings["3000/tcp"] ==
-            [{"HostIp":"127.0.0.1", "HostPort":"3100"}] and
+          ((.[0].HostConfig.PortBindings // {}) | length) == 0 and
           (.[0].Mounts | length) == 6 and
           all(.[0].Mounts[]; .Type == "bind" and .RW == false and
             ((.Source == ($secretDirectory + "/app-db-password") and
@@ -2566,8 +3296,12 @@ verify_live_accepted_initial_runtime() {
                  .Destination == "/run/secrets/business_finlynq_document_microsoft_secret")))) and
           ([.[0].Mounts[].Destination] | unique | length) == 6 and
           ([.[0].NetworkSettings.Networks | keys[]] | sort) ==
-            ["business_finlynq_edge", "business_finlynq_egress",
-              "business_finlynq_private", "business_finlynq_private_evidence"] and
+            ["business_finlynq_egress", "business_finlynq_private",
+              "business_finlynq_private-frontend", "business_finlynq_private_evidence"] and
+          (.[0].NetworkSettings.Networks["business_finlynq_private-frontend"].Aliases |
+            index("release-app")) != null and
+          all(.[0].NetworkSettings.Networks[];
+            ((.Aliases // []) | index("production-app")) == null) and
           ([.[0].Config.Env[]] | index("DEMO_LOGIN_ENABLED=true") != null) and
           ([.[0].Config.Env[]] | index("DEMO_WRITES_ENABLED=true") != null) and
           ([.[0].Config.Env[]] | index("ACCOUNT_LOGIN_ENABLED=false") != null) and
@@ -2579,6 +3313,16 @@ verify_live_accepted_initial_runtime() {
           ([.[0].Config.Env[]] | index("YAHOO_FX_ENABLED=false") != null)
         ' <<<"$inspect_json" >/dev/null \
           || fail "live app differs from the accepted contained runtime"
+        ;;
+      release_router)
+        verify_release_router_runtime_contract \
+          "$inspect_json" "$expected_router_image" "live release router"
+        jq -e '
+          .[0].State.Status == "running" and .[0].State.Health.Status == "healthy"
+        ' <<<"$inspect_json" >/dev/null \
+          || fail "live release router is not running and healthy"
+        verify_release_router_state_contract \
+          "$container_id" active "live accepted release router"
         ;;
       database)
         jq -e --arg imageId "$expected_database_image" --arg revision "$revision" '
@@ -2618,20 +3362,28 @@ verify_live_accepted_initial_runtime() {
         ;;
     esac
   done <<<"$project_container_output"
-  [[ "${#service_containers[@]}" == 3 \
+  [[ "${#service_containers[@]}" == 4 \
     && -v 'service_containers[app]' \
     && -v 'service_containers[database]' \
-    && -v 'service_containers[evidence_scanner]' ]] \
-    || fail "accepted production runtime does not contain exactly app, database, and scanner"
+    && -v 'service_containers[evidence_scanner]' \
+    && -v 'service_containers[release_router]' ]] \
+    || fail "accepted production runtime does not contain exactly app, database, scanner, and release router"
+  verify_unique_network_alias_owner \
+    business_finlynq_edge production-app \
+    "${service_containers[release_router]}" "accepted production public backend"
+  verify_unique_network_alias_owner \
+    business_finlynq_private-frontend release-app \
+    "${service_containers[app]}" "accepted production private application"
   run_fresh_installed_oneshot business-finlynq-accounting-evidence.service
   run_fresh_installed_oneshot business-finlynq-monitor.service
 }
 
 recover_accepted_stopped_app() {
   local accepted_evidence="$1" project_container_output container_id service
-  local app_container inspect_json supporting_inspect
-  local expected_app_image expected_database_image expected_scanner_image
+  local app_container router_container inspect_json supporting_inspect
+  local expected_app_image expected_router_image expected_database_image expected_scanner_image
   local app_state start_output readiness health_state
+  local router_state
   local signature_inventory signature_path signature_uid signature_gid signature_mode
   local signature_mtime now signature_count=0
   local clamd_version
@@ -2639,6 +3391,11 @@ recover_accepted_stopped_app() {
   expected_app_image="$(jq -er '.images[] | select(.name == "app") | .imageId' \
     "$accepted_evidence/11-images.json")" \
     || fail "accepted app image ID is unavailable for terminal recovery"
+  expected_router_image="$(jq -er '.images[] | select(.name == "router") | .imageId' \
+    "$accepted_evidence/11-images.json")" \
+    || fail "accepted release-router image ID is unavailable for terminal recovery"
+  verify_release_router_image_contract \
+    "$expected_router_image" "terminal-recovery release router"
   expected_database_image="$(jq -er \
     '.images[] | select(.name == "database") | .imageId' \
     "$accepted_evidence/11-images.json")" \
@@ -2656,18 +3413,38 @@ recover_accepted_stopped_app() {
     service="$(docker inspect --format \
       '{{ index .Config.Labels "com.docker.compose.service" }}' "$container_id")" \
       || fail "terminal-recovery container service could not be inspected"
-    case "$service" in app|database|evidence_scanner) ;; \
+    case "$service" in app|database|evidence_scanner|release_router) ;; \
       *) fail "terminal recovery found an unexpected production service: $service" ;; \
     esac
     [[ ! -v "recovery_containers[$service]" ]] \
       || fail "terminal recovery found duplicate $service containers"
     recovery_containers["$service"]="$container_id"
   done <<<"$project_container_output"
-  [[ "${#recovery_containers[@]}" == 3 \
+  [[ "${#recovery_containers[@]}" == 4 \
     && -v 'recovery_containers[app]' \
     && -v 'recovery_containers[database]' \
-    && -v 'recovery_containers[evidence_scanner]' ]] \
-    || fail "terminal recovery requires exactly app, database, and scanner containers"
+    && -v 'recovery_containers[evidence_scanner]' \
+    && -v 'recovery_containers[release_router]' ]] \
+    || fail "terminal recovery requires exactly app, database, scanner, and release-router containers"
+  router_container="${recovery_containers[release_router]}"
+  supporting_inspect="$(docker inspect "$router_container")" \
+    || fail "terminal-recovery release router could not be inspected"
+  verify_release_router_runtime_contract \
+    "$supporting_inspect" "$expected_router_image" "terminal-recovery release router"
+  router_state="$(jq -er '.[0].State.Status' <<<"$supporting_inspect")" \
+    || fail "terminal-recovery release-router state could not be read"
+  [[ "$router_state" == running || "$router_state" == exited ]] \
+    || fail "terminal-recovery release router has an unsupported lifecycle state"
+  [[ -z "$accepted_recovery_router_container" \
+    || "$accepted_recovery_router_container" == "$router_container" ]] \
+    || fail "terminal-recovery release-router identity changed after containment was armed"
+  [[ -z "$accepted_recovery_router_image" \
+    || "$accepted_recovery_router_image" == "$expected_router_image" ]] \
+    || fail "terminal-recovery release-router image changed after containment was armed"
+  accepted_recovery_router_container="$router_container"
+  accepted_recovery_router_image="$expected_router_image"
+  hold_accepted_release_router_in_maintenance \
+    "$router_container" "$expected_router_image" "$router_state"
   supporting_inspect="$(docker inspect "${recovery_containers[database]}")" \
     || fail "terminal-recovery database could not be inspected"
   jq -e --arg imageId "$expected_database_image" '
@@ -2743,9 +3520,7 @@ recover_accepted_stopped_app() {
     .[0].HostConfig.RestartPolicy.Name == "unless-stopped" and
     (.[0].HostConfig.CapDrop | sort) == ["ALL"] and
     (.[0].HostConfig.SecurityOpt | index("no-new-privileges:true") != null) and
-    (.[0].HostConfig.PortBindings | keys) == ["3000/tcp"] and
-    .[0].HostConfig.PortBindings["3000/tcp"] ==
-      [{"HostIp":"127.0.0.1", "HostPort":"3100"}] and
+    ((.[0].HostConfig.PortBindings // {}) | length) == 0 and
     (.[0].Mounts | length) == 6 and
     all(.[0].Mounts[]; .Type == "bind" and .RW == false and
       ((.Source == ($secretDirectory + "/app-db-password") and
@@ -2760,8 +3535,12 @@ recover_accepted_stopped_app() {
            .Destination == "/run/secrets/business_finlynq_document_microsoft_secret")))) and
     ([.[0].Mounts[].Destination] | unique | length) == 6 and
     ([.[0].NetworkSettings.Networks | keys[]] | sort) ==
-      ["business_finlynq_edge", "business_finlynq_egress",
-        "business_finlynq_private", "business_finlynq_private_evidence"] and
+      ["business_finlynq_egress", "business_finlynq_private",
+        "business_finlynq_private-frontend", "business_finlynq_private_evidence"] and
+    (.[0].NetworkSettings.Networks["business_finlynq_private-frontend"].Aliases |
+      index("release-app")) != null and
+    all(.[0].NetworkSettings.Networks[];
+      ((.Aliases // []) | index("production-app")) == null) and
     ([.[0].Config.Env[]] | index("DEMO_LOGIN_ENABLED=true") != null) and
     ([.[0].Config.Env[]] | index("DEMO_WRITES_ENABLED=true") != null) and
     ([.[0].Config.Env[]] | index("ACCOUNT_LOGIN_ENABLED=false") != null) and
@@ -2805,6 +3584,12 @@ recover_accepted_stopped_app() {
     .checks.bankFeeds == "disabled"
   ' <<<"$readiness" >/dev/null \
     || fail "restarted accepted app readiness differs from the contained posture"
+  verify_unique_network_alias_owner \
+    business_finlynq_edge production-app "$router_container" \
+    "terminal-recovery public backend"
+  verify_unique_network_alias_owner \
+    business_finlynq_private-frontend release-app "$app_container" \
+    "terminal-recovery private application"
 }
 
 finalize_accepted_initial() {
@@ -2833,6 +3618,10 @@ finalize_accepted_initial() {
       || ( -f "$accepted_evidence/99-failure.json" \
         && ! -L "$accepted_evidence/99-failure.json" ) ) ]] \
     || fail "accepted initial evidence is incomplete or unsafe"
+  # Terminal-inventory repair can decide that the accepted app must be
+  # stopped. Couple that decision to router maintenance before it can perform
+  # any fallible publication or synchronization work.
+  wrapper_force_router_maintenance_on_failure="true"
   recover_accepted_terminal_inventory_gap "$accepted_run_id"
   verify_protected_evidence_inventory "$accepted_evidence"
   jq -e --arg revision "$revision" --arg runId "$accepted_run_id" '
@@ -2847,6 +3636,8 @@ finalize_accepted_initial() {
   # Once the protected terminal evidence is accepted, any later finalizer
   # failure must stop the app even if it was already running before inspection.
   wrapper_stop_app_on_failure="true"
+  wrapper_force_router_maintenance_on_failure="true"
+  arm_accepted_router_failure_containment "$accepted_evidence"
   if [[ -f "$accepted_evidence/99-failure.json" ]]; then
     jq -e --arg revision "$revision" --arg runId "$accepted_run_id" '
       .schemaVersion == 1 and .product == "business-finlynq" and
@@ -2861,7 +3652,9 @@ finalize_accepted_initial() {
     verify_install_completion_for_run "$accepted_run_id"
   fi
   recover_accepted_stopped_app "$accepted_evidence"
-  "$external_edge_verifier_target" --scope full
+  activate_accepted_release_router "$accepted_recovery_router_container"
+  verify_accepted_public_readiness
+  "$external_edge_verifier_target" --scope production
   verify_live_accepted_initial_runtime "$accepted_evidence"
   verify_all_bootstrap_automation_disabled
   for selected_path in \
@@ -2871,6 +3664,9 @@ finalize_accepted_initial() {
   done
   write_install_completion "$accepted_run_id"
   wrapper_stop_app_on_failure="false"
+  wrapper_force_router_maintenance_on_failure="false"
+  accepted_recovery_router_container=""
+  accepted_recovery_router_image=""
   initial_wrapper_active="false"
   printf 'Recovered wrapper completion for accepted initial run %s. Completion: %s\n' \
     "$accepted_run_id" "$install_completion"
@@ -2977,5 +3773,6 @@ jq -e --arg revision "$revision" --arg runId "$resume_run_id" '
 ' "$prior_evidence/99-failure.json" >/dev/null \
   || fail "the acknowledged prior initial failure identity or timer containment is invalid"
 verify_rehearsal_acceptance
+verify_initial_resume_router_boundary "$prior_evidence"
 "$external_edge_verifier_target" --scope development
 run_initial_release "$resume_run_id"

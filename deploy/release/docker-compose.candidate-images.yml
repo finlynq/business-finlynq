@@ -1,4 +1,9 @@
 services:
+  release_router:
+    image: ${BUSINESS_FINLYNQ_RELEASE_ROUTER_IMAGE:?set BUSINESS_FINLYNQ_RELEASE_ROUTER_IMAGE to the verified immutable image ID}
+    pull_policy: never
+    build: !reset null
+
   database:
     image: ${BUSINESS_FINLYNQ_RELEASE_DATABASE_IMAGE:?set BUSINESS_FINLYNQ_RELEASE_DATABASE_IMAGE to the verified immutable image ID}
     pull_policy: never

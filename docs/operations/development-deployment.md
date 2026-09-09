@@ -5,7 +5,7 @@ Business Finlynq keeps two long-lived deployment branches with disjoint targets:
 - `dev` deploys to the development stack at `dev.business.finlynq.com`;
 - `main` deploys to production at `business.finlynq.com`.
 
-A same-repository push to `dev` must pass the complete `quality-gate` job before CI publishes the immutable `deploy-development-<full-sha>` tag. The development timer accepts only that exact tag and a fast-forward `origin/dev` commit. Production continues to accept only `deploy-production-<full-sha>` tags for `origin/main`.
+A same-repository push to `dev` must pass the complete `quality-gate` job before CI publishes the immutable `deploy-development-<full-sha>` tag. The development timer accepts only that exact tag and a fast-forward `origin/dev` commit. Production instead accepts only the exact keyless deployment-signal attestation for `origin/main` documented in [Continuous deployment from main](./continuous-deployment.md).
 
 ## Isolation contract
 
@@ -17,7 +17,7 @@ The development stack uses its own checkout, Compose project, loopback port, dat
 | Compose project | `business-finlynq-development` | `business-finlynq` |
 | Configuration | `/etc/business-finlynq-development` | `/etc/business-finlynq` |
 | State | `/var/lib/business-finlynq-development` | `/var/lib/business-finlynq` |
-| Loopback app port | `3200` | `3100` |
+| Loopback router ingress | `3200` | `3100` |
 | Database volume | `business_finlynq_development_pgdata` | `business_finlynq_pgdata` |
 | Public hostname | `dev.business.finlynq.com` | `business.finlynq.com` |
 
@@ -36,7 +36,7 @@ sudo systemctl start business-finlynq-development-deployment.service
 
 The installer creates independent random database credentials and encryption secrets without printing them. It also creates the external development edge network and gives `deploy` narrowly scoped permission to start, inspect, and read the journal for the development deployment service.
 
-The environment initially sets `DEVELOPMENT_REQUIRE_PUBLIC_ACCEPTANCE=false` so the first internal deployment can be validated before Caddy/DNS activation. Pass `--external-edge` to the development installer only when the separately owned edge contract above is already planned; the default preserves the repository-owned edge behavior on existing hosts. After the external edge handoff, rerun the installer with `--external-edge --require-public-acceptance`. That protected update changes only `DEVELOPMENT_REQUIRE_PUBLIC_ACCEPTANCE`; it does not enable login, email, Turnstile, bank-feed, or other provider gates. Rerun the development deployer at the same accepted revision to force configuration reconciliation and prove public browser acceptance. On later releases, the deployer waits up to two minutes for the exact public `/api/health` response to return `ready` before starting browser acceptance. The acceptance container marks that public target as an already managed server so Playwright cannot fall back to starting a second local Next.js process; ordinary CI browser runs still start their own reviewed build.
+The environment initially sets `DEVELOPMENT_REQUIRE_PUBLIC_ACCEPTANCE=false` so the first internal deployment can be validated before Caddy/DNS activation. Pass `--external-edge` to the development installer only when the separately owned edge contract above is already planned; the default preserves the repository-owned edge behavior on existing hosts. After the external edge handoff, rerun the installer with `--external-edge --require-public-acceptance`. That protected update changes only `DEVELOPMENT_REQUIRE_PUBLIC_ACCEPTANCE`; it does not enable login, email, Turnstile, bank-feed, or other provider gates. Rerun the development deployer at the same accepted revision to force configuration reconciliation and prove public browser acceptance. When public acceptance is required, the deployer waits up to two minutes for a private-preview `/api/health` request through the exact development hostname to return `ready` before starting browser acceptance. The request carries the deployment's ephemeral preview token; uncredentialed public health and application routes remain in maintenance with `503` until activation. The acceptance container marks that public target as an already managed server so Playwright cannot fall back to starting a second local Next.js process; ordinary CI browser runs still start their own reviewed build.
 
 ## Enable every development feature
 
@@ -152,7 +152,9 @@ release-gate dependency.
 
 ## Direct-to-development acceptance and automatic recovery
 
-Every signalled candidate is installed directly on the development stack and validated against `https://dev.business.finlynq.com`; there is no second shadow stack. Public browser acceptance is attempted twice before the candidate is rejected. The PostgreSQL volume remains mounted throughout deployment and recovery.
+Every signalled candidate is installed directly on the development stack; there is no second shadow stack, and the PostgreSQL volume remains mounted throughout deployment and recovery. With `DEVELOPMENT_REQUIRE_PUBLIC_ACCEPTANCE=true`, browser acceptance targets `https://dev.business.finlynq.com` through the private-preview token and is attempted twice before the candidate is rejected. With the flag false, the deployer performs only its private/internal candidate checks and does not claim public browser acceptance.
+
+For router-aware routine releases, candidate images are built before the maintenance interval. The existing stable router is then atomically reloaded to maintenance, so uncredentialed development traffic receives deterministic `503` responses while the old app is stopped, migration/bootstrap dependencies and the candidate start, and any required two-attempt browser gate runs. A candidate that passes every private and public check reloads the same listener live-active while durable state remains maintenance; the accepted-revision record is atomically published, then the router's durable `active` sentinel is committed last. A failed finalization restores the prior accepted pointer and fail-closes the router, so a restarted listener cannot select an unaccepted candidate. The one-time legacy transition cannot enter router maintenance until the old app releases port `3200`; that bootstrap may briefly refuse connections before the stable router starts fail-closed in maintenance.
 
 The deployer records the last fully accepted SHA in the root-only `accepted-revision` state file. If checkout, build, migration/startup, public acceptance, or final health verification fails, it attempts to restore that exact checkout and image revision. Recovery is considered successful only after the restored app reports the expected revision on its internal detailed health endpoint and the public HTTPS health endpoint remains ready. If an accepted runtime image tag is no longer present, recovery rebuilds only the required runtime images from that exact accepted checkout and verifies their embedded revision labels before starting them.
 

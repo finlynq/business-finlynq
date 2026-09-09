@@ -125,13 +125,20 @@ for snapshot_compose_file in \
 done
 
 verify_recovery_image() {
-  local reference="$1" expected_revision="$2" image_id image_revision
+  local reference="$1" expected_revision="$2" allow_unlabeled="${3:-false}"
+  local image_id image_revision
   image_id="$(docker image inspect --format '{{.Id}}' "$reference" 2>/dev/null)" || {
     printf 'Reviewed recovery image is unavailable locally: %s\n' "$reference" >&2
     exit 2
   }
   image_revision="$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$reference")"
-  [[ "$image_id" =~ ^sha256:[a-f0-9]{64}$ && "$image_revision" == "$expected_revision" ]] || {
+  [[ "$image_id" =~ ^sha256:[a-f0-9]{64}$ \
+    && ( "$image_revision" == "$expected_revision" \
+      || ( "$allow_unlabeled" == true \
+        && "$reference" == "sha256:2135e8e936bf8befdc44132771698dfb942fc97dccb19b71eeb3db9f3e5b66b5" \
+        && "$expected_revision" == "f8485ca86fef5b5fb4a38be9cb4cf3bea5ac2107" \
+        && "$ROLLBACK_COMPATIBILITY_ACK" == f8485-one-release-only \
+        && ( -z "$image_revision" || "$image_revision" == '<no value>' ) ) ) ]] || {
     printf 'Recovery image identity does not match the reviewed revision: %s\n' "$reference" >&2
     exit 2
   }
@@ -143,7 +150,7 @@ readonly legacy_image_id="sha256:2135e8e936bf8befdc44132771698dfb942fc97dccb19b7
 RESTORE_APP_IMAGE_ID="$(verify_recovery_image "business-finlynq-app:$BUSINESS_FINLYNQ_IMAGE_REVISION" "$BUSINESS_FINLYNQ_IMAGE_REVISION")"
 RESTORE_MIGRATOR_IMAGE_ID="$(verify_recovery_image "business-finlynq-migrator:$BUSINESS_FINLYNQ_IMAGE_REVISION" "$BUSINESS_FINLYNQ_IMAGE_REVISION")"
 RESTORE_OPERATIONS_IMAGE_ID="$(verify_recovery_image "business-finlynq-operations:$BUSINESS_FINLYNQ_IMAGE_REVISION" "$BUSINESS_FINLYNQ_IMAGE_REVISION")"
-[[ "$(verify_recovery_image "$legacy_image_id" "$legacy_revision")" == "$legacy_image_id" ]] || {
+[[ "$(verify_recovery_image "$legacy_image_id" "$legacy_revision" true)" == "$legacy_image_id" ]] || {
   printf '%s\n' "Hard-pinned legacy application image identity changed" >&2
   exit 2
 }
