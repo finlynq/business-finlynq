@@ -64,6 +64,30 @@ describe("contained initial production release", () => {
     expect(runner).toContain("resumable $service_name container image ID differs from prior evidence");
   });
 
+  it("validates inactive initial resources without assuming Compose retains unused declarations", () => {
+    expect(runner).toContain(
+      '"BUSINESS_FINLYNQ_CADDY_DATA_VOLUME:business_finlynq_caddy_data"',
+    );
+    expect(runner).toContain(
+      '"BUSINESS_FINLYNQ_CADDY_CONFIG_VOLUME:business_finlynq_caddy_config"',
+    );
+    expect(runner).toContain(
+      '"BUSINESS_FINLYNQ_RESTORE_DRILL_NETWORK:business_finlynq_restore_drill"',
+    );
+    expect(runner).not.toContain(
+      '.volumes.business_finlynq_caddy_data.name == "business_finlynq_caddy_data"',
+    );
+    expect(runner).toContain(
+      'initial_restore_compose="$(compose --profile restore-drill config --format json)"',
+    );
+    expect(runner).toContain(
+      '.networks.business_finlynq_restore_drill.name == "business_finlynq_restore_drill"',
+    );
+    expect(runner).toContain(
+      '.networks.business_finlynq_restore_drill.internal == true',
+    );
+  });
+
   it("boots, attests, and probes ClamAV before starting the application", () => {
     const rollback = runner.indexOf('12-rollback-artifact.json');
     const scanner = runner.indexOf('stage="initial-evidence-scanner-bootstrap"');

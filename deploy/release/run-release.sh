@@ -1338,6 +1338,21 @@ read_compose_value() {
 }
 
 if [[ "$mode" != "rehearsal" ]]; then
+  if [[ "$mode" == "initial" ]]; then
+    for initial_resource_contract in \
+      "BUSINESS_FINLYNQ_PGDATA_VOLUME:business_finlynq_pgdata" \
+      "BUSINESS_FINLYNQ_CADDY_DATA_VOLUME:business_finlynq_caddy_data" \
+      "BUSINESS_FINLYNQ_CADDY_CONFIG_VOLUME:business_finlynq_caddy_config" \
+      "BUSINESS_FINLYNQ_PRIVATE_NETWORK:business_finlynq_private" \
+      "BUSINESS_FINLYNQ_EGRESS_NETWORK:business_finlynq_egress" \
+      "BUSINESS_FINLYNQ_EDGE_NETWORK:business_finlynq_edge" \
+      "BUSINESS_FINLYNQ_RESTORE_DRILL_NETWORK:business_finlynq_restore_drill"; do
+      initial_resource_key="${initial_resource_contract%%:*}"
+      initial_resource_name="${initial_resource_contract#*:}"
+      [[ "$(read_compose_value "$initial_resource_key")" == "$initial_resource_name" ]] \
+        || fail "initial production Compose environment does not use the canonical $initial_resource_key"
+    done
+  fi
   [[ "$(read_operations_value BUSINESS_FINLYNQ_IMAGE_REVISION)" == "$revision" ]] \
     || fail "operations image revision does not match the candidate"
   [[ "$(read_operations_value MONITOR_EXPECT_REVISION)" == "$revision" ]] || fail "operations monitor revision does not match the candidate"
@@ -1452,17 +1467,23 @@ if [[ "$mode" != "rehearsal" ]]; then
     jq -e '
       .volumes.business_finlynq_pgdata.name == "business_finlynq_pgdata" and
       .volumes.business_finlynq_clamav.name == "business_finlynq_pgdata_clamav" and
-      .volumes.business_finlynq_caddy_data.name == "business_finlynq_caddy_data" and
-      .volumes.business_finlynq_caddy_config.name == "business_finlynq_caddy_config" and
       .networks.business_finlynq_private.name == "business_finlynq_private" and
       .networks.business_finlynq_evidence.name == "business_finlynq_private_evidence" and
       .networks.business_finlynq_egress.name == "business_finlynq_egress" and
       .networks.business_finlynq_scanner_egress.name == "business_finlynq_egress_scanner" and
       .networks.business_finlynq_edge.name == "business_finlynq_edge" and
-      .networks.business_finlynq_edge.external == true and
-      .networks.business_finlynq_restore_drill.name == "business_finlynq_restore_drill"
+      .networks.business_finlynq_edge.external == true
     ' <<<"$rendered_compose" >/dev/null \
       || fail "initial production must use the canonical production resource names"
+    if ! initial_restore_compose="$(compose --profile restore-drill config --format json)"; then
+      fail "initial production restore-drill Compose configuration could not be rendered"
+    fi
+    jq -e '
+      .networks.business_finlynq_restore_drill.name == "business_finlynq_restore_drill" and
+      .networks.business_finlynq_restore_drill.internal == true
+    ' <<<"$initial_restore_compose" >/dev/null \
+      || fail "initial production must use the canonical restore-drill network"
+    unset initial_restore_compose
     if ! initial_secret_sources="$(jq -r '.secrets[]?.file // empty' \
       <<<"$rendered_compose" | sort -u)"; then
       fail "initial secret-source inventory could not be rendered"

@@ -713,6 +713,57 @@ if (rehearsalAppPort?.host_ip !== "127.0.0.1" || rehearsalAppPort?.published !==
   fail("release rehearsal app is not restricted to its unique loopback port");
 }
 
+const initialResourceEnvironment = {
+  ...process.env,
+  BUSINESS_FINLYNQ_EDGE_MODE: "external",
+  BUSINESS_FINLYNQ_PGDATA_VOLUME: "business_finlynq_pgdata",
+  BUSINESS_FINLYNQ_CADDY_DATA_VOLUME: "business_finlynq_caddy_data",
+  BUSINESS_FINLYNQ_CADDY_CONFIG_VOLUME: "business_finlynq_caddy_config",
+  BUSINESS_FINLYNQ_PRIVATE_NETWORK: "business_finlynq_private",
+  BUSINESS_FINLYNQ_EGRESS_NETWORK: "business_finlynq_egress",
+  BUSINESS_FINLYNQ_EDGE_NETWORK: "business_finlynq_edge",
+  BUSINESS_FINLYNQ_RESTORE_DRILL_NETWORK: "business_finlynq_restore_drill",
+};
+function renderInitialExternal(profiles) {
+  return JSON.parse(execFileSync(
+    "docker",
+    [
+      "compose",
+      "--project-name", "business-finlynq",
+      "-f", "docker-compose.yml",
+      "-f", "deploy/edge/docker-compose.external.yml",
+      ...profiles.flatMap((profile) => ["--profile", profile]),
+      "config",
+      "--format", "json",
+    ],
+    { encoding: "utf8", maxBuffer: 16 * 1024 * 1024, env: initialResourceEnvironment },
+  ));
+}
+const initialActive = renderInitialExternal(["operations", "auth-email", "acceptance"]);
+const initialActiveResources = {
+  business_finlynq_pgdata: "business_finlynq_pgdata",
+  business_finlynq_clamav: "business_finlynq_pgdata_clamav",
+  business_finlynq_private: "business_finlynq_private",
+  business_finlynq_evidence: "business_finlynq_private_evidence",
+  business_finlynq_egress: "business_finlynq_egress",
+  business_finlynq_scanner_egress: "business_finlynq_egress_scanner",
+  business_finlynq_edge: "business_finlynq_edge",
+};
+for (const [logicalName, resourceName] of Object.entries(initialActiveResources)) {
+  const resource = initialActive.volumes?.[logicalName] ?? initialActive.networks?.[logicalName];
+  if (resource?.name !== resourceName) {
+    fail(`initial external-edge resource ${logicalName} is not canonical`);
+  }
+}
+if (initialActive.networks?.business_finlynq_edge?.external !== true) {
+  fail("initial external-edge network is not externally owned");
+}
+const initialRestore = renderInitialExternal(["restore-drill"]);
+if (initialRestore.networks?.business_finlynq_restore_drill?.name !== "business_finlynq_restore_drill"
+  || initialRestore.networks?.business_finlynq_restore_drill?.internal !== true) {
+  fail("initial restore-drill network is not canonical and internal");
+}
+
 
 const developmentRendered = JSON.parse(execFileSync("docker", [
   "compose", "--project-name", "business-finlynq-development",
