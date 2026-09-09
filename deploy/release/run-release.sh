@@ -160,6 +160,9 @@ done
 [[ "$mode" == "release" || "$mode" == "initial" || "$mode" == "rehearsal" ]] \
   || fail "--mode must be release, initial, or rehearsal"
 [[ "$revision" =~ ^[a-f0-9]{40}$ && ! "$revision" =~ ^0+$ ]] || fail "--revision must be a non-zero full 40-character Git SHA"
+readonly image_build_compose_project="business-finlynq-build-$revision"
+[[ "$image_build_compose_project" =~ ^[a-z0-9][a-z0-9-]{2,62}$ ]] \
+  || fail "derived image-build Compose project is invalid"
 [[ "$run_id" =~ ^[a-z0-9][a-z0-9._-]{2,30}$ ]] || fail "--run-id must be 3-31 lowercase safe characters"
 [[ -n "$environment_file" && -n "$evidence_root" ]] || fail "--environment and --evidence-root are required"
 [[ "${RELEASE_EXECUTION_ACK:-}" == "$mode:$revision:$run_id" ]] \
@@ -451,10 +454,14 @@ chmod 0700 -- "$evidence_root" "$evidence_root/$revision" "$evidence_directory"
 
 run_compose() {
   local duration="$1"
-  shift
+  local command_project="$2"
+  shift 2
   local assignment key value separator_seen="false"
   local -a controlled_environment=("PATH=$PATH")
   local -a compose_files=(-f "$candidate_source_root/docker-compose.yml")
+
+  [[ "$command_project" =~ ^[a-z0-9][a-z0-9-]{2,62}$ ]] \
+    || fail "Compose command project is invalid"
 
   if [[ "$mode" == "rehearsal" ]]; then
     controlled_environment+=("RELEASE_REHEARSAL_PROJECT=$compose_project")
@@ -509,7 +516,7 @@ run_compose() {
 
   local -a command=(
     env -i "${controlled_environment[@]}" docker compose
-    --project-name "$compose_project"
+    --project-name "$command_project"
     --project-directory "$candidate_source_root"
     --env-file "$environment_file"
     "${compose_files[@]}"
@@ -522,23 +529,30 @@ run_compose() {
 }
 
 compose() {
-  run_compose "" -- "$@"
+  run_compose "" "$compose_project" -- "$@"
 }
 
 compose_with_overrides() {
-  run_compose "" "$@"
+  run_compose "" "$compose_project" "$@"
 }
 
 compose_timed() {
   local duration="$1"
   shift
-  run_compose "$duration" -- "$@"
+  run_compose "$duration" "$compose_project" -- "$@"
 }
 
 compose_timed_with_overrides() {
   local duration="$1"
   shift
-  run_compose "$duration" "$@"
+  run_compose "$duration" "$compose_project" "$@"
+}
+
+compose_image_build() {
+  # Compose writes its CLI project name into image labels. Keep that label
+  # stable across isolated rehearsal A/B runtime projects so two builds of
+  # one commit can be compared by immutable image ID.
+  run_compose "" "$image_build_compose_project" -- "$@"
 }
 
 compose_query_output=""
@@ -2018,7 +2032,7 @@ fi
 stage="candidate-image-build"
 assert_clean_checkout "$repository_root" \
   "the checkout changed after release evidence initialization and before image build"
-run_logged 10-image-build.log compose --profile operations --profile auth-email --profile acceptance build \
+run_logged 10-image-build.log compose_image_build --profile operations --profile auth-email --profile acceptance build \
   --provenance=false --sbom=false \
   --build-arg "SOURCE_DATE_EPOCH=$candidate_source_date_epoch" \
   database app migrate auth_email_worker backup release_acceptance
@@ -2044,8 +2058,11 @@ for image_name in \
   image_reference="${image_name#*=}"
   image_id="$(docker image inspect --format '{{.Id}}' "$image_reference")"
   image_revision="$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$image_reference")"
+  image_compose_project="$(docker image inspect --format '{{ index .Config.Labels "com.docker.compose.project" }}' "$image_reference")"
   [[ "$image_id" =~ ^sha256:[a-f0-9]{64}$ ]] || fail "$logical_name image has no immutable image ID"
   [[ "$image_revision" == "$revision" ]] || fail "$logical_name image OCI revision does not match the release"
+  [[ "$image_compose_project" == "$image_build_compose_project" ]] \
+    || fail "$logical_name image did not originate from the revision-bound Compose build project"
   image_ids[$logical_name]="$image_id"
   image_evidence="$(jq -c \
     --arg name "$logical_name" --arg reference "$image_reference" --arg id "$image_id" --arg revision "$image_revision" \
