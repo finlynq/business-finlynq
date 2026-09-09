@@ -372,7 +372,7 @@ describe("commit-addressed release orchestration", () => {
     const timestamp = release.indexOf(
       'read_git_output "$repository_root" "candidate commit timestamp" show -s --format=%ct "$revision"',
     );
-    const build = release.indexOf("run_logged 10-image-build.log compose");
+    const build = release.indexOf("run_logged 10-image-build.log compose_image_build");
     expect(timestamp).toBeGreaterThan(-1);
     expect(release).toContain('[[ "$candidate_source_date_epoch" =~ ^[1-9][0-9]{0,11}$ ]]');
     expect(build).toBeGreaterThan(timestamp);
@@ -380,6 +380,31 @@ describe("commit-addressed release orchestration", () => {
     expect(release.slice(build, build + 500)).toContain("--sbom=false");
     expect(release.slice(build, build + 500)).toContain(
       '--build-arg "SOURCE_DATE_EPOCH=$candidate_source_date_epoch"',
+    );
+    expect(release).toContain(
+      'readonly image_build_compose_project="business-finlynq-build-$revision"',
+    );
+    expect(release).toContain(
+      '[[ "$image_build_compose_project" =~ ^[a-z0-9][a-z0-9-]{2,62}$ ]]',
+    );
+    expect(release).toContain('run_compose "" "$image_build_compose_project" -- "$@"');
+    expect(release).toContain('--project-name "$command_project"');
+    expect(release).toContain('run_compose "" "$compose_project" -- "$@"');
+    expect(release).toContain(
+      'controlled_environment+=("RELEASE_REHEARSAL_PROJECT=$compose_project")',
+    );
+    expect(release).not.toContain('--project-name "$compose_project"');
+    const buildHelper = release.slice(
+      release.indexOf("compose_image_build()"),
+      release.indexOf("compose_query_output="),
+    );
+    expect(buildHelper).not.toMatch(/(^|\n)\s*compose_project=/);
+    expect(release).not.toContain('run_logged 10-image-build.log compose --profile');
+    expect(release).toContain(
+      'image_compose_project="$(docker image inspect --format \'{{ index .Config.Labels "com.docker.compose.project" }}\' "$image_reference")"',
+    );
+    expect(release).toContain(
+      '[[ "$image_compose_project" == "$image_build_compose_project" ]]',
     );
     expect(release).toContain("Docker Compose build does not support explicit provenance control");
     expect(release).toContain("Docker Compose build does not support explicit SBOM control");
