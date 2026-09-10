@@ -203,6 +203,9 @@ describe("stable fail-closed release router", () => {
     expect(rollback).toContain(
       '== "Service temporarily unavailable.\\\\n"',
     );
+    expect(release).toContain(
+      '--header "X-Request-Id: release-final-readiness-$run_id"',
+    );
 
     expectOrdered(activeCaddyfile, [
       "handle @router_live {",

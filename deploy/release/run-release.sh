@@ -5599,6 +5599,7 @@ final_public_body="$evidence_directory/76-final-public-readiness.json"
 final_public_status=""
 for _ in {1..30}; do
   if final_public_status="$(curl --silent --show-error --max-time 15 \
+    --header "X-Request-Id: release-final-readiness-$run_id" \
     --dump-header "$final_public_headers" --output "$final_public_body" \
     --write-out '%{http_code}' "$public_base_url/api/health")" \
     && [[ "$final_public_status" == "200" ]]; then
