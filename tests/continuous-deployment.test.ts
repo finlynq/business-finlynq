@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -549,6 +550,38 @@ describe("continuous deployment safety boundary", () => {
       "restore_drill",
     ]) {
       expect(installDevelopment).toContain(`business_finlynq_development_${resource}`);
+    }
+  });
+
+  it("creates the candidate deployer staging file with the reviewed mktemp command", () => {
+    const start = deployDevelopment.indexOf('  candidate_source="$(mktemp');
+    const end = deployDevelopment.indexOf("\n  expected_oid=", start);
+    expect(start).toBeGreaterThan(-1);
+    expect(end).toBeGreaterThan(start);
+    const stagingCommand = deployDevelopment.slice(start, end);
+    const bash =
+      process.platform === "win32"
+        ? "C:\\Program Files\\Git\\bin\\bash.exe"
+        : "bash";
+    const result = spawnSync(
+      bash,
+      [
+        "-c",
+        [
+          "set -Eeuo pipefail",
+          'state_directory="$(mktemp -d)"',
+          'revision="0123456789abcdef0123456789abcdef01234567"',
+          'trap \'rm -rf -- "$state_directory"\' EXIT',
+          'candidate_source=""',
+          'fail() { printf \'%s\\n\' "$*" >&2; exit 1; }',
+          stagingCommand,
+          'test -f "$candidate_source"',
+        ].join("\n"),
+      ],
+      { encoding: "utf8" },
+    );
+    if (result.status !== 0) {
+      throw new Error(result.stderr || result.stdout || "mktemp staging command failed");
     }
   });
 
