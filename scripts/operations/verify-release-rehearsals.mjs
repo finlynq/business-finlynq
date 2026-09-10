@@ -225,6 +225,7 @@ async function verifyDirectory(directory) {
   const expectedRouterNetworks = [
     `${plan.composeProject}-edge`,
     `${plan.composeProject}-frontend`,
+    `${plan.composeProject}-router-control`,
   ].sort();
   const expectedRouterStateVolume = `${plan.composeProject}-release-router-state-v2`;
   const routerRuntimeKeys = [
@@ -237,7 +238,7 @@ async function verifyDirectory(directory) {
     if (Object.keys(router).sort().join(",") !== routerRuntimeKeys
       || router.schemaVersion !== 1 || router.product !== "business-finlynq"
       || router.service !== "release_router" || router.revision !== "release-router-v2"
-      || router.contractVersion !== "v1"
+      || router.contractVersion !== "v2"
       || router.imageId !== imageIds.get("router")
       || router.configSha256 !== complete.releaseRouterConfigSha256
       || router.processHealth !== "healthy"
