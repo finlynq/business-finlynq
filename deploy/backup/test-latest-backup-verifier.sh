@@ -5,6 +5,7 @@ umask 077
 
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 verifier="$script_dir/check-latest-backup.sh"
+backup_runner="$script_dir/run-backup.sh"
 fixture_root="$(mktemp -d "${TMPDIR:-/tmp}/business-finlynq-backup-check.XXXXXX")"
 revision="1111111111111111111111111111111111111111"
 lock_holder_pid=""
@@ -67,7 +68,10 @@ run_verifier() {
   local target_dir="$1"
   local require_offsite="$2"
   local emit_evidence="${3:-false}"
+  local manifest_basename="${4:-}"
   local -a verifier_arguments=()
+  [[ -z "$manifest_basename" ]] \
+    || verifier_arguments+=(--manifest-basename "$manifest_basename")
   [[ "$emit_evidence" == "false" ]] || verifier_arguments+=(--emit-evidence)
   BACKUP_OUTPUT_DIR="$target_dir" \
   BACKUP_MAX_AGE_HOURS=6 \
@@ -108,13 +112,15 @@ jq -e --arg revision "$revision" '
   type == "object" and
   (keys | sort) == ([
     "applicationRevision", "backupToolRevision", "createdAt", "encryptedArchive",
-    "encryptedBytes", "encryption", "format", "product", "schemaVersion",
+    "encryptedBytes", "encryption", "format", "manifestBasename", "product", "schemaVersion",
     "sha256", "sourceApplicationRevision"
   ] | sort) and
   .schemaVersion == 1 and .product == "business-finlynq" and
   .applicationRevision == $revision and .sourceApplicationRevision == $revision and
   .backupToolRevision == $revision and .encryption == "age" and
   .format == "postgres-custom" and
+  (.manifestBasename | type == "string" and
+    test("^business_finlynq_[0-9]{8}T[0-9]{6}Z_[A-Za-z0-9_.-]+\\.manifest\\.json$")) and
   (.createdAt | type == "string" and test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$")) and
   (.encryptedArchive | type == "string" and test("^business_finlynq_[0-9]{8}T[0-9]{6}Z_[A-Za-z0-9_.-]+\\.dump\\.age$")) and
   (.encryptedBytes | type == "number" and . > 0) and
@@ -127,6 +133,85 @@ expect_failure "an unknown evidence option" env \
   BACKUP_MAX_ACTIVE_SECONDS=4800 \
   BACKUP_REQUIRE_OFFSITE_MARKER=true \
   /bin/bash "$verifier" --unknown
+
+exact_dir="$fixture_root/exact-selection"
+older_created_at="$(date -u --date='-2 minutes' +%Y-%m-%dT%H:%M:%SZ)"
+older_timestamp="${older_created_at//-/}"
+older_timestamp="${older_timestamp//:/}"
+newer_created_at="$(date -u --date='-1 minute' +%Y-%m-%dT%H:%M:%SZ)"
+newer_timestamp="${newer_created_at//-/}"
+newer_timestamp="${newer_timestamp//:/}"
+create_fixture "$exact_dir" "$older_timestamp" "$older_created_at"
+create_fixture "$exact_dir" "$newer_timestamp" "$newer_created_at"
+older_prefix="business_finlynq_${older_timestamp}_business_finlynq"
+newer_prefix="business_finlynq_${newer_timestamp}_business_finlynq"
+older_manifest="$older_prefix.manifest.json"
+newer_manifest="$newer_prefix.manifest.json"
+
+latest_exact_output="$(run_verifier "$exact_dir" true true)"
+latest_exact_json="$(printf '%s\n' "$latest_exact_output" \
+  | sed -n 's/^BUSINESS_FINLYNQ_BACKUP_EVIDENCE=//p')"
+jq -e --arg manifest "$newer_manifest" \
+  '.manifestBasename == $manifest' <<<"$latest_exact_json" >/dev/null || {
+    printf '%s\n' "No-argument verifier no longer selects the latest completed manifest" >&2
+    exit 1
+  }
+
+older_exact_output="$(run_verifier "$exact_dir" true true "$older_manifest")"
+older_exact_json="$(printf '%s\n' "$older_exact_output" \
+  | sed -n 's/^BUSINESS_FINLYNQ_BACKUP_EVIDENCE=//p')"
+jq -e --arg manifest "$older_manifest" --arg archive "$older_prefix.dump.age" \
+  '.manifestBasename == $manifest and .encryptedArchive == $archive' \
+  <<<"$older_exact_json" >/dev/null || {
+    printf '%s\n' "Exact verifier substituted a newer completed backup" >&2
+    exit 1
+  }
+
+# Options are intentionally order-independent so the release integration does
+# not depend on a fragile positional parser.
+reverse_order_output="$(
+  BACKUP_OUTPUT_DIR="$exact_dir" \
+  BACKUP_MAX_AGE_HOURS=6 \
+  BACKUP_MAX_ACTIVE_SECONDS=4800 \
+  BACKUP_REQUIRE_OFFSITE_MARKER=true \
+    /bin/bash "$verifier" --emit-evidence --manifest-basename "$older_manifest" </dev/null
+)"
+reverse_order_json="$(printf '%s\n' "$reverse_order_output" \
+  | sed -n 's/^BUSINESS_FINLYNQ_BACKUP_EVIDENCE=//p')"
+jq -e --arg manifest "$older_manifest" '.manifestBasename == $manifest' \
+  <<<"$reverse_order_json" >/dev/null
+
+printf '%s\n' "tampered-exact-payload" >>"$exact_dir/$older_prefix.dump.age"
+expect_failure "a corrupted exact backup when a valid newer backup exists" \
+  run_verifier "$exact_dir" true true "$older_manifest"
+run_verifier "$exact_dir" true true "$newer_manifest" >/dev/null
+printf '%s\n' "encrypted-test-payload" >"$exact_dir/$older_prefix.dump.age"
+
+rm -f -- "$exact_dir/$older_prefix.uploaded"
+expect_failure "an exact backup missing its off-site marker when a valid newer backup exists" \
+  run_verifier "$exact_dir" true true "$older_manifest"
+run_verifier "$exact_dir" true true "$newer_manifest" >/dev/null
+
+expect_failure "a nonexistent exact manifest when another completed backup exists" \
+  run_verifier "$exact_dir" true true \
+    "business_finlynq_19990101T000000Z_business_finlynq.manifest.json"
+expect_failure "an exact manifest path traversal" \
+  run_verifier "$exact_dir" true true "../$newer_manifest"
+expect_failure "an absolute exact manifest path" \
+  run_verifier "$exact_dir" true true "$exact_dir/$newer_manifest"
+expect_failure "an exact manifest with the wrong suffix" \
+  run_verifier "$exact_dir" true true "$newer_prefix.dump.age"
+symlink_manifest="business_finlynq_19990101T000001Z_business_finlynq.manifest.json"
+ln -s -- "$newer_manifest" "$exact_dir/$symlink_manifest"
+expect_failure "a symbolic-link exact manifest" \
+  run_verifier "$exact_dir" true true "$symlink_manifest"
+expect_failure "a duplicate exact-manifest option" env \
+  BACKUP_OUTPUT_DIR="$exact_dir" \
+  BACKUP_MAX_AGE_HOURS=6 \
+  BACKUP_MAX_ACTIVE_SECONDS=4800 \
+  BACKUP_REQUIRE_OFFSITE_MARKER=true \
+  /bin/bash "$verifier" \
+    --manifest-basename "$newer_manifest" --manifest-basename "$older_manifest"
 
 valid_prefix="business_finlynq_${current_timestamp}_business_finlynq"
 printf '%s\n' "tampered" >>"$valid_dir/$valid_prefix.dump.age"
@@ -181,6 +266,14 @@ run_verifier "$valid_dir" false >"$lock_output" 2>&1 || lock_status=$?
   exit 1
 }
 grep -Fqx -- "Backup verification deferred while an encrypted backup is active" "$lock_output"
+exact_lock_status=0
+run_verifier "$valid_dir" false false "$valid_prefix.manifest.json" \
+  >/dev/null 2>&1 || exact_lock_status=$?
+[[ "$exact_lock_status" == "75" ]] || {
+  printf 'Exact verifier returned %s instead of 75 for an active backup\n' \
+    "$exact_lock_status" >&2
+  exit 1
+}
 : >"$lock_release"
 wait "$lock_holder_pid"
 lock_holder_pid=""
@@ -213,5 +306,163 @@ run_verifier "$stale_dir" true >/dev/null 2>&1 || stale_lock_status=$?
 : >"$stale_lock_release"
 wait "$lock_holder_pid"
 lock_holder_pid=""
+
+# Exercise the producer-result boundary with isolated command fakes. The result
+# must be the final line after the local manifest and required remote set have
+# committed, and it must not be emitted when the remote manifest commit fails.
+producer_fixture="$fixture_root/producer"
+producer_bin="$producer_fixture/bin"
+producer_output_dir="$producer_fixture/backups"
+producer_remote_dir="$producer_fixture/remote"
+mkdir -p -- "$producer_bin" "$producer_output_dir" "$producer_remote_dir"
+
+cat >"$producer_bin/pg_dump" <<'EOF'
+#!/bin/sh
+set -eu
+if [ "${1:-}" = "--version" ]; then
+  printf '%s\n' 'pg_dump (PostgreSQL) 16.4'
+else
+  printf '%s\n' 'consistent-test-dump'
+fi
+EOF
+
+cat >"$producer_bin/age" <<'EOF'
+#!/bin/sh
+set -eu
+output=''
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --output)
+      output="$2"
+      shift 2
+      ;;
+    *) shift ;;
+  esac
+done
+[ -n "$output" ]
+cat >"$output"
+EOF
+
+cat >"$producer_bin/rclone" <<'EOF'
+#!/bin/sh
+set -eu
+[ "${1:-}" = "--config" ]
+shift 2
+operation="$1"
+shift
+case "$operation" in
+  copyto)
+    source_path="$1"
+    remote_name="${2##*/}"
+    if [ "${FAKE_RCLONE_FAIL_MANIFEST:-false}" = "true" ]; then
+      case "$remote_name" in
+        *.manifest.json) exit 72 ;;
+      esac
+    fi
+    cp -- "$source_path" "$FAKE_RCLONE_REMOTE_DIR/$remote_name"
+    ;;
+  cat)
+    remote_name="${1##*/}"
+    cat -- "$FAKE_RCLONE_REMOTE_DIR/$remote_name"
+    ;;
+  *) exit 73 ;;
+esac
+EOF
+chmod 0700 -- "$producer_bin/pg_dump" "$producer_bin/age" "$producer_bin/rclone"
+
+producer_password="$producer_fixture/database-password"
+producer_recipient="$producer_fixture/age-recipient"
+producer_rclone_config="$producer_fixture/rclone.conf"
+printf '%s\n' 'test-database-password' >"$producer_password"
+printf '%s\n' 'age1testrecipient' >"$producer_recipient"
+printf '%s\n' '[fixture]' >"$producer_rclone_config"
+
+producer_output="$(
+  PATH="$producer_bin:$PATH" \
+  PGHOST=database \
+  PGDATABASE=business_finlynq \
+  PGUSER=business_finlynq_backup \
+  BACKUP_DATABASE_PASSWORD_FILE="$producer_password" \
+  BACKUP_AGE_RECIPIENT_FILE="$producer_recipient" \
+  BUSINESS_FINLYNQ_IMAGE_REVISION="$revision" \
+  BACKUP_OUTPUT_DIR="$producer_output_dir" \
+  BACKUP_REQUIRE_OFFSITE=true \
+  BACKUP_RCLONE_REMOTE='fixture:business-finlynq/database' \
+  BACKUP_RCLONE_CONFIG_FILE="$producer_rclone_config" \
+  FAKE_RCLONE_REMOTE_DIR="$producer_remote_dir" \
+    /bin/bash "$backup_runner" </dev/null
+)"
+[[ "$(printf '%s\n' "$producer_output" \
+  | grep -Fc 'BUSINESS_FINLYNQ_BACKUP_RESULT=')" == "1" ]] || {
+    printf '%s\n' "Backup producer did not emit exactly one committed result" >&2
+    exit 1
+  }
+producer_result_line="$(printf '%s\n' "$producer_output" | tail -n 1)"
+[[ "$producer_result_line" == BUSINESS_FINLYNQ_BACKUP_RESULT=* ]] || {
+  printf '%s\n' "Backup producer result is not its final output line" >&2
+  exit 1
+}
+producer_result_json="${producer_result_line#BUSINESS_FINLYNQ_BACKUP_RESULT=}"
+producer_manifest="$(jq -er '
+  if type == "object" and
+    keys == ["manifestBasename", "product", "schemaVersion"] and
+    .schemaVersion == 1 and .product == "business-finlynq" and
+    (.manifestBasename | type == "string" and
+      test("^business_finlynq_[0-9]{8}T[0-9]{6}Z_[A-Za-z0-9_.-]+\\.manifest\\.json$"))
+  then .manifestBasename
+  else error("invalid producer result")
+  end
+' <<<"$producer_result_json")" || {
+  printf '%s\n' "Backup producer result schema is invalid" >&2
+  exit 1
+}
+producer_prefix="${producer_manifest%.manifest.json}"
+for committed_path in \
+  "$producer_output_dir/$producer_manifest" \
+  "$producer_output_dir/$producer_prefix.dump.age" \
+  "$producer_output_dir/$producer_prefix.sha256" \
+  "$producer_output_dir/$producer_prefix.uploaded" \
+  "$producer_remote_dir/$producer_manifest" \
+  "$producer_remote_dir/$producer_prefix.dump.age" \
+  "$producer_remote_dir/$producer_prefix.sha256"; do
+  [[ -f "$committed_path" && -s "$committed_path" ]] || {
+    printf 'Backup producer emitted a result before committing %s\n' "$committed_path" >&2
+    exit 1
+  }
+done
+
+failed_output_dir="$producer_fixture/failed-backups"
+failed_remote_dir="$producer_fixture/failed-remote"
+mkdir -p -- "$failed_output_dir" "$failed_remote_dir"
+failed_producer_status=0
+failed_producer_output="$(
+  PATH="$producer_bin:$PATH" \
+  PGHOST=database \
+  PGDATABASE=business_finlynq \
+  PGUSER=business_finlynq_backup \
+  BACKUP_DATABASE_PASSWORD_FILE="$producer_password" \
+  BACKUP_AGE_RECIPIENT_FILE="$producer_recipient" \
+  BUSINESS_FINLYNQ_IMAGE_REVISION="$revision" \
+  BACKUP_OUTPUT_DIR="$failed_output_dir" \
+  BACKUP_REQUIRE_OFFSITE=true \
+  BACKUP_RCLONE_REMOTE='fixture:business-finlynq/database' \
+  BACKUP_RCLONE_CONFIG_FILE="$producer_rclone_config" \
+  FAKE_RCLONE_REMOTE_DIR="$failed_remote_dir" \
+  FAKE_RCLONE_FAIL_MANIFEST=true \
+    /bin/bash "$backup_runner" </dev/null 2>&1
+)" || failed_producer_status=$?
+[[ "$failed_producer_status" != "0" ]] || {
+  printf '%s\n' "Backup producer unexpectedly accepted a failed remote manifest commit" >&2
+  exit 1
+}
+if printf '%s\n' "$failed_producer_output" | grep -Fq 'BUSINESS_FINLYNQ_BACKUP_RESULT='; then
+  printf '%s\n' "Backup producer emitted an exact result before remote commit" >&2
+  exit 1
+fi
+if find "$failed_output_dir" -maxdepth 1 -type f -name 'business_finlynq_*' -print -quit \
+  | grep -q .; then
+  printf '%s\n' "Failed backup producer left a local completed-set artifact" >&2
+  exit 1
+fi
 
 printf '%s\n' "Latest-backup verifier fixture checks passed"

@@ -1,4 +1,5 @@
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import {
   chmodSync,
   mkdirSync,
@@ -13,7 +14,10 @@ import { join, posix } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 const read = (path: string) => readFileSync(path, "utf8");
+const sha256 = (value: string) => createHash("sha256").update(value).digest("hex");
 const installer = read("deploy/production/install-initial-production.sh");
+const productionSignalWorkflow = read(".github/workflows/signal-production-deployment.yml");
+const qualityGateWorkflow = read(".github/workflows/ci.yml");
 const rehearsals = read("deploy/production/run-initial-rehearsals.sh");
 const runner = read("deploy/release/run-release.sh");
 const developmentInstaller = read("deploy/development/install-development.sh");
@@ -65,6 +69,101 @@ describe("fresh production bootstrap installer", () => {
     expect(installer).toContain(".Internal == true");
     expect(installer).toContain(".Attachable == false");
     expect(installer).toContain("Docker Compose 2.39.0 or newer is required");
+  });
+
+  it("verifies the exact keyless production signal before fresh-host mutation", () => {
+    expect(installer).toContain('readonly github_cli="/usr/bin/gh"');
+    expect(installer).toContain(
+      'readonly production_signal_repository="finlynq/business-finlynq"',
+    );
+    expect(installer).toContain(
+      'readonly production_signal_certificate_identity="https://github.com/finlynq/business-finlynq/.github/workflows/signal-production-deployment.yml@refs/heads/main"',
+    );
+    expect(installer).toContain(
+      `readonly production_signal_workflow_sha256="${sha256(productionSignalWorkflow)}"`,
+    );
+    expect(installer).toContain(
+      `readonly quality_gate_workflow_sha256="${sha256(qualityGateWorkflow)}"`,
+    );
+    expect(installer).toContain('[[ -f "$github_cli" && ! -L "$github_cli" \\');
+    expect(installer).toContain(
+      '"$(stat -c \'%u:%g:%a\' -- "$github_cli")" == 0:0:755 ]]',
+    );
+    expect(installer).toContain("GitHub CLI 2.100.0 or newer");
+    const verifierStart = installer.indexOf("verify_ci_approved_production_signal() (");
+    const verifierEnd = installer.indexOf("\n)\n", verifierStart);
+    expect(verifierStart).toBeGreaterThan(-1);
+    expect(verifierEnd).toBeGreaterThan(verifierStart);
+    const verifier = installer.slice(verifierStart, verifierEnd);
+    expect(verifier).toContain([
+      "  printf '%s\\nrepository=%s\\nrevision=%s\\n' \\",
+      "    'business-finlynq-production-deployment-v1' \\",
+      '    "$production_signal_repository" \\',
+      '    "$revision" >"$signal_file"',
+    ].join("\n"));
+    expect(verifier).toContain(
+      'signal_asset="business-finlynq-production-deployment-$revision.attestation.json"',
+    );
+    expect(verifier).toContain(
+      '"https://github.com/$production_signal_repository/releases/download/production-deployment-signals/$signal_asset"',
+    );
+    expect(verifier).toContain("curl --disable --proto '=https'");
+    expect(verifier).toContain("--proto-redir '=https'");
+    expect(verifier).toContain("--max-filesize 16777216");
+    expect(verifier).toContain("timeout --signal=TERM --kill-after=10 45");
+    expect(verifier).toContain("timeout --signal=TERM --kill-after=15 90");
+    expect(verifier).toContain(
+      'signal_directory="$(mktemp -d /tmp/business-finlynq-initial-production-signal.XXXXXX)"',
+    );
+    expect(verifier).toContain('HOME="$signal_directory/home"');
+    expect(verifier).toContain('GH_CONFIG_DIR="$signal_directory/config"');
+    expect(verifier).toContain('XDG_CACHE_HOME="$signal_directory/cache"');
+    expect(verifier).toContain(
+      '"$(stat -c \'%u:%g:%a:%h\' -- "$bundle_file")" == 0:0:600:1',
+    );
+    expect(verifier).toContain("env -i \\");
+    expect(verifier).not.toContain("GH_TOKEN");
+    expect(verifier).toContain(
+      '.mediaType == "application/vnd.dev.sigstore.bundle.v0.3+json"',
+    );
+    expect(verifier).toContain(
+      '.dsseEnvelope.payloadType == "application/vnd.in-toto+json"',
+    );
+    expect(verifier).toContain('--bundle "$bundle_file"');
+    expect(verifier).toContain(
+      '--cert-identity "$production_signal_certificate_identity"',
+    );
+    expect(verifier).toContain(
+      "--cert-oidc-issuer https://token.actions.githubusercontent.com",
+    );
+    expect(verifier).toContain('--signer-digest "$revision"');
+    expect(verifier).toContain('--source-digest "$revision"');
+    expect(verifier).toContain("--source-ref refs/heads/main");
+    expect(verifier).toContain("--deny-self-hosted-runners");
+    expect(verifier).toContain("--predicate-type https://slsa.dev/provenance/v1");
+    expect(verifier).not.toContain("--signer-workflow");
+    expect(installer).not.toContain("refs/tags/deploy-production-");
+
+    const checkoutValidated = installer.indexOf(
+      '|| fail "canonical production checkout, origin, branch, or revision is not exact"',
+    );
+    const trustedWorkflowsValidated = installer.indexOf(
+      "candidate_uses_trusted_production_workflows \\\n  || fail",
+      verifierEnd,
+    );
+    const signalVerified = installer.indexOf(
+      "verify_ci_approved_production_signal \\\n  || fail",
+      verifierEnd,
+    );
+    const firstStateMutation = installer.indexOf(
+      'install -d -o root -g deploy -m 0775 -- "$state_directory"',
+    );
+    expect(installer).toContain(
+      'git_as_deploy cat-file blob "$revision:$path" | sha256sum',
+    );
+    expect(trustedWorkflowsValidated).toBeGreaterThan(checkoutValidated);
+    expect(signalVerified).toBeGreaterThan(trustedWorkflowsValidated);
+    expect(signalVerified).toBeLessThan(firstStateMutation);
   });
 
   it("uses portable numeric ownership for container-writable backup directories", () => {
@@ -167,6 +266,44 @@ describe("fresh production bootstrap installer", () => {
 
   it("renders both the active profile set and the explicitly inert edge service", () => {
     expect(installer).toContain('(.services | has("edge") | not)');
+    expect(installer).toContain(
+      'release_router_reference="business-finlynq-release-router:v1"',
+    );
+    expect(installer).toContain('release_router_revision="release-router-v1"');
+    expect(installer).toContain('release_router_contract="v1"');
+    expect(installer).toContain(
+      'release_router_build_project="business-finlynq-release-router-build-v1"',
+    );
+    expect(installer).toContain(
+      'release_router_state_volume="business_finlynq_private-release-router-state-v1"',
+    );
+    expect(installer).not.toContain(
+      'release_router_state_volume="business_finlynq_private_release-router-state-v1"',
+    );
+    expect(
+      (installer.match(/\.services\.release_router\.image == \$releaseRouterReference/gu) ?? [])
+        .length,
+    ).toBeGreaterThanOrEqual(2);
+    expect(installer).not.toContain(
+      '.services.release_router.image == ("business-finlynq-release-router:" + $revision)',
+    );
+    expect(installer).toContain(
+      '.services.release_router.networks.business_finlynq_edge.aliases == ["production-app"]',
+    );
+    expect(installer).toContain('((.services.app.ports // []) | length) == 0');
+    expect(installer).toContain(
+      '.services.app.networks.business_finlynq_frontend.aliases == ["release-app"]',
+    );
+    expect(installer).toContain(
+      '.networks.business_finlynq_frontend.name == "business_finlynq_private-frontend"',
+    );
+    expect(installer).toContain(
+      '.volumes.business_finlynq_release_router_state.name == $releaseRouterStateVolume',
+    );
+    expect(installer).toContain('.source == "business_finlynq_release_router_state"');
+    expect(installer).toContain('.target == "/state"');
+    expect(installer).toContain('($project + "-release-router-state-v1")');
+    expect(installer).toContain('[.volumes[].name, .networks[].name]');
     expect(installer).toContain("--profile external-edge-disabled config --format json");
     expect(installer).toContain('.services.edge.entrypoint == ["/bin/false"]');
     expect(installer).toContain('.services.edge.network_mode == "none"');
@@ -214,6 +351,23 @@ describe("fresh production bootstrap installer", () => {
     expect(installer).toContain("verify_install_completion_for_run");
     expect(installer).toContain("06-initial-inputs.json");
     expect(installer).toContain("accepted initial inputs do not match the protected configuration");
+    expect(installer).toContain('select(.name == "router")');
+    expect(installer).toContain('"maintenanceConfirmedBeforeSchemaMigration"');
+    expect(installer).toContain('"releaseRouterConfigSha256"');
+    expect(installer).toContain('"releaseRouterImageId"');
+    expect(installer).toContain(".maintenanceConfirmedBeforeSchemaMigration == true");
+    expect(installer).toContain(".releaseRouterImageId == $releaseRouterImageId");
+    expect(installer).toContain(".releaseRouterConfigSha256 == $releaseRouterConfigSha256");
+    const routerManifest = shellFunction(installer, "checked_release_router_config_sha256");
+    expect(routerManifest).toContain("sha256sum Caddyfile Caddyfile.maintenance");
+    expect(routerManifest).toContain("| sha256sum | awk '{print $1}'");
+    expect(shellFunction(installer, "verify_contained_initial_terminal_evidence_records"))
+      .toContain('expected_router_config_sha="$(checked_release_router_config_sha256)"');
+    expect(shellFunction(installer, "write_recovered_initial_terminal_record"))
+      .toContain('expected_router_config_sha="$(checked_release_router_config_sha256)"');
+    expect(installer).not.toMatch(
+      /checked_file_sha256\s+\\?\r?\n?\s*"\$repository\/deploy\/release\/router\/Caddyfile"/u,
+    );
     const finalizeStart = installer.indexOf("finalize_accepted_initial() {");
     const finalizeEnd = installer.indexOf("\n}\n\nif [[ \"$prepare_configuration_only\"", finalizeStart);
     const finalize = installer.slice(finalizeStart, finalizeEnd);
@@ -222,6 +376,13 @@ describe("fresh production bootstrap installer", () => {
     );
     const containment = finalize.indexOf('wrapper_stop_app_on_failure="true"');
     const recovery = finalize.indexOf('recover_accepted_stopped_app "$accepted_evidence"');
+    const activation = finalize.indexOf(
+      'activate_accepted_release_router "$accepted_recovery_router_container"',
+    );
+    const publicReadiness = finalize.indexOf("verify_accepted_public_readiness");
+    const externalReadiness = finalize.indexOf(
+      '"$external_edge_verifier_target" --scope production',
+    );
     const completion = finalize.indexOf('write_install_completion "$accepted_run_id"');
     const disarm = finalize.indexOf('wrapper_stop_app_on_failure="false"', completion);
     const output = finalize.indexOf("printf 'Recovered wrapper completion", completion);
@@ -229,6 +390,10 @@ describe("fresh production bootstrap installer", () => {
     expect(terminalValidation).toBeLessThan(containment);
     expect(containment).toBeLessThan(recovery);
     expect(terminalValidation).toBeLessThan(recovery);
+    expect(recovery).toBeLessThan(activation);
+    expect(activation).toBeLessThan(publicReadiness);
+    expect(publicReadiness).toBeLessThan(externalReadiness);
+    expect(externalReadiness).toBeLessThan(completion);
     expect(recovery).toBeLessThan(completion);
     expect(completion).toBeLessThan(disarm);
     expect(disarm).toBeLessThan(output);
@@ -247,6 +412,24 @@ describe("fresh production bootstrap installer", () => {
     expect(installer).toContain("11-images.json");
     expect(installer).toContain("14-evidence-scanner.json");
     expect(installer).toContain('"HostIp":"127.0.0.1", "HostPort":"3100"');
+    expect(installer).toContain("(.images | type == \"array\" and length == 7)");
+    const imageInventory = shellFunction(installer, "verify_release_image_inventory");
+    expect(imageInventory).toContain('.reference == $releaseRouterReference');
+    expect(imageInventory).toContain('.ociRevision == $releaseRouterRevision');
+    expect(imageInventory).toContain('.ociRevision == $revision');
+    expect(imageInventory.indexOf('if .name == "router" then')).toBeLessThan(
+      imageInventory.indexOf('.ociRevision == $revision'),
+    );
+    expect(installer).toContain("verify_release_router_runtime_contract");
+    expect(installer).toContain("verify_release_router_image_contract");
+    expect(installer).toContain("live release router is not running and healthy");
+    expect(installer).toContain(
+      "accepted production runtime does not contain exactly app, database, scanner, and release router",
+    );
+    expect(installer).toContain(
+      '((.[0].HostConfig.PortBindings // {}) | length) == 0',
+    );
+    expect(installer).toContain('index("release-app")) != null');
     expect(installer).toContain("live app differs from the accepted contained runtime");
     expect(installer).toContain("business-finlynq-accounting-evidence.service");
     expect(installer).toContain("business-finlynq-monitor.service");
@@ -261,6 +444,103 @@ describe("fresh production bootstrap installer", () => {
     expect(installer).toContain("schedulerActivationDeferred == true");
     expect(installer).not.toContain("initialTimersEnabled");
     expect(installer).not.toContain("offsiteBackupDelivery");
+  });
+
+  it("fully attests the accepted release-router container boundary", () => {
+    const routerContract = shellFunction(installer, "verify_release_router_runtime_contract");
+    for (const contract of [
+      '.[0].Image == $imageId',
+      '"org.opencontainers.image.revision"] == $routerRevision',
+      '"com.business-finlynq.release-router.contract"] == $routerContract',
+      '.[0].Config.User == "10001:10001"',
+      '.[0].Config.Entrypoint == ["/usr/local/bin/release-router-entrypoint"]',
+      '.[0].Config.Cmd == ["serve"]',
+      ".[0].Config.Healthcheck.Test ==",
+      ".[0].HostConfig.ReadonlyRootfs == true",
+      ".[0].HostConfig.Init == true",
+      '"Name":"unless-stopped"',
+      '(.[0].HostConfig.CapDrop | sort) == ["ALL"]',
+      '"no-new-privileges:true"',
+      '"HostIp":"127.0.0.1", "HostPort":"3100"',
+      '(.[0].HostConfig.Tmpfs | keys | sort) == ["/config", "/data", "/tmp"]',
+      '(.[0].Mounts | type == "array" and length == 1)',
+      '.[0].Mounts[0].Name == $routerStateVolume',
+      '.[0].Mounts[0].Destination == "/state"',
+      '.[0].Mounts[0].RW == true',
+      '["business_finlynq_edge", "business_finlynq_private-frontend"]',
+      'index("production-app")) != null',
+    ]) {
+      expect(routerContract).toContain(contract);
+    }
+    expect(routerContract).not.toContain('--arg revision "$revision"');
+    const imageContract = shellFunction(installer, "verify_release_router_image_contract");
+    expect(imageContract).toContain('"com.docker.compose.project"] == $buildProject');
+    expect(imageContract).toContain('release_router_build_project');
+    const stateContract = shellFunction(installer, "verify_release_router_state_contract");
+    expect(stateContract).toContain('10001:10001:700');
+    expect(stateContract).toContain('10001:10001:600');
+    expect(stateContract).toContain('active|maintenance');
+    const liveRuntime = shellFunction(installer, "verify_live_accepted_initial_runtime");
+    expect(liveRuntime).toContain('verify_release_router_image_contract');
+    expect(liveRuntime).toContain('verify_release_router_runtime_contract');
+    expect(liveRuntime).toContain('"$container_id" active "live accepted release router"');
+    const recoveryRuntime = shellFunction(installer, "recover_accepted_stopped_app");
+    expect(recoveryRuntime).toContain('verify_release_router_image_contract');
+    expect(recoveryRuntime).toContain('verify_release_router_runtime_contract');
+    expect(recoveryRuntime).toContain("hold_accepted_release_router_in_maintenance");
+    const maintenanceRecovery = shellFunction(
+      installer,
+      "hold_accepted_release_router_in_maintenance",
+    );
+    expect(maintenanceRecovery).toContain(
+      '"$container_id" active-or-maintenance "terminal-recovery release router"',
+    );
+    expect(maintenanceRecovery).toContain(
+      '"$container_id" maintenance "terminal-recovery release router"',
+    );
+    const activation = shellFunction(installer, "activate_accepted_release_router");
+    expect(activation).toContain('reload_accepted_release_router "$container_id" Caddyfile');
+    expect(activation).toContain('commit_release_router_mode_online "$container_id" active');
+    expect(activation.indexOf("reload_accepted_release_router")).toBeLessThan(
+      activation.indexOf("commit_release_router_mode_online"),
+    );
+  });
+
+  it("permits only an attested stable router boundary during an initial resume", () => {
+    const resumeBoundary = shellFunction(installer, "verify_initial_resume_router_boundary");
+    expect(resumeBoundary).toContain('verify_protected_evidence_inventory "$prior_evidence"');
+    expect(resumeBoundary).toContain('verify_release_image_inventory');
+    expect(resumeBoundary).toContain('select(.name == "router")');
+    expect(resumeBoundary).toContain("initial resume found duplicate release-router containers");
+    expect(resumeBoundary).toContain('verify_release_router_image_contract');
+    expect(resumeBoundary).toContain('verify_release_router_runtime_contract');
+    expect(resumeBoundary).toContain('business_finlynq_private-frontend');
+    expect(resumeBoundary).toContain('.Internal == true');
+    expect(resumeBoundary).toContain(
+      '.Labels["com.docker.compose.network"] == "business_finlynq_frontend"',
+    );
+    expect(resumeBoundary).toContain('docker volume inspect "$release_router_state_volume"');
+    expect(resumeBoundary).toContain(
+      '.[0].Labels["com.docker.compose.volume"] == $logical',
+    );
+    expect(resumeBoundary).toContain('active-or-maintenance');
+    expect(installer).toContain('verify_initial_resume_router_boundary "$prior_evidence"');
+    const resumeDispatch = installer.lastIndexOf('run_initial_release "$resume_run_id"');
+    expect(installer.lastIndexOf('verify_initial_resume_router_boundary "$prior_evidence"'))
+      .toBeLessThan(resumeDispatch);
+    expect(shellFunction(installer, "assert_empty_production_runtime"))
+      .toContain('"$release_router_state_volume"');
+    const initialState = shellFunction(runner, "verify_initial_state_contract");
+    expect(initialState).toContain("normalized resumable release-router state");
+    expect(initialState).toContain("0:0:700|0:0:755|10001:10001:700");
+    expect(initialState).toContain("! -path /state/mode -print -quit");
+    expect(initialState).toContain('--entrypoint sh "$resumable_router_expected_image_id"');
+    expect(initialState).toContain('sync "$temporary" 2>/dev/null || sync');
+    expect(initialState).toContain("sync -f /state 2>/dev/null || sync");
+    expect(initialState).toContain('"$resumable_router_container_id"');
+    expect(initialState).toContain('"restarted resumable release router" start');
+    expect(initialState).toContain("exact resumable release router did not become healthy");
+    expect(initialState).toContain("resumed release router did not start in public maintenance");
   });
 
   it.skipIf(process.platform === "win32")(
@@ -496,7 +776,9 @@ ${negativeChecks}
 
   it("recovers only the exact stopped accepted app and recontains finalization failures", () => {
     expect(installer).toContain("recover_accepted_stopped_app");
-    expect(installer).toContain("terminal recovery requires exactly app, database, and scanner containers");
+    expect(installer).toContain(
+      "terminal recovery requires exactly app, database, scanner, and release-router containers",
+    );
     expect(installer).toContain("terminal-recovery scanner signature is writable or future-dated");
     expect(installer).toContain("signature_mtime <= now + 300");
     expect(installer).not.toContain("now - signature_mtime <= 604800");
@@ -504,6 +786,9 @@ ${negativeChecks}
     expect(installer).toContain('clamd_database_is_fresh "$clamd_version" "$now"');
     expect(installer).toContain("terminal-recovery ClamD loaded signatures are unavailable, stale, or future-dated");
     expect(installer).toContain('start_output="$(docker start "$app_container")"');
+    const routerRecovery = shellFunction(installer, "hold_accepted_release_router_in_maintenance");
+    expect(routerRecovery).toContain('start_output="$(docker start "$container_id")"');
+    expect(installer).toContain("terminal-recovery release-router liveness endpoint is unavailable");
     expect(installer).toContain("wrapper_stop_app_on_failure=\"true\"");
     expect(installer).toContain("stopped app differs from the exact accepted contained contract");
     const finalize = installer.slice(installer.indexOf("finalize_accepted_initial()"));
@@ -512,6 +797,17 @@ ${negativeChecks}
     const optionalFailureEnd = finalize.indexOf("\n  fi", optionalFailure);
     expect(optionalFailure).toBeGreaterThan(-1);
     expect(optionalFailureEnd).toBeLessThan(recovery);
+    const recoveryFunction = installer.slice(
+      installer.indexOf("recover_accepted_stopped_app() {"),
+      installer.indexOf("\n}\n\nfinalize_accepted_initial()", installer.indexOf("recover_accepted_stopped_app() {")),
+    );
+    expect(recoveryFunction.indexOf("hold_accepted_release_router_in_maintenance")).toBeLessThan(
+      recoveryFunction.indexOf('docker start "$app_container"'),
+    );
+    expect(routerRecovery).toContain("release-router liveness endpoint");
+    expect(recoveryFunction.indexOf("hold_accepted_release_router_in_maintenance")).toBeLessThan(
+      recoveryFunction.indexOf("loopback detailed readiness"),
+    );
   });
 
   it.skipIf(process.platform === "win32")(
@@ -551,13 +847,41 @@ clamd_database_is_fresh 'ClamAV 1.5.4/28118/Tue Sep  8 12:05:00 2026' "$now"
 
   it("contains every bootstrap failure and keeps production CD absent", () => {
     expect(installer).toContain("contain_initial_wrapper_failure");
+    const containmentEnd = installer.indexOf("\n}\n", installer.indexOf(
+      "contain_initial_wrapper_failure() {",
+    ));
+    const wrapperArm = installer.indexOf('initial_wrapper_active="true"', containmentEnd);
+    const signalTraps = installer.slice(containmentEnd, wrapperArm);
+    expect(containmentEnd).toBeGreaterThan(0);
+    expect(wrapperArm).toBeGreaterThan(containmentEnd);
+    expect(signalTraps).toContain("trap contain_initial_wrapper_failure EXIT");
+    expect(signalTraps).toContain("trap 'exit 130' INT");
+    expect(signalTraps).toContain("trap 'exit 143' TERM");
     expect(installer).toContain("business-finlynq-continuous-deployment.timer");
     expect(installer).toContain("business-finlynq-development-deployment.timer");
     expect(installer).toContain("productionContinuousDeploymentInstalled: false");
     expect(installer).toContain("developmentDeploymentEnabled: false");
     expect(installer).toContain("for service_name in app auth_email_worker; do");
     expect(installer).toContain("wrapper_stop_app_on_failure");
+    const containment = shellFunction(installer, "contain_initial_wrapper_failure");
+    expect(containment).toContain('wrapper_force_router_maintenance_on_failure" == true');
+    expect(containment).toContain("commit_release_router_mode_online");
+    expect(containment).toContain("commit_release_router_maintenance_offline");
+    expect(containment).toContain("resolve_accepted_router_containment_target");
+    expect(containment).toContain("Caddyfile.maintenance");
+    expect(containment).not.toContain("docker stop --time 30 \"$accepted_recovery_router_container\"");
     expect(developmentInstaller).toContain('install -d -o root -g deploy -m 0775 -- "$shared_state_directory"');
+    const runInitial = shellFunction(installer, "run_initial_release");
+    const child = runInitial.indexOf('bash "$repository/deploy/release/run-release.sh"');
+    expect(runInitial.lastIndexOf(
+      'wrapper_force_router_maintenance_on_failure="true"', child,
+    )).toBeGreaterThan(-1);
+    expect(runInitial).toContain("arm_accepted_router_failure_containment");
+    const finalizer = shellFunction(installer, "finalize_accepted_initial");
+    expect(finalizer.indexOf('wrapper_force_router_maintenance_on_failure="true"'))
+      .toBeLessThan(finalizer.indexOf("recover_accepted_terminal_inventory_gap"));
+    expect(installer).toContain("business_finlynq_private-frontend release-app");
+    expect(installer).toContain("business_finlynq_edge production-app");
   });
 
   it("propagates security-critical producer failures before publishing evidence", () => {
@@ -573,6 +897,10 @@ clamd_database_is_fresh 'ClamAV 1.5.4/28118/Tue Sep  8 12:05:00 2026' "$now"
     expect(rehearsals).toContain("canonical production checkout status could not be inspected");
     expect(rehearsals).toContain("canonical production checkout status could not be reinspected");
     expect(runner).toContain('if ! initial_secret_sources="$(jq -r');
+    expect(runner).toContain("forward-repair application inventory could not be read");
+    expect(runner).toContain(
+      "forward-repair authentication-worker inventory could not be read",
+    );
     expect(runner).not.toContain("done < <(");
     expect(developmentInstaller).toContain("checked_random_base64_32");
     expect(developmentInstaller).not.toContain(

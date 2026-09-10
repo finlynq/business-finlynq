@@ -414,6 +414,47 @@ services:
         max-size: "10m"
         max-file: "3"
 
+  release_router:
+    image: business-finlynq-release-router:v1
+    pull_policy: never
+    build:
+      context: .
+      target: release-router
+    user: "10001:10001"
+    ports:
+      - "127.0.0.1:${BUSINESS_FINLYNQ_APP_PORT:-3100}:3000"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-T", "2", "-O", "/dev/null", "http://127.0.0.1:3000/_business-finlynq/release-router/live"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+    read_only: true
+    init: true
+    tmpfs:
+      - /tmp:size=16m,mode=0700,uid=10001,gid=10001,noexec,nosuid,nodev
+      - /config:size=1m,mode=0700,uid=10001,gid=10001,noexec,nosuid,nodev
+      - /data:size=1m,mode=0700,uid=10001,gid=10001,noexec,nosuid,nodev
+    volumes:
+      - business_finlynq_release_router_state:/state
+    security_opt:
+      - no-new-privileges:true
+    cap_drop: [ALL]
+    restart: unless-stopped
+    stop_grace_period: 75s
+    networks:
+      business_finlynq_frontend:
+      business_finlynq_edge:
+        aliases:
+          - ${BUSINESS_FINLYNQ_APP_NETWORK_ALIAS:-production-app}
+    cpus: "0.25"
+    mem_limit: 96m
+    pids_limit: 64
+    logging:
+      options:
+        max-size: "10m"
+        max-file: "5"
+
   app:
     image: business-finlynq-app:${BUSINESS_FINLYNQ_IMAGE_REVISION:?set BUSINESS_FINLYNQ_IMAGE_REVISION}
     pull_policy: never
@@ -465,9 +506,9 @@ services:
       - business_finlynq_document_microsoft_secret
     group_add:
       - ${BUSINESS_FINLYNQ_SECRET_GID:?set BUSINESS_FINLYNQ_SECRET_GID}
-    ports:
-      - "127.0.0.1:${BUSINESS_FINLYNQ_APP_PORT:-3100}:3000"
     depends_on:
+      release_router:
+        condition: service_healthy
       bootstrap_demo:
         condition: service_completed_successfully
       evidence_scanner:
@@ -484,9 +525,9 @@ services:
       business_finlynq_private:
       business_finlynq_egress:
       business_finlynq_evidence:
-      business_finlynq_edge:
+      business_finlynq_frontend:
         aliases:
-          - ${BUSINESS_FINLYNQ_APP_NETWORK_ALIAS:-production-app}
+          - release-app
     cpus: "1.00"
     mem_limit: 768m
     pids_limit: 128
@@ -561,6 +602,7 @@ services:
       PLAYWRIGHT_MANAGED_SERVER: "true"
       E2E_EXPECT_ACCOUNT_LOGIN_ENABLED: ${ACCOUNT_LOGIN_ENABLED:-false}
       E2E_EXPECT_ACCOUNT_SIGNUP_ENABLED: ${ACCOUNT_SIGNUP_ENABLED:-false}
+      PLAYWRIGHT_RELEASE_ACCEPTANCE_TOKEN: ${BUSINESS_FINLYNQ_RELEASE_ACCEPTANCE_TOKEN:-}
       # Playwright removes its output directories before every run. Keep the
       # removable directories below, rather than at, the tmpfs mountpoints.
       PLAYWRIGHT_HTML_OUTPUT_DIR: /app/playwright-report/release
@@ -1487,6 +1529,8 @@ services:
         max-file: "3"
 
 volumes:
+  business_finlynq_release_router_state:
+    name: ${RELEASE_REHEARSAL_PROJECT:-${BUSINESS_FINLYNQ_PRIVATE_NETWORK:-business_finlynq_private}}-release-router-state-v1
   business_finlynq_clamav:
     name: ${BUSINESS_FINLYNQ_PGDATA_VOLUME:-business_finlynq_pgdata}_clamav
   business_finlynq_pgdata:
@@ -1541,6 +1585,9 @@ networks:
     internal: true
   business_finlynq_egress:
     name: ${BUSINESS_FINLYNQ_EGRESS_NETWORK:-business_finlynq_egress}
+  business_finlynq_frontend:
+    name: ${RELEASE_REHEARSAL_PROJECT:-${BUSINESS_FINLYNQ_PRIVATE_NETWORK:-business_finlynq_private}}-frontend
+    internal: true
   business_finlynq_edge:
     name: ${BUSINESS_FINLYNQ_EDGE_NETWORK:-business_finlynq_edge}
   business_finlynq_development_edge:

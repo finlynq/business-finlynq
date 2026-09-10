@@ -105,6 +105,37 @@ ENV npm_config_cache=/tmp/npm-cache
 USER pwuser
 CMD ["./node_modules/.bin/playwright", "test"]
 
+FROM caddy:2.10.2-alpine@sha256:4c6e91c6ed0e2fa03efd5b44747b625fec79bc9cd06ac5235a779726618e530d AS release-router
+
+# The router is infrastructure, not an application release artifact. Keep its
+# contract version stable across ordinary application commits so Compose never
+# replaces the public listener during a routine deployment. Bump this value
+# only as part of an explicitly reviewed router upgrade.
+LABEL com.business-finlynq.release-router.contract=v1 \
+  org.opencontainers.image.revision=release-router-v1
+
+ARG SOURCE_DATE_EPOCH
+RUN test "$SOURCE_DATE_EPOCH" = "1788912000" \
+  && addgroup -S -g 10001 release-router \
+  && adduser -S -D -H -u 10001 -G release-router release-router \
+  && mkdir -p /state \
+  && chown 10001:10001 /state \
+  && chmod 0700 /state \
+  && printf 'maintenance\n' >/state/mode \
+  && chown 10001:10001 /state/mode \
+  && chmod 0600 /state/mode
+
+COPY --chmod=0444 deploy/release/router/Caddyfile /etc/caddy/Caddyfile
+COPY --chmod=0444 deploy/release/router/Caddyfile.maintenance /etc/caddy/Caddyfile.maintenance
+COPY --chmod=0555 deploy/release/router/entrypoint.sh /usr/local/bin/release-router-entrypoint
+
+ENV HOME=/tmp
+USER 10001:10001
+EXPOSE 3000
+
+ENTRYPOINT ["/usr/local/bin/release-router-entrypoint"]
+CMD ["serve"]
+
 FROM node:24-alpine@sha256:e67514e5d0f6c46656005e1b693b2ec9d52e80b641307de684d4a015ba7a4eaf AS runner
 
 ARG BUSINESS_FINLYNQ_IMAGE_REVISION=unknown

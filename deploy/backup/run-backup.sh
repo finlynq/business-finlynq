@@ -197,3 +197,7 @@ while IFS= read -r -d '' old_manifest; do
 done < <(find "$BACKUP_OUTPUT_DIR" -maxdepth 1 -type f -name 'business_finlynq_*.manifest.json' -mtime "+$prune_before_days" -print0)
 
 log "Backup complete: $archive_name sha256=$archive_sha256 bytes=$archive_bytes"
+printf '%s' 'BUSINESS_FINLYNQ_BACKUP_RESULT='
+jq -cn \
+  --arg manifestBasename "$manifest_name" \
+  '{schemaVersion: 1, product: "business-finlynq", manifestBasename: $manifestBasename}'
