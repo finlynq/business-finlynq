@@ -159,7 +159,7 @@ sudo /usr/local/sbin/business-finlynq-deploy-development
 
 # Apply the separately reviewed root-owned shared-edge handoff now. It must
 # promote the Business route as root:root 0444, attach the edge owner to the
-# exact four-network set, recreate it, and write the protected contract source.
+# exact five-network set, recreate it, and write the protected contract source.
 # The production route may return 502/503 until the production app joins.
 
 # Phase 2: installs durable contained configuration but starts no service.
