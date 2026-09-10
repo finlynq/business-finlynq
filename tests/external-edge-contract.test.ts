@@ -242,7 +242,15 @@ describe("externally managed edge contract", () => {
     expect(verifier).toContain('"$address|80|80/tcp"');
     expect(verifier).toContain('"$address|443|443/tcp"');
     expect(verifier).toContain('"$address|443|443/udp"');
-    expect(verifier).toContain("length == 5");
+    expect(verifier).toContain("length == 6");
+    expect(verifier).toContain(
+      'readonly consult_route_source="/home/deploy/consult-finlynq/deploy/server04/Caddyfile.consult-finlynq"',
+    );
+    expect(verifier).toContain(
+      'readonly consult_route_destination="/etc/caddy/consult-finlynq.caddy"',
+    );
+    expect(verifier).toContain(".Source == $consultSource");
+    expect(verifier).toContain(".Destination == $consultDestination");
     expect(verifier).toContain("BUSINESS_FINLYNQ_EXTERNAL_EDGE_ROUTE_SHA256");
     expect(verifier).toContain("== 0:0:444");
     expect(verifier).toContain("BUSINESS_FINLYNQ_EXTERNAL_EDGE_ACTIVE_CONFIG_SHA256");
@@ -589,10 +597,11 @@ describe("externally managed edge contract", () => {
     expect(verifier).toContain(
       '[[ "$actual_edge_networks" == "$expected_edge_networks_sorted" ]]',
     );
-    expect(verifier).toContain("length == 5");
+    expect(verifier).toContain("length == 6");
     expect(verifier).toContain('--arg secretSource "$epm_secret_source"');
+    expect(verifier).toContain('--arg consultSource "$consult_route_source"');
     expect(verifier).toContain(
-      "external edge mounts differ from the protected full Caddy and EPM inventory",
+      "external edge mounts differ from the protected full Caddy, EPM, and Consult inventory",
     );
     expect(verifier).toContain(
       'if [[ "$scope" != production ]]; then\n  development_outer_health=',

@@ -24,6 +24,8 @@ readonly production_router_control_network="business_finlynq_private-router-cont
 readonly development_router_control_network="business_finlynq_development_private-router-control"
 readonly production_router_state_volume="business_finlynq_private-release-router-state-v2"
 readonly development_router_state_volume="business_finlynq_development_private-release-router-state-v2"
+readonly consult_route_source="/home/deploy/consult-finlynq/deploy/server04/Caddyfile.consult-finlynq"
+readonly consult_route_destination="/etc/caddy/consult-finlynq.caddy"
 readonly release_router_reference="business-finlynq-release-router:v2"
 readonly release_router_revision="release-router-v2"
 readonly release_router_contract="v2"
@@ -901,20 +903,24 @@ mounts="$(docker inspect --format '{{json .Mounts}}' "$edge_container")" \
 jq -e --arg configSource "$external_config_source" --arg configDestination "$external_config" \
     --arg routeSource "$route_source" --arg routeDestination "$route_destination" \
     --arg secretSource "$epm_secret_source" --arg secretDestination "$epm_secret_destination" \
+    --arg consultSource "$consult_route_source" \
+    --arg consultDestination "$consult_route_destination" \
     --arg dataVolume "$caddy_data_volume" --arg configVolume "$caddy_config_volume" '
-    length == 5
+    length == 6
     and any(.[]; .Type == "bind" and .Source == $configSource
       and .Destination == $configDestination and .RW == false)
     and any(.[]; .Type == "bind" and .Source == $routeSource
       and .Destination == $routeDestination and .RW == false)
     and any(.[]; .Type == "bind" and .Source == $secretSource
       and .Destination == $secretDestination and .RW == false)
+    and any(.[]; .Type == "bind" and .Source == $consultSource
+      and .Destination == $consultDestination and .RW == false)
     and any(.[]; .Type == "volume" and .Name == $dataVolume
       and .Destination == "/data" and .RW == true)
     and any(.[]; .Type == "volume" and .Name == $configVolume
       and .Destination == "/config" and .RW == true)
   ' <<<"$mounts" >/dev/null \
-  || fail "external edge mounts differ from the protected full Caddy and EPM inventory"
+  || fail "external edge mounts differ from the protected full Caddy, EPM, and Consult inventory"
 unset mounts
 
 readonly expected_route_sha256="$route_sha256"
