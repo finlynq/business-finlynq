@@ -19,7 +19,6 @@
 		header_up -X-Business-Finlynq-Internal-Health
 		header_up -X-Business-Finlynq-Internal-Metrics
 		# Overwrite every client-supplied correlation value at the public edge.
-		header_up -X-Request-Id
 		header_up X-Request-Id {http.request.uuid}
 		health_uri /api/health
 		health_interval 30s
@@ -63,7 +62,6 @@
 		# Keep internal health/metrics details inaccessible at the public edge.
 		header_up -X-Business-Finlynq-Internal-Health
 		header_up -X-Business-Finlynq-Internal-Metrics
-		header_up -X-Request-Id
 		header_up X-Request-Id {http.request.uuid}
 		health_uri /api/health
 		health_interval 30s
