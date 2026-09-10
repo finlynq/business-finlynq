@@ -197,6 +197,12 @@ describe("stable fail-closed release router", () => {
     ]);
     expect(maintenanceCaddyfile).toContain('respond `{"status":"unavailable"}` 503');
     expect(maintenanceCaddyfile).toContain('respond "Service temporarily unavailable.\\n" 503');
+    expect(release).toContain(
+      '== "Service temporarily unavailable.\\\\n"',
+    );
+    expect(rollback).toContain(
+      '== "Service temporarily unavailable.\\\\n"',
+    );
 
     expectOrdered(activeCaddyfile, [
       "handle @router_live {",
