@@ -79,7 +79,7 @@ describe("request-scoped content security policy", () => {
   it("forces the public Caddy edge to replace correlation and internal markers", () => {
     for (const path of ["deploy/Caddyfile.container", "deploy/Caddyfile.example"]) {
       const caddyfile = readFileSync(join(process.cwd(), path), "utf8");
-      expect(caddyfile).toContain("header_up -X-Request-Id");
+      expect(caddyfile).not.toContain("header_up -X-Request-Id");
       expect(caddyfile).toContain("header_up X-Request-Id {http.request.uuid}");
       expect(caddyfile).toContain('X-Request-Id "{http.request.uuid}"');
       expect(caddyfile).toContain("log_append request_id {http.request.uuid}");
