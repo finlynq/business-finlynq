@@ -192,13 +192,17 @@ function writeAcceptedRehearsal(directory: string, revision: string, runId: stri
     containerId: "7".repeat(64),
     imageId: routerImageId,
     revision: "release-router-v2",
-    contractVersion: "v1",
+    contractVersion: "v2",
     configSha256: routerConfigSha256,
     processHealth: "healthy",
     durableStateVolume: `business-finlynq-${runId}-release-router-state-v2`,
     durableMode: "maintenance",
     publicAlias: "production-app",
-    networks: [`business-finlynq-${runId}-edge`, `business-finlynq-${runId}-frontend`],
+    networks: [
+      `business-finlynq-${runId}-edge`,
+      `business-finlynq-${runId}-frontend`,
+      `business-finlynq-${runId}-router-control`,
+    ],
   };
   writeJson("27-release-router-runtime.json", routerRuntime);
   writeJson("28-release-router-live.json", { status: "live" });
