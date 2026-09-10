@@ -5800,7 +5800,9 @@ if [[ "$mode" == release ]]; then
     || fail "active-finalization authorization could not be committed"
 fi
 terminal_evidence_committed="true"
-commit_release_router_active
+if [[ "$mode" != rehearsal ]]; then
+  commit_release_router_active
+fi
 if [[ "$mode" == release ]]; then
   clear_active_finalization_marker \
     || fail "active-finalization recovery marker could not be retired"
