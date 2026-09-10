@@ -135,8 +135,7 @@ refresh_installed_deployer_if_needed() {
   }
   trap cleanup_deployer_refresh_staging EXIT INT TERM
 
-  candidate_source="$(mktemp
-    "$state_directory/.candidate-development-deployer.${revision}.XXXXXX")" \
+  candidate_source="$(mktemp "$state_directory/.candidate-development-deployer.${revision}.XXXXXX")" \
     || fail "candidate development deployer staging could not be created"
   expected_oid="$(git_as_deploy rev-parse "$revision:$relative_path")" \
     || fail "candidate development deployer Git blob could not be resolved"
