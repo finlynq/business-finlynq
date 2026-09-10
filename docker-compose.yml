@@ -415,7 +415,7 @@ services:
         max-file: "3"
 
   release_router:
-    image: business-finlynq-release-router:v1
+    image: business-finlynq-release-router:v2
     pull_policy: never
     build:
       context: .
@@ -1530,7 +1530,7 @@ services:
 
 volumes:
   business_finlynq_release_router_state:
-    name: ${RELEASE_REHEARSAL_PROJECT:-${BUSINESS_FINLYNQ_PRIVATE_NETWORK:-business_finlynq_private}}-release-router-state-v1
+    name: ${RELEASE_REHEARSAL_PROJECT:-${BUSINESS_FINLYNQ_PRIVATE_NETWORK:-business_finlynq_private}}-release-router-state-v2
   business_finlynq_clamav:
     name: ${BUSINESS_FINLYNQ_PGDATA_VOLUME:-business_finlynq_pgdata}_clamav
   business_finlynq_pgdata:

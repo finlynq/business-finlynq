@@ -274,10 +274,10 @@ describe("externally managed edge contract", () => {
   it("attests the release router as the exact hardened public-alias owner", () => {
     expect(verifier).toContain('container_for_service "$project" release_router');
     expect(verifier).toContain(
-      'readonly release_router_reference="business-finlynq-release-router:v1"',
+      'readonly release_router_reference="business-finlynq-release-router:v2"',
     );
-    expect(verifier).toContain('readonly release_router_revision="release-router-v1"');
-    expect(verifier).toContain('readonly release_router_contract="v1"');
+    expect(verifier).toContain('readonly release_router_revision="release-router-v2"');
+    expect(verifier).toContain('readonly release_router_contract="v2"');
     expect(verifier).toContain('expected_image="$release_router_reference"');
     expect(verifier).toContain(
       'Config.Labels["org.opencontainers.image.revision"] == $routerRevision',
@@ -379,10 +379,10 @@ describe("externally managed edge contract", () => {
   it("makes the production monitor require and independently attest the release router", () => {
     expect(monitor).toContain("expected_services=(database release_router app)");
     expect(monitor).toContain(
-      'readonly release_router_reference="business-finlynq-release-router:v1"',
+      'readonly release_router_reference="business-finlynq-release-router:v2"',
     );
-    expect(monitor).toContain('readonly release_router_revision="release-router-v1"');
-    expect(monitor).toContain('readonly release_router_contract="v1"');
+    expect(monitor).toContain('readonly release_router_revision="release-router-v2"');
+    expect(monitor).toContain('readonly release_router_contract="v2"');
     expect(monitor).toContain('release_router_expected_image="$release_router_reference"');
     expect(monitor).toContain(
       'Config.Labels["org.opencontainers.image.revision"] == $routerRevision',

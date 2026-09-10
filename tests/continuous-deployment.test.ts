@@ -278,7 +278,7 @@ describe("continuous deployment safety boundary", () => {
     expect(parentCleanup).toContain("trap - EXIT");
     expect(parentCleanup).toContain("trap '' HUP INT TERM");
     expect(parentCleanup).not.toContain("trap - EXIT HUP INT TERM");
-    expect(containment).toContain("business_finlynq_private-release-router-state-v1");
+    expect(containment).toContain("business_finlynq_private-release-router-state-v2");
     expect(containment).toContain('printf "maintenance\\n"');
     expect(containment).toContain("Caddyfile.maintenance");
     expect(containment).toContain("pause-schedulers.sh");
@@ -687,13 +687,13 @@ describe("continuous deployment safety boundary", () => {
     expect(app).toBeLessThan(candidateProof);
     expect(candidateProof).toBeLessThan(activeReload);
     expect(deployDevelopment).toContain(
-      'readonly release_router_reference="business-finlynq-release-router:v1"',
+      'readonly release_router_reference="business-finlynq-release-router:v2"',
     );
     expect(deployDevelopment).toContain(
-      'readonly release_router_revision="release-router-v1"',
+      'readonly release_router_revision="release-router-v2"',
     );
     expect(deployDevelopment).toContain(
-      'readonly release_router_build_project="business-finlynq-release-router-build-v1"',
+      'readonly release_router_build_project="business-finlynq-release-router-build-v2"',
     );
     expect(deployDevelopment).toContain("compose_release_router_build");
     expect(deployDevelopment).toContain('"business_finlynq_development_private-frontend"');

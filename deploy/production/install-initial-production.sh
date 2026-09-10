@@ -35,18 +35,18 @@ readonly external_edge_verifier_root="/usr/local/libexec/business-finlynq"
 readonly external_edge_verifier_directory="$external_edge_verifier_root/deploy/edge"
 readonly external_edge_verifier_target="$external_edge_verifier_directory/verify-external-edge.sh"
 readonly external_edge_verifier_route_target="$external_edge_verifier_directory/Caddyfile.business-external"
-readonly release_router_reference="business-finlynq-release-router:v1"
-readonly release_router_revision="release-router-v1"
-readonly release_router_contract="v1"
-readonly release_router_build_project="business-finlynq-release-router-build-v1"
-readonly release_router_state_volume="business_finlynq_private-release-router-state-v1"
+readonly release_router_reference="business-finlynq-release-router:v2"
+readonly release_router_revision="release-router-v2"
+readonly release_router_contract="v2"
+readonly release_router_build_project="business-finlynq-release-router-build-v2"
+readonly release_router_state_volume="business_finlynq_private-release-router-state-v2"
 readonly release_router_state_volume_logical="business_finlynq_release_router_state"
 readonly production_signal_repository="finlynq/business-finlynq"
 readonly production_signal_certificate_identity="https://github.com/finlynq/business-finlynq/.github/workflows/signal-production-deployment.yml@refs/heads/main"
 readonly production_signal_workflow_path=".github/workflows/signal-production-deployment.yml"
 readonly production_signal_workflow_sha256="36326ed7f59c4aab5310d4ca58dd86ef0539d653bbf3723a74f53e83fa7df071"
 readonly quality_gate_workflow_path=".github/workflows/ci.yml"
-readonly quality_gate_workflow_sha256="2a61d709888f590a6ac5cf22612224cd31fe4236b7aa3aaeb1f8d9cbb0e2228f"
+readonly quality_gate_workflow_sha256="1a30d197f4cfa9564561307afc69bd61277eac1971e0fef0664c71f3095072b8"
 readonly github_cli="/usr/bin/gh"
 readonly clean_path="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
@@ -1819,7 +1819,7 @@ render_and_verify_initial_configuration() {
       .networks.business_finlynq_frontend.internal == true and
       .networks.business_finlynq_frontend.name == ($project + "-frontend") and
       .volumes.business_finlynq_release_router_state.name ==
-        ($project + "-release-router-state-v1") and
+        ($project + "-release-router-state-v2") and
       ([.volumes[].name, .networks[].name] |
         all(.[]; startswith($project + "-"))) and
       ([.services.backup.volumes[] | select(.target == "/backups") | .source] == [$backup])

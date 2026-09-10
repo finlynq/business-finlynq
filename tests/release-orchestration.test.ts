@@ -112,7 +112,7 @@ function writeAcceptedRehearsal(directory: string, revision: string, runId: stri
     pinnedComposeConfigurationSha256: "4".repeat(64),
     images: [
       { name: "database", reference: `business-finlynq-database:${revision}`, imageId: databaseImageId, ociRevision: revision },
-      { name: "router", reference: "business-finlynq-release-router:v1", imageId: routerImageId, ociRevision: "release-router-v1" },
+      { name: "router", reference: "business-finlynq-release-router:v2", imageId: routerImageId, ociRevision: "release-router-v2" },
       { name: "app", reference: `business-finlynq-app:${revision}`, imageId: appImageId, ociRevision: revision },
       { name: "migrator", reference: `business-finlynq-migrator:${revision}`, imageId: migratorImageId, ociRevision: revision },
       { name: "authWorker", reference: `business-finlynq-auth-worker:${revision}`, imageId: authWorkerImageId, ociRevision: revision },
@@ -191,11 +191,11 @@ function writeAcceptedRehearsal(directory: string, revision: string, runId: stri
     service: "release_router",
     containerId: "7".repeat(64),
     imageId: routerImageId,
-    revision: "release-router-v1",
+    revision: "release-router-v2",
     contractVersion: "v1",
     configSha256: routerConfigSha256,
     processHealth: "healthy",
-    durableStateVolume: `business-finlynq-${runId}-release-router-state-v1`,
+    durableStateVolume: `business-finlynq-${runId}-release-router-state-v2`,
     durableMode: "maintenance",
     publicAlias: "production-app",
     networks: [`business-finlynq-${runId}-edge`, `business-finlynq-${runId}-frontend`],
@@ -317,7 +317,7 @@ describe("commit-addressed release orchestration", () => {
     for (const image of ["database", "app", "migrator", "auth-worker", "operations", "acceptance"]) {
       expect(compose).toContain(`business-finlynq-${image}:\${BUSINESS_FINLYNQ_IMAGE_REVISION:?set BUSINESS_FINLYNQ_IMAGE_REVISION}`);
     }
-    expect(compose).toContain("business-finlynq-release-router:v1");
+    expect(compose).toContain("business-finlynq-release-router:v2");
     expect(compose).toContain('"127.0.0.1:${BUSINESS_FINLYNQ_APP_PORT:-3100}:3000"');
     expect(compose).not.toContain("BUSINESS_FINLYNQ_APP_BIND_ADDRESS");
 
@@ -325,7 +325,7 @@ describe("commit-addressed release orchestration", () => {
     for (const suffix of ["pgdata", "caddy-data", "caddy-config", "private", "egress", "edge", "restore-drill"]) {
       expect(rehearsal).toContain(`\${RELEASE_REHEARSAL_PROJECT:?set RELEASE_REHEARSAL_PROJECT}-${suffix}`);
     }
-    expect(compose).toContain("${RELEASE_REHEARSAL_PROJECT:-${BUSINESS_FINLYNQ_PRIVATE_NETWORK:-business_finlynq_private}}-release-router-state-v1");
+    expect(compose).toContain("${RELEASE_REHEARSAL_PROJECT:-${BUSINESS_FINLYNQ_PRIVATE_NETWORK:-business_finlynq_private}}-release-router-state-v2");
     expect(compose).toContain("${RELEASE_REHEARSAL_PROJECT:-${BUSINESS_FINLYNQ_PRIVATE_NETWORK:-business_finlynq_private}}-frontend");
 
     const pinned = source("deploy/release/docker-compose.candidate-images.yml");
@@ -406,8 +406,8 @@ describe("commit-addressed release orchestration", () => {
   it("embeds the full revision in every release-owned image and retains both backup revision meanings", () => {
     const dockerfile = source("Dockerfile");
     expect(dockerfile.match(/LABEL org\.opencontainers\.image\.revision=\$BUSINESS_FINLYNQ_IMAGE_REVISION/g)).toHaveLength(6);
-    expect(dockerfile).toContain("com.business-finlynq.release-router.contract=v1");
-    expect(dockerfile).toContain("org.opencontainers.image.revision=release-router-v1");
+    expect(dockerfile).toContain("com.business-finlynq.release-router.contract=v2");
+    expect(dockerfile).toContain("org.opencontainers.image.revision=release-router-v2");
     expect(dockerfile).toContain(
       "FROM mcr.microsoft.com/playwright:v1.62.1-noble@sha256:dcc5531e97840b9b5e794f2814476b21571c5124a3fca2267d73041f56e7580e AS acceptance",
     );
@@ -507,11 +507,11 @@ describe("commit-addressed release orchestration", () => {
       'readonly image_build_compose_project="business-finlynq-build-$revision"',
     );
     expect(release).toContain(
-      'readonly release_router_build_compose_project="business-finlynq-release-router-build-v1"',
+      'readonly release_router_build_compose_project="business-finlynq-release-router-build-v2"',
     );
-    expect(release).toContain('readonly release_router_reference="business-finlynq-release-router:v1"');
-    expect(release).toContain('readonly release_router_revision="release-router-v1"');
-    expect(release).toContain('readonly release_router_contract="v1"');
+    expect(release).toContain('readonly release_router_reference="business-finlynq-release-router:v2"');
+    expect(release).toContain('readonly release_router_revision="release-router-v2"');
+    expect(release).toContain('readonly release_router_contract="v2"');
     expect(release).toContain(
       '[[ "$image_build_compose_project" =~ ^[a-z0-9][a-z0-9-]{2,62}$ ]]',
     );

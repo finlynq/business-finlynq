@@ -162,7 +162,7 @@ for (const [serviceName, expectedImage] of Object.entries(expectedReleaseImages)
     fail(`${serviceName} does not embed the full release revision in its OCI label`);
   }
 }
-if (releaseRouter.image !== "business-finlynq-release-router:v1"
+if (releaseRouter.image !== "business-finlynq-release-router:v2"
   || releaseRouter.pull_policy !== "never"
   || Object.keys(releaseRouter.build?.args ?? {}).length !== 0) {
   fail("release router must use its separately versioned stable v1 image");
@@ -231,7 +231,7 @@ const routerStateMounts = releaseRouter.volumes ?? [];
 const routerStateMount = routerStateMounts[0];
 const expectedRouterStateResourceName = `${process.env.RELEASE_REHEARSAL_PROJECT
   ?? process.env.BUSINESS_FINLYNQ_PRIVATE_NETWORK
-  ?? "business_finlynq_private"}-release-router-state-v1`;
+  ?? "business_finlynq_private"}-release-router-state-v2`;
 if (secretSources(releaseRouter).length > 0 || routerStateMounts.length !== 1
   || routerStateMount?.type !== "volume"
   || routerStateMount?.source !== "business_finlynq_release_router_state"
