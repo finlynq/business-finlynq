@@ -6,6 +6,7 @@ umask 077
 
 readonly repository="/home/deploy/business-finlynq-development"
 readonly expected_origin="https://github.com/finlynq/business-finlynq.git"
+readonly installed_deployer="/usr/local/sbin/business-finlynq-deploy-development"
 readonly compose_environment="/etc/business-finlynq-development/compose.env"
 readonly project="business-finlynq-development"
 readonly state_directory="/var/lib/business-finlynq-development"
@@ -15,12 +16,12 @@ readonly legacy_failure_latch="$state_directory/deployment-failed"
 readonly quarantine_file="$state_directory/quarantined-candidate"
 readonly hard_failure_latch="$state_directory/deployment-hard-failed"
 readonly accepted_revision_file="$state_directory/accepted-revision"
-readonly release_router_reference="business-finlynq-release-router:v1"
-readonly release_router_revision="release-router-v1"
-readonly release_router_contract="v1"
-readonly release_router_build_project="business-finlynq-release-router-build-v1"
-readonly release_router_source_date_epoch="1788912000"
-readonly release_router_state_volume="business_finlynq_development_private-release-router-state-v1"
+readonly release_router_reference="business-finlynq-release-router:v2"
+readonly release_router_revision="release-router-v2"
+readonly release_router_contract="v2"
+readonly release_router_build_project="business-finlynq-release-router-build-v2"
+readonly release_router_source_date_epoch="1788998400"
+readonly release_router_state_volume="business_finlynq_development_private-release-router-state-v2"
 readonly build_cache_limit="8GB"
 readonly clean_path="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 release_acceptance_token=""
@@ -111,6 +112,75 @@ git_as_deploy() {
     GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null \
     git --no-optional-locks -c safe.directory="$repository" -c core.hooksPath=/dev/null \
       -C "$repository" "$@"
+}
+
+refresh_installed_deployer_if_needed() {
+  local revision="$1" relative_path="deploy/development/deploy-development.sh"
+  local expected_oid observed_oid candidate_digest installed_digest
+  local candidate_source="" staged_target=""
+  validate_revision "$revision"
+
+  [[ -f "$installed_deployer" && ! -L "$installed_deployer"
+    && "$(readlink -f -- "$installed_deployer")" == "$installed_deployer"
+    && "$(stat -c '%U:%G:%a:%h' -- "$installed_deployer")" == root:root:550:1 ]] \
+    || fail "the installed development deployer is unavailable or unsafe"
+  [[ -d "${installed_deployer%/*}" && ! -L "${installed_deployer%/*}"
+    && "$(readlink -f -- "${installed_deployer%/*}")" == "${installed_deployer%/*}"
+    && "$(stat -c '%U:%G:%a' -- "${installed_deployer%/*}")" == root:root:755 ]] \
+    || fail "the installed development deployer directory is unavailable or unsafe"
+
+  cleanup_deployer_refresh_staging() {
+    [[ -z "$candidate_source" ]] || rm -f -- "$candidate_source"
+    [[ -z "$staged_target" ]] || rm -f -- "$staged_target"
+  }
+  trap cleanup_deployer_refresh_staging EXIT INT TERM
+
+  candidate_source="$(mktemp "$state_directory/.candidate-development-deployer.${revision}.XXXXXX")" \
+    || fail "candidate development deployer staging could not be created"
+  expected_oid="$(git_as_deploy rev-parse "$revision:$relative_path")" \
+    || fail "candidate development deployer Git blob could not be resolved"
+  git_as_deploy show "$revision:$relative_path" >"$candidate_source" \
+    || fail "candidate development deployer source could not be staged"
+  observed_oid="$(git_as_deploy hash-object --stdin <"$candidate_source")" \
+    || fail "candidate development deployer staging could not be hashed"
+  [[ "$expected_oid" =~ ^[a-f0-9]{40}$ && "$observed_oid" == "$expected_oid"
+    && -s "$candidate_source" ]] \
+    || fail "candidate development deployer staging differs from its Git blob"
+  chown root:root -- "$candidate_source" \
+    || fail "candidate development deployer staging ownership could not be set"
+  chmod 0500 "$candidate_source" \
+    || fail "candidate development deployer staging mode could not be set"
+
+  candidate_digest="$(sha256sum -- "$candidate_source" | awk '{ print $1 }')" \
+    || fail "candidate development deployer digest could not be read"
+  installed_digest="$(sha256sum -- "$installed_deployer" | awk '{ print $1 }')" \
+    || fail "installed development deployer digest could not be read"
+  if [[ "$candidate_digest" == "$installed_digest" ]]; then
+    cleanup_deployer_refresh_staging
+    trap - EXIT INT TERM
+    return 0
+  fi
+
+  staged_target="$(mktemp "${installed_deployer%/*}/.business-finlynq-deploy-development.XXXXXX")" \
+    || fail "installed development deployer staging could not be created"
+  install -o root -g root -m 0550 -- "$candidate_source" "$staged_target" \
+    || fail "candidate development deployer could not be installed"
+  [[ -f "$staged_target" && ! -L "$staged_target"
+    && "$(stat -c '%U:%G:%a:%h' -- "$staged_target")" == root:root:550:1
+    && "$(sha256sum -- "$staged_target" | awk '{ print $1 }')" == "$candidate_digest" ]] \
+    || fail "installed candidate development deployer differs from its reviewed source"
+  mv -T -- "$staged_target" "$installed_deployer" \
+    || fail "candidate development deployer could not be activated atomically"
+  staged_target=""
+  sync -f -- "$installed_deployer" "${installed_deployer%/*}"
+  cleanup_deployer_refresh_staging
+  trap - EXIT INT TERM
+
+  printf 'Activated the CI-approved development deployer from candidate %s; restarting preflight.\n' \
+    "$revision"
+  exec 9>&-
+  exec 8>&-
+  exec env -i PATH="$clean_path" "$installed_deployer"
 }
 
 compose() {
@@ -570,9 +640,11 @@ ensure_release_router_image() {
     && "$image_contract" == "$release_router_contract" \
     && "$image_build_project" == "$release_router_build_project" ]] || return 1
   expected_config_sha256="$(
-    cd -- "$repository/deploy/release/router" \
-      && sha256sum Caddyfile Caddyfile.maintenance entrypoint.sh \
-      | awk '{print $1}' | sha256sum | awk '{print $1}'
+    for relative_path in Caddyfile Caddyfile.maintenance entrypoint.sh; do
+      git_as_deploy show \
+        "$candidate_revision:deploy/release/router/$relative_path" \
+        | sha256sum | awk '{ print $1 }'
+    done | sha256sum | awk '{ print $1 }'
   )" || return 1
   [[ "$expected_config_sha256" =~ ^[a-f0-9]{64}$ ]] || return 1
   observed_config_output="$(docker run --rm --network none --read-only \
@@ -719,6 +791,7 @@ assert_fresh_development_resources() {
     business_finlynq_development_egress
     business_finlynq_development_egress_scanner
     business_finlynq_development_private-frontend
+    business_finlynq_development_private-router-control
     business_finlynq_development_restore_drill
   )
 
@@ -800,7 +873,8 @@ release_router_runtime_is_accepted() {
     (.[0].HostConfig.PortBindings["3000/tcp"] ==
       [{"HostIp":"127.0.0.1", "HostPort":"3200"}]) and
     ([.[0].NetworkSettings.Networks | keys[]] | sort) ==
-      ["business_finlynq_development_edge", "business_finlynq_development_private-frontend"] and
+      ["business_finlynq_development_edge", "business_finlynq_development_private-frontend",
+        "business_finlynq_development_private-router-control"] and
     ([.[0].NetworkSettings.Networks.business_finlynq_development_edge.Aliases[]] |
       index("development-app")) != null and
     .[0].Config.Entrypoint == ["/usr/local/bin/release-router-entrypoint"] and
@@ -944,6 +1018,7 @@ signal_revision="$(git_as_deploy rev-parse "refs/tags/$signal_tag^{commit}" 2>/d
   || fail "the immutable development deployment signal is unavailable"
 [[ "$signal_revision" == "$candidate_revision" ]] \
   || fail "the successful quality gate has not published the immutable development deployment signal"
+refresh_installed_deployer_if_needed "$candidate_revision"
 
 verify_compose_boundary() {
   local revision="$1" topology rendered resource expected app_port app_origin app_alias
@@ -966,7 +1041,8 @@ verify_compose_boundary() {
   if [[ "$topology" == router ]]; then
     expected_resources+=(
       "business_finlynq_development_private-frontend"
-      "business_finlynq_development_private-release-router-state-v1"
+      "business_finlynq_development_private-router-control"
+      "business_finlynq_development_private-release-router-state-v2"
     )
     router_image="$(jq -er '.services.release_router.image' <<<"$rendered")" \
       || fail "development release-router image could not be read from Compose"
@@ -980,6 +1056,20 @@ verify_compose_boundary() {
       || fail "development application frontend alias could not be read from Compose"
     [[ "$router_image" == "$release_router_reference" ]] \
       || fail "development release router must use the stable reviewed image"
+    jq -e '
+      ([.services.release_router.networks | keys[]] | sort) ==
+        ["business_finlynq_edge", "business_finlynq_frontend",
+          "business_finlynq_router_control"] and
+      .networks.business_finlynq_router_control.name ==
+        "business_finlynq_development_private-router-control" and
+      ((.networks.business_finlynq_router_control.internal // false) == false) and
+      .networks.business_finlynq_router_control.driver == "bridge" and
+      .networks.business_finlynq_router_control.driver_opts == {
+        "com.docker.network.bridge.enable_icc": "false",
+        "com.docker.network.bridge.enable_ip_masquerade": "false"
+      }
+    ' <<<"$rendered" >/dev/null \
+      || fail "development release-router control network is invalid"
     [[ "$app_port" == 3200 ]] \
       || fail "development release router must bind loopback port 3200"
     [[ "$app_alias" == development-app ]] \

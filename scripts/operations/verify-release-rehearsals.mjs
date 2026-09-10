@@ -198,7 +198,7 @@ async function verifyDirectory(directory) {
   const imageRecord = expectObject(await readJson(resolve(directory, "11-images.json")), `${basename(directory)} image record`);
   const expectedImages = new Map([
     ["database", `business-finlynq-database:${plan.revision}`],
-    ["router", "business-finlynq-release-router:v1"],
+    ["router", "business-finlynq-release-router:v2"],
     ["app", `business-finlynq-app:${plan.revision}`],
     ["migrator", `business-finlynq-migrator:${plan.revision}`],
     ["authWorker", `business-finlynq-auth-worker:${plan.revision}`],
@@ -211,7 +211,7 @@ async function verifyDirectory(directory) {
   const imageIds = new Map();
   for (const selected of imageRecord.images) {
     const expectedReference = expectedImages.get(selected?.name);
-    const expectedOciRevision = selected?.name === "router" ? "release-router-v1" : plan.revision;
+    const expectedOciRevision = selected?.name === "router" ? "release-router-v2" : plan.revision;
     if (!expectedReference || selected.reference !== expectedReference
       || selected.ociRevision !== expectedOciRevision || !/^sha256:[a-f0-9]{64}$/.test(selected.imageId)
       || imageIds.has(selected.name)) fail(`${basename(directory)} image evidence is invalid`);
@@ -226,7 +226,7 @@ async function verifyDirectory(directory) {
     `${plan.composeProject}-edge`,
     `${plan.composeProject}-frontend`,
   ].sort();
-  const expectedRouterStateVolume = `${plan.composeProject}-release-router-state-v1`;
+  const expectedRouterStateVolume = `${plan.composeProject}-release-router-state-v2`;
   const routerRuntimeKeys = [
     "configSha256", "containerId", "contractVersion", "durableMode",
     "durableStateVolume", "imageId", "networks", "processHealth", "product",
@@ -236,7 +236,7 @@ async function verifyDirectory(directory) {
     const router = expectObject(await readJson(resolve(directory, name)), `${basename(directory)} ${name}`);
     if (Object.keys(router).sort().join(",") !== routerRuntimeKeys
       || router.schemaVersion !== 1 || router.product !== "business-finlynq"
-      || router.service !== "release_router" || router.revision !== "release-router-v1"
+      || router.service !== "release_router" || router.revision !== "release-router-v2"
       || router.contractVersion !== "v1"
       || router.imageId !== imageIds.get("router")
       || router.configSha256 !== complete.releaseRouterConfigSha256

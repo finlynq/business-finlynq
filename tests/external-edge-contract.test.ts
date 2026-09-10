@@ -195,7 +195,8 @@ describe("externally managed edge contract", () => {
     expect(routes).toContain("reverse_proxy development-app:3000");
     expect(routes.match(/header_up -X-Business-Finlynq-Internal-Health/gu)).toHaveLength(2);
     expect(routes.match(/header_up -X-Business-Finlynq-Internal-Metrics/gu)).toHaveLength(2);
-    expect(routes.match(/header_up -X-Request-Id/gu)).toHaveLength(2);
+    expect(routes).not.toContain("header_up -X-Request-Id");
+    expect(routes.match(/header_up X-Request-Id \{http\.request\.uuid\}/gu)).toHaveLength(2);
     expect(routes.match(/log_skip \/api\/document-storage\/callback\/\*/gu)).toHaveLength(2);
   });
 
@@ -242,7 +243,15 @@ describe("externally managed edge contract", () => {
     expect(verifier).toContain('"$address|80|80/tcp"');
     expect(verifier).toContain('"$address|443|443/tcp"');
     expect(verifier).toContain('"$address|443|443/udp"');
-    expect(verifier).toContain("length == 5");
+    expect(verifier).toContain("length == 6");
+    expect(verifier).toContain(
+      'readonly consult_route_source="/home/deploy/consult-finlynq/deploy/server04/Caddyfile.consult-finlynq"',
+    );
+    expect(verifier).toContain(
+      'readonly consult_route_destination="/etc/caddy/consult-finlynq.caddy"',
+    );
+    expect(verifier).toContain(".Source == $consultSource");
+    expect(verifier).toContain(".Destination == $consultDestination");
     expect(verifier).toContain("BUSINESS_FINLYNQ_EXTERNAL_EDGE_ROUTE_SHA256");
     expect(verifier).toContain("== 0:0:444");
     expect(verifier).toContain("BUSINESS_FINLYNQ_EXTERNAL_EDGE_ACTIVE_CONFIG_SHA256");
@@ -274,10 +283,16 @@ describe("externally managed edge contract", () => {
   it("attests the release router as the exact hardened public-alias owner", () => {
     expect(verifier).toContain('container_for_service "$project" release_router');
     expect(verifier).toContain(
-      'readonly release_router_reference="business-finlynq-release-router:v1"',
+      'readonly release_router_reference="business-finlynq-release-router:v2"',
     );
-    expect(verifier).toContain('readonly release_router_revision="release-router-v1"');
-    expect(verifier).toContain('readonly release_router_contract="v1"');
+    expect(verifier).toContain('readonly release_router_revision="release-router-v2"');
+    expect(verifier).toContain('readonly release_router_contract="v2"');
+    expect(verifier).toContain(
+      'readonly production_router_control_network="business_finlynq_private-router-control"',
+    );
+    expect(verifier).toContain(
+      'readonly development_router_control_network="business_finlynq_development_private-router-control"',
+    );
     expect(verifier).toContain('expected_image="$release_router_reference"');
     expect(verifier).toContain(
       'Config.Labels["org.opencontainers.image.revision"] == $routerRevision',
@@ -294,6 +309,7 @@ describe("externally managed edge contract", () => {
     expect(verifier).toContain('and ((.[0].Mounts // []) | length) == 1');
     expect(verifier).toContain('.[0].Mounts[0].Name == $stateVolume');
     expect(verifier).toContain('.[0].Mounts[0].Destination == "/state"');
+    expect(verifier).toContain('([$control, $frontend, $ingress] | sort)');
     expect(verifier).toContain('"$router_mode" == "$expected_router_mode"');
     expect(verifier).toContain('"$expected_router_mode" == active-or-maintenance');
     const aliasOwnership = extractShellFunction(verifier, "verify_unique_network_alias_owner");
@@ -379,10 +395,10 @@ describe("externally managed edge contract", () => {
   it("makes the production monitor require and independently attest the release router", () => {
     expect(monitor).toContain("expected_services=(database release_router app)");
     expect(monitor).toContain(
-      'readonly release_router_reference="business-finlynq-release-router:v1"',
+      'readonly release_router_reference="business-finlynq-release-router:v2"',
     );
-    expect(monitor).toContain('readonly release_router_revision="release-router-v1"');
-    expect(monitor).toContain('readonly release_router_contract="v1"');
+    expect(monitor).toContain('readonly release_router_revision="release-router-v2"');
+    expect(monitor).toContain('readonly release_router_contract="v2"');
     expect(monitor).toContain('release_router_expected_image="$release_router_reference"');
     expect(monitor).toContain(
       'Config.Labels["org.opencontainers.image.revision"] == $routerRevision',
@@ -402,7 +418,10 @@ describe("externally managed edge contract", () => {
     expect(monitor).toContain('monitor_router_mode="active"');
     expect(monitor).toContain("--allow-transitional-router-maintenance");
     expect(monitor).toContain("--allow-production-router-maintenance");
-    expect(monitor).toContain('["business_finlynq_edge", "business_finlynq_private-frontend"]');
+    expect(monitor).toContain(
+      '["business_finlynq_edge", "business_finlynq_private-frontend",',
+    );
+    expect(monitor).toContain('"business_finlynq_private-router-control"]');
     expect(monitor).toContain('. == "production-app"');
     expect(monitor).toContain("production public backend alias must be owned exactly once by release_router");
     expect(monitor).toContain("--filter 'network=business_finlynq_edge'");
@@ -579,10 +598,11 @@ describe("externally managed edge contract", () => {
     expect(verifier).toContain(
       '[[ "$actual_edge_networks" == "$expected_edge_networks_sorted" ]]',
     );
-    expect(verifier).toContain("length == 5");
+    expect(verifier).toContain("length == 6");
     expect(verifier).toContain('--arg secretSource "$epm_secret_source"');
+    expect(verifier).toContain('--arg consultSource "$consult_route_source"');
     expect(verifier).toContain(
-      "external edge mounts differ from the protected full Caddy and EPM inventory",
+      "external edge mounts differ from the protected full Caddy, EPM, and Consult inventory",
     );
     expect(verifier).toContain(
       'if [[ "$scope" != production ]]; then\n  development_outer_health=',

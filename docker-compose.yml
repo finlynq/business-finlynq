@@ -415,7 +415,7 @@ services:
         max-file: "3"
 
   release_router:
-    image: business-finlynq-release-router:v1
+    image: business-finlynq-release-router:v2
     pull_policy: never
     build:
       context: .
@@ -444,6 +444,7 @@ services:
     stop_grace_period: 75s
     networks:
       business_finlynq_frontend:
+      business_finlynq_router_control:
       business_finlynq_edge:
         aliases:
           - ${BUSINESS_FINLYNQ_APP_NETWORK_ALIAS:-production-app}
@@ -1530,7 +1531,7 @@ services:
 
 volumes:
   business_finlynq_release_router_state:
-    name: ${RELEASE_REHEARSAL_PROJECT:-${BUSINESS_FINLYNQ_PRIVATE_NETWORK:-business_finlynq_private}}-release-router-state-v1
+    name: ${RELEASE_REHEARSAL_PROJECT:-${BUSINESS_FINLYNQ_PRIVATE_NETWORK:-business_finlynq_private}}-release-router-state-v2
   business_finlynq_clamav:
     name: ${BUSINESS_FINLYNQ_PGDATA_VOLUME:-business_finlynq_pgdata}_clamav
   business_finlynq_pgdata:
@@ -1588,6 +1589,12 @@ networks:
   business_finlynq_frontend:
     name: ${RELEASE_REHEARSAL_PROJECT:-${BUSINESS_FINLYNQ_PRIVATE_NETWORK:-business_finlynq_private}}-frontend
     internal: true
+  business_finlynq_router_control:
+    name: ${RELEASE_REHEARSAL_PROJECT:-${BUSINESS_FINLYNQ_PRIVATE_NETWORK:-business_finlynq_private}}-router-control
+    driver: bridge
+    driver_opts:
+      com.docker.network.bridge.enable_icc: "false"
+      com.docker.network.bridge.enable_ip_masquerade: "false"
   business_finlynq_edge:
     name: ${BUSINESS_FINLYNQ_EDGE_NETWORK:-business_finlynq_edge}
   business_finlynq_development_edge:

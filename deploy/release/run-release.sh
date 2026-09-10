@@ -220,11 +220,11 @@ done
 readonly image_build_compose_project="business-finlynq-build-$revision"
 [[ "$image_build_compose_project" =~ ^[a-z0-9][a-z0-9-]{2,62}$ ]] \
   || fail "derived image-build Compose project is invalid"
-readonly release_router_reference="business-finlynq-release-router:v1"
-readonly release_router_revision="release-router-v1"
-readonly release_router_contract="v1"
-readonly release_router_build_compose_project="business-finlynq-release-router-build-v1"
-readonly release_router_source_date_epoch="1788912000"
+readonly release_router_reference="business-finlynq-release-router:v2"
+readonly release_router_revision="release-router-v2"
+readonly release_router_contract="v2"
+readonly release_router_build_compose_project="business-finlynq-release-router-build-v2"
+readonly release_router_source_date_epoch="1788998400"
 [[ "$run_id" =~ ^[a-z0-9][a-z0-9._-]{2,30}$ ]] || fail "--run-id must be 3-31 lowercase safe characters"
 [[ -n "$environment_file" && -n "$evidence_root" ]] || fail "--environment and --evidence-root are required"
 [[ "${RELEASE_EXECUTION_ACK:-}" == "$mode:$revision:$run_id" ]] \
@@ -1561,7 +1561,7 @@ load_first_router_forward_repair_journal() {
     '{{.Id}}|{{.Image}}|{{ index .Config.Labels "org.opencontainers.image.revision" }}|{{ index .Config.Labels "com.business-finlynq.release-router.contract" }}|{{.State.Running}}|{{if .State.Health}}{{.State.Health.Status}}{{end}}' \
     "$router_query")" || fail "forward-repair release router could not be inspected"
   [[ "$router_contract" \
-    == "$router_query|${image_ids[router]}|release-router-v1|v1|true|healthy" ]] \
+    == "$router_query|${image_ids[router]}|release-router-v2|v2|true|healthy" ]] \
     || fail "forward-repair release router differs from the immutable candidate contract"
   if [[ "$journal_router_was_preexisting" == true ]]; then
     [[ "$router_query" == "$journal_router_container_id" \
@@ -2384,10 +2384,12 @@ app_port="$(jq -r '.services.release_router.ports[] | select(.target == 3000) | 
 [[ "$(jq -r '[.services.app.ports[]? | select(.target == 3000)] | length' <<<"$rendered_compose")" == "0" ]] \
   || fail "application container must not publish the release listener"
 router_frontend_network_name="$(jq -r '.networks.business_finlynq_frontend.name // empty' <<<"$rendered_compose")"
+router_control_network_name="$(jq -r '.networks.business_finlynq_router_control.name // empty' <<<"$rendered_compose")"
 router_edge_network_name="$(jq -r '.networks.business_finlynq_edge.name // empty' <<<"$rendered_compose")"
 router_public_alias="$(jq -r '.services.release_router.networks.business_finlynq_edge.aliases[0] // empty' <<<"$rendered_compose")"
 router_state_volume_name="$(jq -r '.volumes.business_finlynq_release_router_state.name // empty' <<<"$rendered_compose")"
-[[ -n "$router_frontend_network_name" && -n "$router_edge_network_name" \
+[[ -n "$router_frontend_network_name" && -n "$router_control_network_name" \
+  && -n "$router_edge_network_name" \
   && "$router_public_alias" =~ ^[a-z0-9][a-z0-9-]{2,62}$ \
   && "$router_state_volume_name" =~ ^[a-zA-Z0-9][a-zA-Z0-9_.-]{2,127}$ ]] \
   || fail "release-router network identity is incomplete"
@@ -2895,7 +2897,7 @@ verify_initial_state_contract() {
     business_finlynq_pgdata_clamav
     business_finlynq_caddy_data
     business_finlynq_caddy_config
-    business_finlynq_private-release-router-state-v1
+    business_finlynq_private-release-router-state-v2
   )
   local -a forbidden_networks=(
     business_finlynq_private
@@ -2903,6 +2905,7 @@ verify_initial_state_contract() {
     business_finlynq_egress
     business_finlynq_egress_scanner
     business_finlynq_private-frontend
+    business_finlynq_private-router-control
     business_finlynq_restore_drill
   )
 
@@ -3124,13 +3127,13 @@ verify_initial_state_contract() {
       if [[ "$initial_state" == "fresh" \
         || ( "$resource_name" != business_finlynq_pgdata \
           && "$resource_name" != business_finlynq_pgdata_clamav \
-          && "$resource_name" != business_finlynq_private-release-router-state-v1 ) ]]; then
+          && "$resource_name" != business_finlynq_private-release-router-state-v2 ) ]]; then
         fail "initial production found a disallowed preexisting production volume: $resource_name"
       fi
       expected_volume_label=business_finlynq_pgdata
       [[ "$resource_name" == business_finlynq_pgdata_clamav ]] \
         && expected_volume_label=business_finlynq_clamav
-      [[ "$resource_name" == business_finlynq_private-release-router-state-v1 ]] \
+      [[ "$resource_name" == business_finlynq_private-release-router-state-v2 ]] \
         && expected_volume_label=business_finlynq_release_router_state
       read_docker_output "resumable production volume $resource_name" volume inspect "$resource_name"
       jq -e --arg name "$resource_name" --arg logical "$expected_volume_label" '
@@ -3141,7 +3144,7 @@ verify_initial_state_contract() {
         .[0].Labels["com.docker.compose.volume"] == $logical
       ' <<<"$docker_query_output" >/dev/null \
         || fail "resumable production volume ownership is invalid: $resource_name"
-      if [[ "$resource_name" == business_finlynq_private-release-router-state-v1 ]]; then
+      if [[ "$resource_name" == business_finlynq_private-release-router-state-v2 ]]; then
         router_state_volume_present="true"
         if [[ "$resumable_router_running" == "true" ]]; then
           read_docker_output "resumable release-router state volume" run --rm --network none \
@@ -3168,7 +3171,7 @@ verify_initial_state_contract() {
     if [[ "$initial_state" == "fresh" \
       || ( "$resource_name" != business_finlynq_pgdata \
         && "$resource_name" != business_finlynq_pgdata_clamav \
-        && "$resource_name" != business_finlynq_private-release-router-state-v1 ) ]]; then
+        && "$resource_name" != business_finlynq_private-release-router-state-v2 ) ]]; then
       fail "initial production found an unexpected Compose-owned volume: $resource_name"
     fi
   done <<<"$docker_query_output"
@@ -3201,6 +3204,9 @@ verify_initial_state_contract() {
           expected_network_label=business_finlynq_frontend
           expected_network_internal=true
           ;;
+        business_finlynq_private-router-control)
+          expected_network_label=business_finlynq_router_control
+          ;;
       esac
       read_docker_output "resumable production network $resource_name" network inspect "$resource_name"
       jq -e --arg name "$resource_name" --arg logical "$expected_network_label" \
@@ -3214,6 +3220,13 @@ verify_initial_state_contract() {
         .[0].Labels["com.docker.compose.network"] == $logical
       ' <<<"$docker_query_output" >/dev/null \
         || fail "resumable production network ownership is invalid: $resource_name"
+      if [[ "$resource_name" == business_finlynq_private-router-control ]]; then
+        jq -e '.[0].Options == {
+          "com.docker.network.bridge.enable_icc": "false",
+          "com.docker.network.bridge.enable_ip_masquerade": "false"
+        }' <<<"$docker_query_output" >/dev/null \
+          || fail "resumable router control network permits unreviewed forwarding"
+      fi
     fi
   done
   grep -Fxq -- business_finlynq_edge <<<"$network_names" \
@@ -3226,7 +3239,7 @@ verify_initial_state_contract() {
       fail "fresh initial production found an unexpected Compose-owned network: $resource_name"
     fi
     case "$resource_name" in
-      business_finlynq_private|business_finlynq_private_evidence|business_finlynq_egress|business_finlynq_egress_scanner|business_finlynq_private-frontend) ;;
+      business_finlynq_private|business_finlynq_private_evidence|business_finlynq_egress|business_finlynq_egress_scanner|business_finlynq_private-frontend|business_finlynq_private-router-control) ;;
       *) fail "initial resume found an unexpected Compose-owned network: $resource_name" ;;
     esac
   done <<<"$docker_query_output"
@@ -4313,6 +4326,7 @@ verify_release_router_runtime() {
     --arg revision "$release_router_revision" \
     --arg contract "$release_router_contract" \
     --arg frontendNetwork "$router_frontend_network_name" \
+    --arg controlNetwork "$router_control_network_name" \
     --arg edgeNetwork "$router_edge_network_name" \
     --arg stateVolume "$router_state_volume_name" \
     --arg publicAlias "$router_public_alias" \
@@ -4330,7 +4344,8 @@ verify_release_router_runtime() {
       (.portBindings["3000/tcp"] | length) == 1 and
       .portBindings["3000/tcp"][0].HostIp == "127.0.0.1" and
       .portBindings["3000/tcp"][0].HostPort == $port and
-      (.networks | keys | sort) == ([$edgeNetwork, $frontendNetwork] | sort) and
+      (.networks | keys | sort) ==
+        ([$controlNetwork, $edgeNetwork, $frontendNetwork] | sort) and
       (.networks[$edgeNetwork].Aliases | index($publicAlias)) != null and
       .entrypoint == ["/usr/local/bin/release-router-entrypoint"] and
       .command == ["serve"]
@@ -4362,6 +4377,7 @@ verify_release_router_runtime() {
     --arg configSha256 "$router_config_sha256" \
     --arg publicAlias "$router_public_alias" \
     --arg frontendNetwork "$router_frontend_network_name" \
+    --arg controlNetwork "$router_control_network_name" \
     --arg edgeNetwork "$router_edge_network_name" \
     --arg stateVolume "$router_state_volume_name" \
     --arg stateMode "$router_state_mode" \
@@ -4370,7 +4386,7 @@ verify_release_router_runtime() {
       revision: $revision, contractVersion: $contract, configSha256: $configSha256,
       processHealth: "healthy", durableStateVolume: $stateVolume,
       durableMode: $stateMode, publicAlias: $publicAlias,
-      networks: ([$edgeNetwork, $frontendNetwork] | sort)}' \
+      networks: ([$controlNetwork, $edgeNetwork, $frontendNetwork] | sort)}' \
     >"$evidence_directory/$evidence_file"
   chmod 0600 -- "$evidence_directory/$evidence_file"
 }

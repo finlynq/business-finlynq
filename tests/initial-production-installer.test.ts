@@ -267,18 +267,18 @@ describe("fresh production bootstrap installer", () => {
   it("renders both the active profile set and the explicitly inert edge service", () => {
     expect(installer).toContain('(.services | has("edge") | not)');
     expect(installer).toContain(
-      'release_router_reference="business-finlynq-release-router:v1"',
+      'release_router_reference="business-finlynq-release-router:v2"',
     );
-    expect(installer).toContain('release_router_revision="release-router-v1"');
-    expect(installer).toContain('release_router_contract="v1"');
+    expect(installer).toContain('release_router_revision="release-router-v2"');
+    expect(installer).toContain('release_router_contract="v2"');
     expect(installer).toContain(
-      'release_router_build_project="business-finlynq-release-router-build-v1"',
+      'release_router_build_project="business-finlynq-release-router-build-v2"',
     );
     expect(installer).toContain(
-      'release_router_state_volume="business_finlynq_private-release-router-state-v1"',
+      'release_router_state_volume="business_finlynq_private-release-router-state-v2"',
     );
     expect(installer).not.toContain(
-      'release_router_state_volume="business_finlynq_private_release-router-state-v1"',
+      'release_router_state_volume="business_finlynq_private_release-router-state-v2"',
     );
     expect(
       (installer.match(/\.services\.release_router\.image == \$releaseRouterReference/gu) ?? [])
@@ -302,7 +302,7 @@ describe("fresh production bootstrap installer", () => {
     );
     expect(installer).toContain('.source == "business_finlynq_release_router_state"');
     expect(installer).toContain('.target == "/state"');
-    expect(installer).toContain('($project + "-release-router-state-v1")');
+    expect(installer).toContain('($project + "-release-router-state-v2")');
     expect(installer).toContain('[.volumes[].name, .networks[].name]');
     expect(installer).toContain("--profile external-edge-disabled config --format json");
     expect(installer).toContain('.services.edge.entrypoint == ["/bin/false"]');
@@ -467,7 +467,8 @@ describe("fresh production bootstrap installer", () => {
       '.[0].Mounts[0].Name == $routerStateVolume',
       '.[0].Mounts[0].Destination == "/state"',
       '.[0].Mounts[0].RW == true',
-      '["business_finlynq_edge", "business_finlynq_private-frontend"]',
+      '["business_finlynq_edge", "business_finlynq_private-frontend",',
+      '"business_finlynq_private-router-control"]',
       'index("production-app")) != null',
     ]) {
       expect(routerContract).toContain(contract);
@@ -515,6 +516,7 @@ describe("fresh production bootstrap installer", () => {
     expect(resumeBoundary).toContain('verify_release_router_image_contract');
     expect(resumeBoundary).toContain('verify_release_router_runtime_contract');
     expect(resumeBoundary).toContain('business_finlynq_private-frontend');
+    expect(resumeBoundary).toContain('business_finlynq_private-router-control');
     expect(resumeBoundary).toContain('.Internal == true');
     expect(resumeBoundary).toContain(
       '.Labels["com.docker.compose.network"] == "business_finlynq_frontend"',

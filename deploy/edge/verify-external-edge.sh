@@ -20,11 +20,15 @@ readonly development_project="business-finlynq-development"
 readonly development_network="business_finlynq_development_edge"
 readonly production_frontend_network="business_finlynq_private-frontend"
 readonly development_frontend_network="business_finlynq_development_private-frontend"
-readonly production_router_state_volume="business_finlynq_private-release-router-state-v1"
-readonly development_router_state_volume="business_finlynq_development_private-release-router-state-v1"
-readonly release_router_reference="business-finlynq-release-router:v1"
-readonly release_router_revision="release-router-v1"
-readonly release_router_contract="v1"
+readonly production_router_control_network="business_finlynq_private-router-control"
+readonly development_router_control_network="business_finlynq_development_private-router-control"
+readonly production_router_state_volume="business_finlynq_private-release-router-state-v2"
+readonly development_router_state_volume="business_finlynq_development_private-release-router-state-v2"
+readonly consult_route_source="/home/deploy/consult-finlynq/deploy/server04/Caddyfile.consult-finlynq"
+readonly consult_route_destination="/etc/caddy/consult-finlynq.caddy"
+readonly release_router_reference="business-finlynq-release-router:v2"
+readonly release_router_revision="release-router-v2"
+readonly release_router_contract="v2"
 readonly legacy_f8485_revision="f8485ca86fef5b5fb4a38be9cb4cf3bea5ac2107"
 readonly legacy_f8485_image_id="sha256:2135e8e936bf8befdc44132771698dfb942fc97dccb19b71eeb3db9f3e5b66b5"
 readonly minimum_tls_seconds="$((21 * 24 * 60 * 60))"
@@ -256,9 +260,10 @@ verify_exact_f8485_rollback_app() {
 }
 
 verify_release_router_runtime() {
-  local project="$1" ingress_network="$2" frontend_network="$3" alias="$4" state_volume="$5"
-  local expected_router_mode="${6:-active}"
-  local require_upstream="${7:-true}"
+  local project="$1" ingress_network="$2" frontend_network="$3" control_network="$4"
+  local alias="$5" state_volume="$6"
+  local expected_router_mode="${7:-active}"
+  local require_upstream="${8:-true}"
   local router app expected_image router_image_id tagged_image_id runtime_uid
   local router_liveness router_mode
   [[ "$expected_router_mode" == active || "$expected_router_mode" == maintenance \
@@ -273,7 +278,8 @@ verify_release_router_runtime() {
     | jq -e --arg project "$project" --arg routerRevision "$release_router_revision" \
         --arg routerContract "$release_router_contract" \
         --arg ingress "$ingress_network" \
-        --arg frontend "$frontend_network" --arg alias "$alias" \
+        --arg frontend "$frontend_network" --arg control "$control_network" \
+        --arg alias "$alias" \
         --arg stateVolume "$state_volume" '
         length == 1
         and .[0].Config.Labels["com.docker.compose.project"] == $project
@@ -294,7 +300,8 @@ verify_release_router_runtime() {
         and .[0].Mounts[0].RW == true
         and .[0].Config.Entrypoint == ["/usr/local/bin/release-router-entrypoint"]
         and .[0].Config.Cmd == ["serve"]
-        and ((.[0].NetworkSettings.Networks | keys | sort) == ([$frontend, $ingress] | sort))
+        and ((.[0].NetworkSettings.Networks | keys | sort) ==
+          ([$control, $frontend, $ingress] | sort))
         and any(.[0].NetworkSettings.Networks[$ingress].Aliases[]?; . == $alias)
         and all(.[0].NetworkSettings.Networks[$frontend].Aliases[]?; . != $alias)
       ' >/dev/null \
@@ -874,12 +881,12 @@ elif [[ "$scope" == full || "$scope" == production ]]; then
       "$production_alias" "$production_revision"
   elif [[ "$allow_first_router_forward_repair" == true ]]; then
     verify_release_router_runtime "$production_project" "$production_network" \
-      "$production_frontend_network" "$production_alias" "$production_router_state_volume" \
-      maintenance false
+      "$production_frontend_network" "$production_router_control_network" \
+      "$production_alias" "$production_router_state_volume" maintenance false
   else
     verify_release_router_runtime "$production_project" "$production_network" \
-      "$production_frontend_network" "$production_alias" "$production_router_state_volume" \
-      "$production_router_mode"
+      "$production_frontend_network" "$production_router_control_network" \
+      "$production_alias" "$production_router_state_volume" "$production_router_mode"
   fi
   if [[ "$allow_legacy_minimal_production_health" == true ]]; then
     verify_exact_f8485_rollback_app
@@ -887,8 +894,8 @@ elif [[ "$scope" == full || "$scope" == production ]]; then
 fi
 if [[ "$scope" != production ]]; then
   verify_release_router_runtime "$development_project" "$development_network" \
-    "$development_frontend_network" "$development_alias" "$development_router_state_volume" \
-    "$development_router_mode"
+    "$development_frontend_network" "$development_router_control_network" \
+    "$development_alias" "$development_router_state_volume" "$development_router_mode"
 fi
 
 mounts="$(docker inspect --format '{{json .Mounts}}' "$edge_container")" \
@@ -896,20 +903,24 @@ mounts="$(docker inspect --format '{{json .Mounts}}' "$edge_container")" \
 jq -e --arg configSource "$external_config_source" --arg configDestination "$external_config" \
     --arg routeSource "$route_source" --arg routeDestination "$route_destination" \
     --arg secretSource "$epm_secret_source" --arg secretDestination "$epm_secret_destination" \
+    --arg consultSource "$consult_route_source" \
+    --arg consultDestination "$consult_route_destination" \
     --arg dataVolume "$caddy_data_volume" --arg configVolume "$caddy_config_volume" '
-    length == 5
+    length == 6
     and any(.[]; .Type == "bind" and .Source == $configSource
       and .Destination == $configDestination and .RW == false)
     and any(.[]; .Type == "bind" and .Source == $routeSource
       and .Destination == $routeDestination and .RW == false)
     and any(.[]; .Type == "bind" and .Source == $secretSource
       and .Destination == $secretDestination and .RW == false)
+    and any(.[]; .Type == "bind" and .Source == $consultSource
+      and .Destination == $consultDestination and .RW == false)
     and any(.[]; .Type == "volume" and .Name == $dataVolume
       and .Destination == "/data" and .RW == true)
     and any(.[]; .Type == "volume" and .Name == $configVolume
       and .Destination == "/config" and .RW == true)
   ' <<<"$mounts" >/dev/null \
-  || fail "external edge mounts differ from the protected full Caddy and EPM inventory"
+  || fail "external edge mounts differ from the protected full Caddy, EPM, and Consult inventory"
 unset mounts
 
 readonly expected_route_sha256="$route_sha256"

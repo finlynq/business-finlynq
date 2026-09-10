@@ -27,10 +27,10 @@ readonly monitor_cron_maintenance_lock_file="/home/deploy/.local/state/business-
 readonly monitor_cron_status_directory="/home/deploy/.local/state/business-finlynq/cron/job-status"
 readonly monitor_metrics_file="${MONITOR_METRICS_FILE:-/var/lib/business-finlynq/host.prom}"
 readonly accounting_metrics_file="${ACCOUNTING_EVIDENCE_METRICS_FILE:-/var/lib/business-finlynq/accounting-evidence.prom}"
-readonly release_router_reference="business-finlynq-release-router:v1"
-readonly release_router_revision="release-router-v1"
-readonly release_router_contract="v1"
-readonly release_router_state_volume="business_finlynq_private-release-router-state-v1"
+readonly release_router_reference="business-finlynq-release-router:v2"
+readonly release_router_revision="release-router-v2"
+readonly release_router_contract="v2"
+readonly release_router_state_volume="business_finlynq_private-release-router-state-v2"
 readonly release_recovery_state_directory="/var/lib/business-finlynq/release-recovery"
 readonly active_finalization_marker="/var/lib/business-finlynq/release-recovery/active-finalization.json"
 readonly production_release_lock_directory="/home/deploy/.local/state/business-finlynq/release-locks"
@@ -577,7 +577,8 @@ if [[ -n "$release_router_container_id" ]]; then
       and .[0].Config.Entrypoint == ["/usr/local/bin/release-router-entrypoint"]
       and .[0].Config.Cmd == ["serve"]
       and ((.[0].NetworkSettings.Networks | keys | sort)
-        == (["business_finlynq_edge", "business_finlynq_private-frontend"] | sort))
+        == (["business_finlynq_edge", "business_finlynq_private-frontend",
+          "business_finlynq_private-router-control"] | sort))
       and any(.[0].NetworkSettings.Networks["business_finlynq_edge"].Aliases[]?;
         . == "production-app")
       and all(.[0].NetworkSettings.Networks["business_finlynq_private-frontend"].Aliases[]?;

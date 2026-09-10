@@ -54,11 +54,13 @@ describe("stable fail-closed release router", () => {
     );
 
     expect(target).toMatch(/^FROM caddy:2\.10\.2-alpine@sha256:[a-f0-9]{64} AS release-router/m);
-    expect(target).toContain("com.business-finlynq.release-router.contract=v1");
-    expect(target).toContain("org.opencontainers.image.revision=release-router-v1");
+    expect(target).toContain("com.business-finlynq.release-router.contract=v2");
+    expect(target).toContain("org.opencontainers.image.revision=release-router-v2");
     expect(target).not.toContain("ARG BUSINESS_FINLYNQ_IMAGE_REVISION");
     expect(target).toContain("ARG SOURCE_DATE_EPOCH");
-    expect(target).toContain('test "$SOURCE_DATE_EPOCH" = "1788912000"');
+    expect(target).toContain('test "$SOURCE_DATE_EPOCH" = "1788998400"');
+    expect(target).toContain("setcap -r /usr/bin/caddy");
+    expect(target).toContain('test -z "$(getcap /usr/bin/caddy)"');
     expect(target).toContain(
       "COPY --chmod=0444 deploy/release/router/Caddyfile /etc/caddy/Caddyfile",
     );
@@ -118,7 +120,7 @@ describe("stable fail-closed release router", () => {
     const app = between(compose, "  app:\n", "\n  auth_email_worker:\n");
     const routerVolumes = between(router, "    volumes:\n", "    security_opt:\n");
 
-    expect(router).toContain("image: business-finlynq-release-router:v1");
+    expect(router).toContain("image: business-finlynq-release-router:v2");
     expect(router).not.toContain("BUSINESS_FINLYNQ_IMAGE_REVISION");
     expect(router).toContain("target: release-router");
     expect(router).toContain('user: "10001:10001"');
@@ -129,12 +131,13 @@ describe("stable fail-closed release router", () => {
       "volumes:\n      - business_finlynq_release_router_state:/state",
     );
     expect(compose).toContain(
-      "business_finlynq_release_router_state:\n    name: ${RELEASE_REHEARSAL_PROJECT:-${BUSINESS_FINLYNQ_PRIVATE_NETWORK:-business_finlynq_private}}-release-router-state-v1",
+      "business_finlynq_release_router_state:\n    name: ${RELEASE_REHEARSAL_PROJECT:-${BUSINESS_FINLYNQ_PRIVATE_NETWORK:-business_finlynq_private}}-release-router-state-v2",
     );
     expect(router).toContain("/tmp:size=16m");
     expect(router).toContain("/config:size=1m");
     expect(router).toContain("/data:size=1m");
     expect(router).toContain("business_finlynq_frontend:");
+    expect(router).toContain("business_finlynq_router_control:");
     expect(router).toContain("business_finlynq_edge:");
     expect(router).toContain("${BUSINESS_FINLYNQ_APP_NETWORK_ALIAS:-production-app}");
     expect(router).toContain("read_only: true");
@@ -154,6 +157,9 @@ describe("stable fail-closed release router", () => {
     const networks = compose.slice(compose.lastIndexOf("\nnetworks:\n"));
     expect(networks).toMatch(
       /business_finlynq_frontend:\n\s+name: .*\}-frontend\n\s+internal: true/,
+    );
+    expect(networks).toMatch(
+      /business_finlynq_router_control:\n\s+name: .*\}-router-control\n\s+driver: bridge\n\s+driver_opts:\n\s+com\.docker\.network\.bridge\.enable_icc: "false"\n\s+com\.docker\.network\.bridge\.enable_ip_masquerade: "false"/,
     );
     const edgeNetwork = between(
       networks,
@@ -387,7 +393,7 @@ describe("stable fail-closed release router", () => {
       '(.[0].HostConfig.Tmpfs | keys | sort) == ["/config", "/data", "/tmp"]',
       "((.[0].Mounts // []) | length) == 1",
       ".[0].Mounts[0].Name == $stateVolume",
-      "([$edgeNetwork, $frontendNetwork] | sort)",
+      "([$controlNetwork, $edgeNetwork, $frontendNetwork] | sort)",
       ". == $publicAlias",
     ]) {
       expect(rollbackStaticContract).toContain(contract);
@@ -930,19 +936,21 @@ describe("stable fail-closed release router", () => {
       productionMonitor,
       initialInstaller,
     ]) {
-      expect(consumer).toContain('release_router_reference="business-finlynq-release-router:v1"');
-      expect(consumer).toContain('release_router_revision="release-router-v1"');
-      expect(consumer).toContain('release_router_contract="v1"');
+      expect(consumer).toContain('release_router_reference="business-finlynq-release-router:v2"');
+      expect(consumer).toContain('release_router_revision="release-router-v2"');
+      expect(consumer).toContain('release_router_contract="v2"');
     }
-    expect(release).toContain('release_router_source_date_epoch="1788912000"');
-    expect(development).toContain('release_router_source_date_epoch="1788912000"');
+    expect(release).toContain('release_router_source_date_epoch="1788998400"');
+    expect(development).toContain('release_router_source_date_epoch="1788998400"');
     expect(release).toContain("sha256sum Caddyfile Caddyfile.maintenance entrypoint.sh");
-    expect(development).toContain("sha256sum Caddyfile Caddyfile.maintenance entrypoint.sh");
+    expect(development).toContain(
+      '"$candidate_revision:deploy/release/router/$relative_path"',
+    );
   });
 
   it("fails Compose verification when stable-router ownership or isolation drifts", () => {
     for (const contract of [
-      "release router must use its separately versioned stable v1 image",
+      "release router must use its separately versioned stable image",
       "external application alias must belong only to release_router",
       "loopback application port must belong only to release_router",
       "release router state is not limited to its dedicated non-secret durable mode volume",

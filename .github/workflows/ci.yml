@@ -330,6 +330,43 @@ jobs:
           second_acceptance_image_id="$(docker image inspect --format '{{.Id}}' business-finlynq-acceptance-ci)"
           test "$first_acceptance_image_id" = "$second_acceptance_image_id"
           docker run --rm --network none --read-only --user pwuser --cap-drop ALL --security-opt no-new-privileges --pids-limit 32 --memory 128m --cpus 0.25 --tmpfs /app/test-results:rw,noexec,nosuid,nodev,size=16m,mode=1777 --tmpfs /app/playwright-report:rw,noexec,nosuid,nodev,size=16m,mode=1777 --entrypoint /bin/sh business-finlynq-acceptance-ci -ec 'rm -rf /app/test-results/release /app/playwright-report/release; mkdir -p /app/test-results/release /app/playwright-report/release; touch /app/test-results/release/result /app/playwright-report/release/report; rm -rf /app/test-results/release /app/playwright-report/release; test ! -e /app/test-results/release; test ! -e /app/playwright-report/release; if touch /app/read-only-root-check; then exit 1; fi'
+      - name: Exercise hardened release-router runtime
+        run: |
+          set -Eeuo pipefail
+          router_container=business-finlynq-release-router-ci
+          router_volume=business-finlynq-release-router-ci-state
+          router_network=business-finlynq-release-router-ci-control
+          cleanup_router() {
+            docker rm --force "$router_container" >/dev/null 2>&1 || true
+            docker volume rm "$router_volume" >/dev/null 2>&1 || true
+            docker network rm "$router_network" >/dev/null 2>&1 || true
+            rm -f /tmp/release-router-maintenance.json
+          }
+          trap cleanup_router EXIT
+          docker build --provenance=false --sbom=false --target release-router --build-arg SOURCE_DATE_EPOCH=1788998400 --tag business-finlynq-release-router-ci .
+          test "$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' business-finlynq-release-router-ci)" = release-router-v2
+          docker volume create "$router_volume" >/dev/null
+          docker network create --driver bridge --opt com.docker.network.bridge.enable_icc=false --opt com.docker.network.bridge.enable_ip_masquerade=false "$router_network" >/dev/null
+          docker run --detach --name "$router_container" --network "$router_network" --publish 127.0.0.1::3000 --read-only --user 10001:10001 --cap-drop ALL --security-opt no-new-privileges --pids-limit 64 --memory 96m --cpus 0.25 --tmpfs /tmp:size=16m,mode=0700,uid=10001,gid=10001,noexec,nosuid,nodev --tmpfs /config:size=1m,mode=0700,uid=10001,gid=10001,noexec,nosuid,nodev --tmpfs /data:size=1m,mode=0700,uid=10001,gid=10001,noexec,nosuid,nodev --mount "type=volume,source=$router_volume,target=/state" business-finlynq-release-router-ci >/dev/null
+          router_live=""
+          for _ in {1..30}; do
+            if router_live="$(docker exec "$router_container" wget -q -T 2 -O - http://127.0.0.1:3000/_business-finlynq/release-router/live 2>/dev/null)"; then
+              break
+            fi
+            sleep 1
+          done
+          test "$router_live" = '{"status":"release-router-live"}'
+          test "$(docker inspect --format '{{.State.Status}}' "$router_container")" = running
+          router_host_port="$(docker inspect --format '{{(index (index .NetworkSettings.Ports "3000/tcp") 0).HostPort}}' "$router_container")"
+          [[ "$router_host_port" =~ ^[1-9][0-9]{1,4}$ ]]
+          test "$(curl --noproxy '*' --fail --silent --show-error --max-time 5 "http://127.0.0.1:$router_host_port/api/live")" = '{"status":"live"}'
+          maintenance_status="$(curl --noproxy '*' --silent --show-error --max-time 5 --header 'X-Request-Id: ci-maintenance' --output /tmp/release-router-maintenance.json --write-out '%{http_code}' "http://127.0.0.1:$router_host_port/api/health")"
+          test "$maintenance_status" = 503
+          jq -e 'type == "object" and keys == ["status"] and .status == "unavailable"' /tmp/release-router-maintenance.json >/dev/null
+          test "$(docker network inspect --format '{{ index .Options "com.docker.network.bridge.enable_icc" }}:{{ index .Options "com.docker.network.bridge.enable_ip_masquerade" }}' "$router_network")" = false:false
+          ! docker exec "$router_container" wget -q -T 2 -O /dev/null https://1.1.1.1
+          cleanup_router
+          trap - EXIT
       - name: Install release-gate browser
         run: npx playwright install --with-deps chromium
       - name: Run browser release gate

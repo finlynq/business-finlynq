@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -278,7 +279,7 @@ describe("continuous deployment safety boundary", () => {
     expect(parentCleanup).toContain("trap - EXIT");
     expect(parentCleanup).toContain("trap '' HUP INT TERM");
     expect(parentCleanup).not.toContain("trap - EXIT HUP INT TERM");
-    expect(containment).toContain("business_finlynq_private-release-router-state-v1");
+    expect(containment).toContain("business_finlynq_private-release-router-state-v2");
     expect(containment).toContain('printf "maintenance\\n"');
     expect(containment).toContain("Caddyfile.maintenance");
     expect(containment).toContain("pause-schedulers.sh");
@@ -512,6 +513,30 @@ describe("continuous deployment safety boundary", () => {
       'candidate_revision="$(git_as_deploy rev-parse refs/remotes/origin/dev)"',
     );
     expect(deployDevelopment).toContain('signal_tag="deploy-development-$candidate_revision"');
+    expect(deployDevelopment).toContain(
+      'readonly installed_deployer="/usr/local/sbin/business-finlynq-deploy-development"',
+    );
+    const signalVerification = deployDevelopment.indexOf(
+      '[[ "$signal_revision" == "$candidate_revision" ]]',
+    );
+    const deployerRefresh = deployDevelopment.indexOf(
+      'refresh_installed_deployer_if_needed "$candidate_revision"',
+    );
+    const candidateMutation = deployDevelopment.indexOf(
+      'git_as_deploy merge --ff-only "$candidate_revision"',
+    );
+    expect(deployerRefresh).toBeGreaterThan(signalVerification);
+    expect(candidateMutation).toBeGreaterThan(deployerRefresh);
+    expect(deployDevelopment).toContain(
+      'expected_oid="$(git_as_deploy rev-parse "$revision:$relative_path")"',
+    );
+    expect(deployDevelopment).toContain(
+      'observed_oid="$(git_as_deploy hash-object --stdin <"$candidate_source")"',
+    );
+    expect(deployDevelopment).toContain(
+      'mv -T -- "$staged_target" "$installed_deployer"',
+    );
+    expect(deployDevelopment).toContain('exec env -i PATH="$clean_path" "$installed_deployer"');
     expect(deployDevelopment).toContain("http://127.0.0.1:3200/api/health");
     expect(deployDevelopment).not.toContain("/etc/business-finlynq/compose.env");
     expect(deployDevelopment).not.toContain("refs/remotes/origin/main");
@@ -525,6 +550,38 @@ describe("continuous deployment safety boundary", () => {
       "restore_drill",
     ]) {
       expect(installDevelopment).toContain(`business_finlynq_development_${resource}`);
+    }
+  });
+
+  it("creates the candidate deployer staging file with the reviewed mktemp command", () => {
+    const start = deployDevelopment.indexOf('  candidate_source="$(mktemp');
+    const end = deployDevelopment.indexOf("\n  expected_oid=", start);
+    expect(start).toBeGreaterThan(-1);
+    expect(end).toBeGreaterThan(start);
+    const stagingCommand = deployDevelopment.slice(start, end);
+    const bash =
+      process.platform === "win32"
+        ? "C:\\Program Files\\Git\\bin\\bash.exe"
+        : "bash";
+    const result = spawnSync(
+      bash,
+      [
+        "-c",
+        [
+          "set -Eeuo pipefail",
+          'state_directory="$(mktemp -d)"',
+          'revision="0123456789abcdef0123456789abcdef01234567"',
+          'trap \'rm -rf -- "$state_directory"\' EXIT',
+          'candidate_source=""',
+          'fail() { printf \'%s\\n\' "$*" >&2; exit 1; }',
+          stagingCommand,
+          'test -f "$candidate_source"',
+        ].join("\n"),
+      ],
+      { encoding: "utf8" },
+    );
+    if (result.status !== 0) {
+      throw new Error(result.stderr || result.stdout || "mktemp staging command failed");
     }
   });
 
@@ -687,16 +744,17 @@ describe("continuous deployment safety boundary", () => {
     expect(app).toBeLessThan(candidateProof);
     expect(candidateProof).toBeLessThan(activeReload);
     expect(deployDevelopment).toContain(
-      'readonly release_router_reference="business-finlynq-release-router:v1"',
+      'readonly release_router_reference="business-finlynq-release-router:v2"',
     );
     expect(deployDevelopment).toContain(
-      'readonly release_router_revision="release-router-v1"',
+      'readonly release_router_revision="release-router-v2"',
     );
     expect(deployDevelopment).toContain(
-      'readonly release_router_build_project="business-finlynq-release-router-build-v1"',
+      'readonly release_router_build_project="business-finlynq-release-router-build-v2"',
     );
     expect(deployDevelopment).toContain("compose_release_router_build");
     expect(deployDevelopment).toContain('"business_finlynq_development_private-frontend"');
+    expect(deployDevelopment).toContain('"business_finlynq_development_private-router-control"');
     expect(deployDevelopment).toContain(".services.release_router.ports[0].published");
     expect(deployDevelopment).toContain(".services.app.ports | length");
     expect(deployDevelopment).toContain('keys == ["status"] and .status == "unavailable"');
@@ -820,6 +878,7 @@ describe("continuous deployment safety boundary", () => {
       "business_finlynq_development_egress",
       "business_finlynq_development_egress_scanner",
       "business_finlynq_development_private-frontend",
+      "business_finlynq_development_private-router-control",
       "business_finlynq_development_restore_drill",
     ]) {
       expect(resourceGuard).toContain(network);
