@@ -195,7 +195,8 @@ describe("externally managed edge contract", () => {
     expect(routes).toContain("reverse_proxy development-app:3000");
     expect(routes.match(/header_up -X-Business-Finlynq-Internal-Health/gu)).toHaveLength(2);
     expect(routes.match(/header_up -X-Business-Finlynq-Internal-Metrics/gu)).toHaveLength(2);
-    expect(routes.match(/header_up -X-Request-Id/gu)).toHaveLength(2);
+    expect(routes).not.toContain("header_up -X-Request-Id");
+    expect(routes.match(/header_up X-Request-Id \{http\.request\.uuid\}/gu)).toHaveLength(2);
     expect(routes.match(/log_skip \/api\/document-storage\/callback\/\*/gu)).toHaveLength(2);
   });
 

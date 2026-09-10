@@ -13,7 +13,6 @@ business.finlynq.com {
 		# Never trust public attempts to opt in to internal health or metrics.
 		header_up -X-Business-Finlynq-Internal-Health
 		header_up -X-Business-Finlynq-Internal-Metrics
-		header_up -X-Request-Id
 		header_up X-Request-Id {http.request.uuid}
 		health_uri /api/health
 		health_interval 30s
@@ -68,7 +67,6 @@ dev.business.finlynq.com {
 	reverse_proxy development-app:3000 {
 		header_up -X-Business-Finlynq-Internal-Health
 		header_up -X-Business-Finlynq-Internal-Metrics
-		header_up -X-Request-Id
 		header_up X-Request-Id {http.request.uuid}
 		health_uri /api/health
 		health_interval 30s
