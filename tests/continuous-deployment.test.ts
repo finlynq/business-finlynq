@@ -118,6 +118,12 @@ describe("continuous deployment safety boundary", () => {
     );
     expect(workflow).toContain("subject-path: ${{ runner.temp }}/business-finlynq-production-deployment-v1.txt");
     expect(workflow).toContain("ATTESTATION_BUNDLE: ${{ steps.attest.outputs.bundle-path }}");
+    expect(workflow).toContain([
+      "          ' \"$ATTESTATION_BUNDLE\" >/dev/null",
+      '          install -m 0600 -- "$ATTESTATION_BUNDLE" "$transport"',
+      '          cmp --silent -- "$ATTESTATION_BUNDLE" "$transport"',
+    ].join("\n"));
+    expect(workflow).not.toContain('\"$ATTESTATION_BUNDLE\" >\"$transport\"');
     expect(workflow).toContain("release=production-deployment-signals");
     expect(workflow).toContain("gh release upload");
     expect(workflow).not.toContain("git tag");

@@ -37,6 +37,7 @@ readonly expected_full_edge_networks=(
   business_finlynq_development_edge
   epm_finlynq_edge
   epm_finlynq_edge_egress
+  consult_finlynq_edge
 )
 scope="full"
 warmup_host="none"

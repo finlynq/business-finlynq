@@ -228,6 +228,7 @@ describe("externally managed edge contract", () => {
       "business_finlynq_development_edge",
       "epm_finlynq_edge",
       "epm_finlynq_edge_egress",
+      "consult_finlynq_edge",
     ]) {
       expect(verifier).toContain(network);
     }
