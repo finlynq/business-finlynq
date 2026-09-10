@@ -83,7 +83,9 @@ jobs:
             .mediaType == "application/vnd.dev.sigstore.bundle.v0.3+json" and
             (.verificationMaterial | type == "object") and
             (.dsseEnvelope | type == "object")
-          ' "$ATTESTATION_BUNDLE" >"$transport"
+          ' "$ATTESTATION_BUNDLE" >/dev/null
+          install -m 0600 -- "$ATTESTATION_BUNDLE" "$transport"
+          cmp --silent -- "$ATTESTATION_BUNDLE" "$transport"
           release=production-deployment-signals
           if ! gh release view "$release" --repo finlynq/business-finlynq >/dev/null 2>&1; then
             gh release create "$release" \
