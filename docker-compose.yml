@@ -444,6 +444,7 @@ services:
     stop_grace_period: 75s
     networks:
       business_finlynq_frontend:
+      business_finlynq_router_control:
       business_finlynq_edge:
         aliases:
           - ${BUSINESS_FINLYNQ_APP_NETWORK_ALIAS:-production-app}
@@ -1588,6 +1589,12 @@ networks:
   business_finlynq_frontend:
     name: ${RELEASE_REHEARSAL_PROJECT:-${BUSINESS_FINLYNQ_PRIVATE_NETWORK:-business_finlynq_private}}-frontend
     internal: true
+  business_finlynq_router_control:
+    name: ${RELEASE_REHEARSAL_PROJECT:-${BUSINESS_FINLYNQ_PRIVATE_NETWORK:-business_finlynq_private}}-router-control
+    driver: bridge
+    driver_opts:
+      com.docker.network.bridge.enable_icc: "false"
+      com.docker.network.bridge.enable_ip_masquerade: "false"
   business_finlynq_edge:
     name: ${BUSINESS_FINLYNQ_EDGE_NETWORK:-business_finlynq_edge}
   business_finlynq_development_edge:

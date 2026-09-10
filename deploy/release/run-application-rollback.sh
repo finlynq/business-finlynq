@@ -408,12 +408,15 @@ rollback_router_loopback_port="$(jq -r '
   || fail "rollback release-router loopback binding is invalid"
 rollback_router_frontend_network="$(jq -r '.networks.business_finlynq_frontend.name // empty' \
   <<<"$rendered_current_compose")"
+rollback_router_control_network="$(jq -r '.networks.business_finlynq_router_control.name // empty' \
+  <<<"$rendered_current_compose")"
 rollback_router_edge_network="$(jq -r '.networks.business_finlynq_edge.name // empty' \
   <<<"$rendered_current_compose")"
 rollback_router_public_alias="$(jq -r \
   '.services.release_router.networks.business_finlynq_edge.aliases[0] // empty' \
   <<<"$rendered_current_compose")"
 [[ "$rollback_router_frontend_network" =~ ^[a-zA-Z0-9][a-zA-Z0-9_.-]{2,127}$ \
+  && "$rollback_router_control_network" =~ ^[a-zA-Z0-9][a-zA-Z0-9_.-]{2,127}$ \
   && "$rollback_router_edge_network" =~ ^[a-zA-Z0-9][a-zA-Z0-9_.-]{2,127}$ \
   && "$rollback_router_public_alias" == production-app ]] \
   || fail "rollback release-router network contract is invalid"
@@ -468,6 +471,7 @@ release_router_static_contract_is_valid() {
     --arg revision "$release_router_revision" --arg contract "$release_router_contract" \
     --arg stateVolume "$rollback_router_state_volume" \
     --arg frontendNetwork "$rollback_router_frontend_network" \
+    --arg controlNetwork "$rollback_router_control_network" \
     --arg edgeNetwork "$rollback_router_edge_network" \
     --arg publicAlias "$rollback_router_public_alias" \
     --arg port "$rollback_router_loopback_port" '
@@ -512,7 +516,7 @@ release_router_static_contract_is_valid() {
     .[0].Mounts[0].Type == "volume" and .[0].Mounts[0].Name == $stateVolume and
     .[0].Mounts[0].Destination == "/state" and .[0].Mounts[0].RW == true and
     ((.[0].NetworkSettings.Networks // {}) | keys | sort) ==
-      ([$edgeNetwork, $frontendNetwork] | sort) and
+      ([$controlNetwork, $edgeNetwork, $frontendNetwork] | sort) and
     any(.[0].NetworkSettings.Networks[$edgeNetwork].Aliases[]?; . == $publicAlias) and
     all(.[0].NetworkSettings.Networks[$frontendNetwork].Aliases[]?; . != $publicAlias)
   ' <<<"$router_inspection" >/dev/null

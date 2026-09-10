@@ -28,7 +28,7 @@ readonly production_signal_cache_directory="/var/cache/business-finlynq/github-a
 readonly production_signal_workflow_path=".github/workflows/signal-production-deployment.yml"
 readonly production_signal_workflow_sha256="36326ed7f59c4aab5310d4ca58dd86ef0539d653bbf3723a74f53e83fa7df071"
 readonly quality_gate_workflow_path=".github/workflows/ci.yml"
-readonly quality_gate_workflow_sha256="1a30d197f4cfa9564561307afc69bd61277eac1971e0fef0664c71f3095072b8"
+readonly quality_gate_workflow_sha256="e3883ee1d2b149429f91a4e6675ced704623f618dc1daba3a3b80e2212125813"
 readonly github_cli="/usr/bin/gh"
 readonly clean_path="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
@@ -923,7 +923,8 @@ stable_release_router_is_exact() {
       .[0].Mounts[0].Name == "business_finlynq_private-release-router-state-v2" and
       .[0].Mounts[0].Destination == "/state" and .[0].Mounts[0].RW == true and
       ((.[0].NetworkSettings.Networks | keys | sort) ==
-        (["business_finlynq_edge", "business_finlynq_private-frontend"] | sort)) and
+        (["business_finlynq_edge", "business_finlynq_private-frontend",
+          "business_finlynq_private-router-control"] | sort)) and
       any(.[0].NetworkSettings.Networks.business_finlynq_edge.Aliases[]?;
         . == "production-app") and
       .[0].Config.Entrypoint == ["/usr/local/bin/release-router-entrypoint"] and
@@ -1527,7 +1528,8 @@ force_parent_release_router_maintenance() {
     .[0].Mounts[0].Name == "business_finlynq_private-release-router-state-v2" and
     .[0].Mounts[0].Destination == "/state" and .[0].Mounts[0].RW == true and
     ((.[0].NetworkSettings.Networks | keys | sort) ==
-      (["business_finlynq_edge", "business_finlynq_private-frontend"] | sort)) and
+      (["business_finlynq_edge", "business_finlynq_private-frontend",
+        "business_finlynq_private-router-control"] | sort)) and
     any(.[0].NetworkSettings.Networks.business_finlynq_edge.Aliases[]?;
       . == "production-app") and
     all(.[0].NetworkSettings.Networks["business_finlynq_private-frontend"].Aliases[]?;

@@ -165,7 +165,7 @@ for (const [serviceName, expectedImage] of Object.entries(expectedReleaseImages)
 if (releaseRouter.image !== "business-finlynq-release-router:v2"
   || releaseRouter.pull_policy !== "never"
   || Object.keys(releaseRouter.build?.args ?? {}).length !== 0) {
-  fail("release router must use its separately versioned stable v1 image");
+  fail("release router must use its separately versioned stable image");
 }
 if (app.build?.args?.BUSINESS_FINLYNQ_IMAGE_REVISION !== process.env.BUSINESS_FINLYNQ_IMAGE_REVISION) {
   fail("app image build does not embed the configured release revision");
@@ -190,9 +190,18 @@ if (dependencyCondition(app, "release_router") !== "service_healthy") {
 }
 
 const routerNetworks = Object.keys(releaseRouter.networks ?? {}).sort();
-if (routerNetworks.join(",") !== "business_finlynq_edge,business_finlynq_frontend"
-  || configuration.networks?.business_finlynq_frontend?.internal !== true) {
-  fail("release router has a path outside the internal frontend and reviewed ingress networks");
+if (routerNetworks.join(",")
+    !== "business_finlynq_edge,business_finlynq_frontend,business_finlynq_router_control"
+  || configuration.networks?.business_finlynq_frontend?.internal !== true
+  || (configuration.networks?.business_finlynq_router_control?.internal ?? false) !== false
+  || configuration.networks?.business_finlynq_router_control?.driver !== "bridge"
+  || configuration.networks?.business_finlynq_router_control?.driver_opts?.[
+    "com.docker.network.bridge.enable_icc"
+  ] !== "false"
+  || configuration.networks?.business_finlynq_router_control?.driver_opts?.[
+    "com.docker.network.bridge.enable_ip_masquerade"
+  ] !== "false") {
+  fail("release router is outside the reviewed ingress, frontend, and non-masquerading control networks");
 }
 if ((releaseRouter.networks?.business_finlynq_edge?.aliases ?? []).join(",") !== expectedAppNetworkAlias) {
   fail("release router does not exclusively own the reviewed external network alias");
@@ -959,6 +968,7 @@ const initialActiveResources = {
   business_finlynq_egress: "business_finlynq_egress",
   business_finlynq_scanner_egress: "business_finlynq_egress_scanner",
   business_finlynq_frontend: "business_finlynq_private-frontend",
+  business_finlynq_router_control: "business_finlynq_private-router-control",
   business_finlynq_edge: "business_finlynq_edge",
 };
 for (const [logicalName, resourceName] of Object.entries(initialActiveResources)) {
@@ -1014,7 +1024,16 @@ if (!developmentApp || !developmentRouter || (developmentApp.ports ?? []).length
   || developmentRouterPort?.host_ip !== "127.0.0.1" || developmentRouterPort?.published !== "3200"
   || (developmentRouter.networks?.business_finlynq_edge?.aliases ?? []).join(",") !== "development-app"
   || developmentRendered.networks?.business_finlynq_frontend?.name
-    !== "business_finlynq_development_private-frontend") {
+    !== "business_finlynq_development_private-frontend"
+  || developmentRendered.networks?.business_finlynq_router_control?.name
+    !== "business_finlynq_development_private-router-control"
+  || (developmentRendered.networks?.business_finlynq_router_control?.internal ?? false) !== false
+  || developmentRendered.networks?.business_finlynq_router_control?.driver_opts?.[
+    "com.docker.network.bridge.enable_icc"
+  ] !== "false"
+  || developmentRendered.networks?.business_finlynq_router_control?.driver_opts?.[
+    "com.docker.network.bridge.enable_ip_masquerade"
+  ] !== "false") {
   fail("development does not preserve the isolated release-router topology");
 }
 

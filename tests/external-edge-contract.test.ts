@@ -402,7 +402,10 @@ describe("externally managed edge contract", () => {
     expect(monitor).toContain('monitor_router_mode="active"');
     expect(monitor).toContain("--allow-transitional-router-maintenance");
     expect(monitor).toContain("--allow-production-router-maintenance");
-    expect(monitor).toContain('["business_finlynq_edge", "business_finlynq_private-frontend"]');
+    expect(monitor).toContain(
+      '["business_finlynq_edge", "business_finlynq_private-frontend",',
+    );
+    expect(monitor).toContain('"business_finlynq_private-router-control"]');
     expect(monitor).toContain('. == "production-app"');
     expect(monitor).toContain("production public backend alias must be owned exactly once by release_router");
     expect(monitor).toContain("--filter 'network=business_finlynq_edge'");

@@ -640,9 +640,11 @@ ensure_release_router_image() {
     && "$image_contract" == "$release_router_contract" \
     && "$image_build_project" == "$release_router_build_project" ]] || return 1
   expected_config_sha256="$(
-    cd -- "$repository/deploy/release/router" \
-      && sha256sum Caddyfile Caddyfile.maintenance entrypoint.sh \
-      | awk '{print $1}' | sha256sum | awk '{print $1}'
+    for relative_path in Caddyfile Caddyfile.maintenance entrypoint.sh; do
+      git_as_deploy show \
+        "$candidate_revision:deploy/release/router/$relative_path" \
+        | sha256sum | awk '{ print $1 }'
+    done | sha256sum | awk '{ print $1 }'
   )" || return 1
   [[ "$expected_config_sha256" =~ ^[a-f0-9]{64}$ ]] || return 1
   observed_config_output="$(docker run --rm --network none --read-only \
@@ -789,6 +791,7 @@ assert_fresh_development_resources() {
     business_finlynq_development_egress
     business_finlynq_development_egress_scanner
     business_finlynq_development_private-frontend
+    business_finlynq_development_private-router-control
     business_finlynq_development_restore_drill
   )
 
@@ -870,7 +873,8 @@ release_router_runtime_is_accepted() {
     (.[0].HostConfig.PortBindings["3000/tcp"] ==
       [{"HostIp":"127.0.0.1", "HostPort":"3200"}]) and
     ([.[0].NetworkSettings.Networks | keys[]] | sort) ==
-      ["business_finlynq_development_edge", "business_finlynq_development_private-frontend"] and
+      ["business_finlynq_development_edge", "business_finlynq_development_private-frontend",
+        "business_finlynq_development_private-router-control"] and
     ([.[0].NetworkSettings.Networks.business_finlynq_development_edge.Aliases[]] |
       index("development-app")) != null and
     .[0].Config.Entrypoint == ["/usr/local/bin/release-router-entrypoint"] and
@@ -1037,6 +1041,7 @@ verify_compose_boundary() {
   if [[ "$topology" == router ]]; then
     expected_resources+=(
       "business_finlynq_development_private-frontend"
+      "business_finlynq_development_private-router-control"
       "business_finlynq_development_private-release-router-state-v2"
     )
     router_image="$(jq -er '.services.release_router.image' <<<"$rendered")" \
@@ -1051,6 +1056,20 @@ verify_compose_boundary() {
       || fail "development application frontend alias could not be read from Compose"
     [[ "$router_image" == "$release_router_reference" ]] \
       || fail "development release router must use the stable reviewed image"
+    jq -e '
+      ([.services.release_router.networks | keys[]] | sort) ==
+        ["business_finlynq_edge", "business_finlynq_frontend",
+          "business_finlynq_router_control"] and
+      .networks.business_finlynq_router_control.name ==
+        "business_finlynq_development_private-router-control" and
+      ((.networks.business_finlynq_router_control.internal // false) == false) and
+      .networks.business_finlynq_router_control.driver == "bridge" and
+      .networks.business_finlynq_router_control.driver_opts == {
+        "com.docker.network.bridge.enable_icc": "false",
+        "com.docker.network.bridge.enable_ip_masquerade": "false"
+      }
+    ' <<<"$rendered" >/dev/null \
+      || fail "development release-router control network is invalid"
     [[ "$app_port" == 3200 ]] \
       || fail "development release router must bind loopback port 3200"
     [[ "$app_alias" == development-app ]] \

@@ -137,6 +137,7 @@ describe("stable fail-closed release router", () => {
     expect(router).toContain("/config:size=1m");
     expect(router).toContain("/data:size=1m");
     expect(router).toContain("business_finlynq_frontend:");
+    expect(router).toContain("business_finlynq_router_control:");
     expect(router).toContain("business_finlynq_edge:");
     expect(router).toContain("${BUSINESS_FINLYNQ_APP_NETWORK_ALIAS:-production-app}");
     expect(router).toContain("read_only: true");
@@ -156,6 +157,9 @@ describe("stable fail-closed release router", () => {
     const networks = compose.slice(compose.lastIndexOf("\nnetworks:\n"));
     expect(networks).toMatch(
       /business_finlynq_frontend:\n\s+name: .*\}-frontend\n\s+internal: true/,
+    );
+    expect(networks).toMatch(
+      /business_finlynq_router_control:\n\s+name: .*\}-router-control\n\s+driver: bridge\n\s+driver_opts:\n\s+com\.docker\.network\.bridge\.enable_icc: "false"\n\s+com\.docker\.network\.bridge\.enable_ip_masquerade: "false"/,
     );
     const edgeNetwork = between(
       networks,
@@ -389,7 +393,7 @@ describe("stable fail-closed release router", () => {
       '(.[0].HostConfig.Tmpfs | keys | sort) == ["/config", "/data", "/tmp"]',
       "((.[0].Mounts // []) | length) == 1",
       ".[0].Mounts[0].Name == $stateVolume",
-      "([$edgeNetwork, $frontendNetwork] | sort)",
+      "([$controlNetwork, $edgeNetwork, $frontendNetwork] | sort)",
       ". == $publicAlias",
     ]) {
       expect(rollbackStaticContract).toContain(contract);
@@ -939,12 +943,14 @@ describe("stable fail-closed release router", () => {
     expect(release).toContain('release_router_source_date_epoch="1788998400"');
     expect(development).toContain('release_router_source_date_epoch="1788998400"');
     expect(release).toContain("sha256sum Caddyfile Caddyfile.maintenance entrypoint.sh");
-    expect(development).toContain("sha256sum Caddyfile Caddyfile.maintenance entrypoint.sh");
+    expect(development).toContain(
+      '"$candidate_revision:deploy/release/router/$relative_path"',
+    );
   });
 
   it("fails Compose verification when stable-router ownership or isolation drifts", () => {
     for (const contract of [
-      "release router must use its separately versioned stable v1 image",
+      "release router must use its separately versioned stable image",
       "external application alias must belong only to release_router",
       "loopback application port must belong only to release_router",
       "release router state is not limited to its dedicated non-secret durable mode volume",
