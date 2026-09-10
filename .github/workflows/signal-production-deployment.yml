@@ -4,11 +4,15 @@ on:
   workflow_run:
     workflows:
       - quality-gate
+    branches:
+      - main
     types:
       - completed
 
 permissions:
   contents: write
+  id-token: write
+  attestations: write
 
 concurrency:
   group: production-deployment-signal
@@ -24,28 +28,73 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           fetch-depth: 0
+          persist-credentials: false
           ref: ${{ github.event.workflow_run.head_sha }}
 
-      - name: Publish immutable production deployment signal
+      - name: Materialize exact production deployment signal
         env:
           CANDIDATE_REVISION: ${{ github.event.workflow_run.head_sha }}
+          CURRENT_REPOSITORY_ID: ${{ github.event.repository.id }}
+          UPSTREAM_REPOSITORY_ID: ${{ github.event.workflow_run.head_repository.id }}
+          UPSTREAM_WORKFLOW_ID: ${{ github.event.workflow_run.workflow_id }}
+          UPSTREAM_WORKFLOW_PATH: ${{ github.event.workflow_run.path }}
         run: |
           set -Eeuo pipefail
           [[ "$CANDIDATE_REVISION" =~ ^[a-f0-9]{40}$ && ! "$CANDIDATE_REVISION" =~ ^0+$ ]]
+          [[ "$UPSTREAM_WORKFLOW_PATH" == '.github/workflows/ci.yml' \
+            || "$UPSTREAM_WORKFLOW_PATH" == '.github/workflows/ci.yml@main' ]]
+          test "$UPSTREAM_WORKFLOW_ID" = '343064471'
+          test "$UPSTREAM_REPOSITORY_ID" = '1347535948'
+          test "$CURRENT_REPOSITORY_ID" = '1347535948'
           test "$(git rev-parse HEAD)" = "$CANDIDATE_REVISION"
           git fetch --no-tags origin \
             '+refs/heads/main:refs/remotes/origin/main'
           test "$(git rev-parse refs/remotes/origin/main)" = "$CANDIDATE_REVISION"
+          printf '%s\nrepository=%s\nrevision=%s\n' \
+            'business-finlynq-production-deployment-v1' \
+            'finlynq/business-finlynq' \
+            "$CANDIDATE_REVISION" \
+            >"$RUNNER_TEMP/business-finlynq-production-deployment-v1.txt"
 
-          tag="deploy-production-$CANDIDATE_REVISION"
-          existing="$(git ls-remote --tags origin "refs/tags/$tag" | awk 'NR == 1 {print $1}')"
-          if [[ -n "$existing" ]]; then
-            test "$existing" = "$CANDIDATE_REVISION"
-            exit 0
+      - name: Publish keyless production-signal attestation
+        id: attest
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: ${{ runner.temp }}/business-finlynq-production-deployment-v1.txt
+
+      # Release assets are transport only. The production host distrusts this
+      # mutable file and verifies the Sigstore signature, exact workflow
+      # identity, signer/source commit, source ref, and subject bytes itself.
+      - name: Publish credential-free attestation transport
+        env:
+          ATTESTATION_BUNDLE: ${{ steps.attest.outputs.bundle-path }}
+          CANDIDATE_REVISION: ${{ github.event.workflow_run.head_sha }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -Eeuo pipefail
+          [[ "$CANDIDATE_REVISION" =~ ^[a-f0-9]{40}$ && ! "$CANDIDATE_REVISION" =~ ^0+$ ]]
+          test -f "$ATTESTATION_BUNDLE"
+          transport="$RUNNER_TEMP/business-finlynq-production-deployment-$CANDIDATE_REVISION.attestation.json"
+          jq -e '
+            type == "object" and
+            .mediaType == "application/vnd.dev.sigstore.bundle.v0.3+json" and
+            (.verificationMaterial | type == "object") and
+            (.dsseEnvelope | type == "object")
+          ' "$ATTESTATION_BUNDLE" >/dev/null
+          install -m 0600 -- "$ATTESTATION_BUNDLE" "$transport"
+          cmp --silent -- "$ATTESTATION_BUNDLE" "$transport"
+          release=production-deployment-signals
+          if ! gh release view "$release" --repo finlynq/business-finlynq >/dev/null 2>&1; then
+            gh release create "$release" \
+              --repo finlynq/business-finlynq \
+              --target "$CANDIDATE_REVISION" \
+              --title 'Production deployment signals' \
+              --notes 'Untrusted transport for cryptographically verified production deployment attestations.' \
+              --latest=false
           fi
-
-          git tag "$tag" "$CANDIDATE_REVISION"
-          git push origin "refs/tags/$tag:refs/tags/$tag"
+          asset="business-finlynq-production-deployment-$CANDIDATE_REVISION.attestation.json"
+          gh release upload "$release" "$transport#$asset" \
+            --repo finlynq/business-finlynq --clobber

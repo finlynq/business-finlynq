@@ -1,11 +1,16 @@
 import { expect, test } from "@playwright/test";
+import { installReleaseAcceptanceRoute, releaseGet } from "./release-acceptance";
+
+test.beforeEach(async ({ context }) => {
+  await installReleaseAcceptanceRoute(context);
+});
 
 test("period controls creates a monthly calendar and refreshes the selectable periods", async ({ page }, testInfo) => {
   const destination = "/app/controls/period-close";
   await page.goto(`/login?next=${encodeURIComponent(destination)}`);
   const demoHref = await page.getByRole("link", { name: /Open the public demo/ }).getAttribute("href");
   if (!demoHref) throw new Error("Demo login link is missing");
-  const login = await page.context().request.get(demoHref, { maxRedirects: 0 });
+  const login = await releaseGet(page.request, demoHref);
   expect(login.status()).toBe(303);
   await page.goto(destination);
   try {

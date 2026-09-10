@@ -16,6 +16,7 @@ readonly secret_directory="$configuration_directory/secrets"
 readonly compose_environment="$configuration_directory/compose.env"
 readonly state_directory="/var/lib/business-finlynq-development"
 readonly shared_state_directory="/var/lib/business-finlynq"
+readonly host_deployment_lock="$shared_state_directory/deployment-host.lock"
 readonly development_edge_network="business_finlynq_development_edge"
 readonly deploy_target="/usr/local/sbin/business-finlynq-deploy-development"
 readonly service_target="/etc/systemd/system/business-finlynq-development-deployment.service"
@@ -108,7 +109,7 @@ if [[ "$enable_all_features" != true ]] \
 fi
 
 [[ "$(id -u)" == 0 ]] || fail "run this installer as root"
-for command_name in awk chmod chown docker getent git id install mktemp mv openssl rm runuser \
+for command_name in awk chmod chown docker getent git id install mktemp mv openssl readlink rm runuser \
   stat sync systemctl visudo wc; do
   command -v "$command_name" >/dev/null 2>&1 \
     || fail "required command is unavailable: $command_name"
@@ -149,6 +150,18 @@ install -d -o root -g deploy -m 0775 -- "$shared_state_directory"
 [[ -d "$shared_state_directory" && ! -L "$shared_state_directory" \
   && "$(stat -c '%U:%G:%a' -- "$shared_state_directory")" == root:deploy:775 ]] \
   || fail "the shared deployment-lock directory is unsafe"
+deploy_gid="$(id -g deploy 2>/dev/null)" \
+  || fail "host deployment coordination requires the deploy account"
+if [[ ! -e "$host_deployment_lock" ]]; then
+  install -o root -g "$deploy_gid" -m 0660 -- /dev/null "$host_deployment_lock"
+fi
+[[ -f "$host_deployment_lock" && ! -L "$host_deployment_lock" \
+  && "$(readlink -f -- "$host_deployment_lock")" == "$host_deployment_lock" ]] \
+  || fail "the shared deployment lock is unavailable or unsafe"
+chown root:"$deploy_gid" "$host_deployment_lock"
+chmod 0660 "$host_deployment_lock"
+[[ "$(stat -c '%u:%g:%a:%h' -- "$host_deployment_lock")" == "0:$deploy_gid:660:1" ]] \
+  || fail "the shared deployment lock must be root:deploy mode 0660"
 
 if [[ ! -e "$compose_environment" ]]; then
   owner_password="$(checked_random_hex_32)" || fail "could not prepare the database owner credential"

@@ -62,9 +62,58 @@ describe("contained initial production release", () => {
     expect(runner).toContain('verify-external-edge.sh" --scope preflight');
     expect(runner).toContain('verify-external-edge.sh" --scope development');
     expect(runner).toContain("resumable $service_name container image ID differs from prior evidence");
+    expect(runner).toContain('volume_names="$docker_query_output"');
+    expect(runner).toContain('<<<"$volume_names"');
+    expect(runner).toContain('network_names="$docker_query_output"');
+    expect(runner).toContain('<<<"$network_names"');
+    expect(runner).toContain('business_finlynq_edge <<<"$network_names"');
   });
 
-  it("validates inactive initial resources without assuming Compose retains unused declarations", () => {
+  it("accepts both Boolean resume states without jq -e treating false as failure", () => {
+    expect(runner).toContain('if (.running | type) == "boolean"');
+    expect(runner).toContain('then (.running | tostring)');
+    expect(runner).not.toContain("jq -er '.running'");
+  });
+
+  it("normalizes only the random candidate-root prefix before Compose hashing", () => {
+    expect(runner).toContain("canonical_compose_sha256() {");
+    expect(runner).toContain('local stable_root="/__business_finlynq_candidate_source__"');
+    expect(runner).toContain('. == $sourceRoot or startswith($sourceRoot + "/")');
+    expect(runner).toContain('compose_hash="$(canonical_compose_sha256 "$rendered_compose")"');
+    expect(runner).toContain('pinned_compose_hash="$(canonical_compose_sha256 "$pinned_compose")"');
+    expect(runner).not.toContain('compose_hash="$(printf \'%s\' "$rendered_compose"');
+  });
+
+  it.skipIf(process.platform === "win32")(
+    "produces stable Compose hashes across private staging roots without hiding real drift",
+    () => {
+      const start = runner.indexOf("canonical_compose_sha256() {");
+      const end = runner.indexOf("\n}\n", start);
+      expect(start).toBeGreaterThanOrEqual(0);
+      expect(end).toBeGreaterThan(start);
+      const helper = runner.slice(start, end + 2);
+      const result = spawnSync("/bin/bash", ["-c", `
+set -Eeuo pipefail
+${helper}
+candidate_source_root=/tmp/business-finlynq-release.aaaa/repository
+first='{"build":"/tmp/business-finlynq-release.aaaa/repository","bind":"/tmp/business-finlynq-release.aaaa/repository/deploy/file","middle":"prefix:/tmp/business-finlynq-release.aaaa/repository"}'
+first_hash="$(canonical_compose_sha256 "$first")"
+candidate_source_root=/tmp/business-finlynq-release.bbbb/repository
+second='{"middle":"prefix:/tmp/business-finlynq-release.aaaa/repository","bind":"/tmp/business-finlynq-release.bbbb/repository/deploy/file","build":"/tmp/business-finlynq-release.bbbb/repository"}'
+second_hash="$(canonical_compose_sha256 "$second")"
+[[ "$first_hash" == "$second_hash" ]]
+changed='{"middle":"prefix:/tmp/business-finlynq-release.aaaa/repository","bind":"/tmp/business-finlynq-release.bbbb/repository/deploy/other","build":"/tmp/business-finlynq-release.bbbb/repository"}'
+changed_hash="$(canonical_compose_sha256 "$changed")"
+[[ "$changed_hash" != "$second_hash" ]]
+if canonical_compose_sha256 '{"path":"/__business_finlynq_candidate_source__/collision"}' >/dev/null 2>&1; then
+  exit 1
+fi
+`], { encoding: "utf8" });
+      expect(result.status, result.stderr).toBe(0);
+    },
+  );
+
+  it("validates inactive initial resources through a combined all-profile render", () => {
     expect(runner).toContain(
       '"BUSINESS_FINLYNQ_CADDY_DATA_VOLUME:business_finlynq_caddy_data"',
     );
@@ -78,7 +127,8 @@ describe("contained initial production release", () => {
       '.volumes.business_finlynq_caddy_data.name == "business_finlynq_caddy_data"',
     );
     expect(runner).toContain(
-      'initial_restore_compose="$(compose --profile restore-drill config --format json)"',
+      'initial_restore_compose="$(compose --profile operations --profile auth-email \\\n' +
+      '      --profile acceptance --profile restore-drill config --format json)"',
     );
     expect(runner).toContain(
       '.networks.business_finlynq_restore_drill.name == "business_finlynq_restore_drill"',
@@ -86,6 +136,33 @@ describe("contained initial production release", () => {
     expect(runner).toContain(
       '.networks.business_finlynq_restore_drill.internal == true',
     );
+    const recoveryRender = runner.indexOf('initial_restore_compose="$(compose');
+    const secretInventory = runner.indexOf('if ! initial_secret_sources="$(jq -r', recoveryRender);
+    const disabledSecretContract = runner.indexOf('initial_disabled_secret_source="$(jq -r', secretInventory);
+    const releaseRecoveryRender = runner.indexOf('unset initial_restore_compose', recoveryRender);
+    expect(recoveryRender).toBeGreaterThan(-1);
+    expect(secretInventory).toBeGreaterThan(recoveryRender);
+    expect(disabledSecretContract).toBeGreaterThan(secretInventory);
+    expect(releaseRecoveryRender).toBeGreaterThan(disabledSecretContract);
+    expect(runner.slice(secretInventory, disabledSecretContract)).toContain(
+      '<<<"$initial_restore_compose" | sort -u',
+    );
+    const disabledSecretBlock = runner.slice(disabledSecretContract, releaseRecoveryRender);
+    expect(disabledSecretBlock).toContain(
+      '<<<"$initial_restore_compose")',
+    );
+    for (const secretName of [
+      "business_finlynq_document_google_secret",
+      "business_finlynq_document_microsoft_secret",
+      "business_finlynq_resend_api_key",
+      "business_finlynq_turnstile_secret_key",
+      "business_finlynq_rclone_config",
+      "business_finlynq_backup_receiver_ssh_private_key",
+      "business_finlynq_backup_receiver_known_hosts",
+      "business_finlynq_backup_receiver_receipt_public_key",
+      "business_finlynq_backup_age_identity",
+      "business_finlynq_restore_db_password",
+    ]) expect(disabledSecretBlock).toContain(`.secrets.${secretName}.file`);
   });
 
   it("boots, attests, and probes ClamAV before starting the application", () => {
@@ -155,7 +232,11 @@ describe("contained initial production release", () => {
     expect(runner).toContain("business-finlynq-continuous-deployment.timer");
     expect(runner).toContain('initial_schedule_installed="true"');
     expect(runner).toContain("contain_initial_schedule_on_failure");
-    expect(runner).toContain('current_invocation" != "$previous_invocation');
+    expect(runner).toContain("systemd 259 clears InvocationID");
+    expect(runner).toContain("durable metric verification follows");
+    expect(runner).not.toContain('current_invocation" != "$previous_invocation');
+    expect(runner).toContain("development deployment timer must remain disabled");
+    expect(runner).toContain("development deployment service must remain inactive");
     expect(runner).toContain('timersEnabled: false, timersActive: false');
     expect(monitor).toContain('MONITOR_EXPECT_SCHEDULERS_ACTIVE="${MONITOR_EXPECT_SCHEDULERS_ACTIVE:-true}"');
     expect(monitor).toContain("deferred scheduled operations timer is not exactly disabled");

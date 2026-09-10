@@ -1,5 +1,11 @@
 import { expect, test, type Page } from "@playwright/test";
 import { createHash } from "node:crypto";
+import {
+  installReleaseAcceptanceRoute,
+  releaseDelete,
+  releaseGet,
+  releasePost,
+} from "./release-acceptance";
 
 type ReadinessState = "ready" | "disabled";
 
@@ -22,6 +28,10 @@ const expectedAccountSignup = expectedReadiness(
   "ACCOUNT_SIGNUP_ENABLED",
 );
 
+test.beforeEach(async ({ context }) => {
+  await installReleaseAcceptanceRoute(context);
+});
+
 function collectBrowserErrors(page: Page): string[] {
   const errors: string[] = [];
   page.on("console", (message) => {
@@ -41,7 +51,7 @@ async function openDemo(page: Page, destination: string): Promise<void> {
   const demoHref = await page.getByRole("link", { name: /Open the public demo/ }).getAttribute("href");
   if (!demoHref) throw new Error("Demo login link is missing its target");
 
-  const response = await page.context().request.get(demoHref, { maxRedirects: 0 });
+  const response = await releaseGet(page.request, demoHref);
   expect(response.status()).toBe(303);
   expect(new URL(response.headers().location).pathname).toBe(destination);
   await page.goto(destination);
@@ -110,19 +120,19 @@ async function attachInvoiceAndReceipt(page: Page, sourceNumber: string) {
     const upload = { module: "payables", filename, mimeType: "application/pdf", byteSize: bytes.length,
       sha256: createHash("sha256").update(bytes).digest("hex"), contentBase64: bytes.toString("base64"),
       idempotencyKey: crypto.randomUUID() };
-    const response = await page.request.post("/api/document-evidence", { headers, data: upload });
+    const response = await releasePost(page.request, "/api/document-evidence", { headers, data: upload });
     expect(response.status(), await response.text()).toBe(201);
     const assetId = (await response.json()).asset.assetId as string;
-    const replay = await page.request.post("/api/document-evidence", { headers, data: upload });
+    const replay = await releasePost(page.request, "/api/document-evidence", { headers, data: upload });
     expect(replay.status()).toBe(200);
     expect((await replay.json()).asset.assetId).toBe(assetId);
     const link = { kind: "SUPPLIER_BILL", sourceNumber, expectedVersion, assetId, purpose,
       idempotencyKey: crypto.randomUUID(), reason: "Release acceptance source evidence" };
-    const linked = await page.request.post("/api/document-evidence/links", { headers, data: link });
+    const linked = await releasePost(page.request, "/api/document-evidence/links", { headers, data: link });
     expect(linked.status(), await linked.text()).toBe(201);
     const document = (await linked.json()).document;
     expectedVersion = document.version;
-    const linkReplay = await page.request.post("/api/document-evidence/links", { headers, data: link });
+    const linkReplay = await releasePost(page.request, "/api/document-evidence/links", { headers, data: link });
     expect(linkReplay.status()).toBe(200);
     attachments.push({ assetId, filename, downloadUrl: `/api/document-evidence/${assetId}?sourceDocumentId=${document.id}` });
   }
@@ -134,7 +144,7 @@ async function attachInvoiceAndReceipt(page: Page, sourceNumber: string) {
   await bill.getByRole("button", { name: "View details", exact: true }).click();
   for (const attachment of attachments) {
     await expect(page.getByRole("link", { name: attachment.filename, exact: true })).toBeVisible();
-    const download = await page.request.get(attachment.downloadUrl, { headers });
+    const download = await releaseGet(page.request, attachment.downloadUrl, { headers });
     expect(download.status()).toBe(200);
     expect(download.headers()["content-disposition"]).toContain("attachment;");
     expect(download.headers()["cache-control"]).toContain("no-store");
@@ -157,12 +167,12 @@ test("public website, readiness, and security headers are release-ready", async 
   expect(response?.headers()["x-frame-options"]).toBe("DENY");
   expect(response?.headers()["content-security-policy"]).toContain("frame-ancestors 'none'");
 
-  const live = await request.get("/api/live");
+  const live = await releaseGet(request, "/api/live");
   expect(live.status()).toBe(200);
   expect(live.headers()["cache-control"]).toContain("no-store");
   await expect(live.json()).resolves.toEqual({ status: "live" });
 
-  const ready = await request.get("/api/health");
+  const ready = await releaseGet(request, "/api/health");
   expect(ready.status()).toBe(200);
   expect(ready.headers()["cache-control"]).toContain("no-store");
   await expect(ready.json()).resolves.toEqual({ status: "ready" });
@@ -222,7 +232,7 @@ test("demo session protects workspace routes and is revoked by sign-out", async 
   // Exercise the route through the browser context's shared cookie jar. A normal
   // document click can be preceded by browser speculation, which this stateful
   // endpoint deliberately answers with 204 and must never treat as a login.
-  const demoResponse = await page.context().request.get(demoHref, { maxRedirects: 0 });
+  const demoResponse = await releaseGet(page.request, demoHref);
   expect(demoResponse.status()).toBe(303);
   expect(new URL(demoResponse.headers().location).pathname).toBe("/app/journals");
   await page.goto("/app/journals");
@@ -269,7 +279,7 @@ test("writable demo can create, post, and void an AR invoice", async ({ page }) 
   await page.goto("/login?next=%2Fapp%2Freceivables%2Finvoices");
   const demoHref = await page.getByRole("link", { name: /Open the public demo/ }).getAttribute("href");
   if (!demoHref) throw new Error("Demo login link is missing its target");
-  const demoResponse = await page.context().request.get(demoHref, { maxRedirects: 0 });
+  const demoResponse = await releaseGet(page.request, demoHref);
   expect(demoResponse.status()).toBe(303);
   await page.goto("/app/receivables/invoices");
 
@@ -359,10 +369,10 @@ test(`writable demo completes and exactly reverses an AP bill ${fundingMethod} s
     for (const attachment of evidence) {
       const link = page.getByRole("link", { name: attachment.filename, exact: true });
       await expect(link).toBeVisible();
-      expect((await page.request.get((await link.getAttribute("href"))!, { headers })).status()).toBe(200);
-      expect((await page.request.get(attachment.downloadUrl, { headers })).status()).toBe(200);
+      expect((await releaseGet(page.request, (await link.getAttribute("href"))!, { headers })).status()).toBe(200);
+      expect((await releaseGet(page.request, attachment.downloadUrl, { headers })).status()).toBe(200);
     }
-    const forbidden = await page.request.delete("/api/document-evidence/links", {
+    const forbidden = await releaseDelete(page.request, "/api/document-evidence/links", {
       headers,
       data: { kind: "SUPPLIER_BILL", sourceNumber: billNumber, expectedVersion: 6,
         assetId: evidence[0].assetId, idempotencyKey: crypto.randomUUID(), reason: "Posted evidence cannot be detached" },
@@ -370,7 +380,9 @@ test(`writable demo completes and exactly reverses an AP bill ${fundingMethod} s
     expect(forbidden.status()).toBe(409);
   }
   await revokeDemoSession(page);
-  for (const attachment of evidence) expect((await page.request.get(attachment.downloadUrl)).status()).toBe(401);
+  for (const attachment of evidence) {
+    expect((await releaseGet(page.request, attachment.downloadUrl)).status()).toBe(401);
+  }
   expect(errors).toEqual([]);
 });
 
@@ -382,6 +394,10 @@ test("concurrent demo visitors share one company and see each other's changes", 
   if (typeof baseURL !== "string") throw new Error("Playwright baseURL is required for shared-demo acceptance");
   const contextA = await browser.newContext({ baseURL });
   const contextB = await browser.newContext({ baseURL });
+  await Promise.all([
+    installReleaseAcceptanceRoute(contextA),
+    installReleaseAcceptanceRoute(contextB),
+  ]);
   const pageA = await contextA.newPage();
   const pageB = await contextB.newPage();
   const errorsA = collectBrowserErrors(pageA);
@@ -415,6 +431,7 @@ test("concurrent demo visitors share one company and see each other's changes", 
 
     await revokeDemoSession(pageA);
     contextC = await browser.newContext({ baseURL });
+    await installReleaseAcceptanceRoute(contextC);
     pageC = await contextC.newPage();
     errorsC = collectBrowserErrors(pageC);
     await openDemo(pageC, "/app/payables/bills");

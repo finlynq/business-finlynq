@@ -50,10 +50,10 @@ document_provider_configuration_matches app "$(cat "$FIXTURE/config.json")"
 }
 
 describe("development document-provider configuration drift", () => {
-  it("accepts matching credentials without leaking values or hashes", () => {
+  it.skipIf(process.platform === "win32")("accepts matching credentials without leaking values or hashes", () => {
     const result = fixture().run(); expect(result.status).toBe(0); expect(result.stdout + result.stderr).toBe("");
   });
-  it.each(["absolute", "relative", "default"])("accepts %s Compose secret targets", (format) => {
+  it.skipIf(process.platform === "win32").each(["absolute", "relative", "default"])("accepts %s Compose secret targets", (format) => {
     const f = fixture();
     for (const secret of f.config.services.app.secrets) {
       if (format === "relative") secret.target = secret.source;
@@ -61,30 +61,30 @@ describe("development document-provider configuration drift", () => {
     }
     const result = f.run(); expect(result.status).toBe(0); expect(result.stdout + result.stderr).toBe("");
   });
-  it("rejects an unrelated absolute target with the same filename", () => {
+  it.skipIf(process.platform === "win32")("rejects an unrelated absolute target with the same filename", () => {
     const f = fixture(); f.config.services.app.secrets[0].target = "/different/google";
     expect(f.run().status).toBe(1);
   });
-  it("detects enablement, disabling, and rotation of client IDs at the same revision", () => {
+  it.skipIf(process.platform === "win32")("detects enablement, disabling, and rotation of client IDs at the same revision", () => {
     for (const value of ["", "new-client-id"]) {
       const f = fixture(); f.environment.DOCUMENT_MICROSOFT_CLIENT_ID = value;
       expect(f.run().status).toBe(1);
       f.running.DOCUMENT_MICROSOFT_CLIENT_ID = value; expect(f.run().status).toBe(0);
     }
   });
-  it("detects changed secret paths and writable or absent mounts", () => {
+  it.skipIf(process.platform === "win32")("detects changed secret paths and writable or absent mounts", () => {
     const f = fixture(); f.mounts[0].Source += "-old"; expect(f.run().status).toBe(1);
     f.mounts[0].Source = f.config.secrets.google.file; f.mounts[0].RW = true; expect(f.run().status).toBe(1);
     f.mounts.splice(0, 1); expect(f.run().status).toBe(1);
   });
-  it("detects same-path secret replacement until the app sees the new contents", () => {
+  it.skipIf(process.platform === "win32")("detects same-path secret replacement until the app sees the new contents", () => {
     const f = fixture(); writeFileSync(f.config.secrets.microsoft.file, "rotated-synthetic-value\n");
     const stale = f.run(); expect(stale.status).toBe(1); expect(stale.stdout + stale.stderr).toBe("");
     writeFileSync(join(f.runtime, "microsoft"), readFileSync(f.config.secrets.microsoft.file));
     expect(f.run().status).toBe(0);
     expect(f.run(true).status).toBe(1);
   });
-  it("supports recovery to a revision that predates cloud-provider configuration", () => {
+  it.skipIf(process.platform === "win32")("supports recovery to a revision that predates cloud-provider configuration", () => {
     const f = fixture();
     for (const key of Object.keys(f.environment)) { delete f.environment[key]; delete f.running[key]; }
     f.config.services.app.secrets.length = 0; f.mounts.length = 0;

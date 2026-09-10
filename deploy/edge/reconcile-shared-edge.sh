@@ -20,7 +20,7 @@ fail() {
 [[ "$(id -u)" == 0 ]] || fail "run this command as root"
 [[ "$repository" == "/home/deploy/business-finlynq" ]] \
   || fail "run this command from the canonical production checkout"
-for command_name in awk bash chmod curl docker flock git id jq readlink sha256sum stat timeout; do
+for command_name in awk bash chmod chown curl docker flock git id install jq readlink sha256sum stat timeout; do
   command -v "$command_name" >/dev/null 2>&1 \
     || fail "required command is unavailable: $command_name"
 done
@@ -30,15 +30,32 @@ docker compose version >/dev/null 2>&1 || fail "Docker Compose v2 is unavailable
   || fail "the application state directory is unavailable"
 [[ ! -L "$host_deployment_lock" && ! -L "$shared_edge_lock" ]] \
   || fail "a shared-edge lock path is symbolic"
+deploy_gid="$(id -g deploy 2>/dev/null)" \
+  || fail "host deployment coordination requires the deploy account"
+[[ "$(readlink -f -- "${host_deployment_lock%/*}")" == "${host_deployment_lock%/*}" \
+  && "$(stat -c '%u:%g:%a' -- "${host_deployment_lock%/*}")" == "0:$deploy_gid:775" ]] \
+  || fail "shared deployment state directory must be root:deploy mode 0775"
+if [[ ! -e "$host_deployment_lock" ]]; then
+  install -o root -g "$deploy_gid" -m 0660 -- /dev/null "$host_deployment_lock"
+fi
+[[ -f "$host_deployment_lock" && ! -L "$host_deployment_lock" \
+  && "$(readlink -f -- "$host_deployment_lock")" == "$host_deployment_lock" ]] \
+  || fail "the host deployment lock is unavailable or unsafe"
+chown root:"$deploy_gid" "$host_deployment_lock"
+chmod 0660 -- "$host_deployment_lock"
+[[ "$(stat -c '%u:%g:%a:%h' -- "$host_deployment_lock")" == "0:$deploy_gid:660:1" ]] \
+  || fail "the host deployment lock must be root:deploy mode 0660"
 # The installed production deployer already owns fd 8 on this exact lock. A
 # direct operator invocation acquires it here, so development, production, and
 # shared-edge changes can never overlap on the multi-deployment host.
 if [[ "$(readlink "/proc/$$/fd/8" 2>/dev/null || true)" != "$host_deployment_lock" ]]; then
-  exec 8>"$host_deployment_lock"
-  chmod 0600 -- "$host_deployment_lock"
+  exec 8<>"$host_deployment_lock"
   flock --exclusive --nonblock 8 \
     || fail "another production or development deployment is active"
 fi
+[[ "$(readlink -f -- /proc/$$/fd/8)" == "$host_deployment_lock" \
+  && "$(stat -Lc '%u:%g:%a:%h' -- /proc/$$/fd/8)" == "0:$deploy_gid:660:1" ]] \
+  || fail "the opened host deployment lock differs from its protected path"
 exec 7>"$shared_edge_lock"
 chmod 0600 -- "$shared_edge_lock"
 flock --exclusive --nonblock 7 || fail "another shared-edge reconciliation is active"
@@ -66,7 +83,7 @@ edge_mode="${edge_mode:-compose}"
 [[ "$edge_mode" == compose || "$edge_mode" == external ]] \
   || fail "BUSINESS_FINLYNQ_EDGE_MODE must be compose or external"
 if [[ "$edge_mode" == external ]]; then
-  exec bash "$repository/deploy/edge/verify-external-edge.sh"
+  exec bash "$repository/deploy/edge/verify-external-edge.sh" --scope production
 fi
 
 [[ -f "$repository/deploy/Caddyfile.container" \
@@ -109,8 +126,8 @@ compose_timed() {
 # down another project's containers, volumes, or external networks.
 compose --profile edge run --rm --no-deps -T --entrypoint /bin/sh edge -ec '
   caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile >/dev/null
-  wget -q -T 10 -O /dev/null http://production-app:3000/api/health
-  wget -q -T 10 -O /dev/null http://development-app:3000/api/health
+  wget -q -T 10 --header="X-Business-Finlynq-Internal-Health: 1" -O /dev/null http://production-app:3000/api/health
+  wget -q -T 10 --header="X-Business-Finlynq-Internal-Health: 1" -O /dev/null http://development-app:3000/api/health
   wget -q -T 10 -O /dev/null http://epm-finlynq-api:7100/health
   wget -q -T 10 -O /dev/null http://epm-finlynq-console:7090/api/health
   wget -q -T 10 -O /dev/null http://consult-finlynq-app:8080/

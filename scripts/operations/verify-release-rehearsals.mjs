@@ -36,12 +36,22 @@ const requiredRehearsalFiles = [
   "02-clean-environment.json",
   "03-candidate-git-tree.txt",
   "04-staged-tree-sha256.txt",
+  "10-release-router-build.log",
   "10-image-build.log",
   "10-operations-image-content.log",
+  "10-release-router-image-content.log",
   "11-images.json",
   "12-rollback-artifact.json",
   "25-stop-write-surfaces.log",
   "26-write-surfaces-stopped.json",
+  "27-release-router-start.log",
+  "27-release-router-runtime.json",
+  "28-release-router-live.json",
+  "28-release-router-maintenance.log",
+  "28-release-router-maintenance.headers",
+  "28-release-router-maintenance.json",
+  "28-release-router-route.headers",
+  "28-release-router-route.txt",
   "29-rehearsal-database-start.log",
   "29-rehearsal-database-image.json",
   "30-provision-backup-role.log",
@@ -77,6 +87,10 @@ const requiredRehearsalFiles = [
   "71-browser-acceptance.json",
   "72-final-app-start.log",
   "73-final-readiness.json",
+  "74-release-router-runtime.json",
+  "75-release-router-active.log",
+  "76-final-public-readiness.headers",
+  "76-final-public-readiness.json",
   "80-clean-rehearsal.log",
   "90-release-complete.json",
 ];
@@ -166,6 +180,9 @@ async function verifyDirectory(directory) {
     || complete.databaseRollback !== "forward-repair-only"
     || typeof complete.completedAt !== "string" || !/^[a-f0-9]{64}$/.test(complete.browserLogSha256)
     || !/^sha256:[a-f0-9]{64}$/.test(complete.candidateAppImageId)
+    || !/^sha256:[a-f0-9]{64}$/.test(complete.releaseRouterImageId)
+    || !/^[a-f0-9]{64}$/.test(complete.releaseRouterConfigSha256)
+    || complete.maintenanceConfirmedBeforeSchemaMigration !== true
     || complete.previousAppImageId !== null) {
     fail(`${basename(directory)} completion record is incomplete`);
   }
@@ -181,6 +198,7 @@ async function verifyDirectory(directory) {
   const imageRecord = expectObject(await readJson(resolve(directory, "11-images.json")), `${basename(directory)} image record`);
   const expectedImages = new Map([
     ["database", `business-finlynq-database:${plan.revision}`],
+    ["router", "business-finlynq-release-router:v1"],
     ["app", `business-finlynq-app:${plan.revision}`],
     ["migrator", `business-finlynq-migrator:${plan.revision}`],
     ["authWorker", `business-finlynq-auth-worker:${plan.revision}`],
@@ -193,12 +211,66 @@ async function verifyDirectory(directory) {
   const imageIds = new Map();
   for (const selected of imageRecord.images) {
     const expectedReference = expectedImages.get(selected?.name);
+    const expectedOciRevision = selected?.name === "router" ? "release-router-v1" : plan.revision;
     if (!expectedReference || selected.reference !== expectedReference
-      || selected.ociRevision !== plan.revision || !/^sha256:[a-f0-9]{64}$/.test(selected.imageId)
+      || selected.ociRevision !== expectedOciRevision || !/^sha256:[a-f0-9]{64}$/.test(selected.imageId)
       || imageIds.has(selected.name)) fail(`${basename(directory)} image evidence is invalid`);
     imageIds.set(selected.name, selected.imageId);
   }
   if (complete.candidateAppImageId !== imageIds.get("app")) fail(`${basename(directory)} candidate image identity disagrees`);
+  if (complete.releaseRouterImageId !== imageIds.get("router")) {
+    fail(`${basename(directory)} release-router image identity disagrees`);
+  }
+
+  const expectedRouterNetworks = [
+    `${plan.composeProject}-edge`,
+    `${plan.composeProject}-frontend`,
+  ].sort();
+  const expectedRouterStateVolume = `${plan.composeProject}-release-router-state-v1`;
+  const routerRuntimeKeys = [
+    "configSha256", "containerId", "contractVersion", "durableMode",
+    "durableStateVolume", "imageId", "networks", "processHealth", "product",
+    "publicAlias", "revision", "schemaVersion", "service", "verifiedAt",
+  ].sort().join(",");
+  for (const name of ["27-release-router-runtime.json", "74-release-router-runtime.json"]) {
+    const router = expectObject(await readJson(resolve(directory, name)), `${basename(directory)} ${name}`);
+    if (Object.keys(router).sort().join(",") !== routerRuntimeKeys
+      || router.schemaVersion !== 1 || router.product !== "business-finlynq"
+      || router.service !== "release_router" || router.revision !== "release-router-v1"
+      || router.contractVersion !== "v1"
+      || router.imageId !== imageIds.get("router")
+      || router.configSha256 !== complete.releaseRouterConfigSha256
+      || router.processHealth !== "healthy"
+      || !/^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$/.test(router.verifiedAt)
+      || !/^[a-f0-9]{64}$/.test(router.containerId)
+      || typeof router.publicAlias !== "string" || router.publicAlias.length === 0
+      || router.durableStateVolume !== expectedRouterStateVolume
+      || router.durableMode !== "maintenance"
+      || !Array.isArray(router.networks)
+      || router.networks.join("\n") !== expectedRouterNetworks.join("\n")) {
+      fail(`${basename(directory)} ${name} does not attest the release router`);
+    }
+  }
+  const routerContentLog = await readFile(resolve(directory, "10-release-router-image-content.log"), "utf8");
+  if (routerContentLog.trim() !== `${complete.releaseRouterConfigSha256}  -`) {
+    fail(`${basename(directory)} does not prove the combined active and maintenance router configuration`);
+  }
+  const maintenanceLive = await readJson(resolve(directory, "28-release-router-live.json"));
+  const maintenanceHealth = await readJson(resolve(directory, "28-release-router-maintenance.json"));
+  const maintenanceHeaders = await readFile(resolve(directory, "28-release-router-maintenance.headers"), "utf8");
+  const maintenanceRoute = await readFile(resolve(directory, "28-release-router-route.txt"), "utf8");
+  const maintenanceRouteHeaders = await readFile(resolve(directory, "28-release-router-route.headers"), "utf8");
+  if (JSON.stringify(maintenanceLive) !== JSON.stringify({ status: "live" })
+    || JSON.stringify(maintenanceHealth) !== JSON.stringify({ status: "unavailable" })
+    || !/^HTTP\/\S+ 503\b/m.test(maintenanceHeaders)
+    || !/^cache-control:.*no-store/im.test(maintenanceHeaders)
+    || !/^retry-after:\s*5\s*$/im.test(maintenanceHeaders)
+    || maintenanceRoute.replaceAll("\r", "") !== "Service temporarily unavailable.\n"
+    || !/^HTTP\/\S+ 503\b/m.test(maintenanceRouteHeaders)
+    || !/^cache-control:.*no-store/im.test(maintenanceRouteHeaders)
+    || !/^retry-after:\s*5\s*$/im.test(maintenanceRouteHeaders)) {
+    fail(`${basename(directory)} does not prove graceful release-router maintenance`);
+  }
 
   await Promise.all([
     [
@@ -258,7 +330,10 @@ async function verifyDirectory(directory) {
     || backup.applicationRevision !== plan.revision || backup.sourceApplicationRevision !== plan.revision
     || backup.backupToolRevision !== plan.revision || backup.encryption !== "age"
     || backup.format !== "postgres-custom" || !/^[a-f0-9]{64}$/.test(backup.sha256)
+    || typeof backup.manifestBasename !== "string"
+    || !/^business_finlynq_[0-9]{8}T[0-9]{6}Z_[A-Za-z0-9_.-]+\.manifest\.json$/.test(backup.manifestBasename)
     || typeof backup.encryptedArchive !== "string" || !Number.isSafeInteger(backup.encryptedBytes)
+    || backup.encryptedArchive !== backup.manifestBasename.replace(/\.manifest\.json$/, ".dump.age")
     || backup.encryptedBytes <= 0) fail(`${basename(directory)} backup evidence is invalid`);
 
   const pretraffic = expectObject(await readJson(resolve(directory, "53-pretraffic-verification.json")), `${basename(directory)} pretraffic record`);
@@ -296,16 +371,32 @@ async function verifyDirectory(directory) {
   for (const check of ["accountAuthentication", "accountSignup", "emailWorker", "bankFeeds"]) {
     if (quiesced.checks[check] !== "disabled") fail(`${basename(directory)} quiesced readiness enabled ${check}`);
   }
-  const publicReadiness = await readJson(resolve(directory, "65-public-readiness.json"));
-  if (JSON.stringify(publicReadiness) !== JSON.stringify({ status: "ready" })) {
-    fail(`${basename(directory)} public readiness is not minimal`);
+  const previewReadiness = await readJson(resolve(directory, "65-public-readiness.json"));
+  if (JSON.stringify(previewReadiness) !== JSON.stringify({ status: "ready" })) {
+    fail(`${basename(directory)} private candidate preview readiness is not minimal`);
   }
-  const publicHeaders = await readFile(resolve(directory, "65-public-readiness.headers"), "utf8");
-  if (!/^cache-control:.*no-store/im.test(publicHeaders)) fail(`${basename(directory)} public readiness headers are incomplete`);
+  const previewHeaders = await readFile(resolve(directory, "65-public-readiness.headers"), "utf8");
+  if (!/^HTTP\/\S+ 200\b/m.test(previewHeaders) || !/^cache-control:.*no-store/im.test(previewHeaders)) {
+    fail(`${basename(directory)} private candidate preview readiness headers are incomplete`);
+  }
+  const finalPublicReadiness = await readJson(resolve(directory, "76-final-public-readiness.json"));
+  if (JSON.stringify(finalPublicReadiness) !== JSON.stringify({ status: "ready" })) {
+    fail(`${basename(directory)} final public readiness is not minimal`);
+  }
+  const finalPublicHeaders = await readFile(resolve(directory, "76-final-public-readiness.headers"), "utf8");
+  if (!/^HTTP\/\S+ 200\b/m.test(finalPublicHeaders)
+    || !/^cache-control:.*no-store/im.test(finalPublicHeaders)) {
+    fail(`${basename(directory)} final public readiness headers are incomplete`);
+  }
   const browserLog = await readFile(resolve(directory, "70-browser-acceptance.log"));
   const browserLogSha256 = createHash("sha256").update(browserLog).digest("hex");
   if (browserLogSha256 !== complete.browserLogSha256) fail(`${basename(directory)} browser log digest disagrees`);
-  return { revision: complete.revision, runId: complete.runId };
+  return {
+    revision: complete.revision,
+    runId: complete.runId,
+    releaseRouterImageId: complete.releaseRouterImageId,
+    releaseRouterConfigSha256: complete.releaseRouterConfigSha256,
+  };
 }
 
 const directories = process.argv.slice(2).map((path) => resolve(path));
@@ -315,4 +406,8 @@ if (directories.length !== 2 || directories[0] === directories[1]) {
 const [first, second] = await Promise.all(directories.map(verifyDirectory));
 if (first.revision !== second.revision) fail("the two rehearsals target different revisions");
 if (first.runId === second.runId) fail("the two rehearsals are not independent runs");
+if (first.releaseRouterImageId !== second.releaseRouterImageId
+  || first.releaseRouterConfigSha256 !== second.releaseRouterConfigSha256) {
+  fail("the two rehearsals did not use one immutable stable release router");
+}
 process.stdout.write(`Two independent clean release rehearsals accepted for ${first.revision}\n`);

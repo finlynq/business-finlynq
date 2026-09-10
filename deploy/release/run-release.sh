@@ -14,6 +14,11 @@ repository_root="$(cd -- "$script_dir/../.." && pwd -P)" || {
   exit 1
 }
 readonly repository_root
+readonly legacy_f8485_revision="f8485ca86fef5b5fb4a38be9cb4cf3bea5ac2107"
+readonly legacy_f8485_image_id="sha256:2135e8e936bf8befdc44132771698dfb942fc97dccb19b71eeb3db9f3e5b66b5"
+readonly release_recovery_state_directory="/var/lib/business-finlynq/release-recovery"
+readonly first_router_recovery_journal="$release_recovery_state_directory/first-router-pre-cutover.json"
+readonly active_finalization_marker="$release_recovery_state_directory/active-finalization.json"
 
 mode=""
 revision=""
@@ -26,6 +31,12 @@ stage="argument-validation"
 evidence_directory=""
 compose_project=""
 release_completed="false"
+terminal_evidence_committed="false"
+first_router_recovery_journal_committed="false"
+active_finalization_marker_committed="false"
+first_router_forward_repair_resume="false"
+first_router_recovery_journal_sha256=""
+first_router_recovery_source_run_id=""
 candidate_started="false"
 schedulers_paused="false"
 rehearsal_cleaned="false"
@@ -51,12 +62,30 @@ candidate_tree_id=""
 candidate_source_date_epoch=""
 previous_cron_schedule_file=""
 release_backup_timeout_seconds="5400"
+release_online_backup_timeout_seconds="900"
+release_quiesced_backup_timeout_seconds="300"
 release_images_pinned="false"
+router_maintenance_confirmed="false"
+router_was_preexisting="false"
+router_active_confirmed="false"
+router_transition_attempted="false"
+database_mutation_started="false"
+write_surfaces_stopped="false"
+release_acceptance_token=""
+previous_container=""
+previous_app_was_running="false"
+previous_app_public_edge_detached="false"
+previous_auth_worker_container=""
+previous_auth_worker_was_running="false"
+previous_auth_worker_image_id=""
+previous_auth_worker_revision=""
 scheduler_boundary_bootstrap_required="false"
 scheduler_boundary_bootstrap_source_revision=""
 scheduler_boundary_bootstrap_receipt=""
 scheduler_boundary_bootstrap_receipt_sha256=""
 edge_mode="compose"
+public_base_url=""
+app_port=""
 declare -a detached_mutator_services=()
 
 usage() {
@@ -64,7 +93,7 @@ usage() {
 Usage:
   run-release.sh --mode release --revision <full-sha> --environment <compose.env> \
     --operations-environment <operations.env> --evidence-root <directory> \
-    --run-id <id> --scheduler <systemd|cron>
+    --run-id <id> --scheduler systemd
 
   run-release.sh --mode rehearsal --revision <full-sha> --environment <rehearsal.env> \
     --evidence-root <directory> --run-id rehearsal-<id>
@@ -103,6 +132,34 @@ checked_utc_timestamp() {
 checked_file_sha256() {
   local selected_file="$1" checksum_output digest remainder
   checksum_output="$(sha256sum -- "$selected_file")" || return 1
+  read -r digest remainder <<<"$checksum_output" || return 1
+  [[ "$digest" =~ ^[a-f0-9]{64}$ && -n "$remainder" ]] || return 1
+  printf '%s' "$digest"
+}
+
+canonical_compose_sha256() {
+  local rendered_configuration="$1" normalized_configuration checksum_output
+  local digest remainder
+  local stable_root="/__business_finlynq_candidate_source__"
+  [[ -n "$candidate_source_root" && "$candidate_source_root" == /* ]] || return 1
+  # The private materialization root is intentionally random. Compose resolves
+  # build contexts and bind sources through that root, so hash a canonical JSON
+  # representation without weakening the immutable candidate-tree boundary.
+  jq -e --arg stableRoot "$stable_root" '
+    all(.. | strings;
+      (. != $stableRoot and (startswith($stableRoot + "/") | not)))
+  ' <<<"$rendered_configuration" >/dev/null || return 1
+  normalized_configuration="$(jq -cS \
+    --arg sourceRoot "$candidate_source_root" --arg stableRoot "$stable_root" '
+      walk(
+        if type == "string" and
+          (. == $sourceRoot or startswith($sourceRoot + "/"))
+        then $stableRoot + .[($sourceRoot | length):]
+        else .
+        end
+      )
+    ' <<<"$rendered_configuration")" || return 1
+  checksum_output="$(printf '%s' "$normalized_configuration" | sha256sum)" || return 1
   read -r digest remainder <<<"$checksum_output" || return 1
   [[ "$digest" =~ ^[a-f0-9]{64}$ && -n "$remainder" ]] || return 1
   printf '%s' "$digest"
@@ -163,6 +220,11 @@ done
 readonly image_build_compose_project="business-finlynq-build-$revision"
 [[ "$image_build_compose_project" =~ ^[a-z0-9][a-z0-9-]{2,62}$ ]] \
   || fail "derived image-build Compose project is invalid"
+readonly release_router_reference="business-finlynq-release-router:v1"
+readonly release_router_revision="release-router-v1"
+readonly release_router_contract="v1"
+readonly release_router_build_compose_project="business-finlynq-release-router-build-v1"
+readonly release_router_source_date_epoch="1788912000"
 [[ "$run_id" =~ ^[a-z0-9][a-z0-9._-]{2,30}$ ]] || fail "--run-id must be 3-31 lowercase safe characters"
 [[ -n "$environment_file" && -n "$evidence_root" ]] || fail "--environment and --evidence-root are required"
 [[ "${RELEASE_EXECUTION_ACK:-}" == "$mode:$revision:$run_id" ]] \
@@ -173,6 +235,8 @@ if [[ "$mode" == "release" || "$mode" == "initial" ]]; then
     || fail "--operations-environment is required for production modes"
   [[ "$scheduler_mode" == "systemd" || "$scheduler_mode" == "cron" ]] \
     || fail "--scheduler must be systemd or cron for production modes"
+  [[ "$mode" != "release" || "$scheduler_mode" == "systemd" ]] \
+    || fail "release mode requires the root-managed systemd scheduler"
   if [[ "$mode" == "initial" ]]; then
     [[ "$run_id" == initial-* ]] || fail "an initial run ID must begin with initial-"
     [[ "$scheduler_mode" == "systemd" ]] \
@@ -194,7 +258,7 @@ else
     || fail "rehearsal mode does not operate production schedulers or an operations environment"
 fi
 
-for command_name in awk bash chmod chown curl date docker env find flock git grep id install jq mkdir mktemp readlink rm sed sha256sum sleep sort stat sync tar tee timeout touch xargs; do
+for command_name in awk bash chmod chown curl date docker env find flock git grep id install jq mkdir mktemp openssl readlink rm sed sha256sum sleep sort stat sync tar tee timeout touch tr xargs; do
   command -v "$command_name" >/dev/null 2>&1 || fail "required command is unavailable: $command_name"
 done
 docker compose version >/dev/null 2>&1 || fail "Docker Compose v2 is unavailable"
@@ -346,33 +410,111 @@ else
 fi
 
 acquire_host_deployment_lock() {
-  local state_directory="/var/lib/business-finlynq" lock_file deploy_gid
+  local state_directory="/var/lib/business-finlynq" lock_file deploy_gid deploy_uid caller_uid
+  local descriptor_path path_identity descriptor_identity path_contract descriptor_contract
   deploy_gid="$(id -g deploy 2>/dev/null)" \
     || fail "host deployment coordination requires the deploy account"
+  deploy_uid="$(id -u deploy 2>/dev/null)" \
+    || fail "host deployment coordination requires the deploy account"
+  caller_uid="$(id -u)" \
+    || fail "host deployment coordination could not inspect the caller"
+  [[ "$caller_uid" == 0 || "$caller_uid" == "$deploy_uid" ]] \
+    || fail "host deployment coordination requires root or the deploy account"
   [[ -d "$state_directory" && ! -L "$state_directory" \
     && "$(readlink -f -- "$state_directory")" == "$state_directory" \
     && "$(stat -c '%u:%g:%a' -- "$state_directory")" == "0:$deploy_gid:775" ]] \
     || fail "shared deployment state directory must be root:deploy mode 0775"
   lock_file="$state_directory/deployment-host.lock"
+
+  validate_opened_host_lock() {
+    local selected_descriptor="$1" require_final_contract="$2"
+    descriptor_path="/proc/$$/fd/$selected_descriptor"
+    [[ -f "$lock_file" && ! -L "$lock_file" \
+      && "$(readlink -f -- "$lock_file")" == "$lock_file" \
+      && -e "$descriptor_path" \
+      && "$(readlink -f -- "$descriptor_path")" == "$lock_file" ]] \
+      || fail "opened deployment-host lock differs from its exact protected path"
+    path_identity="$(stat -Lc '%d:%i' -- "$lock_file")" \
+      || fail "deployment-host lock path identity is unavailable"
+    descriptor_identity="$(stat -Lc '%d:%i' -- "$descriptor_path")" \
+      || fail "deployment-host lock descriptor identity is unavailable"
+    [[ "$path_identity" == "$descriptor_identity" ]] \
+      || fail "deployment-host lock descriptor identity differs from its protected path"
+    path_contract="$(stat -Lc '%u:%g:%a:%h' -- "$lock_file")" \
+      || fail "deployment-host lock path metadata is unavailable"
+    descriptor_contract="$(stat -Lc '%u:%g:%a:%h' -- "$descriptor_path")" \
+      || fail "deployment-host lock descriptor metadata is unavailable"
+    [[ "$path_contract" == "$descriptor_contract" ]] \
+      || fail "deployment-host lock descriptor metadata differs from its protected path"
+    if [[ "$require_final_contract" == true ]]; then
+      [[ "$path_contract" == "0:$deploy_gid:660:1" ]] \
+        || fail "deployment-host lock must be root:deploy mode 0660 with one link"
+    else
+      [[ "$path_contract" =~ ^0:([0-9]+):(600|660):1$ ]] \
+        || fail "legacy deployment-host lock is not safe for root normalization"
+      if [[ "${BASH_REMATCH[2]}" == 660 ]]; then
+        [[ "${BASH_REMATCH[1]}" == "$deploy_gid" ]] \
+          || fail "group-writable deployment-host lock has an unexpected group"
+      fi
+    fi
+  }
+
   if [[ -n "$host_lock_fd" ]]; then
-    [[ "$host_lock_fd" =~ ^[3-9]$ \
-      && -e "/proc/self/fd/$host_lock_fd" \
+    [[ "$host_lock_fd" =~ ^([3-9]|[1-9][0-9]{1,2})$ \
       && "$(readlink -f -- "/proc/self/fd/$host_lock_fd")" == "$lock_file" ]] \
       || fail "inherited deployment-host lock descriptor is invalid"
+    validate_opened_host_lock "$host_lock_fd" "$([[ "$caller_uid" == 0 ]] && printf false || printf true)"
     flock --exclusive --nonblock "$host_lock_fd" \
       || fail "the inherited deployment-host lock is not held by this process tree"
+    if [[ "$caller_uid" == 0 ]]; then
+      chown --dereference -- 0:"$deploy_gid" "/proc/$$/fd/$host_lock_fd"
+      chmod 0660 -- "/proc/$$/fd/$host_lock_fd"
+      validate_opened_host_lock "$host_lock_fd" true
+    fi
     return 0
   fi
+
   [[ ! -L "$lock_file" ]] || fail "shared deployment-host lock is symbolic"
-  exec 8>"$lock_file"
-  chmod 0600 -- "$lock_file"
-  [[ -f "$lock_file" && ! -L "$lock_file" ]] \
-    || fail "shared deployment-host lock is unavailable"
+  if [[ ! -e "$lock_file" ]]; then
+    [[ "$caller_uid" == 0 ]] \
+      || fail "deploy requires the pre-existing root-owned deployment-host lock"
+    # Noclobber gives creation O_EXCL semantics. A racing entry is accepted only
+    # after the same exact regular-file, owner, link-count, and fd checks below.
+    (set -o noclobber; umask 0077; : >"$lock_file") 2>/dev/null || true
+  fi
+  [[ -f "$lock_file" && ! -L "$lock_file" \
+    && "$(readlink -f -- "$lock_file")" == "$lock_file" ]] \
+    || fail "shared deployment-host lock is unavailable or unsafe"
+  if [[ "$caller_uid" == 0 ]]; then
+    path_contract="$(stat -Lc '%u:%g:%a:%h' -- "$lock_file")" \
+      || fail "deployment-host lock metadata is unavailable"
+    [[ "$path_contract" =~ ^0:([0-9]+):(600|660):1$ ]] \
+      || fail "legacy deployment-host lock is not safe for root normalization"
+    if [[ "${BASH_REMATCH[2]}" == 660 ]]; then
+      [[ "${BASH_REMATCH[1]}" == "$deploy_gid" ]] \
+        || fail "group-writable deployment-host lock has an unexpected group"
+    fi
+  else
+    [[ "$(stat -Lc '%u:%g:%a:%h' -- "$lock_file")" == "0:$deploy_gid:660:1" ]] \
+      || fail "deploy requires the pre-existing root:deploy mode 0660 deployment-host lock"
+  fi
+  exec 8<>"$lock_file"
+  validate_opened_host_lock 8 "$([[ "$caller_uid" == 0 ]] && printf false || printf true)"
   flock --exclusive --nonblock 8 \
     || fail "another production or development deployment is active"
+  if [[ "$caller_uid" == 0 ]]; then
+    chown --dereference -- 0:"$deploy_gid" /proc/$$/fd/8
+    chmod 0660 -- /proc/$$/fd/8
+    validate_opened_host_lock 8 true
+  fi
 }
 
 acquire_host_deployment_lock
+
+if [[ "$mode" == release \
+  && ( -e "$active_finalization_marker" || -L "$active_finalization_marker" ) ]]; then
+  fail "an earlier active-finalization marker requires continuous-deployment recovery before a manual release"
+fi
 
 verify_scheduler_boundary_bootstrap() {
   [[ "$mode" == "release" ]] || return 0
@@ -473,6 +615,7 @@ run_compose() {
   if [[ "$release_images_pinned" == "true" ]]; then
     controlled_environment+=(
       "BUSINESS_FINLYNQ_RELEASE_DATABASE_IMAGE=${image_ids[database]}"
+      "BUSINESS_FINLYNQ_RELEASE_ROUTER_IMAGE=${image_ids[router]}"
       "BUSINESS_FINLYNQ_RELEASE_APP_IMAGE=${image_ids[app]}"
       "BUSINESS_FINLYNQ_RELEASE_AUTH_WORKER_IMAGE=${image_ids[authWorker]}"
       "BUSINESS_FINLYNQ_RELEASE_ACCEPTANCE_IMAGE=${image_ids[acceptance]}"
@@ -502,6 +645,10 @@ run_compose() {
       BUSINESS_FINLYNQ_RELEASE_APP_IMAGE)
         [[ "$value" =~ ^sha256:[a-f0-9]{64}$ ]] \
           || fail "rollback-anchor application image override is invalid"
+        ;;
+      BUSINESS_FINLYNQ_RELEASE_ACCEPTANCE_TOKEN)
+        [[ "$value" =~ ^[a-f0-9]{64}$ ]] \
+          || fail "release acceptance token override is invalid"
         ;;
       DEMO_LOGIN_ENABLED|DEMO_WRITES_ENABLED|ACCOUNT_LOGIN_ENABLED|ACCOUNT_SIGNUP_ENABLED|AUTH_EMAIL_DELIVERY_ENABLED|SIGNUP_TURNSTILE_ENABLED|BUSINESS_WRITES_ENABLED|BANK_FEEDS_ENABLED)
         [[ "$value" == "true" || "$value" == "false" ]] \
@@ -553,6 +700,13 @@ compose_image_build() {
   # stable across isolated rehearsal A/B runtime projects so two builds of
   # one commit can be compared by immutable image ID.
   run_compose "" "$image_build_compose_project" -- "$@"
+}
+
+compose_release_router_build() {
+  # Unlike application images, the listener is built by one stable project
+  # and tag. Its image ID therefore stays unchanged across ordinary commits
+  # and across production, development, and rehearsal environments.
+  run_compose "" "$release_router_build_compose_project" -- "$@"
 }
 
 compose_query_output=""
@@ -1024,6 +1178,747 @@ restore_stopped_previous_app_anchor() {
   chmod 0600 -- "$evidence_directory/97-failure-rollback-anchor.json" || return 1
 }
 
+ensure_release_recovery_state_directory() {
+  [[ ! -L "$release_recovery_state_directory" ]] || return 1
+  install -d -o root -g root -m 0700 -- "$release_recovery_state_directory" \
+    || return 1
+  [[ -d "$release_recovery_state_directory" \
+    && ! -L "$release_recovery_state_directory" \
+    && "$(readlink -f -- "$release_recovery_state_directory")" \
+      == "$release_recovery_state_directory" \
+    && "$(stat -c '%u:%g:%a' -- "$release_recovery_state_directory")" == 0:0:700 ]] \
+    || return 1
+}
+
+write_first_router_recovery_journal() (
+  set -Eeuo pipefail
+  local app_container_id worker_container_id="" router_container_id="" router_image_id=""
+  local created_at temporary
+  [[ "$mode" == release && "$database_mutation_started" != true \
+    && "$previous_app_was_running" == true \
+    && "$previous_container" =~ ^[a-f0-9]{12,64}$ \
+    && "$previous_app_id" =~ ^sha256:[a-f0-9]{64}$ \
+    && "$previous_app_revision" =~ ^[a-f0-9]{40}$ ]] || return 1
+  ensure_release_recovery_state_directory || return 1
+  [[ ! -e "$first_router_recovery_journal" \
+    && ! -L "$first_router_recovery_journal" ]] || return 1
+  app_container_id="$(docker inspect --format '{{.Id}}' "$previous_container")" \
+    || return 1
+  [[ "$app_container_id" =~ ^[a-f0-9]{64}$ \
+    && "$(docker inspect --format '{{.Image}}|{{.State.Running}}' \
+      "$app_container_id")" == "$previous_app_id|true" ]] || return 1
+  if [[ "$router_was_preexisting" == true ]]; then
+    network_alias_has_exact_owner_nonfatal \
+      business_finlynq_private-frontend release-app "$app_container_id" || return 1
+    resolve_release_router_container
+    router_container_id="$(docker inspect --format '{{.Id}}' \
+      "$release_router_container_id")" || return 1
+    router_image_id="$(docker inspect --format '{{.Image}}' \
+      "$router_container_id")" || return 1
+    [[ "$router_container_id" =~ ^[a-f0-9]{64}$ \
+      && "$router_image_id" == "${image_ids[router]}" \
+      && "$(docker inspect --format '{{.State.Running}}|{{if .State.Health}}{{.State.Health.Status}}{{end}}' \
+        "$router_container_id")" == true\|healthy ]] || return 1
+    network_alias_has_exact_owner_nonfatal \
+      business_finlynq_edge production-app "$router_container_id" || return 1
+  else
+    network_alias_has_exact_owner_nonfatal \
+      business_finlynq_edge production-app "$app_container_id" || return 1
+  fi
+  if [[ "$previous_auth_worker_was_running" == true ]]; then
+    worker_container_id="$(docker inspect --format '{{.Id}}' \
+      "$previous_auth_worker_container")" || return 1
+    [[ "$worker_container_id" =~ ^[a-f0-9]{64}$ \
+      && "$previous_auth_worker_image_id" =~ ^sha256:[a-f0-9]{64}$ \
+      && "$previous_auth_worker_revision" == "$previous_app_revision" \
+      && "$(docker inspect --format '{{.Image}}|{{.State.Running}}' \
+        "$worker_container_id")" == "$previous_auth_worker_image_id|true" ]] || return 1
+  fi
+  created_at="$(checked_utc_timestamp)" || return 1
+  temporary="$(mktemp \
+    "$release_recovery_state_directory/.first-router-pre-cutover.XXXXXX")" \
+    || return 1
+  trap 'rm -f -- "$temporary"' EXIT INT TERM
+  jq -n \
+    --arg createdAt "$created_at" \
+    --arg sourceRevision "$previous_app_revision" \
+    --arg candidateRevision "$revision" \
+    --arg runId "$run_id" \
+    --arg appContainerId "$app_container_id" \
+    --arg appImageId "$previous_app_id" \
+    --arg routerWasPreexisting "$router_was_preexisting" \
+    --arg routerContainerId "$router_container_id" \
+    --arg routerImageId "$router_image_id" \
+    --arg workerWasRunning "$previous_auth_worker_was_running" \
+    --arg workerContainerId "$worker_container_id" \
+    --arg workerImageId "$previous_auth_worker_image_id" \
+    --arg workerRevision "$previous_auth_worker_revision" '
+      {
+        schemaVersion: 1,
+        product: "business-finlynq",
+        kind: "first-router-pre-cutover",
+        phase: "pre-router-maintenance",
+        createdAt: $createdAt,
+        sourceRevision: $sourceRevision,
+        candidateRevision: $candidateRevision,
+        runId: $runId,
+        routerWasPreexisting: ($routerWasPreexisting == "true"),
+        router: (if $routerWasPreexisting == "true" then
+          {containerId: $routerContainerId, imageId: $routerImageId}
+        else
+          {containerId: null, imageId: null}
+        end),
+        databaseMutationStarted: false,
+        app: {containerId: $appContainerId, imageId: $appImageId},
+        authWorker: (if $workerWasRunning == "true" then
+          {wasRunning: true, containerId: $workerContainerId,
+            imageId: $workerImageId, revision: $workerRevision}
+        else
+          {wasRunning: false, containerId: null, imageId: null, revision: null}
+        end)
+      }
+    ' >"$temporary" || return 1
+  chmod 0600 -- "$temporary" || return 1
+  chown root:root -- "$temporary" || return 1
+  [[ "$(stat -c '%u:%g:%a:%h' -- "$temporary")" == 0:0:600:1 ]] \
+    || return 1
+  sync -f -- "$temporary" || return 1
+  mv -- "$temporary" "$first_router_recovery_journal" || return 1
+  sync -f -- "$release_recovery_state_directory" || return 1
+  trap - EXIT INT TERM
+)
+
+clear_first_router_recovery_journal() {
+  local app_container_id="$previous_container" worker_container_id=""
+  ensure_release_recovery_state_directory || return 1
+  [[ -f "$first_router_recovery_journal" \
+    && ! -L "$first_router_recovery_journal" \
+    && "$(readlink -f -- "$first_router_recovery_journal")" \
+      == "$first_router_recovery_journal" \
+    && "$(stat -c '%u:%g:%a:%h' -- "$first_router_recovery_journal")" \
+      == 0:0:600:1 ]] || return 1
+  if [[ "$previous_auth_worker_was_running" == true ]]; then
+    worker_container_id="$previous_auth_worker_container"
+  fi
+  [[ "$app_container_id" =~ ^[a-f0-9]{64}$ \
+    && ( "$previous_auth_worker_was_running" != true \
+      || "$worker_container_id" =~ ^[a-f0-9]{64}$ ) ]] || return 1
+  jq -e \
+    --arg sourceRevision "$previous_app_revision" \
+    --arg candidateRevision "$revision" \
+    --arg appContainerId "$app_container_id" \
+    --arg appImageId "$previous_app_id" \
+    --arg workerWasRunning "$previous_auth_worker_was_running" \
+    --arg workerContainerId "$worker_container_id" \
+    --arg workerImageId "$previous_auth_worker_image_id" \
+    --arg workerRevision "$previous_auth_worker_revision" '
+      type == "object" and
+      (keys == (["app", "authWorker", "candidateRevision", "createdAt",
+        "databaseMutationStarted", "kind", "phase", "product",
+        "router", "routerWasPreexisting", "runId", "schemaVersion", "sourceRevision"] | sort) or
+       keys == (["app", "authWorker", "candidateRevision", "createdAt",
+        "databaseMutationStarted", "kind", "mutationArmedAt", "phase", "product",
+        "router", "routerWasPreexisting", "runId", "schemaVersion", "sourceRevision"] | sort)) and
+      .schemaVersion == 1 and .product == "business-finlynq" and
+      .kind == "first-router-pre-cutover" and
+      ((.phase == "pre-router-maintenance" and .databaseMutationStarted == false) or
+        (.phase == "forward-repair-required" and .databaseMutationStarted == true)) and
+      .sourceRevision == $sourceRevision and .candidateRevision == $candidateRevision and
+      (.runId | type == "string" and test("^[a-z0-9][a-z0-9._-]{2,30}$")) and
+      (.routerWasPreexisting | type == "boolean") and
+      (if .routerWasPreexisting then
+        (.router.containerId | type == "string" and test("^[a-f0-9]{64}$")) and
+        (.router.imageId | type == "string" and test("^sha256:[a-f0-9]{64}$"))
+      else .router == {containerId: null, imageId: null} end) and
+      .app == {containerId: $appContainerId, imageId: $appImageId} and
+      .authWorker == (if $workerWasRunning == "true" then
+        {wasRunning: true, containerId: $workerContainerId,
+          imageId: $workerImageId, revision: $workerRevision}
+      else
+        {wasRunning: false, containerId: null, imageId: null, revision: null}
+      end)
+    ' "$first_router_recovery_journal" >/dev/null || return 1
+  rm -- "$first_router_recovery_journal" || return 1
+  sync -f -- "$release_recovery_state_directory" || return 1
+  first_router_recovery_journal_committed="false"
+}
+
+mark_first_router_database_mutation_started() (
+  set -Eeuo pipefail
+  local armed_at temporary
+  [[ "$first_router_recovery_journal_committed" == true \
+    && "$first_router_forward_repair_resume" != true ]] || return 1
+  ensure_release_recovery_state_directory || return 1
+  [[ -f "$first_router_recovery_journal" \
+    && ! -L "$first_router_recovery_journal" \
+    && "$(stat -c '%u:%g:%a:%h' -- "$first_router_recovery_journal")" \
+      == 0:0:600:1 ]] || return 1
+  jq -e --arg candidateRevision "$revision" --arg sourceRevision "$previous_app_revision" '
+    type == "object" and .schemaVersion == 1 and .product == "business-finlynq" and
+    .kind == "first-router-pre-cutover" and .phase == "pre-router-maintenance" and
+    .databaseMutationStarted == false and (.routerWasPreexisting | type == "boolean") and
+    .candidateRevision == $candidateRevision and .sourceRevision == $sourceRevision
+  ' "$first_router_recovery_journal" >/dev/null || return 1
+  armed_at="$(checked_utc_timestamp)" || return 1
+  temporary="$(mktemp \
+    "$release_recovery_state_directory/.first-router-forward-repair.XXXXXX")" \
+    || return 1
+  trap 'rm -f -- "$temporary"' EXIT INT TERM
+  jq --arg armedAt "$armed_at" '
+    .phase = "forward-repair-required" |
+    .databaseMutationStarted = true |
+    .mutationArmedAt = $armedAt
+  ' "$first_router_recovery_journal" >"$temporary" || return 1
+  chmod 0600 -- "$temporary" || return 1
+  chown root:root -- "$temporary" || return 1
+  sync -f -- "$temporary" || return 1
+  mv -f -- "$temporary" "$first_router_recovery_journal" || return 1
+  sync -f -- "$release_recovery_state_directory" || return 1
+  trap - EXIT INT TERM
+)
+
+load_first_router_forward_repair_journal() {
+  local app_container_id app_image_id router_query router_contract router_mode
+  local worker_was_running worker_container_id worker_image_id worker_revision
+  local journal_source_revision journal_candidate_revision journal_run_id digest_output
+  local journal_router_was_preexisting journal_router_container_id journal_router_image_id
+  local tagged_source_image tagged_source_worker_image="" current_container current_app_image
+  local current_app_inventory current_worker_inventory
+  local -a current_app_containers=() current_worker_containers=()
+  [[ -e "$first_router_recovery_journal" || -L "$first_router_recovery_journal" ]] \
+    || return 1
+  ensure_release_recovery_state_directory \
+    || fail "first-router forward-repair directory is unsafe"
+  [[ -f "$first_router_recovery_journal" \
+    && ! -L "$first_router_recovery_journal" \
+    && "$(readlink -f -- "$first_router_recovery_journal")" \
+      == "$first_router_recovery_journal" \
+    && "$(stat -c '%u:%g:%a:%h' -- "$first_router_recovery_journal")" \
+      == 0:0:600:1 ]] \
+    || fail "first-router forward-repair journal is unsafe"
+  jq -e --arg candidateRevision "$revision" '
+      type == "object" and
+      keys == (["app", "authWorker", "candidateRevision", "createdAt",
+        "databaseMutationStarted", "kind", "mutationArmedAt", "phase", "product",
+        "router", "routerWasPreexisting", "runId", "schemaVersion", "sourceRevision"] | sort) and
+      .schemaVersion == 1 and .product == "business-finlynq" and
+      .kind == "first-router-pre-cutover" and .phase == "forward-repair-required" and
+      .databaseMutationStarted == true and (.routerWasPreexisting | type == "boolean") and
+      (if .routerWasPreexisting then
+        (.router.containerId | type == "string" and test("^[a-f0-9]{64}$")) and
+        (.router.imageId | type == "string" and test("^sha256:[a-f0-9]{64}$"))
+      else .router == {containerId: null, imageId: null} end) and
+      .candidateRevision == $candidateRevision and
+      (.sourceRevision | type == "string" and test("^[a-f0-9]{40}$")) and
+      (.runId | type == "string" and test("^[a-z0-9][a-z0-9._-]{2,30}$")) and
+      (.createdAt | type == "string" and
+        test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$")) and
+      (.mutationArmedAt | type == "string" and
+        test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$")) and
+      (.app.containerId | type == "string" and test("^[a-f0-9]{64}$")) and
+      (.app.imageId | type == "string" and test("^sha256:[a-f0-9]{64}$")) and
+      (.authWorker.wasRunning | type == "boolean") and
+      (if .authWorker.wasRunning then
+        (.authWorker.containerId | type == "string" and test("^[a-f0-9]{64}$")) and
+        (.authWorker.imageId | type == "string" and test("^sha256:[a-f0-9]{64}$")) and
+        .authWorker.revision == .sourceRevision
+      else
+        .authWorker == {wasRunning: false, containerId: null, imageId: null, revision: null}
+      end)
+    ' "$first_router_recovery_journal" >/dev/null \
+    || fail "first-router forward-repair journal does not match this exact candidate"
+  journal_source_revision="$(jq -er '.sourceRevision' "$first_router_recovery_journal")"
+  journal_candidate_revision="$(jq -er '.candidateRevision' "$first_router_recovery_journal")"
+  journal_run_id="$(jq -er '.runId' "$first_router_recovery_journal")"
+  app_container_id="$(jq -er '.app.containerId' "$first_router_recovery_journal")"
+  app_image_id="$(jq -er '.app.imageId' "$first_router_recovery_journal")"
+  worker_was_running="$(jq -r '.authWorker.wasRunning | tostring' \
+    "$first_router_recovery_journal")"
+  worker_container_id="$(jq -r '.authWorker.containerId // ""' \
+    "$first_router_recovery_journal")"
+  worker_image_id="$(jq -r '.authWorker.imageId // ""' \
+    "$first_router_recovery_journal")"
+  worker_revision="$(jq -r '.authWorker.revision // ""' \
+    "$first_router_recovery_journal")"
+  journal_router_was_preexisting="$(jq -r '.routerWasPreexisting | tostring' \
+    "$first_router_recovery_journal")"
+  journal_router_container_id="$(jq -r '.router.containerId // ""' \
+    "$first_router_recovery_journal")"
+  journal_router_image_id="$(jq -r '.router.imageId // ""' \
+    "$first_router_recovery_journal")"
+  git --no-optional-locks -c safe.directory="$repository_root" -C "$repository_root" \
+    cat-file -e "$journal_source_revision^{commit}" 2>/dev/null \
+    || fail "journaled source revision is not a retained local Git commit"
+  if [[ "$journal_source_revision" == "$legacy_f8485_revision" ]]; then
+    [[ "$app_image_id" == "$legacy_f8485_image_id" ]] \
+      || fail "journaled legacy application image differs from the exact compatibility artifact"
+  else
+    tagged_source_image="$(docker image inspect --format '{{.Id}}' \
+      "business-finlynq-app:$journal_source_revision" 2>/dev/null)" \
+      || fail "journaled source application tag is unavailable"
+    [[ "$app_image_id" == "$tagged_source_image" ]] \
+      || fail "journaled source application image lost its immutable tag"
+  fi
+  if ! current_app_inventory="$(docker ps --all --quiet --no-trunc \
+    --filter label=com.docker.compose.project=business-finlynq \
+    --filter label=com.docker.compose.service=app)"; then
+    fail "forward-repair application inventory could not be read"
+  fi
+  if [[ -n "$current_app_inventory" ]]; then
+    mapfile -t current_app_containers <<<"$current_app_inventory"
+  fi
+  (( ${#current_app_containers[@]} <= 1 )) \
+    || fail "forward repair found an ambiguous application inventory"
+  if (( ${#current_app_containers[@]} == 1 )); then
+    current_container="${current_app_containers[0]}"
+    docker inspect "$current_container" | jq -e \
+      --arg sourceRevision "$journal_source_revision" \
+      --arg sourceImage "$app_image_id" \
+      --arg candidateRevision "$revision" \
+      --arg candidateImage "${image_ids[app]}" \
+      --arg legacyRevision "$legacy_f8485_revision" '
+        length == 1 and
+        .[0].Config.Labels["com.docker.compose.project"] == "business-finlynq" and
+        .[0].Config.Labels["com.docker.compose.service"] == "app" and
+        .[0].State.Running == false and .[0].HostConfig.ReadonlyRootfs == true and
+        .[0].HostConfig.Privileged == false and
+        .[0].HostConfig.RestartPolicy.Name == "unless-stopped" and
+        ((.[0].HostConfig.CapDrop // []) | sort) == ["ALL"] and
+        ((.[0].HostConfig.SecurityOpt // []) | index("no-new-privileges:true")) != null and
+        ((.[0].Image == $sourceImage and
+          (if $sourceRevision == $legacyRevision then
+             ((.[0].Config.Labels["org.opencontainers.image.revision"] // "") == "")
+           else
+             .[0].Config.Labels["org.opencontainers.image.revision"] == $sourceRevision
+           end)) or
+         (.[0].Image == $candidateImage and
+          .[0].Config.Labels["org.opencontainers.image.revision"] == $candidateRevision))
+      ' >/dev/null \
+      || fail "forward repair retained an unexpected application container"
+    current_app_image="$(docker inspect --format '{{.Image}}' "$current_container")" \
+      || fail "forward-repair application image could not be inspected"
+    if [[ "$journal_router_was_preexisting" == true \
+      || "$current_app_image" == "${image_ids[app]}" ]]; then
+      network_alias_has_exact_owner_nonfatal \
+        business_finlynq_private-frontend release-app "$current_container" \
+        || fail "forward-repair application lost its unique private alias"
+    else
+      [[ "$current_app_image" == "$app_image_id" \
+        && "$(docker inspect --format \
+          '{{if index .NetworkSettings.Networks "business_finlynq_edge"}}attached{{end}}' \
+          "$current_container")" == "" ]] \
+        || fail "forward-repair legacy source application retained the public edge"
+    fi
+  fi
+  if [[ "$worker_was_running" == true ]]; then
+    [[ "$(docker image inspect --format '{{.Id}}' "$worker_image_id" 2>/dev/null)" \
+      == "$worker_image_id" ]] \
+      || fail "journaled source authentication-worker image is unavailable"
+    tagged_source_worker_image="$worker_image_id"
+  elif [[ "$journal_source_revision" != "$legacy_f8485_revision" ]]; then
+    tagged_source_worker_image="$(docker image inspect --format '{{.Id}}' \
+      "business-finlynq-auth-worker:$journal_source_revision" 2>/dev/null || true)"
+  fi
+  if ! current_worker_inventory="$(docker ps --all --quiet --no-trunc \
+    --filter label=com.docker.compose.project=business-finlynq \
+    --filter label=com.docker.compose.service=auth_email_worker)"; then
+    fail "forward-repair authentication-worker inventory could not be read"
+  fi
+  if [[ -n "$current_worker_inventory" ]]; then
+    mapfile -t current_worker_containers <<<"$current_worker_inventory"
+  fi
+  (( ${#current_worker_containers[@]} <= 1 )) \
+    || fail "forward repair found an ambiguous authentication-worker inventory"
+  if (( ${#current_worker_containers[@]} == 1 )); then
+    current_container="${current_worker_containers[0]}"
+    docker inspect "$current_container" | jq -e \
+      --arg sourceRevision "$journal_source_revision" \
+      --arg sourceImage "$tagged_source_worker_image" \
+      --arg candidateRevision "$revision" \
+      --arg candidateImage "${image_ids[authWorker]}" '
+        length == 1 and
+        .[0].Config.Labels["com.docker.compose.project"] == "business-finlynq" and
+        .[0].Config.Labels["com.docker.compose.service"] == "auth_email_worker" and
+        .[0].State.Running == false and .[0].HostConfig.ReadonlyRootfs == true and
+        .[0].HostConfig.Privileged == false and
+        .[0].HostConfig.RestartPolicy.Name == "unless-stopped" and
+        ((.[0].HostConfig.CapDrop // []) | sort) == ["ALL"] and
+        ((.[0].HostConfig.SecurityOpt // []) | index("no-new-privileges:true")) != null and
+        ((($sourceImage | length) > 0 and .[0].Image == $sourceImage and
+          .[0].Config.Labels["org.opencontainers.image.revision"] == $sourceRevision) or
+         (.[0].Image == $candidateImage and
+          .[0].Config.Labels["org.opencontainers.image.revision"] == $candidateRevision))
+      ' >/dev/null \
+      || fail "forward repair retained an unexpected authentication-worker container"
+  fi
+  router_query="$(docker ps --all --quiet --no-trunc \
+    --filter label=com.docker.compose.project=business-finlynq \
+    --filter label=com.docker.compose.service=release_router)" \
+    || fail "forward-repair release-router inventory could not be read"
+  [[ "$router_query" =~ ^[a-f0-9]{64}$ && "$router_query" != *$'\n'* ]] \
+    || fail "forward-repair requires exactly one stable release router"
+  router_contract="$(docker inspect --format \
+    '{{.Id}}|{{.Image}}|{{ index .Config.Labels "org.opencontainers.image.revision" }}|{{ index .Config.Labels "com.business-finlynq.release-router.contract" }}|{{.State.Running}}|{{if .State.Health}}{{.State.Health.Status}}{{end}}' \
+    "$router_query")" || fail "forward-repair release router could not be inspected"
+  [[ "$router_contract" \
+    == "$router_query|${image_ids[router]}|release-router-v1|v1|true|healthy" ]] \
+    || fail "forward-repair release router differs from the immutable candidate contract"
+  if [[ "$journal_router_was_preexisting" == true ]]; then
+    [[ "$router_query" == "$journal_router_container_id" \
+      && "${image_ids[router]}" == "$journal_router_image_id" ]] \
+      || fail "forward-repair stable router differs from its pre-cutover identity"
+  fi
+  router_mode="$(docker exec "$router_query" sh -ec '
+    [[ -f /state/mode && ! -L /state/mode && "$(stat -c "%u:%g:%a" /state/mode)" == 10001:10001:600 ]]
+    cat /state/mode
+  ')" || fail "forward-repair release-router mode could not be inspected"
+  [[ "$router_mode" == maintenance ]] \
+    || fail "forward-repair release router is not durably in maintenance"
+  network_alias_has_exact_owner_nonfatal \
+    business_finlynq_edge production-app "$router_query" \
+    || fail "forward-repair release router is not the unique public backend"
+  digest_output="$(sha256sum -- "$first_router_recovery_journal")" \
+    || fail "first-router forward-repair journal could not be hashed"
+  first_router_recovery_journal_sha256="${digest_output%% *}"
+  [[ "$first_router_recovery_journal_sha256" =~ ^[a-f0-9]{64}$ ]] \
+    || fail "first-router forward-repair journal digest is invalid"
+  first_router_recovery_source_run_id="$journal_run_id"
+  first_router_forward_repair_resume="true"
+  first_router_recovery_journal_committed="true"
+  database_mutation_started="true"
+  router_was_preexisting="true"
+  previous_container="$app_container_id"
+  previous_app_id="$app_image_id"
+  previous_app_revision="$journal_source_revision"
+  previous_auth_worker_was_running="$worker_was_running"
+  previous_auth_worker_container="$worker_container_id"
+  previous_auth_worker_image_id="$worker_image_id"
+  previous_auth_worker_revision="$worker_revision"
+  export FIRST_ROUTER_FORWARD_REPAIR_ACK="forward-repair:$journal_candidate_revision:$first_router_recovery_journal_sha256"
+}
+
+write_active_finalization_marker() (
+  set -Eeuo pipefail
+  local app_container_id router_container_id created_at temporary
+  cleanup_active_finalization_marker_write() {
+    local cleanup_status=$?
+    trap - EXIT HUP INT TERM
+    [[ -z "${temporary:-}" ]] || rm -f -- "$temporary"
+    exit "$cleanup_status"
+  }
+  [[ "$mode" == release && "$revision" =~ ^[a-f0-9]{40}$ \
+    && "$final_container" =~ ^[a-f0-9]{12,64}$ \
+    && "${image_ids[app]}" =~ ^sha256:[a-f0-9]{64}$ \
+    && "${image_ids[router]}" =~ ^sha256:[a-f0-9]{64}$ ]] || return 1
+  ensure_release_recovery_state_directory || return 1
+  [[ ! -e "$active_finalization_marker" && ! -L "$active_finalization_marker" ]] \
+    || return 1
+  app_container_id="$(docker inspect --format '{{.Id}}' "$final_container")" \
+    || return 1
+  resolve_release_router_container
+  router_container_id="$(docker inspect --format '{{.Id}}' \
+    "$release_router_container_id")" || return 1
+  [[ "$app_container_id" =~ ^[a-f0-9]{64}$ \
+    && "$router_container_id" =~ ^[a-f0-9]{64}$ ]] || return 1
+  created_at="$(checked_utc_timestamp)" || return 1
+  temporary="$(mktemp \
+    "$release_recovery_state_directory/.active-finalization.XXXXXX")" || return 1
+  trap cleanup_active_finalization_marker_write EXIT
+  trap 'exit 129' HUP
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+  jq -n \
+    --arg createdAt "$created_at" \
+    --arg revision "$revision" \
+    --arg runId "$run_id" \
+    --arg appContainerId "$app_container_id" \
+    --arg appImageId "${image_ids[app]}" \
+    --arg routerContainerId "$router_container_id" \
+    --arg routerImageId "${image_ids[router]}" '
+      {
+        schemaVersion: 1,
+        product: "business-finlynq",
+        kind: "active-finalization",
+        phase: "terminal-evidence-pending",
+        createdAt: $createdAt,
+        revision: $revision,
+        runId: $runId,
+        app: {containerId: $appContainerId, imageId: $appImageId},
+        router: {containerId: $routerContainerId, imageId: $routerImageId}
+      }
+    ' >"$temporary" || return 1
+  chmod 0600 -- "$temporary" || return 1
+  chown root:root -- "$temporary" || return 1
+  [[ "$(stat -c '%u:%g:%a:%h' -- "$temporary")" == 0:0:600:1 ]] \
+    || return 1
+  sync -f -- "$temporary" || return 1
+  mv -- "$temporary" "$active_finalization_marker" || return 1
+  temporary=""
+  sync -f -- "$release_recovery_state_directory" || return 1
+  trap - EXIT HUP INT TERM
+)
+
+authorize_active_finalization_marker() (
+  set -Eeuo pipefail
+  local app_container_id router_container_id authorized_at terminal_evidence_sha256
+  local terminal_evidence_file temporary=""
+  cleanup_active_finalization_authorization() {
+    local cleanup_status=$?
+    trap - EXIT HUP INT TERM
+    [[ -z "$temporary" ]] || rm -f -- "$temporary"
+    exit "$cleanup_status"
+  }
+  [[ "$mode" == release && "$revision" =~ ^[a-f0-9]{40}$ \
+    && "$final_container" =~ ^[a-f0-9]{12,64}$ \
+    && "${image_ids[app]}" =~ ^sha256:[a-f0-9]{64}$ \
+    && "${image_ids[router]}" =~ ^sha256:[a-f0-9]{64}$ ]] || return 1
+  ensure_release_recovery_state_directory || return 1
+  [[ -f "$active_finalization_marker" && ! -L "$active_finalization_marker" \
+    && "$(readlink -f -- "$active_finalization_marker")" == "$active_finalization_marker" \
+    && "$(stat -c '%u:%g:%a:%h' -- "$active_finalization_marker")" \
+      == 0:0:600:1 ]] || return 1
+  terminal_evidence_file="$evidence_directory/90-release-complete.json"
+  [[ -f "$terminal_evidence_file" && ! -L "$terminal_evidence_file" \
+    && "$(stat -c '%u:%g:%a:%h' -- "$terminal_evidence_file")" \
+      == 0:0:600:1 ]] || return 1
+  terminal_evidence_sha256="$(checked_file_sha256 "$terminal_evidence_file")" \
+    || return 1
+  app_container_id="$(docker inspect --format '{{.Id}}' "$final_container")" \
+    || return 1
+  resolve_release_router_container
+  router_container_id="$(docker inspect --format '{{.Id}}' \
+    "$release_router_container_id")" || return 1
+  jq -e \
+    --arg revision "$revision" --arg runId "$run_id" \
+    --arg appContainerId "$app_container_id" \
+    --arg appImageId "${image_ids[app]}" \
+    --arg routerContainerId "$router_container_id" \
+    --arg routerImageId "${image_ids[router]}" '
+      type == "object" and
+      keys == (["app", "createdAt", "kind", "phase", "product", "revision",
+        "router", "runId", "schemaVersion"] | sort) and
+      .schemaVersion == 1 and .product == "business-finlynq" and
+      .kind == "active-finalization" and .phase == "terminal-evidence-pending" and
+      .revision == $revision and .runId == $runId and
+      .app == {containerId: $appContainerId, imageId: $appImageId} and
+      .router == {containerId: $routerContainerId, imageId: $routerImageId}
+    ' "$active_finalization_marker" >/dev/null || return 1
+  authorized_at="$(checked_utc_timestamp)" || return 1
+  temporary="$(mktemp \
+    "$release_recovery_state_directory/.active-finalization-authorized.XXXXXX")" \
+    || return 1
+  trap cleanup_active_finalization_authorization EXIT
+  trap 'exit 129' HUP
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+  jq --arg authorizedAt "$authorized_at" \
+    --arg terminalEvidenceSha256 "$terminal_evidence_sha256" '
+      .phase = "active-commit-authorized" |
+      .authorizedAt = $authorizedAt |
+      .terminalEvidenceSha256 = $terminalEvidenceSha256
+    ' "$active_finalization_marker" >"$temporary" || return 1
+  chmod 0600 -- "$temporary" || return 1
+  chown root:root -- "$temporary" || return 1
+  [[ "$(stat -c '%u:%g:%a:%h' -- "$temporary")" == 0:0:600:1 ]] \
+    || return 1
+  sync -f -- "$temporary" || return 1
+  mv -f -- "$temporary" "$active_finalization_marker" || return 1
+  temporary=""
+  sync -f -- "$release_recovery_state_directory" || return 1
+  trap - EXIT HUP INT TERM
+)
+
+clear_active_finalization_marker() {
+  local app_container_id router_container_id terminal_evidence_sha256
+  ensure_release_recovery_state_directory || return 1
+  [[ -f "$active_finalization_marker" && ! -L "$active_finalization_marker" \
+    && "$(readlink -f -- "$active_finalization_marker")" == "$active_finalization_marker" \
+    && "$(stat -c '%u:%g:%a:%h' -- "$active_finalization_marker")" \
+      == 0:0:600:1 ]] || return 1
+  app_container_id="$(docker inspect --format '{{.Id}}' "$final_container")" \
+    || return 1
+  resolve_release_router_container
+  router_container_id="$(docker inspect --format '{{.Id}}' \
+    "$release_router_container_id")" || return 1
+  terminal_evidence_sha256="$(checked_file_sha256 \
+    "$evidence_directory/90-release-complete.json")" || return 1
+  jq -e \
+    --arg revision "$revision" --arg runId "$run_id" \
+    --arg appContainerId "$app_container_id" \
+    --arg appImageId "${image_ids[app]}" \
+    --arg routerContainerId "$router_container_id" \
+    --arg routerImageId "${image_ids[router]}" \
+    --arg terminalEvidenceSha256 "$terminal_evidence_sha256" '
+      type == "object" and
+      keys == (["app", "authorizedAt", "createdAt", "kind", "phase", "product",
+        "revision", "router", "runId", "schemaVersion",
+        "terminalEvidenceSha256"] | sort) and
+      .schemaVersion == 1 and .product == "business-finlynq" and
+      .kind == "active-finalization" and .phase == "active-commit-authorized" and
+      .revision == $revision and .runId == $runId and
+      .terminalEvidenceSha256 == $terminalEvidenceSha256 and
+      .app == {containerId: $appContainerId, imageId: $appImageId} and
+      .router == {containerId: $routerContainerId, imageId: $routerImageId}
+    ' "$active_finalization_marker" >/dev/null || return 1
+  rm -- "$active_finalization_marker" || return 1
+  sync -f -- "$release_recovery_state_directory" || return 1
+  active_finalization_marker_committed="false"
+}
+
+recover_pre_mutation_release() {
+  local router_query="" router_state="" health_body="" recovered_at="" app_state="" worker_state=""
+  local public_ready="false" maintenance_restore_status=0
+  [[ "$mode" == "release" && "$database_mutation_started" != "true" \
+    && "$previous_app_was_running" == "true" \
+    && "$previous_container" =~ ^[a-f0-9]{12,64}$ \
+    && ( "$write_surfaces_stopped" == "true" \
+      || "$write_surface_containment_armed" == "true" \
+      || "$router_maintenance_confirmed" == "true" ) ]] || return 1
+
+  if [[ "$router_was_preexisting" == "true" ]]; then
+    resolve_release_router_container
+    [[ -n "$release_router_container_id" ]] || return 1
+    docker start "$previous_container" >/dev/null 2>&1 || return 1
+  else
+    # The first router rollout may fail after the legacy app released the
+    # loopback port. Remove only that candidate router, then restart the exact
+    # pre-cutover container with its original port and edge-alias contract.
+    router_query="$(compose ps --all --quiet release_router 2>/dev/null)" || return 1
+    if [[ -n "$router_query" ]]; then
+      [[ "$router_query" =~ ^[a-f0-9]{12,64}$ ]] \
+        || return 1
+      docker rm --force "$router_query" >/dev/null 2>&1 || return 1
+    fi
+    [[ "$(docker inspect --format '{{.Image}}' "$previous_container" 2>/dev/null)" \
+      == "$previous_app_id" \
+      && "$(docker inspect --format '{{.State.Running}}' "$previous_container" 2>/dev/null)" \
+      == false ]] || return 1
+    if [[ "$(docker inspect --format \
+      '{{if index .NetworkSettings.Networks "business_finlynq_edge"}}attached{{end}}' \
+      "$previous_container" 2>/dev/null)" == "" ]]; then
+      docker network connect --alias production-app \
+        business_finlynq_edge "$previous_container" >/dev/null 2>&1 || return 1
+    fi
+    network_alias_has_exact_owner_nonfatal \
+      business_finlynq_edge production-app "$previous_container" || return 1
+    docker start "$previous_container" >/dev/null 2>&1 || return 1
+  fi
+
+  # Account-enabled readiness depends on a fresh authentication-worker
+  # heartbeat. Restore and attest that exact pre-cutover container before
+  # waiting for public readiness, otherwise recovery can deadlock on the gate
+  # that only the stopped worker can satisfy.
+  if [[ "$previous_auth_worker_was_running" == "true" ]]; then
+    docker start "$previous_auth_worker_container" >/dev/null 2>&1 || return 1
+    worker_state="$(docker inspect --format \
+      '{{.State.Running}}|{{.Image}}|{{ index .Config.Labels "org.opencontainers.image.revision" }}' \
+      "$previous_auth_worker_container" 2>/dev/null)" || return 1
+    [[ "$worker_state" == "true|$previous_auth_worker_image_id|$previous_auth_worker_revision" ]] \
+      || return 1
+  fi
+
+  # Restore and health-check the exact accepted upstream before returning a
+  # stopped router to active service. The app healthcheck can itself depend on
+  # the worker heartbeat, so both containers must be running first.
+  for _ in {1..60}; do
+    app_state="$(docker inspect --format \
+      '{{.State.Running}}|{{if .State.Health}}{{.State.Health.Status}}{{end}}' \
+      "$previous_container" 2>/dev/null)" || return 1
+    [[ "$app_state" == true\|healthy ]] && break
+    sleep 2
+  done
+  [[ "$app_state" == true\|healthy ]] || return 1
+
+  if [[ "$router_was_preexisting" == "true" ]]; then
+    [[ "$(docker inspect --format '{{.State.Running}}' \
+      "$release_router_container_id" 2>/dev/null)" == true ]] \
+      || docker start "$release_router_container_id" >/dev/null 2>&1 || return 1
+    for _ in {1..30}; do
+      router_state="$(docker inspect --format \
+        '{{.State.Running}}|{{if .State.Health}}{{.State.Health.Status}}{{end}}' \
+        "$release_router_container_id" 2>/dev/null)" || return 1
+      [[ "$router_state" == true\|healthy ]] && break
+      sleep 1
+    done
+    [[ "$router_state" == true\|healthy ]] || return 1
+    # Keep the restart contract fail-closed while briefly exposing the exact
+    # previous release for its public recovery proof. A failed proof explicitly
+    # reloads maintenance; only a successful proof may persist active.
+    persist_release_router_mode maintenance >/dev/null 2>&1 || return 1
+    reload_release_router_configuration Caddyfile >/dev/null 2>&1 || return 1
+  fi
+
+  for _ in {1..60}; do
+    health_body=""
+    if ! app_state="$(docker inspect --format \
+      '{{.State.Running}}|{{if .State.Health}}{{.State.Health.Status}}{{end}}' \
+      "$previous_container" 2>/dev/null)"; then
+      app_state=""
+    fi
+    if [[ "$app_state" == true\|healthy ]] \
+      && health_body="$(curl --fail --silent --show-error --max-time 5 \
+        "$public_base_url/api/health" 2>/dev/null)" \
+      && jq -e 'type == "object" and keys == ["status"] and .status == "ready"' \
+        <<<"$health_body" >/dev/null; then
+      public_ready="true"
+      break
+    fi
+    sleep 2
+  done
+  if [[ "$public_ready" != true ]]; then
+    if [[ "$router_was_preexisting" == "true" ]]; then
+      maintenance_restore_status=0
+      persist_release_router_mode maintenance >/dev/null 2>&1 \
+        || maintenance_restore_status=1
+      reload_release_router_configuration Caddyfile.maintenance >/dev/null 2>&1 \
+        || maintenance_restore_status=1
+      if (( maintenance_restore_status == 0 )); then
+        router_active_confirmed="false"
+        router_maintenance_confirmed="true"
+      fi
+    fi
+    return 1
+  fi
+
+  if [[ "$router_was_preexisting" != true ]]; then
+    network_alias_has_exact_owner_nonfatal \
+      business_finlynq_edge production-app "$previous_container" || return 1
+    previous_app_public_edge_detached="false"
+  fi
+
+  if [[ "$router_was_preexisting" == "true" ]]; then
+    if ! persist_release_router_mode active >/dev/null 2>&1; then
+      maintenance_restore_status=0
+      persist_release_router_mode maintenance >/dev/null 2>&1 \
+        || maintenance_restore_status=1
+      reload_release_router_configuration Caddyfile.maintenance >/dev/null 2>&1 \
+        || maintenance_restore_status=1
+      if (( maintenance_restore_status == 0 )); then
+        router_active_confirmed="false"
+        router_maintenance_confirmed="true"
+      fi
+      return 1
+    fi
+    router_active_confirmed="true"
+    router_maintenance_confirmed="false"
+  fi
+
+  recovered_at="$(checked_utc_timestamp)" || return 1
+  jq -n --arg at "$recovered_at" --arg appContainerId "$previous_container" \
+    --arg appImageId "$previous_app_id" --arg revision "$previous_app_revision" \
+    --arg routerPreserved "$router_was_preexisting" \
+    '{schemaVersion: 1, product: "business-finlynq", recoveredAt: $at,
+      result: "pre-mutation-availability-restored", appContainerId: $appContainerId,
+      appImageId: $appImageId, revision: $revision,
+      stableRouterPreserved: ($routerPreserved == "true"), databaseMutationStarted: false,
+      schedulersRemainPaused: true}' \
+    >"$evidence_directory/97-pre-mutation-auto-recovery.json" || return 1
+  chmod 0600 -- "$evidence_directory/97-pre-mutation-auto-recovery.json" || return 1
+  if [[ "${first_router_recovery_journal_committed:-false}" == true ]]; then
+    clear_first_router_recovery_journal || return 1
+  fi
+}
+
 contain_project_services_on_failure() {
   local service_name query container_id contract running observed_project observed_service
   local containment_status=0
@@ -1074,12 +1969,182 @@ contain_project_services_on_failure() {
   return "$containment_status"
 }
 
+network_alias_has_exact_owner_nonfatal() {
+  local network="$1" alias="$2" expected_container="$3"
+  local expected_full_id network_query container networks owner_count=0
+  expected_full_id="$(docker inspect --format '{{.Id}}' "$expected_container" 2>/dev/null)" \
+    || return 1
+  [[ "$expected_full_id" =~ ^[a-f0-9]{64}$ ]] || return 1
+  network_query="$(docker ps --all --no-trunc \
+    --filter "network=$network" --format '{{.ID}}' 2>/dev/null)" || return 1
+  while IFS= read -r container; do
+    [[ -n "$container" ]] || continue
+    [[ "$container" =~ ^[a-f0-9]{64}$ ]] || return 1
+    networks="$(docker inspect --format '{{json .NetworkSettings.Networks}}' \
+      "$container" 2>/dev/null)" || return 1
+    if jq -e --arg network "$network" --arg alias "$alias" '
+      has($network) and any(.[$network].Aliases[]?; . == $alias)
+    ' <<<"$networks" >/dev/null; then
+      (( owner_count += 1 ))
+      [[ "$container" == "$expected_full_id" ]] || return 1
+    fi
+  done <<<"$network_query"
+  [[ "$owner_count" == 1 ]]
+}
+
+stop_public_alias_owners_during_failure() {
+  local network_query container networks running remaining owner_count=0 result=0
+  local identity project service
+  network_query="$(docker ps --all --no-trunc \
+    --filter network=business_finlynq_edge --format '{{.ID}}' 2>/dev/null)" \
+    || return 1
+  while IFS= read -r container; do
+    [[ -n "$container" ]] || continue
+    [[ "$container" =~ ^[a-f0-9]{64}$ ]] || { result=1; continue; }
+    networks="$(docker inspect --format '{{json .NetworkSettings.Networks}}' \
+      "$container" 2>/dev/null)" || { result=1; continue; }
+    if jq -e '
+      has("business_finlynq_edge") and
+      any(.business_finlynq_edge.Aliases[]?; . == "production-app")
+    ' <<<"$networks" >/dev/null; then
+      identity="$(docker inspect --format \
+        '{{ index .Config.Labels "com.docker.compose.project" }}|{{ index .Config.Labels "com.docker.compose.service" }}' \
+        "$container" 2>/dev/null)" || { result=1; continue; }
+      IFS='|' read -r project service <<<"$identity"
+      if [[ "$project" != business-finlynq \
+        || ( "$service" != app && "$service" != release_router ) ]]; then
+        result=1
+        continue
+      fi
+      running="$(docker inspect --format '{{.State.Running}}' "$container" 2>/dev/null)" \
+        || { result=1; continue; }
+      if [[ "$running" == true ]]; then
+        docker stop --time 30 "$container" >/dev/null 2>&1 || true
+        running="$(docker inspect --format '{{.State.Running}}' "$container" 2>/dev/null)" \
+          || { result=1; continue; }
+      fi
+      [[ "$running" == false ]] || result=1
+    fi
+  done <<<"$network_query"
+  remaining="$(docker ps --no-trunc \
+    --filter network=business_finlynq_edge --format '{{.ID}}' 2>/dev/null)" \
+    || return 1
+  while IFS= read -r container; do
+    [[ -n "$container" ]] || continue
+    networks="$(docker inspect --format '{{json .NetworkSettings.Networks}}' \
+      "$container" 2>/dev/null)" || return 1
+    if jq -e '
+      has("business_finlynq_edge") and
+      any(.business_finlynq_edge.Aliases[]?; . == "production-app")
+    ' <<<"$networks" >/dev/null; then
+      (( owner_count += 1 ))
+    fi
+  done <<<"$remaining"
+  [[ "$result" == 0 && "$owner_count" == 0 ]]
+}
+
+force_router_maintenance_during_failure() {
+  local query token status body running image_id router_contract
+  query="$(docker ps --all --quiet --no-trunc \
+    --filter "label=com.docker.compose.project=$compose_project" \
+    --filter 'label=com.docker.compose.service=release_router' 2>/dev/null)" \
+    || return 1
+  [[ "$query" =~ ^[a-f0-9]{64}$ && "$query" != *$'\n'* ]] || return 1
+  router_contract="$(docker inspect --format \
+    '{{ index .Config.Labels "com.docker.compose.project" }}|{{ index .Config.Labels "com.docker.compose.service" }}|{{ index .Config.Labels "org.opencontainers.image.revision" }}|{{ index .Config.Labels "com.business-finlynq.release-router.contract" }}' \
+    "$query" 2>/dev/null)" || return 1
+  [[ "$router_contract" == "$compose_project|release_router|$release_router_revision|$release_router_contract" ]] \
+    || return 1
+  image_id="$(docker inspect --format '{{.Image}}' "$query" 2>/dev/null)" || return 1
+  [[ "$image_id" =~ ^sha256:[a-f0-9]{64}$ ]] || return 1
+  token="$release_acceptance_token"
+  [[ "$token" =~ ^[a-f0-9]{64}$ ]] || token="$(openssl rand -hex 32 2>/dev/null)" \
+    || return 1
+  [[ "$token" =~ ^[a-f0-9]{64}$ ]] || return 1
+  running="$(docker inspect --format '{{.State.Running}}' "$query" 2>/dev/null)" \
+    || return 1
+  if [[ "$running" != true ]]; then
+    # A stopped listener is already fail-closed. Update its non-secret state
+    # volume offline so a later daemon/container restart also chooses
+    # maintenance, without briefly starting the active configuration here.
+    docker run --rm --network none --read-only --cap-drop ALL \
+      --security-opt no-new-privileges --pids-limit 32 --memory 32m --cpus 0.25 \
+      --volumes-from "$query" --entrypoint sh "$image_id" -ec '
+        set -eu
+        [[ -d /state && ! -L /state && "$(stat -c "%u:%g:%a" /state)" == 10001:10001:700 ]]
+        temporary="/state/.mode.$$"
+        trap '\''rm -f -- "$temporary"'\'' EXIT INT TERM
+        printf "maintenance\n" >"$temporary"
+        chmod 0600 "$temporary"
+        mv -f "$temporary" /state/mode
+        sync /state/mode 2>/dev/null || sync
+        sync -f /state 2>/dev/null || sync
+        trap - EXIT INT TERM
+      ' >/dev/null 2>&1 || return 1
+    network_alias_has_exact_owner_nonfatal \
+      business_finlynq_edge production-app "$query" || return 1
+    router_maintenance_confirmed="true"
+    router_active_confirmed="false"
+    return 0
+  fi
+  docker exec "$query" sh -ec '
+    set -eu
+    [[ -d /state && ! -L /state && "$(stat -c "%u:%g:%a" /state)" == 10001:10001:700 ]]
+    temporary="/state/.mode.$$"
+    trap '\''rm -f -- "$temporary"'\'' EXIT INT TERM
+    printf "maintenance\n" >"$temporary"
+    chmod 0600 "$temporary"
+    mv -f "$temporary" /state/mode
+    sync /state/mode 2>/dev/null || sync
+    sync -f /state 2>/dev/null || sync
+    trap - EXIT INT TERM
+  ' >/dev/null 2>&1 || return 1
+  docker exec --env "BUSINESS_FINLYNQ_RELEASE_ACCEPTANCE_TOKEN=$token" \
+    "$query" caddy reload --config /etc/caddy/Caddyfile.maintenance \
+    --adapter caddyfile --address unix//tmp/caddy-admin.sock >/dev/null 2>&1 \
+    || return 1
+  status="$(curl --silent --show-error --max-time 5 --output /dev/null \
+    --write-out '%{http_code}' "$public_base_url/api/health" 2>/dev/null)" \
+    || return 1
+  [[ "$status" == 503 ]] || return 1
+  body="$(curl --fail --silent --show-error --max-time 5 \
+    "http://127.0.0.1:$app_port/_business-finlynq/release-router/live" 2>/dev/null)" \
+    || return 1
+  jq -e 'type == "object" and keys == ["status"] and .status == "release-router-live"' \
+    <<<"$body" >/dev/null || return 1
+  network_alias_has_exact_owner_nonfatal \
+    business_finlynq_edge production-app "$query" || return 1
+  release_acceptance_token="$token"
+  router_maintenance_confirmed="true"
+  router_active_confirmed="false"
+}
+
 on_exit() {
   local status=$? failure_at="" failure_record_temporary=""
   local failure_record_published="false"
-  trap - EXIT ERR INT TERM
+  trap - EXIT ERR
+  trap '' HUP INT TERM
   if (( status != 0 )); then
-    if [[ "$mode" == "release" && "$scheduler_pause_attempted" == "true" \
+    if [[ "$router_transition_attempted" == "true" \
+      && -n "$public_base_url" && -n "$app_port" \
+      && ( "$mode" != release || "$terminal_evidence_committed" != true ) ]]; then
+      if ! force_router_maintenance_during_failure; then
+        router_query="$(docker ps --all --quiet --no-trunc \
+          --filter "label=com.docker.compose.project=$compose_project" \
+          --filter 'label=com.docker.compose.service=release_router' 2>/dev/null || true)"
+        if [[ "$router_query" =~ ^[a-f0-9]{64}$ && "$router_query" != *$'\n'* ]]; then
+          docker stop --time 30 "$router_query" >/dev/null 2>&1 || true
+        fi
+        if ! stop_public_alias_owners_during_failure; then
+          printf '%s\n' \
+            "URGENT: failed release could not stop every running production-app alias owner." >&2
+        fi
+        printf '%s\n' \
+          "URGENT: failed release could not prove router maintenance; the scoped router was stopped fail-closed." >&2
+      fi
+    fi
+    if [[ "$mode" == "release" && "$terminal_evidence_committed" != true \
+      && "$scheduler_pause_attempted" == "true" \
       && "$schedulers_paused" != "true" ]]; then
       if pause_schedulers allow-already-paused >/dev/null 2>&1; then
         schedulers_paused="true"
@@ -1089,7 +2154,8 @@ on_exit() {
           "URGENT: release failure occurred during scheduler pause and containment retry failed." >&2
       fi
     fi
-    if [[ "$mode" == "release" && "$schedulers_resumed" == "true" ]]; then
+    if [[ "$mode" == "release" && "$terminal_evidence_committed" != true \
+      && "$schedulers_resumed" == "true" ]]; then
       if pause_schedulers allow-already-paused >/dev/null 2>&1; then
         schedulers_paused="true"
       else
@@ -1113,14 +2179,29 @@ on_exit() {
           "URGENT: failed release could not prove detached database mutators quiescent." >&2
       fi
     fi
-    if [[ "$write_surface_containment_armed" == "true" \
-      || "$candidate_started" == "true" ]]; then
+    if [[ "$terminal_evidence_committed" != "true" \
+      && ( "$write_surface_containment_armed" == "true" \
+        || "$candidate_started" == "true" ) ]]; then
       if ! contain_project_services_on_failure app auth_email_worker; then
         printf '%s\n' \
           "URGENT: failed release could not prove application write surfaces quiescent." >&2
       fi
     fi
-    if [[ "$candidate_started" == "true" ]]; then
+    if [[ "$mode" == "release" && "$database_mutation_started" != "true" \
+      && ( "$write_surfaces_stopped" == "true" \
+        || "$write_surface_containment_armed" == "true" \
+        || "$router_maintenance_confirmed" == "true" ) ]]; then
+      if recover_pre_mutation_release; then
+        write_surface_containment_armed="false"
+        printf '%s\n' \
+          "The exact pre-cutover application was automatically restored; schedulers remain paused." >&2
+      else
+        printf '%s\n' \
+          "URGENT: pre-mutation availability could not be restored automatically." >&2
+      fi
+    fi
+    if [[ "$candidate_started" == "true" \
+      && "$terminal_evidence_committed" != "true" ]]; then
       if [[ "$mode" == "release" ]]; then
         if restore_stopped_previous_app_anchor; then
           printf '%s\n' "Stopped previous-application rollback anchor restored for a safe retry." >&2
@@ -1128,6 +2209,10 @@ on_exit() {
           printf '%s\n' "URGENT: failed to restore the stopped previous-application rollback anchor." >&2
         fi
       fi
+    fi
+    if [[ "$terminal_evidence_committed" == "true" ]]; then
+      printf '%s\n' \
+        "Accepted candidate evidence and active-finalization authorization are durable; the exact candidate is eligible for strict active-last recovery." >&2
     fi
     if failure_at="$(checked_utc_timestamp)"; then
       failure_record_temporary="$evidence_directory/.99-failure.json.partial"
@@ -1145,7 +2230,8 @@ on_exit() {
         --argjson exitCode "$status" \
         --arg schedulersPaused "$schedulers_paused" \
         --arg initialTimersDisabled "$initial_schedulers_verified" \
-        '{schemaVersion: 1, product: "business-finlynq", status: "failed", failedAt: $at, mode: $mode, revision: $revision, runId: $runId, stage: $stage, exitCode: $exitCode, schedulersRemainPaused: ($schedulersPaused == "true"), initialTimersRemainDisabled: (if $mode == "initial" then ($initialTimersDisabled == "true") else null end)}' \
+        --arg routerMaintenanceConfirmed "$router_maintenance_confirmed" \
+        '{schemaVersion: 1, product: "business-finlynq", status: "failed", failedAt: $at, mode: $mode, revision: $revision, runId: $runId, stage: $stage, exitCode: $exitCode, schedulersRemainPaused: ($schedulersPaused == "true"), releaseRouterMaintenanceConfirmed: ($routerMaintenanceConfirmed == "true"), initialTimersRemainDisabled: (if $mode == "initial" then ($initialTimersDisabled == "true") else null end)}' \
         >"$failure_record_temporary" 2>/dev/null \
         && chmod 0600 -- "$failure_record_temporary" 2>/dev/null \
         && mv -- "$failure_record_temporary" \
@@ -1206,6 +2292,9 @@ on_exit() {
   exit "$status"
 }
 trap on_exit EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 if [[ "$scheduler_boundary_bootstrap_required" == "true" ]]; then
   install -m 0600 -- "$scheduler_boundary_bootstrap_receipt" \
@@ -1277,6 +2366,7 @@ rendered_revision="$(jq -r '.services.app.environment.BUSINESS_FINLYNQ_IMAGE_REV
 [[ "$rendered_revision" == "$revision" ]] || fail "Compose image revision does not match the requested release"
 for image_contract in \
   "database:business-finlynq-database:$revision" \
+  "release_router:$release_router_reference" \
   "app:business-finlynq-app:$revision" \
   "migrate:business-finlynq-migrator:$revision" \
   "auth_email_worker:business-finlynq-auth-worker:$revision" \
@@ -1289,8 +2379,20 @@ for image_contract in \
   [[ "$actual_image" == "$expected_image" ]] || fail "$service_name is not bound to its commit-addressed image"
 done
 
-app_port="$(jq -r '.services.app.ports[] | select(.target == 3000) | .published' <<<"$rendered_compose")"
+app_port="$(jq -r '.services.release_router.ports[] | select(.target == 3000) | .published' <<<"$rendered_compose")"
 [[ "$app_port" =~ ^[0-9]+$ && "$app_port" -ge 1024 && "$app_port" -le 65535 ]] || fail "rendered app port is invalid"
+[[ "$(jq -r '[.services.app.ports[]? | select(.target == 3000)] | length' <<<"$rendered_compose")" == "0" ]] \
+  || fail "application container must not publish the release listener"
+router_frontend_network_name="$(jq -r '.networks.business_finlynq_frontend.name // empty' <<<"$rendered_compose")"
+router_edge_network_name="$(jq -r '.networks.business_finlynq_edge.name // empty' <<<"$rendered_compose")"
+router_public_alias="$(jq -r '.services.release_router.networks.business_finlynq_edge.aliases[0] // empty' <<<"$rendered_compose")"
+router_state_volume_name="$(jq -r '.volumes.business_finlynq_release_router_state.name // empty' <<<"$rendered_compose")"
+[[ -n "$router_frontend_network_name" && -n "$router_edge_network_name" \
+  && "$router_public_alias" =~ ^[a-z0-9][a-z0-9-]{2,62}$ \
+  && "$router_state_volume_name" =~ ^[a-zA-Z0-9][a-zA-Z0-9_.-]{2,127}$ ]] \
+  || fail "release-router network identity is incomplete"
+[[ "$(jq -r '.services.app.networks.business_finlynq_frontend.aliases[0] // empty' <<<"$rendered_compose")" == "release-app" ]] \
+  || fail "application does not use the reviewed internal release-router alias"
 app_origin="$(jq -r '.services.app.environment.APP_ORIGIN // empty' <<<"$rendered_compose")"
 session_cookie_name="$(jq -r '.services.app.environment.SESSION_COOKIE_NAME // empty' <<<"$rendered_compose")"
 public_base_url=""
@@ -1424,6 +2526,12 @@ if [[ "$mode" != "rehearsal" ]]; then
     && MONITOR_MAX_BACKUP_ACTIVE_SECONDS < SCHEDULED_BACKUP_TIMEOUT_SECONDS )) \
     || fail "operations backup runtime settings exceed the reviewed recovery envelope"
   release_backup_timeout_seconds="$SCHEDULED_BACKUP_TIMEOUT_SECONDS"
+  release_online_backup_timeout_seconds="$release_backup_timeout_seconds"
+  (( release_online_backup_timeout_seconds <= 900 )) \
+    || release_online_backup_timeout_seconds=900
+  release_quiesced_backup_timeout_seconds="$release_backup_timeout_seconds"
+  (( release_quiesced_backup_timeout_seconds <= 300 )) \
+    || release_quiesced_backup_timeout_seconds=300
   [[ "$MONITOR_BASE_URL" =~ ^https:// ]] || fail "production monitor base URL must use HTTPS"
   [[ "$MONITOR_EXPECT_EDGE" == "true" ]] || fail "the production release requires the reviewed edge boundary"
   [[ "$MONITOR_EDGE_MODE" == compose || "$MONITOR_EDGE_MODE" == external ]] \
@@ -1475,7 +2583,8 @@ if [[ "$mode" != "rehearsal" ]]; then
       .networks.business_finlynq_edge.external == true
     ' <<<"$rendered_compose" >/dev/null \
       || fail "initial production must use the canonical production resource names"
-    if ! initial_restore_compose="$(compose --profile restore-drill config --format json)"; then
+    if ! initial_restore_compose="$(compose --profile operations --profile auth-email \
+      --profile acceptance --profile restore-drill config --format json)"; then
       fail "initial production restore-drill Compose configuration could not be rendered"
     fi
     jq -e '
@@ -1483,9 +2592,8 @@ if [[ "$mode" != "rehearsal" ]]; then
       .networks.business_finlynq_restore_drill.internal == true
     ' <<<"$initial_restore_compose" >/dev/null \
       || fail "initial production must use the canonical restore-drill network"
-    unset initial_restore_compose
     if ! initial_secret_sources="$(jq -r '.secrets[]?.file // empty' \
-      <<<"$rendered_compose" | sort -u)"; then
+      <<<"$initial_restore_compose" | sort -u)"; then
       fail "initial secret-source inventory could not be rendered"
     fi
     [[ -n "$initial_secret_sources" ]] \
@@ -1508,12 +2616,13 @@ if [[ "$mode" != "rehearsal" ]]; then
         .secrets.business_finlynq_backup_age_identity.file,
         .secrets.business_finlynq_restore_db_password.file
       ] | unique | if length == 1 then .[0] else "" end
-    ' <<<"$rendered_compose")" \
+    ' <<<"$initial_restore_compose")" \
       || fail "disabled initial secret-source contract could not be read"
     [[ -n "$initial_disabled_secret_source" \
       && -f "$initial_disabled_secret_source" && ! -L "$initial_disabled_secret_source" \
       && ! -s "$initial_disabled_secret_source" ]] \
       || fail "disabled initial providers and recovery inputs must share one durable empty placeholder"
+    unset initial_restore_compose
     for required_secret in business_finlynq_app_db_password \
       business_finlynq_root_kek business_finlynq_identity_secret \
       business_finlynq_auth_worker_db_password business_finlynq_backup_db_password \
@@ -1569,7 +2678,7 @@ scanner_egress_network_name="$(jq -r '.networks.business_finlynq_scanner_egress.
   && -n "$scanner_egress_network_name" ]] \
   || fail "evidence-scanner resource names are missing"
 
-compose_hash="$(printf '%s' "$rendered_compose" | sha256sum | awk '{print $1}')" \
+compose_hash="$(canonical_compose_sha256 "$rendered_compose")" \
   || fail "rendered Compose configuration checksum could not be computed"
 [[ "$compose_hash" =~ ^[a-f0-9]{64}$ ]] \
   || fail "rendered Compose configuration checksum is invalid"
@@ -1735,13 +2844,37 @@ quiesce_and_verify_initial_schedulers() {
     fi
   done
 
-  for unit_name in business-finlynq-development-deployment.timer \
-    business-finlynq-development-deployment.service; do
-    if systemctl is-active --quiet "$unit_name" 2>/dev/null \
-      || systemctl is-enabled --quiet "$unit_name" 2>/dev/null; then
-      fail "development deployment automation must remain inactive during production bootstrap"
-    fi
-  done
+  unit_name=business-finlynq-development-deployment.timer
+  active_state=""; active_status=0
+  if active_state="$(systemctl is-active "$unit_name" 2>/dev/null)"; then
+    active_status=0
+  else
+    active_status=$?
+  fi
+  [[ "$active_status" != "0" && "$active_state" != "active" ]] \
+    || fail "development deployment timer must remain inactive during production bootstrap"
+  enabled_state=""; enabled_status=0
+  if enabled_state="$(systemctl is-enabled "$unit_name" 2>/dev/null)"; then
+    enabled_status=0
+  else
+    enabled_status=$?
+  fi
+  [[ "$enabled_status" != "0" \
+    && ( "$enabled_state" == "disabled" || "$enabled_state" == "not-found" ) ]] \
+    || fail "development deployment timer must remain disabled during production bootstrap"
+
+  # A service with no [Install] section is reported as static by systemd and
+  # `is-enabled --quiet` succeeds for that classification. Only its active
+  # state is meaningful; the timer above is the independently enabled unit.
+  unit_name=business-finlynq-development-deployment.service
+  active_state=""; active_status=0
+  if active_state="$(systemctl is-active "$unit_name" 2>/dev/null)"; then
+    active_status=0
+  else
+    active_status=$?
+  fi
+  [[ "$active_status" != "0" && "$active_state" != "active" ]] \
+    || fail "development deployment service must remain inactive during production bootstrap"
   initial_schedulers_verified="true"
   printf '%s\n' "Production operation/deployment schedulers are disabled and services are quiescent."
 }
@@ -1750,21 +2883,26 @@ verify_initial_state_contract() {
   [[ "$mode" == "initial" ]] || return 0
   local resource_name container_id container_contract service_name image_revision
   local expected_volume_label expected_network_label expected_network_internal prior_record
-  local logical_image expected_resume_image_id
+  local logical_image expected_resume_image_id volume_names network_names
   local prior_failure_record prior_plan prior_rollback
   local failed_initial_record=""
+  local resumable_router_container_id="" resumable_router_running="false"
+  local resumable_router_expected_image_id="" router_health_state=""
+  local router_state_volume_present="false" router_maintenance_status=""
   local -a project_containers=()
   local -a forbidden_volumes=(
     business_finlynq_pgdata
     business_finlynq_pgdata_clamav
     business_finlynq_caddy_data
     business_finlynq_caddy_config
+    business_finlynq_private-release-router-state-v1
   )
   local -a forbidden_networks=(
     business_finlynq_private
     business_finlynq_private_evidence
     business_finlynq_egress
     business_finlynq_egress_scanner
+    business_finlynq_private-frontend
     business_finlynq_restore_drill
   )
 
@@ -1838,6 +2976,12 @@ verify_initial_state_contract() {
       "$evidence_directory/06-initial-inputs.json" \
       || fail "initial secret/input attestations changed since the acknowledged failure"
     failed_initial_record="$prior_failure_record"
+    resumable_router_expected_image_id="$(jq -er \
+      '.images[] | select(.name == "router") | .imageId' \
+      "$prior_evidence_directory/11-images.json")" \
+      || fail "prior image inventory could not be parsed for the release router"
+    [[ "$resumable_router_expected_image_id" =~ ^sha256:[a-f0-9]{64}$ ]] \
+      || fail "prior image inventory has no stable release-router image"
 
     for container_id in "${project_containers[@]}"; do
       read_docker_output "resumable initial container contract" inspect --format \
@@ -1869,7 +3013,12 @@ verify_initial_state_contract() {
         || fail "resumable container image reference could not be parsed"
       image_id="$(jq -er '.imageId' <<<"$container_contract")" \
         || fail "resumable container image ID could not be parsed"
-      container_running="$(jq -er '.running' <<<"$container_contract")" \
+      container_running="$(jq -r '
+        if (.running | type) == "boolean"
+        then (.running | tostring)
+        else error("running is not boolean")
+        end
+      ' <<<"$container_contract")" \
         || fail "resumable container running state could not be parsed"
       container_status="$(jq -er '.status' <<<"$container_contract")" \
         || fail "resumable container lifecycle state could not be parsed"
@@ -1878,6 +3027,51 @@ verify_initial_state_contract() {
       [[ "$project_name" == business-finlynq ]] \
         || fail "resumable container escaped the production Compose project"
       case "$service_name" in
+        release_router)
+          [[ -z "$resumable_router_container_id" ]] \
+            || fail "initial resume found duplicate release-router containers"
+          resumable_router_container_id="$container_id"
+          resumable_router_running="$container_running"
+          [[ "$image_revision" == "$release_router_revision" \
+            && "$image_reference" == "$release_router_reference" ]] \
+            || fail "resumable release router is not the stable reviewed contract"
+          expected_resume_image_id="$resumable_router_expected_image_id"
+          [[ "$expected_resume_image_id" =~ ^sha256:[a-f0-9]{64}$ \
+            && "$image_id" == "$expected_resume_image_id" ]] \
+            || fail "resumable release-router image ID differs from prior evidence"
+          read_docker_output "resumable stable release-router runtime" inspect "$container_id"
+          jq -e --arg imageId "$expected_resume_image_id" \
+            --arg stateVolume "$router_state_volume_name" \
+            --arg revision "$release_router_revision" --arg contract "$release_router_contract" '
+            length == 1 and .[0].Image == $imageId and
+            .[0].Config.Labels["com.docker.compose.project"] == "business-finlynq" and
+            .[0].Config.Labels["com.docker.compose.service"] == "release_router" and
+            .[0].Config.Labels["org.opencontainers.image.revision"] == $revision and
+            .[0].Config.Labels["com.business-finlynq.release-router.contract"] == $contract and
+            .[0].Config.User == "10001:10001" and
+            .[0].HostConfig.ReadonlyRootfs == true and .[0].HostConfig.Init == true and
+            .[0].HostConfig.RestartPolicy.Name == "unless-stopped" and
+            (.[0].HostConfig.CapDrop | sort) == ["ALL"] and
+            (.[0].HostConfig.SecurityOpt | index("no-new-privileges:true")) != null and
+            ((.[0].Mounts // []) | length) == 1 and
+            .[0].Mounts[0].Type == "volume" and .[0].Mounts[0].Name == $stateVolume and
+            .[0].Mounts[0].Destination == "/state" and .[0].Mounts[0].RW == true and
+            .[0].Config.Entrypoint == ["/usr/local/bin/release-router-entrypoint"] and
+            .[0].Config.Cmd == ["serve"]
+          ' <<<"$docker_query_output" >/dev/null \
+            || fail "resumable release-router runtime differs from its hardened contract"
+          if [[ "$container_running" == true ]]; then
+            [[ "$container_health" == healthy ]] \
+              || fail "running resumable release-router container is not healthy"
+            read_docker_output "resumable release-router durable mode" exec "$container_id" sh -ec '
+              [[ -d /state && ! -L /state && "$(stat -c "%u:%g:%a" /state)" == 10001:10001:700 ]]
+              [[ -f /state/mode && ! -L /state/mode && "$(stat -c "%u:%g:%a" /state/mode)" == 10001:10001:600 ]]
+              cat /state/mode
+            '
+            [[ "$docker_query_output" == active || "$docker_query_output" == maintenance ]] \
+              || fail "resumable release-router durable mode is invalid"
+          fi
+          ;;
         database|backup|provision_auth_worker_role|migrate|reconcile_runtime_grants|reconcile_auth_worker_grants|reconcile_backup_grants|verify_database_contract|bootstrap_demo|provision_backup|verify_accounting_evidence|app|release_acceptance|verify_latest_backup)
           [[ "$image_revision" == "$revision" ]] \
             || fail "resumable $service_name container is not from the interrupted revision"
@@ -1905,7 +3099,8 @@ verify_initial_state_contract() {
           ;;
         *) fail "initial resume found an unexpected production service: ${service_name:-missing}" ;;
       esac
-      if [[ "$service_name" == database || "$service_name" == evidence_scanner ]]; then
+      if [[ "$service_name" == database || "$service_name" == evidence_scanner \
+        || "$service_name" == release_router ]]; then
         if [[ "$container_running" == true ]]; then
           [[ "$container_health" == healthy ]] \
             || fail "running resumable $service_name container is not healthy"
@@ -1923,16 +3118,20 @@ verify_initial_state_contract() {
   fi
 
   read_docker_output "Docker volumes before initial production" volume ls --format '{{.Name}}'
+  volume_names="$docker_query_output"
   for resource_name in "${forbidden_volumes[@]}"; do
-    if grep -Fxq -- "$resource_name" <<<"$docker_query_output"; then
+    if grep -Fxq -- "$resource_name" <<<"$volume_names"; then
       if [[ "$initial_state" == "fresh" \
         || ( "$resource_name" != business_finlynq_pgdata \
-          && "$resource_name" != business_finlynq_pgdata_clamav ) ]]; then
+          && "$resource_name" != business_finlynq_pgdata_clamav \
+          && "$resource_name" != business_finlynq_private-release-router-state-v1 ) ]]; then
         fail "initial production found a disallowed preexisting production volume: $resource_name"
       fi
       expected_volume_label=business_finlynq_pgdata
       [[ "$resource_name" == business_finlynq_pgdata_clamav ]] \
         && expected_volume_label=business_finlynq_clamav
+      [[ "$resource_name" == business_finlynq_private-release-router-state-v1 ]] \
+        && expected_volume_label=business_finlynq_release_router_state
       read_docker_output "resumable production volume $resource_name" volume inspect "$resource_name"
       jq -e --arg name "$resource_name" --arg logical "$expected_volume_label" '
         length == 1 and .[0].Name == $name and .[0].Driver == "local" and
@@ -1942,6 +3141,24 @@ verify_initial_state_contract() {
         .[0].Labels["com.docker.compose.volume"] == $logical
       ' <<<"$docker_query_output" >/dev/null \
         || fail "resumable production volume ownership is invalid: $resource_name"
+      if [[ "$resource_name" == business_finlynq_private-release-router-state-v1 ]]; then
+        router_state_volume_present="true"
+        if [[ "$resumable_router_running" == "true" ]]; then
+          read_docker_output "resumable release-router state volume" run --rm --network none \
+            --read-only --cap-drop ALL --security-opt no-new-privileges \
+            --pids-limit 32 --memory 32m --cpus 0.25 \
+            --mount "type=volume,src=$resource_name,dst=/state,readonly" \
+            --entrypoint sh "$resumable_router_expected_image_id" -ec '
+              [[ -d /state && ! -L /state && "$(stat -c "%u:%g:%a" /state)" == 10001:10001:700 ]]
+              [[ -f /state/mode && ! -L /state/mode && "$(stat -c "%u:%g:%a" /state/mode)" == 10001:10001:600 ]]
+              mode="$(cat /state/mode)"
+              [[ "$mode" == active || "$mode" == maintenance ]]
+              printf "%s" "$mode"
+            '
+          [[ "$docker_query_output" == active || "$docker_query_output" == maintenance ]] \
+            || fail "resumable release-router state volume contains an invalid mode"
+        fi
+      fi
     fi
   done
   read_docker_output "Compose-owned volumes before initial production" volume ls \
@@ -1950,14 +3167,16 @@ verify_initial_state_contract() {
     [[ -z "$resource_name" ]] && continue
     if [[ "$initial_state" == "fresh" \
       || ( "$resource_name" != business_finlynq_pgdata \
-        && "$resource_name" != business_finlynq_pgdata_clamav ) ]]; then
+        && "$resource_name" != business_finlynq_pgdata_clamav \
+        && "$resource_name" != business_finlynq_private-release-router-state-v1 ) ]]; then
       fail "initial production found an unexpected Compose-owned volume: $resource_name"
     fi
   done <<<"$docker_query_output"
 
   read_docker_output "Docker networks before initial production" network ls --format '{{.Name}}'
+  network_names="$docker_query_output"
   for resource_name in "${forbidden_networks[@]}"; do
-    if grep -Fxq -- "$resource_name" <<<"$docker_query_output"; then
+    if grep -Fxq -- "$resource_name" <<<"$network_names"; then
       if [[ "$initial_state" == "fresh" || "$resource_name" == business_finlynq_restore_drill ]]; then
         fail "initial production found a disallowed preexisting production network: $resource_name"
       fi
@@ -1978,6 +3197,10 @@ verify_initial_state_contract() {
         business_finlynq_egress_scanner)
           expected_network_label=business_finlynq_scanner_egress
           ;;
+        business_finlynq_private-frontend)
+          expected_network_label=business_finlynq_frontend
+          expected_network_internal=true
+          ;;
       esac
       read_docker_output "resumable production network $resource_name" network inspect "$resource_name"
       jq -e --arg name "$resource_name" --arg logical "$expected_network_label" \
@@ -1993,7 +3216,7 @@ verify_initial_state_contract() {
         || fail "resumable production network ownership is invalid: $resource_name"
     fi
   done
-  grep -Fxq -- business_finlynq_edge <<<"$docker_query_output" \
+  grep -Fxq -- business_finlynq_edge <<<"$network_names" \
     || fail "initial production requires the pre-created external production ingress network"
   read_docker_output "Compose-owned networks before initial production" network ls \
     --filter 'label=com.docker.compose.project=business-finlynq' --format '{{.Name}}'
@@ -2003,10 +3226,107 @@ verify_initial_state_contract() {
       fail "fresh initial production found an unexpected Compose-owned network: $resource_name"
     fi
     case "$resource_name" in
-      business_finlynq_private|business_finlynq_private_evidence|business_finlynq_egress|business_finlynq_egress_scanner) ;;
+      business_finlynq_private|business_finlynq_private_evidence|business_finlynq_egress|business_finlynq_egress_scanner|business_finlynq_private-frontend) ;;
       *) fail "initial resume found an unexpected Compose-owned network: $resource_name" ;;
     esac
   done <<<"$docker_query_output"
+
+  if [[ "$initial_state" == "resume" \
+    && "$router_state_volume_present" == "true" \
+    && "$resumable_router_running" != "true" ]]; then
+    # A daemon interruption can leave either the exact stopped router or only
+    # its Compose-owned volume. Normalize that already-attested volume through
+    # the exact prior router image before any listener is started. The helper
+    # accepts only an empty Docker-created directory or the exact prior mode
+    # sentinel and commits maintenance with file and directory durability.
+    read_docker_output "normalized resumable release-router state" run --rm \
+      --network none --read-only --user 0:0 --cap-drop ALL \
+      --cap-add CHOWN --cap-add DAC_OVERRIDE --security-opt no-new-privileges \
+      --pids-limit 32 --memory 32m --cpus 0.25 \
+      --mount "type=volume,src=$router_state_volume_name,dst=/state" \
+      --entrypoint sh "$resumable_router_expected_image_id" -ec '
+        set -eu
+        [[ -d /state && ! -L /state ]]
+        unexpected="$(find /state -mindepth 1 -maxdepth 1 \
+          ! -path /state/mode -print -quit)"
+        [[ -z "$unexpected" ]]
+        directory_contract="$(stat -c "%u:%g:%a" /state)"
+        if [[ ! -e /state/mode && ! -L /state/mode ]]; then
+          case "$directory_contract" in
+            0:0:700|0:0:755|10001:10001:700) ;;
+            *) exit 1 ;;
+          esac
+        else
+          [[ -f /state/mode && ! -L /state/mode \
+            && "$directory_contract" == 10001:10001:700 ]]
+          [[ "$(stat -c "%u:%g:%a" /state/mode)" == 10001:10001:600 ]]
+          prior_mode="$(cat /state/mode)"
+          [[ "$prior_mode" == active || "$prior_mode" == maintenance ]]
+        fi
+        temporary="/state/.mode.$$"
+        trap '\''rm -f -- "$temporary"'\'' EXIT INT TERM
+        printf "maintenance\n" >"$temporary"
+        chmod 0600 "$temporary"
+        chown 10001:10001 "$temporary"
+        sync "$temporary" 2>/dev/null || sync
+        if [[ "$directory_contract" != 10001:10001:700 ]]; then
+          chmod 0700 /state
+          chown 10001:10001 /state
+        fi
+        mv -f "$temporary" /state/mode
+        sync /state/mode 2>/dev/null || sync
+        sync -f /state 2>/dev/null || sync
+        trap - EXIT INT TERM
+        [[ "$(stat -c "%u:%g:%a" /state)" == 10001:10001:700 ]]
+        [[ -f /state/mode && ! -L /state/mode \
+          && "$(stat -c "%u:%g:%a" /state/mode)" == 10001:10001:600 \
+          && "$(cat /state/mode)" == maintenance ]]
+        printf maintenance
+      '
+    [[ "$docker_query_output" == maintenance ]] \
+      || fail "resumable release-router state could not be normalized to maintenance"
+
+    if [[ -n "$resumable_router_container_id" ]]; then
+      router_transition_attempted="true"
+      read_docker_output "restarted resumable release router" start \
+        "$resumable_router_container_id"
+      [[ "$docker_query_output" == "$resumable_router_container_id" \
+        || "$docker_query_output" == "${resumable_router_container_id:0:12}" ]] \
+        || fail "Docker returned an unexpected resumed release-router identity"
+      for _ in {1..60}; do
+        router_health_state="$(docker inspect --format \
+          '{{.State.Running}}|{{if .State.Health}}{{.State.Health.Status}}{{end}}' \
+          "$resumable_router_container_id")" \
+          || fail "resumed release-router health could not be inspected"
+        [[ "$router_health_state" == true\|healthy ]] && break
+        sleep 2
+      done
+      [[ "$router_health_state" == true\|healthy ]] \
+        || fail "exact resumable release router did not become healthy"
+      read_docker_output "resumed release-router durable maintenance" exec \
+        "$resumable_router_container_id" sh -ec '
+          [[ -f /state/mode && ! -L /state/mode \
+            && "$(stat -c "%u:%g:%a" /state/mode)" == 10001:10001:600 ]]
+          cat /state/mode
+        '
+      [[ "$docker_query_output" == maintenance ]] \
+        || fail "resumed release router did not retain durable maintenance"
+      curl --fail --silent --show-error --max-time 5 \
+        "http://127.0.0.1:$app_port/_business-finlynq/release-router/live" \
+        | jq -e 'type == "object" and keys == ["status"] and \
+          .status == "release-router-live"' >/dev/null \
+        || fail "resumed release-router private liveness is unavailable"
+      router_maintenance_status="$(curl --silent --show-error --max-time 10 \
+        --header "X-Request-Id: initial-resume-$run_id" \
+        --output /dev/null --write-out '%{http_code}' \
+        "$public_base_url/api/health")" \
+        || fail "resumed release-router maintenance response is unavailable"
+      [[ "$router_maintenance_status" == 503 ]] \
+        || fail "resumed release router did not start in public maintenance"
+      router_maintenance_confirmed="true"
+      router_was_preexisting="true"
+    fi
+  fi
 
   [[ ! -e /home/deploy/.local/state/business-finlynq/release-locks/scheduler-maintenance \
     && ! -L /home/deploy/.local/state/business-finlynq/release-locks/scheduler-maintenance ]] \
@@ -2053,6 +3373,39 @@ fi
 stage="candidate-image-build"
 assert_clean_checkout "$repository_root" \
   "the checkout changed after release evidence initialization and before image build"
+# The stable router is not part of an ordinary application release. Rebuilding
+# its shared v1 tag here could make monitoring observe a different tag even
+# though the accepted listener was deliberately left untouched. Reuse the
+# already-attested image for routine releases; bootstrap it only when the
+# deployment has no router yet (initial/rehearsal/one-time legacy transition).
+if [[ "$mode" == "release" ]]; then
+  release_router_prebuild_query="$(compose ps --all --quiet release_router)" \
+    || fail "pre-build release-router inventory could not be read"
+  [[ -z "$release_router_prebuild_query" \
+    || ( "$release_router_prebuild_query" =~ ^[a-f0-9]{12,64}$ \
+      && "$release_router_prebuild_query" != *$'\n'* ) ]] \
+    || fail "pre-build release-router inventory is ambiguous"
+  [[ -z "$release_router_prebuild_query" ]] || router_was_preexisting="true"
+fi
+read_docker_output "pre-build stable release-router image" image ls \
+  --quiet --no-trunc "$release_router_reference"
+release_router_prebuild_image_id="$docker_query_output"
+[[ -z "$release_router_prebuild_image_id" \
+  || ( "$release_router_prebuild_image_id" =~ ^sha256:[a-f0-9]{64}$ \
+    && "$release_router_prebuild_image_id" != *$'\n'* ) ]] \
+  || fail "pre-build stable release-router image inventory is ambiguous"
+if [[ -z "$release_router_prebuild_image_id" \
+  && "$router_was_preexisting" == "true" ]]; then
+  fail "the running stable release router has lost its canonical local image tag"
+fi
+if [[ -n "$release_router_prebuild_image_id" ]]; then
+  run_logged 10-release-router-build.log printf '%s\n' \
+    "Reusing the existing separately versioned release-router image without rebuilding its shared tag."
+else
+  run_logged 10-release-router-build.log compose_release_router_build build \
+    --provenance=false --sbom=false \
+    --build-arg "SOURCE_DATE_EPOCH=$release_router_source_date_epoch" release_router
+fi
 run_logged 10-image-build.log compose_image_build --profile operations --profile auth-email --profile acceptance build \
   --provenance=false --sbom=false \
   --build-arg "SOURCE_DATE_EPOCH=$candidate_source_date_epoch" \
@@ -2070,6 +3423,7 @@ image_evidence='[]'
 declare -A image_ids=()
 for image_name in \
   "database=business-finlynq-database:$revision" \
+  "router=$release_router_reference" \
   "app=business-finlynq-app:$revision" \
   "migrator=business-finlynq-migrator:$revision" \
   "authWorker=business-finlynq-auth-worker:$revision" \
@@ -2081,9 +3435,20 @@ for image_name in \
   image_revision="$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$image_reference")"
   image_compose_project="$(docker image inspect --format '{{ index .Config.Labels "com.docker.compose.project" }}' "$image_reference")"
   [[ "$image_id" =~ ^sha256:[a-f0-9]{64}$ ]] || fail "$logical_name image has no immutable image ID"
-  [[ "$image_revision" == "$revision" ]] || fail "$logical_name image OCI revision does not match the release"
-  [[ "$image_compose_project" == "$image_build_compose_project" ]] \
-    || fail "$logical_name image did not originate from the revision-bound Compose build project"
+  if [[ "$logical_name" == router ]]; then
+    [[ "$image_revision" == "$release_router_revision" ]] \
+      || fail "release-router image does not carry the stable reviewed revision"
+    [[ "$image_compose_project" == "$release_router_build_compose_project" ]] \
+      || fail "release-router image did not originate from its canonical build project"
+    [[ "$(docker image inspect --format \
+      '{{ index .Config.Labels "com.business-finlynq.release-router.contract" }}' \
+      "$image_reference")" == "$release_router_contract" ]] \
+      || fail "release-router image does not carry the reviewed contract version"
+  else
+    [[ "$image_revision" == "$revision" ]] || fail "$logical_name image OCI revision does not match the release"
+    [[ "$image_compose_project" == "$image_build_compose_project" ]] \
+      || fail "$logical_name image did not originate from the revision-bound Compose build project"
+  fi
   image_ids[$logical_name]="$image_id"
   image_evidence="$(jq -c \
     --arg name "$logical_name" --arg reference "$image_reference" --arg id "$image_id" --arg revision "$image_revision" \
@@ -2095,12 +3460,27 @@ run_logged 10-operations-image-content.log docker run --rm --network none --read
   --user 70:70 --cap-drop ALL --security-opt no-new-privileges --pids-limit 32 --memory 128m --cpus 0.25 \
   --entrypoint /bin/sh "${image_ids[operations]}" -ec \
   'test "$(stat -c "%u:%g:%a:%F" /usr/local/share/business-finlynq)" = "0:0:555:directory" && test "$(stat -c "%u:%g:%a:%F" /usr/local/share/business-finlynq/accounting-evidence-query.sql)" = "0:0:444:regular file" && test -f /usr/local/share/business-finlynq/accounting-evidence-query.sql && test -r /usr/local/share/business-finlynq/accounting-evidence-query.sql && test ! -L /usr/local/share/business-finlynq/accounting-evidence-query.sql'
+router_config_sha256="$(
+  cd -- "$candidate_source_root/deploy/release/router" \
+    && sha256sum Caddyfile Caddyfile.maintenance entrypoint.sh \
+    | awk '{print $1}' | sha256sum | awk '{print $1}'
+)" || fail "release-router configuration checksum could not be read"
+[[ "$router_config_sha256" =~ ^[a-f0-9]{64}$ ]] \
+  || fail "release-router configuration checksum is invalid"
+run_logged 10-release-router-image-content.log docker run --rm --network none --read-only \
+  --user 10001:10001 --cap-drop ALL --security-opt no-new-privileges --pids-limit 32 --memory 64m --cpus 0.25 \
+  --entrypoint /bin/sh "${image_ids[router]}" -ec \
+  'test "$(stat -c "%u:%g:%a:%F" /etc/caddy/Caddyfile)" = "0:0:444:regular file" && test "$(stat -c "%u:%g:%a:%F" /etc/caddy/Caddyfile.maintenance)" = "0:0:444:regular file" && test "$(stat -c "%u:%g:%a:%F" /usr/local/bin/release-router-entrypoint)" = "0:0:555:regular file" && test ! -L /etc/caddy/Caddyfile && test ! -L /etc/caddy/Caddyfile.maintenance && test ! -L /usr/local/bin/release-router-entrypoint && sha256sum /etc/caddy/Caddyfile /etc/caddy/Caddyfile.maintenance /usr/local/bin/release-router-entrypoint | awk '\''{print $1}'\'' | sha256sum' \
+  | grep -F "$router_config_sha256  -" >/dev/null \
+  || fail "release-router image does not contain the exact reviewed configuration"
 
 # From this point onward every release-run service, including browser
 # acceptance, resolves the immutable IDs just inspected rather than mutable
 # commit-shaped tags.
 release_images_pinned="true"
 pinned_compose="$(compose --profile operations --profile auth-email --profile acceptance config --format json)"
+[[ "$(jq -r '.services.release_router.image // empty' <<<"$pinned_compose")" == "${image_ids[router]}" ]] \
+  || fail "pinned Compose configuration does not bind the immutable release-router image"
 [[ "$(jq -r '.services.app.image // empty' <<<"$pinned_compose")" == "${image_ids[app]}" ]] \
   || fail "pinned Compose configuration does not bind the immutable app image"
 [[ "$(jq -r '.services.auth_email_worker.image // empty' <<<"$pinned_compose")" == "${image_ids[authWorker]}" ]] \
@@ -2127,7 +3507,7 @@ for pinned_service_contract in \
     == "${image_ids[$pinned_logical_image]}" ]] \
     || fail "pinned Compose configuration does not bind the immutable image for $pinned_service"
 done
-pinned_compose_hash="$(printf '%s' "$pinned_compose" | sha256sum | awk '{print $1}')" \
+pinned_compose_hash="$(canonical_compose_sha256 "$pinned_compose")" \
   || fail "pinned Compose configuration checksum could not be computed"
 unset pinned_compose
 [[ "$pinned_compose_hash" =~ ^[a-f0-9]{64}$ ]] || fail "pinned Compose configuration checksum is invalid"
@@ -2287,11 +3667,52 @@ previous_app_id=""
 previous_app_revision=""
 if [[ "$mode" == "release" ]]; then
   stage="capture-rollback-artifact"
-  previous_container="$(compose ps --all --quiet app)"
-  [[ "$previous_container" =~ ^[a-f0-9]{12,64}$ ]] \
-    || fail "exactly one existing app container is required; use a reviewed initial-install procedure"
-  previous_app_id="$(docker inspect --format '{{.Image}}' "$previous_container")"
-  previous_app_revision="$(docker inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$previous_container")"
+  if [[ -e "$first_router_recovery_journal" || -L "$first_router_recovery_journal" ]]; then
+    load_first_router_forward_repair_journal
+  else
+    previous_container="$(compose ps --all --quiet app)"
+    [[ "$previous_container" =~ ^[a-f0-9]{12,64}$ ]] \
+      || fail "exactly one existing app container is required; use a reviewed initial-install procedure"
+    previous_container="$(docker inspect --format '{{.Id}}' "$previous_container")" \
+      || fail "the previous application container identity could not be normalized"
+    previous_app_id="$(docker inspect --format '{{.Image}}' "$previous_container")"
+    previous_app_revision="$(docker inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$previous_container")"
+    if [[ -z "$previous_app_revision" || "$previous_app_revision" == "<no value>" ]]; then
+      [[ "$previous_app_id" == "$legacy_f8485_image_id" \
+        && "${ROLLBACK_COMPATIBILITY_ACK:-}" == f8485-one-release-only ]] \
+        || fail "the previous app has no OCI revision and is not the acknowledged exact f8485 compatibility image"
+      previous_app_revision="$legacy_f8485_revision"
+    fi
+    [[ "$(docker inspect --format '{{.State.Running}}' "$previous_container")" == true ]] \
+      || fail "the previous application container is not running before release"
+    previous_app_was_running="true"
+    previous_auth_worker_container="$(compose --profile auth-email ps --all --quiet auth_email_worker)"
+    [[ -z "$previous_auth_worker_container" \
+      || ( "$previous_auth_worker_container" =~ ^[a-f0-9]{12,64}$ \
+        && "$previous_auth_worker_container" != *$'\n'* ) ]] \
+      || fail "previous authentication-worker container inventory is ambiguous"
+    if [[ -n "$previous_auth_worker_container" \
+      && "$(docker inspect --format '{{.State.Running}}' "$previous_auth_worker_container")" == true ]]; then
+      previous_auth_worker_container="$(docker inspect --format '{{.Id}}' \
+        "$previous_auth_worker_container")" \
+        || fail "the previous authentication-worker identity could not be normalized"
+      previous_auth_worker_was_running="true"
+      previous_auth_worker_image_id="$(docker inspect --format '{{.Image}}' \
+        "$previous_auth_worker_container")"
+      previous_auth_worker_revision="$(docker inspect --format \
+        '{{ index .Config.Labels "org.opencontainers.image.revision" }}' \
+        "$previous_auth_worker_container")"
+    fi
+  fi
+  [[ "$previous_auth_worker_was_running" == "$MONITOR_EXPECT_AUTH_EMAIL_WORKER" ]] \
+    || fail "the pre-cutover authentication-worker runtime does not match its reviewed gate"
+  if [[ "$previous_auth_worker_was_running" == true ]]; then
+    [[ "$previous_auth_worker_image_id" =~ ^sha256:[a-f0-9]{64}$ \
+      && "$previous_auth_worker_revision" == "$previous_app_revision" \
+      && "$(docker image inspect --format '{{.Id}}' \
+        "$previous_auth_worker_image_id")" == "$previous_auth_worker_image_id" ]] \
+      || fail "the pre-cutover authentication worker is not the retained immutable release"
+  fi
   [[ "$previous_app_id" =~ ^sha256:[a-f0-9]{64}$ ]] || fail "the previous app has no immutable image ID"
   [[ "$previous_app_revision" =~ ^[a-f0-9]{40}$ && ! "$previous_app_revision" =~ ^0+$ ]] || fail "the previous app has no full OCI revision"
   [[ "$(docker image inspect --format '{{.Id}}' "$previous_app_id")" == "$previous_app_id" ]] || fail "the previous application image is not retained locally"
@@ -2308,12 +3729,14 @@ if [[ "$mode" == "release" ]]; then
       == "$scheduler_boundary_bootstrap_receipt_sha256" ]] \
       || fail "the protected scheduler-boundary bootstrap receipt changed during release"
   fi
-  previous_cron_schedule_file="$(mktemp)"
-  git --no-optional-locks -c safe.directory="$repository_root" -C "$repository_root" \
-    show "$previous_app_revision:deploy/cron/managed-crontab" \
-    >"$previous_cron_schedule_file" \
-    || fail "the previous deployed revision has no reviewable managed cron schedule"
-  chmod 0600 -- "$previous_cron_schedule_file"
+  if [[ "$scheduler_mode" == cron ]]; then
+    previous_cron_schedule_file="$(mktemp)"
+    git --no-optional-locks -c safe.directory="$repository_root" -C "$repository_root" \
+      show "$previous_app_revision:deploy/cron/managed-crontab" \
+      >"$previous_cron_schedule_file" \
+      || fail "the previous deployed revision has no reviewable managed cron schedule"
+    chmod 0600 -- "$previous_cron_schedule_file"
+  fi
 fi
 jq -n \
   --arg previousImageId "$previous_app_id" \
@@ -2523,61 +3946,29 @@ disable_and_verify_initial_schedule() {
   printf '%s\n' "All four production operation timers are installed, disabled, and inactive."
 }
 
-systemd_property_value=""
-read_systemd_property() {
-  local service_name="$1" property_name="$2"
-  [[ "$service_name" == "business-finlynq-accounting-evidence.service" \
-    || "$service_name" == "business-finlynq-monitor.service" ]] \
-    || fail "release acceptance requested an unsupported systemd service"
-  case "$property_name" in
-    ExecMainStartTimestampMonotonic|ExecMainExitTimestampMonotonic|InvocationID|Result|ExecMainStatus) ;;
-    *) fail "release acceptance requested an unsupported systemd property" ;;
-  esac
-  if ! systemd_property_value="$(systemctl show --property="$property_name" --value "$service_name")"; then
-    fail "could not inspect $property_name for $service_name"
-  fi
-  [[ -n "$systemd_property_value" ]] \
-    || fail "systemd returned an empty $property_name for $service_name"
-}
-
 run_fresh_systemd_oneshot() {
   local service_name="$1" description="$2"
-  local previous_start previous_invocation current_start current_exit
-  local current_invocation result main_status
-  read_systemd_property "$service_name" ExecMainStartTimestampMonotonic
-  previous_start="$systemd_property_value"
-  [[ "$previous_start" =~ ^[0-9]+$ ]] \
-    || fail "$description has an invalid previous systemd start timestamp"
-  previous_invocation="$(systemctl show --property=InvocationID --value "$service_name")" \
-    || fail "could not inspect the previous InvocationID for $service_name"
-  [[ -z "$previous_invocation" || "$previous_invocation" =~ ^[a-f0-9]{32}$ ]] \
-    || fail "$description has an invalid previous systemd InvocationID"
+  local active_state active_status
+  case "$service_name" in
+    business-finlynq-accounting-evidence.service|business-finlynq-monitor.service) ;;
+    *) fail "release acceptance requested an unsupported systemd service" ;;
+  esac
+  # systemd 259 clears InvocationID and ExecMain*TimestampMonotonic when a
+  # Type=oneshot unit without RemainAfterExit returns to inactive. The caller
+  # removes the prior metric first and validates a newly written, timestamped,
+  # success metric after this synchronous start; that durable output is the
+  # cross-version proof that this exact invocation ran successfully.
   systemctl start "$service_name" \
     || fail "$description could not be started"
-  read_systemd_property "$service_name" ExecMainStartTimestampMonotonic
-  current_start="$systemd_property_value"
-  read_systemd_property "$service_name" ExecMainExitTimestampMonotonic
-  current_exit="$systemd_property_value"
-  read_systemd_property "$service_name" InvocationID
-  current_invocation="$systemd_property_value"
-  read_systemd_property "$service_name" Result
-  result="$systemd_property_value"
-  read_systemd_property "$service_name" ExecMainStatus
-  main_status="$systemd_property_value"
-  [[ "$current_start" =~ ^[1-9][0-9]*$ && "$current_start" != "$previous_start" ]] \
-    || fail "$description did not execute a fresh systemd invocation"
-  [[ "$current_exit" =~ ^[1-9][0-9]*$ && "$current_exit" -gt "$current_start" ]] \
-    || fail "$description has no valid systemd exit timestamp after its fresh start"
-  [[ "$current_invocation" =~ ^[a-f0-9]{32}$ \
-    && "$current_invocation" != "$previous_invocation" ]] \
-    || fail "$description did not receive a fresh systemd InvocationID"
-  [[ "$result" == "success" ]] \
-    || fail "$description did not report systemd Result=success"
-  [[ "$main_status" == "0" ]] \
-    || fail "$description exited with a nonzero systemd ExecMainStatus"
-  systemctl show --no-pager --property=ExecMainStartTimestampMonotonic \
-    --property=ExecMainExitTimestampMonotonic --property=InvocationID --property=Result \
-    --property=ExecMainStatus "$service_name"
+  active_state=""; active_status=0
+  if active_state="$(systemctl is-active "$service_name" 2>/dev/null)"; then
+    active_status=0
+  else
+    active_status=$?
+  fi
+  [[ "$active_status" == "3" && "$active_state" == "inactive" ]] \
+    || fail "$description did not return to the expected inactive one-shot state"
+  printf 'Started %s; durable metric verification follows.\n' "$service_name"
 }
 
 verify_fresh_cron_job_status() {
@@ -2775,8 +4166,10 @@ verify_fresh_host_monitor_metrics() {
 }
 
 run_installed_monitor() {
-  local started_at completed_timestamp
-  if [[ "$scheduler_mode" == "cron" ]]; then
+  local router_mode="${1:-strict}" started_at completed_timestamp
+  [[ "$router_mode" == strict || "$router_mode" == transitional-maintenance ]] \
+    || fail "monitor acceptance requested an invalid router-mode policy"
+  if [[ "$scheduler_mode" == "cron" && "$router_mode" == strict ]]; then
     clear_cron_job_status monitor
   fi
   clear_release_metric_file MONITOR_METRICS_FILE /var/lib/business-finlynq/host.prom \
@@ -2784,7 +4177,14 @@ run_installed_monitor() {
   started_at="$(date +%s)"
   [[ "$started_at" =~ ^[1-9][0-9]*$ ]] \
     || fail "monitor acceptance start time is invalid"
-  if [[ "$scheduler_mode" == "systemd" ]]; then
+  if [[ "$router_mode" == transitional-maintenance ]]; then
+    # The scheduled monitor intentionally remains strict. During final release
+    # acceptance only, invoke the reviewed implementation directly so it can
+    # attest the live candidate while the restart sentinel is still
+    # maintenance; its freshly replaced metric is verified below unchanged.
+    bash "$repository_root/deploy/monitoring/check-production.sh" \
+      --allow-transitional-router-maintenance
+  elif [[ "$scheduler_mode" == "systemd" ]]; then
     run_fresh_systemd_oneshot business-finlynq-monitor.service \
       "the resumed systemd monitor"
   else
@@ -2870,6 +4270,334 @@ record_scheduler_boundary_version() {
   fi
 }
 
+verify_unique_network_alias_owner() {
+  local network="$1" alias="$2" expected_container="$3" description="$4"
+  local expected_full_id network_query container networks owner_count=0
+  expected_full_id="$(docker inspect --format '{{.Id}}' "$expected_container")" \
+    || fail "$description expected container identity could not be inspected"
+  [[ "$expected_full_id" =~ ^[a-f0-9]{64}$ ]] \
+    || fail "$description expected container identity is invalid"
+  network_query="$(docker ps --all --no-trunc \
+    --filter "network=$network" --format '{{.ID}}')" \
+    || fail "$description network endpoints could not be enumerated"
+  while IFS= read -r container; do
+    [[ -n "$container" ]] || continue
+    [[ "$container" =~ ^[a-f0-9]{64}$ ]] \
+      || fail "$description network returned an invalid endpoint ID"
+    networks="$(docker inspect --format '{{json .NetworkSettings.Networks}}' \
+      "$container")" \
+      || fail "$description network endpoint could not be inspected"
+    if jq -e --arg network "$network" --arg alias "$alias" '
+      has($network) and any(.[$network].Aliases[]?; . == $alias)
+    ' <<<"$networks" >/dev/null; then
+      (( owner_count += 1 ))
+      [[ "$container" == "$expected_full_id" ]] \
+        || fail "$description alias is owned by another network endpoint"
+    fi
+  done <<<"$network_query"
+  [[ "$owner_count" == 1 ]] \
+    || fail "$description alias must be owned exactly once on $network"
+}
+
+verify_release_router_runtime() {
+  local evidence_file="$1" router_container router_runtime router_state_mode verified_at
+
+  capture_compose_container_id "running release-router container" ps --quiet release_router
+  router_container="$captured_compose_container_id"
+  read_docker_output "release-router runtime contract" inspect \
+    --format '{"imageId":{{json .Image}},"revision":{{json (index .Config.Labels "org.opencontainers.image.revision")}},"contract":{{json (index .Config.Labels "com.business-finlynq.release-router.contract")}},"user":{{json .Config.User}},"readOnly":{{json .HostConfig.ReadonlyRootfs}},"init":{{json .HostConfig.Init}},"status":{{json .State.Status}},"healthy":{{json .State.Health.Status}},"capDrop":{{json .HostConfig.CapDrop}},"securityOpt":{{json .HostConfig.SecurityOpt}},"portBindings":{{json .HostConfig.PortBindings}},"tmpfs":{{json .HostConfig.Tmpfs}},"mounts":{{json .Mounts}},"networks":{{json .NetworkSettings.Networks}},"entrypoint":{{json .Config.Entrypoint}},"command":{{json .Config.Cmd}}}' \
+    "$router_container"
+  router_runtime="$docker_query_output"
+  jq -e \
+    --arg imageId "${image_ids[router]}" \
+    --arg revision "$release_router_revision" \
+    --arg contract "$release_router_contract" \
+    --arg frontendNetwork "$router_frontend_network_name" \
+    --arg edgeNetwork "$router_edge_network_name" \
+    --arg stateVolume "$router_state_volume_name" \
+    --arg publicAlias "$router_public_alias" \
+    --arg port "$app_port" '
+      type == "object" and
+      .imageId == $imageId and .revision == $revision and .contract == $contract and
+      .user == "10001:10001" and .readOnly == true and .init == true and
+      .status == "running" and .healthy == "healthy" and
+      (.capDrop | sort) == ["ALL"] and
+      (.securityOpt | index("no-new-privileges:true")) != null and
+      (.mounts | length) == 1 and
+      .mounts[0].Type == "volume" and .mounts[0].Name == $stateVolume and
+      .mounts[0].Destination == "/state" and .mounts[0].RW == true and
+      (.tmpfs | keys | sort) == ["/config", "/data", "/tmp"] and
+      (.portBindings["3000/tcp"] | length) == 1 and
+      .portBindings["3000/tcp"][0].HostIp == "127.0.0.1" and
+      .portBindings["3000/tcp"][0].HostPort == $port and
+      (.networks | keys | sort) == ([$edgeNetwork, $frontendNetwork] | sort) and
+      (.networks[$edgeNetwork].Aliases | index($publicAlias)) != null and
+      .entrypoint == ["/usr/local/bin/release-router-entrypoint"] and
+      .command == ["serve"]
+    ' <<<"$router_runtime" >/dev/null \
+    || fail "running release router differs from the immutable hardened contract"
+  verify_unique_network_alias_owner \
+    "$router_edge_network_name" "$router_public_alias" "$router_container" \
+    "release-router public backend"
+  read_docker_output "release-router durable mode" exec "$router_container" sh -ec '
+    [[ -d /state && ! -L /state && "$(stat -c "%u:%g:%a" /state)" == 10001:10001:700 ]]
+    [[ -f /state/mode && ! -L /state/mode && "$(stat -c "%u:%g:%a" /state/mode)" == 10001:10001:600 ]]
+    cat /state/mode
+  '
+  router_state_mode="$docker_query_output"
+  [[ "$router_state_mode" == active || "$router_state_mode" == maintenance ]] \
+    || fail "release-router durable mode is invalid"
+  curl --fail --silent --show-error --max-time 5 \
+    "http://127.0.0.1:$app_port/_business-finlynq/release-router/live" \
+    | jq -e 'type == "object" and keys == ["status"] and .status == "release-router-live"' >/dev/null \
+    || fail "release-router process liveness contract failed"
+  verified_at="$(checked_utc_timestamp)" \
+    || fail "release-router verification timestamp could not be generated"
+  jq -n \
+    --arg at "$verified_at" \
+    --arg containerId "$router_container" \
+    --arg imageId "${image_ids[router]}" \
+    --arg revision "$release_router_revision" \
+    --arg contract "$release_router_contract" \
+    --arg configSha256 "$router_config_sha256" \
+    --arg publicAlias "$router_public_alias" \
+    --arg frontendNetwork "$router_frontend_network_name" \
+    --arg edgeNetwork "$router_edge_network_name" \
+    --arg stateVolume "$router_state_volume_name" \
+    --arg stateMode "$router_state_mode" \
+    '{schemaVersion: 1, product: "business-finlynq", verifiedAt: $at,
+      service: "release_router", containerId: $containerId, imageId: $imageId,
+      revision: $revision, contractVersion: $contract, configSha256: $configSha256,
+      processHealth: "healthy", durableStateVolume: $stateVolume,
+      durableMode: $stateMode, publicAlias: $publicAlias,
+      networks: ([$edgeNetwork, $frontendNetwork] | sort)}' \
+    >"$evidence_directory/$evidence_file"
+  chmod 0600 -- "$evidence_directory/$evidence_file"
+}
+
+release_router_container_id=""
+resolve_release_router_container() {
+  local query
+  query="$(compose ps --all --quiet release_router)" \
+    || fail "release-router container inventory could not be read"
+  [[ -z "$query" || ( "$query" =~ ^[a-f0-9]{12,64}$ && "$query" != *$'\n'* ) ]] \
+    || fail "release-router container inventory is ambiguous"
+  release_router_container_id="$query"
+}
+
+persist_release_router_mode() {
+  local mode="$1"
+  [[ "$mode" == active || "$mode" == maintenance ]] \
+    || fail "release-router durable mode requested an invalid value"
+  resolve_release_router_container
+  [[ -n "$release_router_container_id" ]] \
+    || fail "release-router durable mode requested without a container"
+  docker exec "$release_router_container_id" sh -ec '
+    set -eu
+    mode="$1"
+    [[ "$mode" == active || "$mode" == maintenance ]]
+    [[ -d /state && ! -L /state && "$(stat -c "%u:%g:%a" /state)" == 10001:10001:700 ]]
+    temporary="/state/.mode.$$"
+    trap '\''rm -f -- "$temporary"'\'' EXIT INT TERM
+    printf "%s\n" "$mode" >"$temporary"
+    chmod 0600 "$temporary"
+    mv -f "$temporary" /state/mode
+    sync /state/mode 2>/dev/null || sync
+    sync -f /state 2>/dev/null || sync
+    trap - EXIT INT TERM
+    [[ -f /state/mode && ! -L /state/mode \
+      && "$(stat -c "%u:%g:%a" /state/mode)" == 10001:10001:600 \
+      && "$(cat /state/mode)" == "$mode" ]]
+  ' sh "$mode" || fail "release-router durable mode could not be committed"
+}
+
+reload_release_router_configuration() {
+  local selected_config="$1"
+  [[ "$selected_config" == Caddyfile || "$selected_config" == Caddyfile.maintenance ]] \
+    || fail "release-router reload requested an unknown configuration"
+  resolve_release_router_container
+  [[ -n "$release_router_container_id" ]] \
+    || fail "release-router reload requested without a container"
+  if [[ "$selected_config" == Caddyfile.maintenance ]]; then
+    [[ "$release_acceptance_token" =~ ^[a-f0-9]{64}$ ]] \
+      || fail "release-router maintenance token is unavailable"
+    docker exec --env \
+      "BUSINESS_FINLYNQ_RELEASE_ACCEPTANCE_TOKEN=$release_acceptance_token" \
+      "$release_router_container_id" caddy reload \
+      --config "/etc/caddy/$selected_config" --adapter caddyfile \
+      --address unix//tmp/caddy-admin.sock
+  else
+    docker exec "$release_router_container_id" caddy reload \
+      --config "/etc/caddy/$selected_config" --adapter caddyfile \
+      --address unix//tmp/caddy-admin.sock
+  fi
+}
+
+verify_release_router_maintenance() {
+  local live_body="$evidence_directory/28-release-router-live.json"
+  local health_headers="$evidence_directory/28-release-router-maintenance.headers"
+  local health_body="$evidence_directory/28-release-router-maintenance.json"
+  local route_headers="$evidence_directory/28-release-router-route.headers"
+  local route_body="$evidence_directory/28-release-router-route.txt"
+  local live_status="" health_status="" route_status="" attempt
+
+  for attempt in {1..15}; do
+    live_status=""
+    if live_status="$(curl --silent --show-error --max-time 5 \
+      --header "X-Request-Id: release-maintenance-$run_id" \
+      --output "$live_body" --write-out '%{http_code}' \
+      "$public_base_url/api/live")" \
+      && [[ "$live_status" == "200" ]] \
+      && jq -e 'type == "object" and keys == ["status"] and .status == "live"' \
+        "$live_body" >/dev/null; then
+      break
+    fi
+    sleep 2
+  done
+  [[ "$live_status" == "200" ]] \
+    || fail "release router did not keep public liveness available during maintenance"
+
+  health_status="$(curl --silent --show-error --max-time 10 \
+    --header "X-Request-Id: release-maintenance-$run_id" \
+    --dump-header "$health_headers" --output "$health_body" --write-out '%{http_code}' \
+    "$public_base_url/api/health")" \
+    || fail "release-router maintenance response could not be reached"
+  [[ "$health_status" == "503" ]] \
+    || fail "release-router maintenance response must be HTTP 503"
+  jq -e 'type == "object" and keys == ["status"] and .status == "unavailable"' \
+    "$health_body" >/dev/null \
+    || fail "release-router maintenance readiness body is invalid"
+  grep -Eiq '^cache-control:.*no-store' "$health_headers" \
+    || fail "release-router maintenance response is cacheable"
+  grep -Eiq '^retry-after:[[:space:]]*5[[:space:]]*$' "$health_headers" \
+    || fail "release-router maintenance response lacks its bounded retry advice"
+
+  route_status="$(curl --silent --show-error --max-time 10 \
+    --header "X-Request-Id: release-maintenance-$run_id" \
+    --dump-header "$route_headers" --output "$route_body" --write-out '%{http_code}' \
+    "$public_base_url/")" \
+    || fail "release-router public maintenance route could not be reached"
+  [[ "$route_status" == "503" \
+    && "$(tr -d '\r' <"$route_body")" == "Service temporarily unavailable." ]] \
+    || fail "release router did not block public application traffic"
+  grep -Eiq '^cache-control:.*no-store' "$route_headers" \
+    || fail "release-router public maintenance route is cacheable"
+  grep -Eiq '^retry-after:[[:space:]]*5[[:space:]]*$' "$route_headers" \
+    || fail "release-router public maintenance route lacks retry advice"
+  chmod 0600 -- "$live_body" "$health_headers" "$health_body" "$route_headers" "$route_body"
+}
+
+enter_release_router_maintenance() {
+  [[ "$release_acceptance_token" =~ ^[a-f0-9]{64}$ ]] \
+    || fail "release acceptance token is unavailable or invalid"
+  # Persist the fail-closed restart choice before changing the live process.
+  persist_release_router_mode maintenance
+  reload_release_router_configuration Caddyfile.maintenance
+  verify_release_router_maintenance
+  router_maintenance_confirmed="true"
+  router_active_confirmed="false"
+}
+
+activate_release_router_live() {
+  # Keep durable maintenance throughout every final acceptance gate. A host or
+  # daemon restart before the terminal evidence is sealed therefore remains
+  # fail-closed even though the already-running Caddy process serves the
+  # candidate for public verification.
+  reload_release_router_configuration Caddyfile
+}
+
+commit_release_router_active() {
+  # This atomic sentinel rename is the last acceptance commit. The terminal
+  # evidence already authorizes exact recovery if power is lost immediately
+  # before this write; no unaccepted candidate can restart active.
+  persist_release_router_mode active
+  router_active_confirmed="true"
+  router_maintenance_confirmed="false"
+}
+
+wait_for_router_upstream_drain() {
+  local connection_count="" attempt drained_at
+  for attempt in {1..60}; do
+    resolve_release_router_container
+    [[ -n "$release_router_container_id" ]] \
+      || fail "release router disappeared during upstream drain"
+    connection_count="$(docker exec "$release_router_container_id" sh -ec '
+      awk '\''$4 == "01" && $3 ~ /:0BB8$/ { count++ } END { print count + 0 }'\'' \
+        /proc/net/tcp /proc/net/tcp6
+    ')" || fail "release-router upstream drain could not be inspected"
+    [[ "$connection_count" =~ ^[0-9]+$ ]] \
+      || fail "release-router upstream drain returned an invalid count"
+    [[ "$connection_count" == 0 ]] && break
+    sleep 1
+  done
+  [[ "$connection_count" == 0 ]] \
+    || fail "in-flight release-router application requests did not drain"
+  drained_at="$(checked_utc_timestamp)" \
+    || fail "router-drain timestamp could not be generated"
+  jq -n --arg at "$drained_at" \
+    '{schemaVersion: 1, product: "business-finlynq", verifiedAt: $at,
+      upstream: "release-app:3000", establishedConnections: 0}' \
+    >"$evidence_directory/24-router-upstream-drain.json"
+  chmod 0600 -- "$evidence_directory/24-router-upstream-drain.json"
+}
+
+wait_for_application_database_disconnect() {
+  local session_count="" attempt disconnected_at
+  for attempt in {1..60}; do
+    session_count="$(compose exec -T database sh -ec '
+      export PGPASSWORD="$POSTGRES_PASSWORD"
+      exec psql --no-psqlrc -X -A -t -h 127.0.0.1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" \
+        -c "SELECT count(*) FROM pg_stat_activity WHERE pid <> pg_backend_pid() AND datname = current_database() AND backend_type = '\''client backend'\'';"
+    ')" || fail "database client-session drain could not be inspected"
+    [[ "$session_count" =~ ^[0-9]+$ ]] \
+      || fail "database client-session drain returned an invalid count"
+    [[ "$session_count" == 0 ]] && break
+    sleep 1
+  done
+  [[ "$session_count" == 0 ]] \
+    || fail "database client sessions did not fully drain before the recovery point"
+  disconnected_at="$(checked_utc_timestamp)" \
+    || fail "database-disconnect timestamp could not be generated"
+  jq -n --arg at "$disconnected_at" \
+    '{schemaVersion: 1, product: "business-finlynq", verifiedAt: $at,
+      scope: "all-client-backends-in-application-database", remainingSessions: 0}' \
+    >"$evidence_directory/24-database-session-disconnect.json"
+  chmod 0600 -- "$evidence_directory/24-database-session-disconnect.json"
+}
+
+# A normal application release reuses the already-running, separately
+# versioned router. Absence is accepted only for the one-time legacy rollout,
+# an initial install/resume, or an isolated rehearsal.
+resolve_release_router_container
+if [[ "$mode" == "release" && "$edge_mode" == "external" ]]; then
+  stage="pre-cutover-external-edge"
+  if [[ "$first_router_forward_repair_resume" == true ]]; then
+    pre_cutover_edge_arguments=(
+      --scope production --warmup-host production
+      --expected-production-revision "$revision"
+      --allow-first-router-forward-repair "$first_router_recovery_journal_sha256"
+    )
+  else
+    pre_cutover_edge_arguments=(
+      --scope production --warmup-host production
+      --expected-production-revision "$previous_app_revision"
+    )
+    if [[ -z "$release_router_container_id" ]]; then
+      pre_cutover_edge_arguments+=(--allow-pre-router-production)
+    elif [[ "$previous_app_revision" == "$legacy_f8485_revision" ]]; then
+      pre_cutover_edge_arguments+=(--allow-f8485-minimal-production-health)
+    fi
+  fi
+  run_logged 19-pre-cutover-external-edge.log \
+    bash "$candidate_source_root/deploy/edge/verify-external-edge.sh" \
+      "${pre_cutover_edge_arguments[@]}"
+fi
+
+if [[ -n "$release_router_container_id" ]]; then
+  router_was_preexisting="true"
+  verify_release_router_runtime 19-pre-cutover-release-router-runtime.json
+fi
+
 if [[ "$mode" == "release" ]]; then
   stage="pause-schedulers"
   scheduler_pause_attempted="true"
@@ -2897,28 +4625,614 @@ stage="stop-write-surfaces"
 stop_write_surfaces() {
   if [[ "$mode" == "release" ]]; then
     # The recovery point must cover every mutation accepted by the old release.
-    # Quiesce both application and delivery worker before pg_dump; taking the
-    # snapshot first would leave a post-snapshot/pre-migration loss window.
-    compose --profile auth-email stop --timeout 60 auth_email_worker app
+    # Quiesce the delivery worker first. On all post-bootstrap releases the
+    # router is already holding new public requests in maintenance while the
+    # app finishes any active database transaction.
+    compose --profile auth-email stop --timeout 60 auth_email_worker
+    if [[ "$router_was_preexisting" == "true" ]]; then
+      wait_for_router_upstream_drain
+    fi
+    compose stop --timeout 60 app
+    wait_for_application_database_disconnect
   fi
   read_compose_output "running application write surface" ps --status running --quiet app
   [[ -z "$compose_query_output" ]] || fail "application write surface is still running"
   read_compose_output "running authentication-worker write surface" \
     --profile auth-email ps --status running --quiet auth_email_worker
   [[ -z "$compose_query_output" ]] || fail "authentication worker is still running"
+  write_surfaces_stopped="true"
   printf '%s\n' "Application and authentication-worker write surfaces are stopped."
 }
+
+detach_previous_app_public_edge() {
+  local attachment
+  [[ "$mode" == release && "$router_was_preexisting" != true \
+    && "$previous_container" =~ ^[a-f0-9]{12,64}$ \
+    && "$router_edge_network_name" == business_finlynq_edge \
+    && "$router_public_alias" == production-app ]] || return 1
+  [[ "$(docker inspect --format '{{.Image}}' "$previous_container" 2>/dev/null)" \
+    == "$previous_app_id" \
+    && "$(docker inspect --format '{{.State.Running}}' "$previous_container" 2>/dev/null)" \
+    == false ]] || return 1
+  attachment="$(docker inspect --format \
+    '{{json (index .NetworkSettings.Networks "business_finlynq_edge")}}' \
+    "$previous_container" 2>/dev/null)" || return 1
+  jq -e --arg alias "$router_public_alias" '
+    type == "object" and any(.Aliases[]?; . == $alias)
+  ' <<<"$attachment" >/dev/null || return 1
+  # Arm recovery before the mutating Docker call. The recovery path inspects the
+  # real attachment, so interruption between disconnect and return is safe.
+  previous_app_public_edge_detached="true"
+  docker network disconnect --force "$router_edge_network_name" "$previous_container"
+  [[ "$(docker inspect --format \
+    '{{if index .NetworkSettings.Networks "business_finlynq_edge"}}attached{{end}}' \
+    "$previous_container" 2>/dev/null)" == "" ]] || return 1
+}
+
+cleanup_failed_backup_service_containers() {
+  local service_name="$1" container_id query_output=""
+  local -a backup_containers=()
+  [[ "$service_name" == backup || "$service_name" == verify_latest_backup ]] \
+    || fail "backup failure containment received an unexpected service"
+  if ! query_output="$(timeout --signal=TERM --kill-after=5s 30s \
+    env -i "PATH=$PATH" docker ps --all --quiet \
+    --filter "label=com.docker.compose.project=$compose_project" \
+    --filter "label=com.docker.compose.service=$service_name")"; then
+    return 1
+  fi
+  while IFS= read -r container_id; do
+    [[ -z "$container_id" ]] && continue
+    [[ "$container_id" =~ ^[a-f0-9]{12,64}$ ]] \
+      || fail "Docker returned an invalid backup container ID during containment"
+    backup_containers+=("$container_id")
+  done <<<"$query_output"
+  (( ${#backup_containers[@]} > 0 )) || return 0
+  timeout --signal=TERM --kill-after=5s 2m env -i "PATH=$PATH" \
+    docker rm --force -- "${backup_containers[@]}" >/dev/null 2>&1 \
+    || return 1
+  if ! query_output="$(timeout --signal=TERM --kill-after=5s 30s \
+    env -i "PATH=$PATH" docker ps --all --quiet \
+    --filter "label=com.docker.compose.project=$compose_project" \
+    --filter "label=com.docker.compose.service=$service_name")"; then
+    return 1
+  fi
+  [[ -z "$query_output" ]]
+}
+
+cleanup_failed_backup_containers() {
+  cleanup_failed_backup_service_containers backup
+}
+
+cleanup_failed_backup_verifier_containers() {
+  cleanup_failed_backup_service_containers verify_latest_backup
+}
+
+run_backup() (
+  local timeout_seconds="${1:-$release_backup_timeout_seconds}" backup_status=0
+  [[ "$timeout_seconds" =~ ^[1-9][0-9]*$ && "$timeout_seconds" -le 5400 ]] \
+    || fail "release backup timeout is outside the reviewed envelope"
+  if compose_timed_with_overrides "${timeout_seconds}s" \
+    "BACKUP_SOURCE_APPLICATION_REVISION=$backup_source_revision" -- \
+    --profile operations run --rm --no-deps backup; then
+    return 0
+  else
+    backup_status=$?
+  fi
+  cleanup_failed_backup_containers \
+    || fail "timed-out backup container could not be contained and removed"
+  return "$backup_status"
+)
+
+capture_backup_manifest_from_log() {
+  local log_filename="$1" result_records="" result_json="" backup_manifest_basename=""
+  local -a result_lines=()
+  [[ "$log_filename" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*[.]log$ \
+    && -f "$evidence_directory/$log_filename" \
+    && ! -L "$evidence_directory/$log_filename" ]] \
+    || fail "backup producer log is missing or unsafe"
+  result_records="$(sed -n 's/^BUSINESS_FINLYNQ_BACKUP_RESULT=//p' \
+    "$evidence_directory/$log_filename")" \
+    || fail "backup producer result could not be extracted"
+  [[ -n "$result_records" ]] \
+    || fail "backup producer did not emit exactly one committed result"
+  mapfile -t result_lines <<<"$result_records"
+  (( ${#result_lines[@]} == 1 )) \
+    || fail "backup producer did not emit exactly one committed result"
+  result_json="${result_lines[0]}"
+  backup_manifest_basename="$(jq -er '
+    if type == "object" and
+      keys == ["manifestBasename", "product", "schemaVersion"] and
+      .schemaVersion == 1 and .product == "business-finlynq" and
+      (.manifestBasename | type == "string" and
+        test("^business_finlynq_[0-9]{8}T[0-9]{6}Z_[A-Za-z0-9_.-]+\\.manifest\\.json$"))
+    then .manifestBasename
+    else error("invalid backup producer result")
+    end
+  ' <<<"$result_json")" \
+    || fail "backup producer emitted an invalid committed result"
+  [[ "$backup_manifest_basename" =~ ^business_finlynq_[0-9]{8}T[0-9]{6}Z_[A-Za-z0-9_.-]+[.]manifest[.]json$ ]] \
+    || fail "backup producer emitted an unsafe manifest basename"
+  printf '%s' "$backup_manifest_basename"
+}
+
+verify_backup_and_record_evidence() {
+  local manifest_basename="$1"
+  local evidence_filename="${2:-33-backup-evidence.json}"
+  local workflow_deadline_seconds="$3"
+  local verifier_output evidence_records evidence_json verifier_timeout_seconds verifier_status=0
+  local -a evidence_lines=()
+  [[ "$manifest_basename" =~ ^business_finlynq_[0-9]{8}T[0-9]{6}Z_[A-Za-z0-9_.-]+[.]manifest[.]json$ ]] \
+    || fail "exact backup manifest basename is unsafe"
+  [[ "$evidence_filename" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*[.]json$ ]] \
+    || fail "immutable backup evidence filename is unsafe"
+  if ! verifier_timeout_seconds="$(remaining_backup_workflow_seconds \
+    "$workflow_deadline_seconds")"; then
+    cleanup_failed_backup_verifier_containers \
+      || fail "expired backup verifier container could not be contained and removed"
+    printf '%s\n' "Backup verification exceeded the shared producer/verifier deadline." >&2
+    return 124
+  fi
+  if verifier_output="$(compose_timed "${verifier_timeout_seconds}s" \
+    --profile operations run --rm --no-deps -T \
+    verify_latest_backup \
+    /usr/local/bin/business-finlynq-check-latest-backup \
+      --manifest-basename "$manifest_basename" --emit-evidence 2>&1)"; then
+    verifier_status=0
+  else
+    verifier_status=$?
+  fi
+  if (( verifier_status != 0 )); then
+    printf '%s\n' "$verifier_output"
+    cleanup_failed_backup_verifier_containers \
+      || fail "failed backup verifier container could not be contained and removed"
+    return "$verifier_status"
+  fi
+  printf '%s\n' "$verifier_output"
+  evidence_records="$(printf '%s\n' "$verifier_output" \
+    | sed -n 's/^BUSINESS_FINLYNQ_BACKUP_EVIDENCE=//p')" \
+    || fail "immutable backup evidence lines could not be extracted"
+  [[ -n "$evidence_records" ]] \
+    || fail "immutable backup verifier did not emit exactly one evidence record"
+  mapfile -t evidence_lines <<<"$evidence_records"
+  (( ${#evidence_lines[@]} == 1 )) \
+    || fail "immutable backup verifier did not emit exactly one evidence record"
+  evidence_json="${evidence_lines[0]}"
+  jq -e --arg sourceRevision "$backup_source_revision" --arg toolRevision "$revision" \
+    --arg manifestBasename "$manifest_basename" '
+    type == "object" and
+    keys == ["applicationRevision", "backupToolRevision", "createdAt",
+      "encryptedArchive", "encryptedBytes", "encryption", "format",
+      "manifestBasename", "product", "schemaVersion", "sha256",
+      "sourceApplicationRevision"] and
+    .schemaVersion == 1 and .product == "business-finlynq" and
+    .applicationRevision == $sourceRevision and
+    .sourceApplicationRevision == $sourceRevision and
+    .backupToolRevision == $toolRevision and
+    .manifestBasename == $manifestBasename and
+    .encryption == "age" and .format == "postgres-custom" and
+    (.createdAt | type == "string" and
+      test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$")) and
+    (.encryptedArchive | type == "string" and
+      test("^business_finlynq_[0-9]{8}T[0-9]{6}Z_[A-Za-z0-9_.-]+\\.dump\\.age$")) and
+    .encryptedArchive == ($manifestBasename | sub("\\.manifest\\.json$"; ".dump.age")) and
+    (.encryptedBytes | type == "number" and . == floor and . > 0) and
+    (.sha256 | type == "string" and test("^[a-f0-9]{64}$"))
+  ' <<<"$evidence_json" >/dev/null \
+    || fail "immutable backup verifier emitted invalid release evidence"
+  jq '.' <<<"$evidence_json" >"$evidence_directory/$evidence_filename" \
+    || fail "immutable backup evidence could not be written"
+  chmod 0600 -- "$evidence_directory/$evidence_filename" \
+    || fail "immutable backup evidence permissions could not be set"
+}
+
+remaining_backup_workflow_seconds() {
+  local workflow_deadline_seconds="$1" remaining_seconds
+  [[ "$workflow_deadline_seconds" =~ ^[1-9][0-9]*$ ]] \
+    || fail "backup workflow deadline is invalid"
+  remaining_seconds=$((workflow_deadline_seconds - SECONDS))
+  (( remaining_seconds > 0 )) || return 124
+  printf '%s' "$remaining_seconds"
+}
+
+run_backup_before_deadline() {
+  local workflow_deadline_seconds="$1" remaining_seconds
+  remaining_seconds="$(remaining_backup_workflow_seconds \
+    "$workflow_deadline_seconds")" || return $?
+  run_backup "$remaining_seconds"
+}
+
+run_verified_backup_workflow() {
+  local timeout_seconds="$1" producer_log="$2" verifier_log="$3"
+  local evidence_filename="${4:-33-backup-evidence.json}"
+  local workflow_deadline_seconds backup_manifest_basename=""
+  [[ "$timeout_seconds" =~ ^[1-9][0-9]*$ && "$timeout_seconds" -le 5400 ]] \
+    || fail "verified backup workflow timeout is outside the reviewed envelope"
+  [[ "$producer_log" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*[.]log$ \
+    && "$verifier_log" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*[.]log$ ]] \
+    || fail "verified backup workflow log filename is unsafe"
+
+  # This coordinator intentionally runs in the parent shell. `run_logged`
+  # isolates each command, while the exact manifest parsed after the producer
+  # remains parent-owned and is passed explicitly to the verifier. Both Docker
+  # phases consume one absolute deadline rather than receiving independent caps.
+  workflow_deadline_seconds=$((SECONDS + timeout_seconds))
+  run_logged "$producer_log" run_backup_before_deadline "$workflow_deadline_seconds"
+  backup_manifest_basename="$(capture_backup_manifest_from_log "$producer_log")" \
+    || fail "exact backup manifest identity could not be captured"
+  run_logged "$verifier_log" verify_backup_and_record_evidence \
+    "$backup_manifest_basename" "$evidence_filename" "$workflow_deadline_seconds"
+}
+
+release_recovery_lsn=""
+release_recovery_system_identifier=""
+release_recovery_timeline_id=""
+release_recovery_database=""
+release_recovery_unlogged_relations=""
+release_recovery_prepared_transactions=""
+release_recovery_sequences=""
+release_recovery_foreign_tables=""
+release_recovery_active_client_transactions=""
+read_release_database_recovery_boundary() {
+  local boundary="" extra=""
+  boundary="$(compose exec -T database sh -ec '
+    export PGPASSWORD="$POSTGRES_PASSWORD"
+    exec psql --no-psqlrc -X -A -t -h 127.0.0.1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" \
+      -c "SELECT concat_ws(chr(124), pg_current_wal_insert_lsn()::text, (SELECT system_identifier::text FROM pg_control_system()), (SELECT timeline_id::text FROM pg_control_checkpoint()), current_database(), (SELECT count(*)::text FROM pg_class WHERE relpersistence = chr(117)), (SELECT count(*)::text FROM pg_prepared_xacts WHERE database = current_database()), (SELECT count(*)::text FROM pg_class WHERE ascii(relkind::text) = 83), (SELECT count(*)::text FROM pg_class WHERE ascii(relkind::text) = 102), (SELECT count(*)::text FROM pg_stat_activity WHERE pid <> pg_backend_pid() AND datname = current_database() AND backend_type = concat(chr(99), chr(108), chr(105), chr(101), chr(110), chr(116), chr(32), chr(98), chr(97), chr(99), chr(107), chr(101), chr(110), chr(100)) AND xact_start IS NOT NULL));"
+  ')" || fail "database recovery boundary could not be inspected"
+  IFS='|' read -r release_recovery_lsn release_recovery_system_identifier \
+    release_recovery_timeline_id release_recovery_database \
+    release_recovery_unlogged_relations release_recovery_prepared_transactions \
+    release_recovery_sequences release_recovery_foreign_tables \
+    release_recovery_active_client_transactions extra <<<"$boundary"
+  release_recovery_lsn="${release_recovery_lsn^^}"
+  [[ -z "$extra" && "$release_recovery_lsn" =~ ^[0-9A-F]+/[0-9A-F]+$ \
+    && "$release_recovery_system_identifier" =~ ^[1-9][0-9]+$ \
+    && "$release_recovery_timeline_id" =~ ^[1-9][0-9]*$ \
+    && "$release_recovery_database" == business_finlynq \
+    && "$release_recovery_unlogged_relations" =~ ^[0-9]+$ \
+    && "$release_recovery_prepared_transactions" =~ ^[0-9]+$ \
+    && "$release_recovery_sequences" =~ ^[0-9]+$ \
+    && "$release_recovery_foreign_tables" =~ ^[0-9]+$ \
+    && "$release_recovery_active_client_transactions" =~ ^[0-9]+$ ]] \
+    || fail "database recovery boundary identity or sanitized relation counts are invalid"
+}
+
+release_recovery_boundary_supports_online_reuse() {
+  [[ "$release_recovery_unlogged_relations" == 0 \
+    && "$release_recovery_prepared_transactions" == 0 \
+    && "$release_recovery_sequences" == 0 \
+    && "$release_recovery_foreign_tables" == 0 \
+    && "$release_recovery_active_client_transactions" == 0 ]]
+}
+
+write_release_database_recovery_sample() {
+  local filename="$1" phase="$2" lsn="$3" system_identifier="$4"
+  local timeline_id="$5" database_name="$6" container_id="$7"
+  local unlogged_relations="$8" prepared_transactions="$9"
+  local sequence_relations="${10}" foreign_tables="${11}"
+  local active_client_transactions="${12}" recorded_at=""
+  [[ "$filename" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*[.]json$ \
+    && "$phase" =~ ^[a-z][a-z0-9-]*$ \
+    && "$lsn" =~ ^[0-9A-F]+/[0-9A-F]+$ \
+    && "$system_identifier" =~ ^[1-9][0-9]+$ \
+    && "$timeline_id" =~ ^[1-9][0-9]*$ \
+    && "$database_name" == business_finlynq \
+    && "$container_id" =~ ^[a-f0-9]{12,64}$ \
+    && "$unlogged_relations" =~ ^[0-9]+$ \
+    && "$prepared_transactions" =~ ^[0-9]+$ \
+    && "$sequence_relations" =~ ^[0-9]+$ \
+    && "$foreign_tables" =~ ^[0-9]+$ \
+    && "$active_client_transactions" =~ ^[0-9]+$ ]] \
+    || fail "database recovery sample is invalid"
+  recorded_at="$(checked_utc_timestamp)" \
+    || fail "database recovery sample timestamp could not be generated"
+  jq -n --arg at "$recorded_at" --arg phase "$phase" --arg lsn "$lsn" \
+    --arg systemIdentifier "$system_identifier" --arg timelineId "$timeline_id" \
+    --arg database "$database_name" --arg containerId "$container_id" \
+    --argjson unloggedRelations "$unlogged_relations" \
+    --argjson preparedTransactions "$prepared_transactions" \
+    --argjson sequenceRelations "$sequence_relations" \
+    --argjson foreignTables "$foreign_tables" \
+    --argjson activeClientTransactions "$active_client_transactions" \
+    '{schemaVersion: 1, product: "business-finlynq", recordedAt: $at,
+      phase: $phase, database: $database, databaseContainerId: $containerId,
+      systemIdentifier: $systemIdentifier, timelineId: ($timelineId | tonumber),
+      walInsertLsn: $lsn, unloggedRelations: $unloggedRelations,
+      preparedTransactions: $preparedTransactions,
+      sequenceRelations: $sequenceRelations, foreignTables: $foreignTables,
+      activeClientTransactions: $activeClientTransactions,
+      onlineBackupEligible: ($unloggedRelations == 0 and
+        $preparedTransactions == 0 and $sequenceRelations == 0 and
+        $foreignTables == 0 and $activeClientTransactions == 0),
+      onlineBackupIneligibilityReasons: [
+        if $unloggedRelations > 0 then "unlogged-relations" else empty end,
+        if $preparedTransactions > 0 then "prepared-transactions" else empty end,
+        if $sequenceRelations > 0 then "sequences" else empty end,
+        if $foreignTables > 0 then "foreign-tables" else empty end,
+        if $activeClientTransactions > 0 then "active-client-transactions" else empty end
+      ]}' \
+    >"$evidence_directory/$filename" \
+    || fail "database recovery sample could not be written"
+  chmod 0600 -- "$evidence_directory/$filename" \
+    || fail "database recovery sample permissions could not be set"
+}
+
+record_release_backup_recovery_point() {
+  local strategy="$1" start_lsn="$2" final_lsn="$3"
+  local decision_reason="${4:-}" identity_stable="${5:-}" recorded_at=""
+  local online_backup_json="null" eligibility_json="null"
+  [[ "$strategy" == online-no-wal-advance || "$strategy" == quiesced-fallback \
+    || "$strategy" == quiesced-worker-active \
+    || "$strategy" == quiesced-online-ineligible ]] \
+    || fail "release backup recovery strategy is invalid"
+  [[ -f "$evidence_directory/33-backup-evidence.json" \
+    && ! -L "$evidence_directory/33-backup-evidence.json" ]] \
+    || fail "release backup recovery evidence is incomplete"
+  if [[ "$strategy" == quiesced-worker-active \
+    || "$strategy" == quiesced-online-ineligible ]]; then
+    [[ -z "$start_lsn" && -z "$final_lsn" \
+      && ! -e "$evidence_directory/22-online-backup-evidence.json" \
+      && ! -L "$evidence_directory/22-online-backup-evidence.json" ]] \
+      || fail "skipped online backup recovery evidence has an online snapshot"
+    if [[ "$strategy" == quiesced-worker-active ]]; then
+      [[ "$decision_reason" == authentication-worker-active \
+        && -z "$identity_stable" \
+        && ! -e "$evidence_directory/22-online-backup-eligibility.json" \
+        && ! -L "$evidence_directory/22-online-backup-eligibility.json" ]] \
+        || fail "worker-active online-backup skip evidence is invalid"
+    else
+      [[ "$decision_reason" == database-online-reuse-ineligible \
+        && -z "$identity_stable" \
+        && -f "$evidence_directory/22-online-backup-eligibility.json" \
+        && ! -L "$evidence_directory/22-online-backup-eligibility.json" ]] \
+        || fail "database-ineligible online-backup skip evidence is invalid"
+      eligibility_json="$(jq -c '.' \
+        "$evidence_directory/22-online-backup-eligibility.json")" \
+        || fail "online backup eligibility evidence could not be loaded"
+    fi
+  else
+    if [[ "$strategy" == online-no-wal-advance ]]; then
+      [[ -z "$decision_reason" && "$identity_stable" == true ]] \
+        || fail "reused online backup decision evidence is invalid"
+    else
+      [[ "$decision_reason" == wal-advanced \
+        || "$decision_reason" == database-identity-changed \
+        || "$decision_reason" == online-reuse-became-ineligible ]] \
+        || fail "fallback online backup decision evidence is invalid"
+      [[ "$identity_stable" == true || "$identity_stable" == false ]] \
+        || fail "fallback database identity evidence is invalid"
+    fi
+    [[ "$start_lsn" =~ ^[0-9A-F]+/[0-9A-F]+$ \
+      && "$final_lsn" =~ ^[0-9A-F]+/[0-9A-F]+$ \
+      && -f "$evidence_directory/22-online-backup-start.json" \
+      && ! -L "$evidence_directory/22-online-backup-start.json" \
+      && -f "$evidence_directory/29-online-backup-final.json" \
+      && ! -L "$evidence_directory/29-online-backup-final.json" \
+      && -f "$evidence_directory/22-online-backup-evidence.json" \
+      && ! -L "$evidence_directory/22-online-backup-evidence.json" ]] \
+      || fail "online backup recovery evidence is incomplete"
+    eligibility_json="$(jq -c '.' \
+      "$evidence_directory/22-online-backup-start.json")" \
+      || fail "online backup start-boundary evidence could not be loaded"
+    online_backup_json="$(jq -c '.' \
+      "$evidence_directory/22-online-backup-evidence.json")" \
+      || fail "online backup recovery evidence could not be loaded"
+  fi
+  recorded_at="$(checked_utc_timestamp)" \
+    || fail "release backup recovery-point timestamp could not be generated"
+  jq -n --arg at "$recorded_at" --arg strategy "$strategy" \
+    --arg startLsn "$start_lsn" --arg finalLsn "$final_lsn" \
+    --arg decisionReason "$decision_reason" --arg identityStable "$identity_stable" \
+    --argjson online "$online_backup_json" \
+    --argjson eligibility "$eligibility_json" \
+    --argjson onlineTimeoutSeconds "$release_online_backup_timeout_seconds" \
+    --argjson quiescedTimeoutSeconds "$release_quiesced_backup_timeout_seconds" \
+    --slurpfile selected "$evidence_directory/33-backup-evidence.json" '
+      {
+        schemaVersion: 1,
+        product: "business-finlynq",
+        recordedAt: $at,
+        strategy: $strategy,
+        onlineBackup: $online,
+        onlineBackupEligibility: $eligibility,
+        onlineBackupDecisionReason:
+          (if $decisionReason == "" then null else $decisionReason end),
+        databaseIdentityStableAcrossOnlineBackup:
+          (if $identityStable == "" then null else ($identityStable == "true") end),
+        selectedRecoveryPoint: $selected[0],
+        walInsertLsnBeforeOnlineBackup: (if $startLsn == "" then null else $startLsn end),
+        walInsertLsnAfterWriteSurfaceDrain: (if $finalLsn == "" then null else $finalLsn end),
+        walAdvanced: (if $startLsn == "" then null else ($startLsn != $finalLsn) end),
+        publicApplicationAvailableDuringOnlineBackup:
+          (if $startLsn == "" then null else true end),
+        onlineBackupSkippedBecauseAuthenticationWorkerWasActive:
+          ($strategy == "quiesced-worker-active"),
+        onlineBackupTimeoutSeconds: $onlineTimeoutSeconds,
+        quiescedFallbackTimeoutSeconds: $quiescedTimeoutSeconds
+      }
+    ' >"$evidence_directory/33-backup-recovery-point.json" \
+    || fail "release backup recovery-point evidence could not be written"
+  chmod 0600 -- "$evidence_directory/33-backup-recovery-point.json" \
+    || fail "release backup recovery-point evidence permissions could not be set"
+}
+
+if [[ "$mode" == release && "$first_router_forward_repair_resume" != true ]]; then
+  write_first_router_recovery_journal \
+    || fail "release pre-cutover recovery journal could not be committed"
+  first_router_recovery_journal_committed="true"
+fi
+
+online_backup_start_lsn=""
+online_backup_final_lsn=""
+online_backup_system_identifier=""
+online_backup_timeline_id=""
+online_backup_database=""
+online_backup_database_container_id=""
+online_backup_skip_reason=""
+online_backup_identity_stable=""
+online_backup_fallback_reason=""
+if [[ "$mode" == release ]]; then
+  backup_source_revision="$previous_app_revision"
+  stage="prepare-pre-migration-backup"
+  run_logged 22-online-provision-backup-role.log \
+    compose --profile operations run --rm --no-deps provision_backup
+  if [[ "$previous_auth_worker_was_running" != true ]]; then
+    # A live email worker writes its readiness heartbeat every two seconds.
+    # Stopping it would make public readiness fail, while ignoring its WAL
+    # would make the recovery point inexact. Attempt the online optimization
+    # only when the accepted release does not require that worker.
+    stage="online-pre-migration-backup"
+    online_backup_database_container_id="$(compose ps --quiet database)" \
+      || fail "online backup database container could not be resolved"
+    [[ "$online_backup_database_container_id" =~ ^[a-f0-9]{12,64}$ ]] \
+      || fail "online backup requires exactly one database container"
+    read_release_database_recovery_boundary
+    online_backup_start_lsn="$release_recovery_lsn"
+    online_backup_system_identifier="$release_recovery_system_identifier"
+    online_backup_timeline_id="$release_recovery_timeline_id"
+    online_backup_database="$release_recovery_database"
+    if release_recovery_boundary_supports_online_reuse; then
+      write_release_database_recovery_sample \
+        22-online-backup-start.json before-online-backup "$online_backup_start_lsn" \
+        "$online_backup_system_identifier" "$online_backup_timeline_id" \
+        "$online_backup_database" "$online_backup_database_container_id" \
+        "$release_recovery_unlogged_relations" \
+        "$release_recovery_prepared_transactions" \
+        "$release_recovery_sequences" "$release_recovery_foreign_tables" \
+        "$release_recovery_active_client_transactions"
+      run_verified_backup_workflow "$release_online_backup_timeout_seconds" \
+        22-online-encrypted-backup.log 22-online-backup-verification.log \
+        22-online-backup-evidence.json
+    else
+      # Unsupported relation/transaction semantics do not fail the release.
+      # Record only sanitized counts, then use the short quiesced path.
+      write_release_database_recovery_sample \
+        22-online-backup-eligibility.json online-backup-eligibility \
+        "$online_backup_start_lsn" "$online_backup_system_identifier" \
+        "$online_backup_timeline_id" "$online_backup_database" \
+        "$online_backup_database_container_id" \
+        "$release_recovery_unlogged_relations" \
+        "$release_recovery_prepared_transactions" \
+        "$release_recovery_sequences" "$release_recovery_foreign_tables" \
+        "$release_recovery_active_client_transactions"
+      online_backup_start_lsn=""
+      online_backup_skip_reason="database-online-reuse-ineligible"
+    fi
+  else
+    online_backup_skip_reason="authentication-worker-active"
+  fi
+fi
+
+# `run_logged` deliberately isolates its command in a subshell. Create this
+# capability in the parent before either maintenance transition so the live
+# router, the readiness probe, and the browser container all receive one exact
+# short-lived value.
+release_acceptance_token="$(openssl rand -hex 32)" \
+  || fail "release acceptance token generation failed"
+[[ "$release_acceptance_token" =~ ^[a-f0-9]{64}$ ]] \
+  || fail "release acceptance token generation failed"
+
+if [[ "$router_was_preexisting" == "true" ]]; then
+  stage="enter-graceful-maintenance"
+  router_transition_attempted="true"
+  run_logged 23-release-router-maintenance.log enter_release_router_maintenance
+  router_maintenance_confirmed="true"
+  router_active_confirmed="false"
+fi
 write_surface_containment_armed="true"
 run_logged 25-stop-write-surfaces.log stop_write_surfaces
+if [[ "$mode" == release && "$router_was_preexisting" != true ]]; then
+  detach_previous_app_public_edge
+fi
+write_surfaces_stopped="true"
 write_checkpoint 26-write-surfaces-stopped.json write-surfaces-stopped-before-backup
 
+if [[ "$router_was_preexisting" != "true" ]]; then
+  stage="bootstrap-release-router"
+  router_transition_attempted="true"
+  run_logged 27-release-router-start.log \
+    compose up --detach --wait --no-deps --no-build release_router
+  verify_release_router_runtime 27-release-router-runtime.json
+  stage="enter-bootstrap-maintenance"
+  run_logged 28-release-router-maintenance.log enter_release_router_maintenance
+  router_maintenance_confirmed="true"
+  router_active_confirmed="false"
+else
+  verify_release_router_runtime 27-release-router-runtime.json
+fi
+
 stage="pre-migration-backup"
-if [[ "$mode" == "rehearsal" ]]; then
+if [[ "$mode" == rehearsal ]]; then
   run_logged 29-rehearsal-database-start.log compose_timed 10m up --detach --wait --no-build database
   record_running_database_image "$evidence_directory/29-rehearsal-database-image.json"
   backup_source_revision="$revision"
-elif [[ "$mode" == "release" ]]; then
-  backup_source_revision="$previous_app_revision"
+  run_logged 30-provision-backup-role.log \
+    compose --profile operations run --rm --no-deps provision_backup
+  run_verified_backup_workflow "$release_backup_timeout_seconds" \
+    31-encrypted-backup.log 32-backup-verification.log
+elif [[ "$mode" == release ]]; then
+  if [[ -z "$online_backup_start_lsn" ]]; then
+    run_verified_backup_workflow "$release_quiesced_backup_timeout_seconds" \
+      31-quiesced-encrypted-backup.log 32-quiesced-backup-verification.log
+    if [[ "$online_backup_skip_reason" == authentication-worker-active ]]; then
+      record_release_backup_recovery_point \
+        quiesced-worker-active "" "" "$online_backup_skip_reason" ""
+    else
+      record_release_backup_recovery_point \
+        quiesced-online-ineligible "" "" "$online_backup_skip_reason" ""
+    fi
+  else
+    final_backup_database_container_id="$(compose ps --quiet database)" \
+      || fail "post-drain database container could not be resolved"
+    read_release_database_recovery_boundary
+    online_backup_final_lsn="$release_recovery_lsn"
+    if [[ "$final_backup_database_container_id" == "$online_backup_database_container_id" \
+      && "$release_recovery_system_identifier" == "$online_backup_system_identifier" \
+      && "$release_recovery_timeline_id" == "$online_backup_timeline_id" \
+      && "$release_recovery_database" == "$online_backup_database" ]]; then
+      online_backup_identity_stable="true"
+    else
+      online_backup_identity_stable="false"
+    fi
+    write_release_database_recovery_sample \
+      29-online-backup-final.json after-write-surface-drain "$online_backup_final_lsn" \
+      "$release_recovery_system_identifier" "$release_recovery_timeline_id" \
+      "$release_recovery_database" "$final_backup_database_container_id" \
+      "$release_recovery_unlogged_relations" \
+      "$release_recovery_prepared_transactions" \
+      "$release_recovery_sequences" "$release_recovery_foreign_tables" \
+      "$release_recovery_active_client_transactions"
+  fi
+  if [[ -n "$online_backup_start_lsn" \
+    && "$online_backup_identity_stable" == true \
+    && "$online_backup_start_lsn" == "$online_backup_final_lsn" ]] \
+    && release_recovery_boundary_supports_online_reuse; then
+    jq '.' "$evidence_directory/22-online-backup-evidence.json" \
+      >"$evidence_directory/33-backup-evidence.json" \
+      || fail "online backup evidence could not be selected as the recovery point"
+    chmod 0600 -- "$evidence_directory/33-backup-evidence.json" \
+      || fail "selected online backup evidence permissions could not be set"
+    record_release_backup_recovery_point \
+      online-no-wal-advance "$online_backup_start_lsn" \
+      "$online_backup_final_lsn" "" "$online_backup_identity_stable"
+  elif [[ -n "$online_backup_start_lsn" ]]; then
+    # A committed or aborted write advanced WAL after the dump's conservative
+    # boundary. Never migrate from that stale snapshot. One short quiesced
+    # fallback is allowed; timeout/failure restores the exact old release.
+    sleep 1
+    run_verified_backup_workflow "$release_quiesced_backup_timeout_seconds" \
+      31-quiesced-encrypted-backup.log 32-quiesced-backup-verification.log
+    if [[ "$online_backup_identity_stable" != true ]]; then
+      online_backup_fallback_reason="database-identity-changed"
+    elif ! release_recovery_boundary_supports_online_reuse; then
+      online_backup_fallback_reason="online-reuse-became-ineligible"
+    else
+      online_backup_fallback_reason="wal-advanced"
+    fi
+    record_release_backup_recovery_point \
+      quiesced-fallback "$online_backup_start_lsn" "$online_backup_final_lsn" \
+      "$online_backup_fallback_reason" "$online_backup_identity_stable"
+  fi
 else
   backup_source_revision="$revision"
   initial_backup_boundary_at="$(checked_utc_timestamp)" \
@@ -2932,89 +5246,15 @@ else
     >"$evidence_directory/27-initial-pre-migration-backup-boundary.json"
   chmod 0600 -- "$evidence_directory/27-initial-pre-migration-backup-boundary.json"
 fi
-cleanup_failed_backup_containers() {
-  local container_id
-  local -a backup_containers=()
-  read_docker_output "one-off backup containers during failure containment" ps --all --quiet \
-    --filter "label=com.docker.compose.project=$compose_project" \
-    --filter "label=com.docker.compose.service=backup"
-  while IFS= read -r container_id; do
-    [[ -z "$container_id" ]] && continue
-    [[ "$container_id" =~ ^[a-f0-9]{12,64}$ ]] \
-      || fail "Docker returned an invalid backup container ID during containment"
-    backup_containers+=("$container_id")
-  done <<<"$docker_query_output"
-  (( ${#backup_containers[@]} > 0 )) || return 0
-  timeout 2m env -i "PATH=$PATH" docker rm --force -- "${backup_containers[@]}" >/dev/null 2>&1 \
-    || return 1
-  read_docker_output "one-off backup containers after failure containment" ps --all --quiet \
-    --filter "label=com.docker.compose.project=$compose_project" \
-    --filter "label=com.docker.compose.service=backup"
-  [[ -z "$docker_query_output" ]]
-}
-
-run_backup() (
-  local backup_status=0
-  if compose_timed_with_overrides "${release_backup_timeout_seconds}s" \
-    "BACKUP_SOURCE_APPLICATION_REVISION=$backup_source_revision" -- \
-    --profile operations run --rm --no-deps backup; then
-    return 0
-  else
-    backup_status=$?
-  fi
-  cleanup_failed_backup_containers \
-    || fail "timed-out backup container could not be contained and removed"
-  return "$backup_status"
-)
-verify_backup_and_record_evidence() {
-  local verifier_output evidence_records evidence_json
-  local -a evidence_lines=()
-  if ! verifier_output="$(compose --profile operations run --rm --no-deps -T \
-    verify_latest_backup \
-    /usr/local/bin/business-finlynq-check-latest-backup --emit-evidence 2>&1)"; then
-    printf '%s\n' "$verifier_output"
-    return 1
-  fi
-  printf '%s\n' "$verifier_output"
-  evidence_records="$(printf '%s\n' "$verifier_output" \
-    | sed -n 's/^BUSINESS_FINLYNQ_BACKUP_EVIDENCE=//p')" \
-    || fail "immutable backup evidence lines could not be extracted"
-  [[ -n "$evidence_records" ]] \
-    || fail "immutable backup verifier did not emit exactly one evidence record"
-  mapfile -t evidence_lines <<<"$evidence_records"
-  (( ${#evidence_lines[@]} == 1 )) \
-    || fail "immutable backup verifier did not emit exactly one evidence record"
-  evidence_json="${evidence_lines[0]}"
-  jq -e --arg sourceRevision "$backup_source_revision" --arg toolRevision "$revision" '
-    type == "object" and
-    keys == ["applicationRevision", "backupToolRevision", "createdAt",
-      "encryptedArchive", "encryptedBytes", "encryption", "format", "product",
-      "schemaVersion", "sha256", "sourceApplicationRevision"] and
-    .schemaVersion == 1 and .product == "business-finlynq" and
-    .applicationRevision == $sourceRevision and
-    .sourceApplicationRevision == $sourceRevision and
-    .backupToolRevision == $toolRevision and
-    .encryption == "age" and .format == "postgres-custom" and
-    (.createdAt | type == "string" and
-      test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$")) and
-    (.encryptedArchive | type == "string" and
-      test("^business_finlynq_[0-9]{8}T[0-9]{6}Z_[A-Za-z0-9_.-]+\\.dump\\.age$")) and
-    (.encryptedBytes | type == "number" and . == floor and . > 0) and
-    (.sha256 | type == "string" and test("^[a-f0-9]{64}$"))
-  ' <<<"$evidence_json" >/dev/null \
-    || fail "immutable backup verifier emitted invalid release evidence"
-  jq '.' <<<"$evidence_json" >"$evidence_directory/33-backup-evidence.json" \
-    || fail "immutable backup evidence could not be written"
-  chmod 0600 -- "$evidence_directory/33-backup-evidence.json" \
-    || fail "immutable backup evidence permissions could not be set"
-}
-if [[ "$mode" != "initial" ]]; then
-  run_logged 30-provision-backup-role.log compose --profile operations run --rm --no-deps provision_backup
-  run_logged 31-encrypted-backup.log run_backup
-  run_logged 32-backup-verification.log verify_backup_and_record_evidence
-fi
 
 stage="activate-reviewed-database-image"
+# From this point onward recovery must follow the reviewed forward-repair or
+# application-rollback path; the exact pre-migration database backup is sealed.
+if [[ "$mode" == release && "$first_router_forward_repair_resume" != true ]]; then
+  mark_first_router_database_mutation_started \
+    || fail "release recovery journal could not commit the forward-repair boundary"
+fi
+database_mutation_started="true"
 start_reviewed_database() {
   local -a recreate_arguments=()
   [[ "$mode" == "initial" ]] && recreate_arguments+=(--force-recreate)
@@ -3133,8 +5373,8 @@ if [[ "$mode" == "initial" ]]; then
   stage="initial-post-migration-local-backup"
   run_logged 59-initial-provision-backup-role.log \
     compose --profile operations run --rm --no-deps provision_backup
-  run_logged 59-initial-encrypted-backup.log run_backup
-  run_logged 59-initial-backup-verification.log verify_backup_and_record_evidence
+  run_verified_backup_workflow "$release_backup_timeout_seconds" \
+    59-initial-encrypted-backup.log 59-initial-backup-verification.log
   initial_backup_recorded_at="$(checked_utc_timestamp)" \
     || fail "initial backup-deferral timestamp could not be generated"
   jq -n \
@@ -3203,44 +5443,44 @@ run_acceptance_app() (
     up --detach --no-deps --no-build --force-recreate app
 )
 run_logged 63-app-start.log run_acceptance_app
-wait_for_internal_readiness "$evidence_directory/64-internal-readiness.json" || fail "candidate did not satisfy detailed readiness"
-chmod 0600 -- "$evidence_directory/64-internal-readiness.json"
-
 candidate_container="$(compose ps --quiet app)"
 [[ -n "$candidate_container" ]] || fail "candidate app container is missing"
 [[ "$(docker inspect --format '{{.Image}}' "$candidate_container")" == "${image_ids[app]}" ]] || fail "running app image ID differs from the built candidate"
 [[ "$(docker inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$candidate_container")" == "$revision" ]] \
   || fail "running app OCI revision differs from the release"
+verify_unique_network_alias_owner \
+  "$router_frontend_network_name" release-app "$candidate_container" \
+  "candidate private application"
+wait_for_internal_readiness "$evidence_directory/64-internal-readiness.json" || fail "candidate did not satisfy detailed readiness"
+chmod 0600 -- "$evidence_directory/64-internal-readiness.json"
+
 candidate_environment="$(docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$candidate_container")"
 [[ "$(awk -F= '$1 == "BUSINESS_WRITES_ENABLED" {print $2; exit}' <<<"$candidate_environment")" == "false" ]] \
   || fail "real business writes were enabled before candidate acceptance"
 [[ "$(awk -F= '$1 == "BANK_FEEDS_ENABLED" {print $2; exit}' <<<"$candidate_environment")" == "false" ]] \
   || fail "live bank feeds were enabled before candidate acceptance"
 
-stage="public-readiness"
+stage="private-candidate-preview-readiness"
 public_headers="$evidence_directory/65-public-readiness.headers"
 public_body="$evidence_directory/65-public-readiness.json"
 public_status=""
 for _ in {1..30}; do
-  if public_status="$(curl --silent --show-error --max-time 15 --dump-header "$public_headers" --output "$public_body" --write-out '%{http_code}' "$public_base_url/api/health")" \
+  if public_status="$(curl --silent --show-error --max-time 15 \
+    --header "Authorization: Bearer $release_acceptance_token" \
+    --dump-header "$public_headers" --output "$public_body" --write-out '%{http_code}' \
+    "$public_base_url/api/health")" \
     && [[ "$public_status" == "200" ]]; then
     break
   fi
   sleep 2
 done
 [[ "$public_status" == "200" ]] \
-  || fail "public readiness did not become ready (last HTTP ${public_status:-unavailable})"
+  || fail "private candidate preview did not become ready (last HTTP ${public_status:-unavailable})"
 jq -e 'type == "object" and keys == ["status"] and .status == "ready"' "$public_body" >/dev/null \
-  || fail "public readiness exposed details or was unavailable"
-grep -Eiq '^cache-control:.*no-store' "$public_headers" || fail "public readiness is missing no-store"
+  || fail "private candidate preview exposed details or was unavailable"
+grep -Eiq '^cache-control:.*no-store' "$public_headers" || fail "private candidate preview is missing no-store"
 chmod 0600 -- "$public_headers" "$public_body"
-
-if [[ "$mode" != rehearsal && "$edge_mode" == external ]]; then
-  stage="external-edge-contract"
-  run_logged 67-external-edge-contract.log \
-    bash "$candidate_source_root/deploy/edge/verify-external-edge.sh"
-  write_checkpoint 68-external-edge-contract.json external-edge-accepted
-fi
+verify_release_router_maintenance
 
 expected_auth="disabled"; [[ "$release_ACCOUNT_LOGIN_ENABLED" == "true" ]] && expected_auth="ready"
 expected_signup="disabled"; [[ "$release_ACCOUNT_SIGNUP_ENABLED" == "true" ]] && expected_signup="ready"
@@ -3269,7 +5509,9 @@ run_browser_acceptance() (
   trap 'exit 143' TERM
 
   compose --profile acceptance rm --force --stop release_acceptance
-  compose --profile acceptance up --detach --no-deps --no-build --force-recreate release_acceptance
+  compose_with_overrides \
+    "BUSINESS_FINLYNQ_RELEASE_ACCEPTANCE_TOKEN=$release_acceptance_token" -- \
+    --profile acceptance up --detach --no-deps --no-build --force-recreate release_acceptance
   capture_compose_container_id "browser-acceptance container" \
     --profile acceptance ps --all --quiet release_acceptance
   browser_container="$captured_compose_container_id"
@@ -3296,14 +5538,17 @@ write_checkpoint 71-browser-acceptance.json browser-acceptance-passed
 
 stage="activate-reviewed-write-gates"
 run_logged 72-final-app-start.log compose up --detach --no-deps --no-build --force-recreate app
-wait_for_internal_readiness "$evidence_directory/73-final-readiness.json" || fail "final reviewed gate posture did not become ready"
-chmod 0600 -- "$evidence_directory/73-final-readiness.json"
 final_container="$(compose ps --quiet app)"
 [[ -n "$final_container" ]] || fail "final candidate app container is missing"
 [[ "$(docker inspect --format '{{.Image}}' "$final_container")" == "${image_ids[app]}" ]] \
   || fail "final app image ID differs from the immutable accepted candidate"
 [[ "$(docker inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$final_container")" == "$revision" ]] \
   || fail "final app OCI revision differs from the accepted release"
+verify_unique_network_alias_owner \
+  "$router_frontend_network_name" release-app "$final_container" \
+  "final private application"
+wait_for_internal_readiness "$evidence_directory/73-final-readiness.json" || fail "final reviewed gate posture did not become ready"
+chmod 0600 -- "$evidence_directory/73-final-readiness.json"
 final_environment="$(docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$final_container")"
 [[ "$(awk -F= '$1 == "BUSINESS_WRITES_ENABLED" {print $2; exit}' <<<"$final_environment")" == "$release_BUSINESS_WRITES_ENABLED" ]] \
   || fail "final business write gate differs from the reviewed environment"
@@ -3313,6 +5558,56 @@ final_expected_bank="disabled"; [[ "$release_BANK_FEEDS_ENABLED" == "true" ]] &&
 jq -e --arg revision "$revision" --arg bank "$final_expected_bank" \
   '.status == "ready" and .revision == $revision and .checks.bankFeeds == $bank' \
   "$evidence_directory/73-final-readiness.json" >/dev/null || fail "final readiness does not reflect the reviewed bank-feed gate"
+verify_release_router_runtime 74-release-router-runtime.json
+
+# The candidate, its final write-gate posture, and browser workflow have all
+# passed while ordinary users remained behind deterministic maintenance. Make
+# the accepted app visible with an in-process Caddy reload; the listener and
+# existing connections are never replaced.
+verify_release_router_maintenance
+verify_unique_network_alias_owner \
+  "$router_frontend_network_name" release-app "$final_container" \
+  "accepted private application"
+if [[ "$mode" == release ]]; then
+  stage="prepare-active-finalization"
+  write_active_finalization_marker \
+    || fail "active-finalization recovery marker could not be committed"
+  active_finalization_marker_committed="true"
+fi
+stage="activate-accepted-application"
+run_logged 75-release-router-active.log activate_release_router_live
+
+stage="final-public-readiness"
+final_public_headers="$evidence_directory/76-final-public-readiness.headers"
+final_public_body="$evidence_directory/76-final-public-readiness.json"
+final_public_status=""
+for _ in {1..30}; do
+  if final_public_status="$(curl --silent --show-error --max-time 15 \
+    --dump-header "$final_public_headers" --output "$final_public_body" \
+    --write-out '%{http_code}' "$public_base_url/api/health")" \
+    && [[ "$final_public_status" == "200" ]]; then
+    break
+  fi
+  sleep 2
+done
+[[ "$final_public_status" == "200" ]] \
+  || fail "accepted application did not become publicly ready"
+jq -e 'type == "object" and keys == ["status"] and .status == "ready"' \
+  "$final_public_body" >/dev/null \
+  || fail "final public readiness exposed details or was unavailable"
+grep -Eiq '^cache-control:.*no-store' "$final_public_headers" \
+  || fail "final public readiness is missing no-store"
+chmod 0600 -- "$final_public_headers" "$final_public_body"
+
+if [[ "$mode" != rehearsal && "$edge_mode" == external ]]; then
+  stage="external-edge-contract"
+  run_logged 77-external-edge-contract.log \
+    bash "$candidate_source_root/deploy/edge/verify-external-edge.sh" \
+      --scope production --warmup-host production \
+      --allow-production-router-maintenance \
+      --expected-production-revision "$revision"
+  write_checkpoint 77-external-edge-contract.json external-edge-accepted
+fi
 
 stage="canonical-environment-stability"
 [[ "$(validate_secret_environment_file "$canonical_environment_file" "canonical Compose environment")" \
@@ -3354,7 +5649,7 @@ if [[ "$mode" == "release" ]]; then
   run_logged 81-accounting-evidence-seed.log run_installed_accounting_evidence
   verify_live_checkout_matches_candidate
   stage="production-monitor-acceptance"
-  run_logged 82-production-monitor.log run_installed_monitor
+  run_logged 82-production-monitor.log run_installed_monitor transitional-maintenance
   verify_live_checkout_matches_candidate
   write_checkpoint 83-production-monitor.json installed-scheduled-monitor-passed
   stage="record-scheduler-boundary-version"
@@ -3380,7 +5675,7 @@ elif [[ "$mode" == "initial" ]]; then
   run_logged 81-accounting-evidence-seed.log run_installed_accounting_evidence
   verify_live_checkout_matches_candidate
   stage="initial-production-monitor-acceptance"
-  run_logged 82-production-monitor.log run_installed_monitor
+  run_logged 82-production-monitor.log run_installed_monitor transitional-maintenance
   verify_live_checkout_matches_candidate
   run_logged 83-initial-schedulers-still-disabled.log disable_and_verify_initial_schedule
   write_checkpoint 84-production-monitor.json contained-initial-monitor-passed
@@ -3419,7 +5714,7 @@ elif [[ "$mode" == "initial" ]]; then
   read_docker_output "contained initial runtime after disposable pruning" ps --all \
     --format '{{.Label "com.docker.compose.service"}}' \
     --filter 'label=com.docker.compose.project=business-finlynq'
-  [[ "$(sort <<<"$docker_query_output")" == $'app\ndatabase\nevidence_scanner' ]] \
+  [[ "$(sort <<<"$docker_query_output")" == $'app\ndatabase\nevidence_scanner\nrelease_router' ]] \
     || fail "contained initial runtime retains an unexpected Compose service"
   write_checkpoint 87-initial-runtime-pruned.json disposable-initial-containers-removed
 else
@@ -3463,10 +5758,12 @@ jq -n \
   --arg revision "$revision" \
   --arg runId "$run_id" \
   --arg candidateImageId "${image_ids[app]}" \
+  --arg releaseRouterImageId "${image_ids[router]}" \
+  --arg releaseRouterConfigSha256 "$router_config_sha256" \
   --arg previousImageId "$previous_app_id" \
   --arg containedInitial "$contained_initial" \
   --arg browserLogSha256 "$browser_log_sha256" \
-  '{schemaVersion: 1, product: "business-finlynq", status: "accepted", completedAt: $completedAt, mode: $mode, revision: $revision, runId: $runId, candidateAppImageId: $candidateImageId, previousAppImageId: (if $previousImageId == "" then null else $previousImageId end), preTrafficDatabaseContractVerified: true, postBootstrapAccountingEvidenceVerified: true, browserAcceptancePassed: true, browserLogSha256: $browserLogSha256, databaseRollback: "forward-repair-only", containedInitial: ($containedInitial == "true"), localEncryptedBackupVerified: ($containedInitial == "true"), offsiteBackupDeferred: ($containedInitial == "true"), schedulerActivationDeferred: ($containedInitial == "true")}' \
+  '{schemaVersion: 1, product: "business-finlynq", status: "accepted", completedAt: $completedAt, mode: $mode, revision: $revision, runId: $runId, candidateAppImageId: $candidateImageId, releaseRouterImageId: $releaseRouterImageId, releaseRouterConfigSha256: $releaseRouterConfigSha256, maintenanceConfirmedBeforeSchemaMigration: true, previousAppImageId: (if $previousImageId == "" then null else $previousImageId end), preTrafficDatabaseContractVerified: true, postBootstrapAccountingEvidenceVerified: true, browserAcceptancePassed: true, browserLogSha256: $browserLogSha256, databaseRollback: "forward-repair-only", containedInitial: ($containedInitial == "true"), localEncryptedBackupVerified: ($containedInitial == "true"), offsiteBackupDeferred: ($containedInitial == "true"), schedulerActivationDeferred: ($containedInitial == "true")}' \
   >"$terminal_evidence_temporary" \
   || fail "terminal release evidence could not be staged"
 chmod 0600 -- "$terminal_evidence_temporary" \
@@ -3481,5 +5778,19 @@ refresh_checksums \
   || fail "accepted release evidence could not be checksummed"
 sync_evidence_inventory \
   || fail "accepted release evidence could not be durably synchronized"
+if [[ "$mode" == release ]]; then
+  authorize_active_finalization_marker \
+    || fail "active-finalization authorization could not be committed"
+fi
+terminal_evidence_committed="true"
+commit_release_router_active
+if [[ "$mode" == release ]]; then
+  clear_active_finalization_marker \
+    || fail "active-finalization recovery marker could not be retired"
+  if [[ "$first_router_recovery_journal_committed" == true ]]; then
+    clear_first_router_recovery_journal \
+      || fail "release recovery journal could not be retired after active acceptance"
+  fi
+fi
 release_completed="true"
 printf 'Business Finlynq %s accepted for %s. Evidence: %s\n' "$mode" "$revision" "$evidence_directory"

@@ -29,7 +29,8 @@
     "org:onboard": "tsx scripts/onboard-organization.ts",
     "demo:bootstrap": "tsx scripts/bootstrap-demo.ts",
     "demo:reset": "tsx scripts/reset-demo.ts",
-    "check": "npm run lint && npm run typecheck && npm run test"
+    "check": "npm run lint && npm run typecheck && npm run test",
+    "check:predeploy": "npm run db:check-drift && npm run journal-types:check-seed && npm run check && npm run build"
   },
   "engines": {
     "node": ">=24",
