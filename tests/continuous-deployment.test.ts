@@ -754,6 +754,7 @@ describe("continuous deployment safety boundary", () => {
     );
     expect(deployDevelopment).toContain("compose_release_router_build");
     expect(deployDevelopment).toContain('"business_finlynq_development_private-frontend"');
+    expect(deployDevelopment).toContain('"business_finlynq_development_private-router-control"');
     expect(deployDevelopment).toContain(".services.release_router.ports[0].published");
     expect(deployDevelopment).toContain(".services.app.ports | length");
     expect(deployDevelopment).toContain('keys == ["status"] and .status == "unavailable"');
@@ -877,6 +878,7 @@ describe("continuous deployment safety boundary", () => {
       "business_finlynq_development_egress",
       "business_finlynq_development_egress_scanner",
       "business_finlynq_development_private-frontend",
+      "business_finlynq_development_private-router-control",
       "business_finlynq_development_restore_drill",
     ]) {
       expect(resourceGuard).toContain(network);

@@ -577,7 +577,8 @@ if [[ -n "$release_router_container_id" ]]; then
       and .[0].Config.Entrypoint == ["/usr/local/bin/release-router-entrypoint"]
       and .[0].Config.Cmd == ["serve"]
       and ((.[0].NetworkSettings.Networks | keys | sort)
-        == (["business_finlynq_edge", "business_finlynq_private-frontend"] | sort))
+        == (["business_finlynq_edge", "business_finlynq_private-frontend",
+          "business_finlynq_private-router-control"] | sort))
       and any(.[0].NetworkSettings.Networks["business_finlynq_edge"].Aliases[]?;
         . == "production-app")
       and all(.[0].NetworkSettings.Networks["business_finlynq_private-frontend"].Aliases[]?;

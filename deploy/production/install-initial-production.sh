@@ -46,7 +46,7 @@ readonly production_signal_certificate_identity="https://github.com/finlynq/busi
 readonly production_signal_workflow_path=".github/workflows/signal-production-deployment.yml"
 readonly production_signal_workflow_sha256="36326ed7f59c4aab5310d4ca58dd86ef0539d653bbf3723a74f53e83fa7df071"
 readonly quality_gate_workflow_path=".github/workflows/ci.yml"
-readonly quality_gate_workflow_sha256="1a30d197f4cfa9564561307afc69bd61277eac1971e0fef0664c71f3095072b8"
+readonly quality_gate_workflow_sha256="e3883ee1d2b149429f91a4e6675ced704623f618dc1daba3a3b80e2212125813"
 readonly github_cli="/usr/bin/gh"
 readonly clean_path="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
@@ -450,7 +450,8 @@ assert_empty_production_runtime() {
     || fail "Docker networks could not be inspected"
   for resource in business_finlynq_private business_finlynq_private_evidence \
     business_finlynq_egress business_finlynq_egress_scanner \
-    business_finlynq_private-frontend business_finlynq_restore_drill; do
+    business_finlynq_private-frontend business_finlynq_private-router-control \
+    business_finlynq_restore_drill; do
     ! grep -Fxq "$resource" <<<"$query" \
       || fail "production network already exists: $resource"
   done
@@ -1715,7 +1716,8 @@ render_and_verify_initial_configuration() {
       select(.target == 3000 and .host_ip == "127.0.0.1" and .protocol == "tcp") |
       .published] == ["3100"]) and
     ([.services.release_router.networks | keys[]] | sort) ==
-      ["business_finlynq_edge", "business_finlynq_frontend"] and
+      ["business_finlynq_edge", "business_finlynq_frontend",
+        "business_finlynq_router_control"] and
     .services.release_router.networks.business_finlynq_edge.aliases == ["production-app"] and
     .services.app.image == ("business-finlynq-app:" + $revision) and
     ((.services.app.ports // []) | length) == 0 and
@@ -1740,6 +1742,14 @@ render_and_verify_initial_configuration() {
     .networks.business_finlynq_edge.name == "business_finlynq_edge" and
     .networks.business_finlynq_frontend.internal == true and
     .networks.business_finlynq_frontend.name == "business_finlynq_private-frontend" and
+    .networks.business_finlynq_router_control.name ==
+      "business_finlynq_private-router-control" and
+    ((.networks.business_finlynq_router_control.internal // false) == false) and
+    .networks.business_finlynq_router_control.driver == "bridge" and
+    .networks.business_finlynq_router_control.driver_opts == {
+      "com.docker.network.bridge.enable_icc": "false",
+      "com.docker.network.bridge.enable_ip_masquerade": "false"
+    } and
     .volumes.business_finlynq_release_router_state.name == $releaseRouterStateVolume and
     .services.backup.environment.BACKUP_REQUIRE_OFFSITE == "false" and
     .services.verify_latest_backup.environment.BACKUP_REQUIRE_OFFSITE_MARKER == "false"
@@ -1799,7 +1809,8 @@ render_and_verify_initial_configuration() {
         select(.target == 3000 and .host_ip == "127.0.0.1" and .protocol == "tcp") |
         .published] == [$port]) and
       ([.services.release_router.networks | keys[]] | sort) ==
-        ["business_finlynq_edge", "business_finlynq_frontend"] and
+        ["business_finlynq_edge", "business_finlynq_frontend",
+          "business_finlynq_router_control"] and
       .services.release_router.networks.business_finlynq_edge.aliases == ["production-app"] and
       .services.app.image == ("business-finlynq-app:" + $revision) and
       ((.services.app.ports // []) | length) == 0 and
@@ -1818,6 +1829,13 @@ render_and_verify_initial_configuration() {
       .services.verify_latest_backup.environment.BACKUP_REQUIRE_OFFSITE_MARKER == "false" and
       .networks.business_finlynq_frontend.internal == true and
       .networks.business_finlynq_frontend.name == ($project + "-frontend") and
+      .networks.business_finlynq_router_control.name == ($project + "-router-control") and
+      ((.networks.business_finlynq_router_control.internal // false) == false) and
+      .networks.business_finlynq_router_control.driver == "bridge" and
+      .networks.business_finlynq_router_control.driver_opts == {
+        "com.docker.network.bridge.enable_icc": "false",
+        "com.docker.network.bridge.enable_ip_masquerade": "false"
+      } and
       .volumes.business_finlynq_release_router_state.name ==
         ($project + "-release-router-state-v2") and
       ([.volumes[].name, .networks[].name] |
@@ -2852,7 +2870,8 @@ verify_release_router_runtime_contract() {
       .[0].Mounts[0].Destination == "/state" and
       .[0].Mounts[0].RW == true) and
     ([.[0].NetworkSettings.Networks | keys[]] | sort) ==
-      ["business_finlynq_edge", "business_finlynq_private-frontend"] and
+      ["business_finlynq_edge", "business_finlynq_private-frontend",
+        "business_finlynq_private-router-control"] and
     (.[0].NetworkSettings.Networks["business_finlynq_edge"].Aliases |
       index("production-app")) != null and
     (.[0].NetworkSettings.Networks["business_finlynq_private-frontend"].Aliases |
@@ -3144,7 +3163,8 @@ verify_accepted_public_readiness() {
 
 verify_initial_resume_router_boundary() {
   local prior_evidence="$1" expected_router_image router_output container_id inspect_json
-  local router_count=0 frontend_network_present=false router_state_volume_present=false
+  local router_count=0 frontend_network_present=false control_network_present=false
+  local router_state_volume_present=false
   verify_protected_evidence_inventory "$prior_evidence"
   verify_release_image_inventory \
     "$prior_evidence/11-images.json" "resumable initial"
@@ -3216,8 +3236,30 @@ verify_initial_resume_router_boundary() {
     ' <<<"$inspect_json" >/dev/null \
       || fail "resumable initial frontend network ownership is invalid"
   fi
+  if inspect_json="$(docker network inspect \
+    business_finlynq_private-router-control 2>/dev/null)"; then
+    control_network_present=true
+    jq -e '
+      length == 1 and
+      .[0].Name == "business_finlynq_private-router-control" and
+      .[0].Driver == "bridge" and .[0].Scope == "local" and
+      .[0].Internal == false and .[0].Attachable == false and
+      .[0].Ingress == false and
+      .[0].Options == {
+        "com.docker.network.bridge.enable_icc": "false",
+        "com.docker.network.bridge.enable_ip_masquerade": "false"
+      } and
+      .[0].IPAM.Driver == "default" and
+      (.[0].IPAM.Config | type == "array" and length == 1) and
+      .[0].Labels["com.docker.compose.project"] == "business-finlynq" and
+      .[0].Labels["com.docker.compose.network"] == "business_finlynq_router_control"
+    ' <<<"$inspect_json" >/dev/null \
+      || fail "resumable initial router control network ownership is invalid"
+  fi
   (( router_count == 0 )) || [[ "$frontend_network_present" == true ]] \
     || fail "resumable initial release router is missing its private frontend network"
+  (( router_count == 0 )) || [[ "$control_network_present" == true ]] \
+    || fail "resumable initial release router is missing its loopback control network"
   (( router_count == 0 )) || [[ "$router_state_volume_present" == true ]] \
     || fail "resumable initial release router is missing its persistent state volume"
 }

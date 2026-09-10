@@ -467,7 +467,8 @@ describe("fresh production bootstrap installer", () => {
       '.[0].Mounts[0].Name == $routerStateVolume',
       '.[0].Mounts[0].Destination == "/state"',
       '.[0].Mounts[0].RW == true',
-      '["business_finlynq_edge", "business_finlynq_private-frontend"]',
+      '["business_finlynq_edge", "business_finlynq_private-frontend",',
+      '"business_finlynq_private-router-control"]',
       'index("production-app")) != null',
     ]) {
       expect(routerContract).toContain(contract);
@@ -515,6 +516,7 @@ describe("fresh production bootstrap installer", () => {
     expect(resumeBoundary).toContain('verify_release_router_image_contract');
     expect(resumeBoundary).toContain('verify_release_router_runtime_contract');
     expect(resumeBoundary).toContain('business_finlynq_private-frontend');
+    expect(resumeBoundary).toContain('business_finlynq_private-router-control');
     expect(resumeBoundary).toContain('.Internal == true');
     expect(resumeBoundary).toContain(
       '.Labels["com.docker.compose.network"] == "business_finlynq_frontend"',
