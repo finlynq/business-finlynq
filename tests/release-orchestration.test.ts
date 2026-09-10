@@ -831,6 +831,12 @@ describe("commit-addressed release orchestration", () => {
     expect(accountingSeed).toBeLessThan(monitorAcceptance);
     expect(monitorAcceptance).toBeLessThan(boundaryRecord);
     expect(release).not.toContain("run_logged 82-production-monitor.log bash deploy/monitoring/check-production.sh");
+    expect(release).toContain(
+      'cd -- "$repository_root"\n      bash "$repository_root/deploy/monitoring/check-production.sh"',
+    );
+    expect(release).toContain(
+      "migrate|verify_database_contract|bootstrap_demo) logical_image=migrator",
+    );
     expect(release).not.toMatch(/docker compose[^\n]*pull/);
     expect(release).toContain('git --no-optional-locks -c safe.directory="$repository_root" -C "$repository_root"');
     expect(release).toContain('archive --format=tar "$revision"');
