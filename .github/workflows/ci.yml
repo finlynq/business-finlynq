@@ -330,6 +330,31 @@ jobs:
           second_acceptance_image_id="$(docker image inspect --format '{{.Id}}' business-finlynq-acceptance-ci)"
           test "$first_acceptance_image_id" = "$second_acceptance_image_id"
           docker run --rm --network none --read-only --user pwuser --cap-drop ALL --security-opt no-new-privileges --pids-limit 32 --memory 128m --cpus 0.25 --tmpfs /app/test-results:rw,noexec,nosuid,nodev,size=16m,mode=1777 --tmpfs /app/playwright-report:rw,noexec,nosuid,nodev,size=16m,mode=1777 --entrypoint /bin/sh business-finlynq-acceptance-ci -ec 'rm -rf /app/test-results/release /app/playwright-report/release; mkdir -p /app/test-results/release /app/playwright-report/release; touch /app/test-results/release/result /app/playwright-report/release/report; rm -rf /app/test-results/release /app/playwright-report/release; test ! -e /app/test-results/release; test ! -e /app/playwright-report/release; if touch /app/read-only-root-check; then exit 1; fi'
+      - name: Exercise hardened release-router runtime
+        run: |
+          set -Eeuo pipefail
+          router_container=business-finlynq-release-router-ci
+          router_volume=business-finlynq-release-router-ci-state
+          cleanup_router() {
+            docker rm --force "$router_container" >/dev/null 2>&1 || true
+            docker volume rm "$router_volume" >/dev/null 2>&1 || true
+          }
+          trap cleanup_router EXIT
+          docker build --provenance=false --sbom=false --target release-router --build-arg SOURCE_DATE_EPOCH=1788912000 --tag business-finlynq-release-router-ci .
+          test "$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' business-finlynq-release-router-ci)" = release-router-v1
+          docker volume create "$router_volume" >/dev/null
+          docker run --detach --name "$router_container" --network none --read-only --user 10001:10001 --cap-drop ALL --security-opt no-new-privileges --pids-limit 64 --memory 96m --cpus 0.25 --tmpfs /tmp:size=16m,mode=0700,uid=10001,gid=10001,noexec,nosuid,nodev --tmpfs /config:size=1m,mode=0700,uid=10001,gid=10001,noexec,nosuid,nodev --tmpfs /data:size=1m,mode=0700,uid=10001,gid=10001,noexec,nosuid,nodev --mount "type=volume,source=$router_volume,target=/state" business-finlynq-release-router-ci >/dev/null
+          router_live=""
+          for _ in {1..30}; do
+            if router_live="$(docker exec "$router_container" wget -q -T 2 -O - http://127.0.0.1:3000/_business-finlynq/release-router/live 2>/dev/null)"; then
+              break
+            fi
+            sleep 1
+          done
+          test "$router_live" = '{"status":"release-router-live"}'
+          test "$(docker inspect --format '{{.State.Status}}' "$router_container")" = running
+          cleanup_router
+          trap - EXIT
       - name: Install release-gate browser
         run: npx playwright install --with-deps chromium
       - name: Run browser release gate

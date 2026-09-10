@@ -115,7 +115,12 @@ LABEL com.business-finlynq.release-router.contract=v1 \
   org.opencontainers.image.revision=release-router-v1
 
 ARG SOURCE_DATE_EPOCH
+# The upstream binary is granted cap_net_bind_service for ports below 1024.
+# This router listens on 3000 and runs with every capability dropped plus
+# no-new-privileges, so retaining that file capability makes execve fail.
 RUN test "$SOURCE_DATE_EPOCH" = "1788912000" \
+  && setcap -r /usr/bin/caddy \
+  && test -z "$(getcap /usr/bin/caddy)" \
   && addgroup -S -g 10001 release-router \
   && adduser -S -D -H -u 10001 -G release-router release-router \
   && mkdir -p /state \

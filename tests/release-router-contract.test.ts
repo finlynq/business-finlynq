@@ -59,6 +59,8 @@ describe("stable fail-closed release router", () => {
     expect(target).not.toContain("ARG BUSINESS_FINLYNQ_IMAGE_REVISION");
     expect(target).toContain("ARG SOURCE_DATE_EPOCH");
     expect(target).toContain('test "$SOURCE_DATE_EPOCH" = "1788912000"');
+    expect(target).toContain("setcap -r /usr/bin/caddy");
+    expect(target).toContain('test -z "$(getcap /usr/bin/caddy)"');
     expect(target).toContain(
       "COPY --chmod=0444 deploy/release/router/Caddyfile /etc/caddy/Caddyfile",
     );
