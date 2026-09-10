@@ -206,6 +206,9 @@ describe("stable fail-closed release router", () => {
     expect(release).toContain(
       '--header "X-Request-Id: release-final-readiness-$run_id"',
     );
+    expect(release).toContain(
+      'if [[ "$mode" != rehearsal ]]; then\n  commit_release_router_active\nfi',
+    );
 
     expectOrdered(activeCaddyfile, [
       "handle @router_live {",
