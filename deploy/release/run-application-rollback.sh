@@ -932,7 +932,7 @@ verify_rollback_maintenance() {
           --dump-header "$route_headers" --output "$route_body" --write-out '%{http_code}' \
           "$rollback_public_base_url/" 2>/dev/null || true)"
         if [[ "$route_status" == 503 \
-          && "$(tr -d '\r' <"$route_body")" == "Service temporarily unavailable." ]] \
+          && "$(tr -d '\r' <"$route_body")" == "Service temporarily unavailable.\\n" ]] \
           && grep -Eiq '^cache-control:.*no-store' "$route_headers" \
           && grep -Eiq '^retry-after:[[:space:]]*5[[:space:]]*$' "$route_headers"; then
           rollback_maintenance_confirmed="true"

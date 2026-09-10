@@ -211,7 +211,7 @@ function writeAcceptedRehearsal(directory: string, revision: string, runId: stri
     join(directory, "28-release-router-route.headers"),
     "HTTP/1.1 503 Service Unavailable\nCache-Control: no-store\nRetry-After: 5\n",
   );
-  writeFileSync(join(directory, "28-release-router-route.txt"), "Service temporarily unavailable.\n");
+  writeFileSync(join(directory, "28-release-router-route.txt"), "Service temporarily unavailable.\\n");
   writeJson("33-backup-evidence.json", {
     schemaVersion: 1,
     product: "business-finlynq",

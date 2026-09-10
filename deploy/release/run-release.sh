@@ -4494,7 +4494,7 @@ verify_release_router_maintenance() {
     "$public_base_url/")" \
     || fail "release-router public maintenance route could not be reached"
   [[ "$route_status" == "503" \
-    && "$(tr -d '\r' <"$route_body")" == "Service temporarily unavailable." ]] \
+    && "$(tr -d '\r' <"$route_body")" == "Service temporarily unavailable.\\n" ]] \
     || fail "release router did not block public application traffic"
   grep -Eiq '^cache-control:.*no-store' "$route_headers" \
     || fail "release-router public maintenance route is cacheable"

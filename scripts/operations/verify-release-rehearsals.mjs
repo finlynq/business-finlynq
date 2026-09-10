@@ -265,7 +265,7 @@ async function verifyDirectory(directory) {
     || !/^HTTP\/\S+ 503\b/m.test(maintenanceHeaders)
     || !/^cache-control:.*no-store/im.test(maintenanceHeaders)
     || !/^retry-after:\s*5\s*$/im.test(maintenanceHeaders)
-    || maintenanceRoute.replaceAll("\r", "") !== "Service temporarily unavailable.\n"
+    || maintenanceRoute.replaceAll("\r", "") !== "Service temporarily unavailable.\\n"
     || !/^HTTP\/\S+ 503\b/m.test(maintenanceRouteHeaders)
     || !/^cache-control:.*no-store/im.test(maintenanceRouteHeaders)
     || !/^retry-after:\s*5\s*$/im.test(maintenanceRouteHeaders)) {
