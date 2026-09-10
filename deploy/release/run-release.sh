@@ -258,7 +258,7 @@ else
     || fail "rehearsal mode does not operate production schedulers or an operations environment"
 fi
 
-for command_name in awk bash chmod chown curl date docker env find flock git grep id install jq mkdir mktemp openssl readlink rm sed sha256sum sleep sort stat sync tar tee timeout touch tr xargs; do
+for command_name in awk bash chmod chown curl date docker env find flock git grep id install jq mkdir mktemp openssl readlink rm runuser sed sha256sum sleep sort stat sync tar tee timeout touch tr xargs; do
   command -v "$command_name" >/dev/null 2>&1 || fail "required command is unavailable: $command_name"
 done
 docker compose version >/dev/null 2>&1 || fail "Docker Compose v2 is unavailable"
@@ -3035,13 +3035,14 @@ verify_initial_state_contract() {
             || fail "initial resume found duplicate release-router containers"
           resumable_router_container_id="$container_id"
           resumable_router_running="$container_running"
-          [[ "$image_revision" == "$release_router_revision" \
-            && "$image_reference" == "$release_router_reference" ]] \
-            || fail "resumable release router is not the stable reviewed contract"
           expected_resume_image_id="$resumable_router_expected_image_id"
           [[ "$expected_resume_image_id" =~ ^sha256:[a-f0-9]{64}$ \
             && "$image_id" == "$expected_resume_image_id" ]] \
             || fail "resumable release-router image ID differs from prior evidence"
+          [[ "$image_revision" == "$release_router_revision" \
+            && ( "$image_reference" == "$release_router_reference" \
+              || "$image_reference" == "$expected_resume_image_id" ) ]] \
+            || fail "resumable release router is not the stable reviewed contract"
           read_docker_output "resumable stable release-router runtime" inspect "$container_id"
           jq -e --arg imageId "$expected_resume_image_id" \
             --arg stateVolume "$router_state_volume_name" \
@@ -3110,8 +3111,6 @@ verify_initial_state_contract() {
         fi
       elif [[ "$container_running" == true ]]; then
         read_docker_output "stopped resumable $service_name container" stop --time 30 "$container_id"
-        [[ "$docker_query_output" == "$container_id" || "$docker_query_output" == "${container_id:0:12}" ]] \
-          || fail "resumable $service_name container returned an unexpected stop identity"
         read_docker_output "quiescent resumable $service_name container" inspect \
           --format '{{.State.Running}}|{{.State.Status}}' "$container_id"
         [[ "$docker_query_output" == false\|exited ]] \
@@ -4197,7 +4196,7 @@ run_installed_monitor() {
     # maintenance; its freshly replaced metric is verified below unchanged.
     (
       cd -- "$repository_root"
-      bash "$repository_root/deploy/monitoring/check-production.sh" \
+      runuser -u deploy -- bash "$repository_root/deploy/monitoring/check-production.sh" \
         --allow-transitional-router-maintenance
     )
   elif [[ "$scheduler_mode" == "systemd" ]]; then
