@@ -220,11 +220,11 @@ done
 readonly image_build_compose_project="business-finlynq-build-$revision"
 [[ "$image_build_compose_project" =~ ^[a-z0-9][a-z0-9-]{2,62}$ ]] \
   || fail "derived image-build Compose project is invalid"
-readonly release_router_reference="business-finlynq-release-router:v1"
-readonly release_router_revision="release-router-v1"
-readonly release_router_contract="v1"
-readonly release_router_build_compose_project="business-finlynq-release-router-build-v1"
-readonly release_router_source_date_epoch="1788912000"
+readonly release_router_reference="business-finlynq-release-router:v2"
+readonly release_router_revision="release-router-v2"
+readonly release_router_contract="v2"
+readonly release_router_build_compose_project="business-finlynq-release-router-build-v2"
+readonly release_router_source_date_epoch="1788998400"
 [[ "$run_id" =~ ^[a-z0-9][a-z0-9._-]{2,30}$ ]] || fail "--run-id must be 3-31 lowercase safe characters"
 [[ -n "$environment_file" && -n "$evidence_root" ]] || fail "--environment and --evidence-root are required"
 [[ "${RELEASE_EXECUTION_ACK:-}" == "$mode:$revision:$run_id" ]] \
@@ -1561,7 +1561,7 @@ load_first_router_forward_repair_journal() {
     '{{.Id}}|{{.Image}}|{{ index .Config.Labels "org.opencontainers.image.revision" }}|{{ index .Config.Labels "com.business-finlynq.release-router.contract" }}|{{.State.Running}}|{{if .State.Health}}{{.State.Health.Status}}{{end}}' \
     "$router_query")" || fail "forward-repair release router could not be inspected"
   [[ "$router_contract" \
-    == "$router_query|${image_ids[router]}|release-router-v1|v1|true|healthy" ]] \
+    == "$router_query|${image_ids[router]}|release-router-v2|v2|true|healthy" ]] \
     || fail "forward-repair release router differs from the immutable candidate contract"
   if [[ "$journal_router_was_preexisting" == true ]]; then
     [[ "$router_query" == "$journal_router_container_id" \
@@ -2895,7 +2895,7 @@ verify_initial_state_contract() {
     business_finlynq_pgdata_clamav
     business_finlynq_caddy_data
     business_finlynq_caddy_config
-    business_finlynq_private-release-router-state-v1
+    business_finlynq_private-release-router-state-v2
   )
   local -a forbidden_networks=(
     business_finlynq_private
@@ -3124,13 +3124,13 @@ verify_initial_state_contract() {
       if [[ "$initial_state" == "fresh" \
         || ( "$resource_name" != business_finlynq_pgdata \
           && "$resource_name" != business_finlynq_pgdata_clamav \
-          && "$resource_name" != business_finlynq_private-release-router-state-v1 ) ]]; then
+          && "$resource_name" != business_finlynq_private-release-router-state-v2 ) ]]; then
         fail "initial production found a disallowed preexisting production volume: $resource_name"
       fi
       expected_volume_label=business_finlynq_pgdata
       [[ "$resource_name" == business_finlynq_pgdata_clamav ]] \
         && expected_volume_label=business_finlynq_clamav
-      [[ "$resource_name" == business_finlynq_private-release-router-state-v1 ]] \
+      [[ "$resource_name" == business_finlynq_private-release-router-state-v2 ]] \
         && expected_volume_label=business_finlynq_release_router_state
       read_docker_output "resumable production volume $resource_name" volume inspect "$resource_name"
       jq -e --arg name "$resource_name" --arg logical "$expected_volume_label" '
@@ -3141,7 +3141,7 @@ verify_initial_state_contract() {
         .[0].Labels["com.docker.compose.volume"] == $logical
       ' <<<"$docker_query_output" >/dev/null \
         || fail "resumable production volume ownership is invalid: $resource_name"
-      if [[ "$resource_name" == business_finlynq_private-release-router-state-v1 ]]; then
+      if [[ "$resource_name" == business_finlynq_private-release-router-state-v2 ]]; then
         router_state_volume_present="true"
         if [[ "$resumable_router_running" == "true" ]]; then
           read_docker_output "resumable release-router state volume" run --rm --network none \
@@ -3168,7 +3168,7 @@ verify_initial_state_contract() {
     if [[ "$initial_state" == "fresh" \
       || ( "$resource_name" != business_finlynq_pgdata \
         && "$resource_name" != business_finlynq_pgdata_clamav \
-        && "$resource_name" != business_finlynq_private-release-router-state-v1 ) ]]; then
+        && "$resource_name" != business_finlynq_private-release-router-state-v2 ) ]]; then
       fail "initial production found an unexpected Compose-owned volume: $resource_name"
     fi
   done <<<"$docker_query_output"

@@ -13,9 +13,9 @@ readonly boundary_file="/home/deploy/.local/state/business-finlynq/release-locks
 readonly automation_lock="/var/lib/business-finlynq/continuous-deployment.lock"
 readonly host_deployment_lock="/var/lib/business-finlynq/deployment-host.lock"
 readonly failure_latch="/var/lib/business-finlynq/continuous-deployment-failed"
-readonly release_router_reference="business-finlynq-release-router:v1"
-readonly release_router_revision="release-router-v1"
-readonly release_router_contract="v1"
+readonly release_router_reference="business-finlynq-release-router:v2"
+readonly release_router_revision="release-router-v2"
+readonly release_router_contract="v2"
 readonly legacy_f8485_revision="f8485ca86fef5b5fb4a38be9cb4cf3bea5ac2107"
 readonly legacy_f8485_image_id="sha256:2135e8e936bf8befdc44132771698dfb942fc97dccb19b71eeb3db9f3e5b66b5"
 readonly release_recovery_state_directory="/var/lib/business-finlynq/release-recovery"
@@ -28,7 +28,7 @@ readonly production_signal_cache_directory="/var/cache/business-finlynq/github-a
 readonly production_signal_workflow_path=".github/workflows/signal-production-deployment.yml"
 readonly production_signal_workflow_sha256="36326ed7f59c4aab5310d4ca58dd86ef0539d653bbf3723a74f53e83fa7df071"
 readonly quality_gate_workflow_path=".github/workflows/ci.yml"
-readonly quality_gate_workflow_sha256="2a61d709888f590a6ac5cf22612224cd31fe4236b7aa3aaeb1f8d9cbb0e2228f"
+readonly quality_gate_workflow_sha256="1a30d197f4cfa9564561307afc69bd61277eac1971e0fef0664c71f3095072b8"
 readonly github_cli="/usr/bin/gh"
 readonly clean_path="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
@@ -920,7 +920,7 @@ stable_release_router_is_exact() {
       ((.[0].HostConfig.CapDrop // []) | sort) == ["ALL"] and
       ((.[0].HostConfig.SecurityOpt // []) | index("no-new-privileges:true")) != null and
       (.[0].Mounts | length) == 1 and .[0].Mounts[0].Type == "volume" and
-      .[0].Mounts[0].Name == "business_finlynq_private-release-router-state-v1" and
+      .[0].Mounts[0].Name == "business_finlynq_private-release-router-state-v2" and
       .[0].Mounts[0].Destination == "/state" and .[0].Mounts[0].RW == true and
       ((.[0].NetworkSettings.Networks | keys | sort) ==
         (["business_finlynq_edge", "business_finlynq_private-frontend"] | sort)) and
@@ -1524,7 +1524,7 @@ force_parent_release_router_maintenance() {
     (.[0].HostConfig.CapDrop | sort) == ["ALL"] and
     (.[0].HostConfig.SecurityOpt | index("no-new-privileges:true")) != null and
     (.[0].Mounts | length) == 1 and .[0].Mounts[0].Type == "volume" and
-    .[0].Mounts[0].Name == "business_finlynq_private-release-router-state-v1" and
+    .[0].Mounts[0].Name == "business_finlynq_private-release-router-state-v2" and
     .[0].Mounts[0].Destination == "/state" and .[0].Mounts[0].RW == true and
     ((.[0].NetworkSettings.Networks | keys | sort) ==
       (["business_finlynq_edge", "business_finlynq_private-frontend"] | sort)) and

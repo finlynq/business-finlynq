@@ -111,14 +111,14 @@ FROM caddy:2.10.2-alpine@sha256:4c6e91c6ed0e2fa03efd5b44747b625fec79bc9cd06ac523
 # contract version stable across ordinary application commits so Compose never
 # replaces the public listener during a routine deployment. Bump this value
 # only as part of an explicitly reviewed router upgrade.
-LABEL com.business-finlynq.release-router.contract=v1 \
-  org.opencontainers.image.revision=release-router-v1
+LABEL com.business-finlynq.release-router.contract=v2 \
+  org.opencontainers.image.revision=release-router-v2
 
 ARG SOURCE_DATE_EPOCH
 # The upstream binary is granted cap_net_bind_service for ports below 1024.
 # This router listens on 3000 and runs with every capability dropped plus
 # no-new-privileges, so retaining that file capability makes execve fail.
-RUN test "$SOURCE_DATE_EPOCH" = "1788912000" \
+RUN test "$SOURCE_DATE_EPOCH" = "1788998400" \
   && setcap -r /usr/bin/caddy \
   && test -z "$(getcap /usr/bin/caddy)" \
   && addgroup -S -g 10001 release-router \

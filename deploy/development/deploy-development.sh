@@ -15,12 +15,12 @@ readonly legacy_failure_latch="$state_directory/deployment-failed"
 readonly quarantine_file="$state_directory/quarantined-candidate"
 readonly hard_failure_latch="$state_directory/deployment-hard-failed"
 readonly accepted_revision_file="$state_directory/accepted-revision"
-readonly release_router_reference="business-finlynq-release-router:v1"
-readonly release_router_revision="release-router-v1"
-readonly release_router_contract="v1"
-readonly release_router_build_project="business-finlynq-release-router-build-v1"
-readonly release_router_source_date_epoch="1788912000"
-readonly release_router_state_volume="business_finlynq_development_private-release-router-state-v1"
+readonly release_router_reference="business-finlynq-release-router:v2"
+readonly release_router_revision="release-router-v2"
+readonly release_router_contract="v2"
+readonly release_router_build_project="business-finlynq-release-router-build-v2"
+readonly release_router_source_date_epoch="1788998400"
+readonly release_router_state_volume="business_finlynq_development_private-release-router-state-v2"
 readonly build_cache_limit="8GB"
 readonly clean_path="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 release_acceptance_token=""
@@ -966,7 +966,7 @@ verify_compose_boundary() {
   if [[ "$topology" == router ]]; then
     expected_resources+=(
       "business_finlynq_development_private-frontend"
-      "business_finlynq_development_private-release-router-state-v1"
+      "business_finlynq_development_private-release-router-state-v2"
     )
     router_image="$(jq -er '.services.release_router.image' <<<"$rendered")" \
       || fail "development release-router image could not be read from Compose"

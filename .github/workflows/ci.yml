@@ -340,8 +340,8 @@ jobs:
             docker volume rm "$router_volume" >/dev/null 2>&1 || true
           }
           trap cleanup_router EXIT
-          docker build --provenance=false --sbom=false --target release-router --build-arg SOURCE_DATE_EPOCH=1788912000 --tag business-finlynq-release-router-ci .
-          test "$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' business-finlynq-release-router-ci)" = release-router-v1
+          docker build --provenance=false --sbom=false --target release-router --build-arg SOURCE_DATE_EPOCH=1788998400 --tag business-finlynq-release-router-ci .
+          test "$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' business-finlynq-release-router-ci)" = release-router-v2
           docker volume create "$router_volume" >/dev/null
           docker run --detach --name "$router_container" --network none --read-only --user 10001:10001 --cap-drop ALL --security-opt no-new-privileges --pids-limit 64 --memory 96m --cpus 0.25 --tmpfs /tmp:size=16m,mode=0700,uid=10001,gid=10001,noexec,nosuid,nodev --tmpfs /config:size=1m,mode=0700,uid=10001,gid=10001,noexec,nosuid,nodev --tmpfs /data:size=1m,mode=0700,uid=10001,gid=10001,noexec,nosuid,nodev --mount "type=volume,source=$router_volume,target=/state" business-finlynq-release-router-ci >/dev/null
           router_live=""
