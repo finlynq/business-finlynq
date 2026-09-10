@@ -512,6 +512,30 @@ describe("continuous deployment safety boundary", () => {
       'candidate_revision="$(git_as_deploy rev-parse refs/remotes/origin/dev)"',
     );
     expect(deployDevelopment).toContain('signal_tag="deploy-development-$candidate_revision"');
+    expect(deployDevelopment).toContain(
+      'readonly installed_deployer="/usr/local/sbin/business-finlynq-deploy-development"',
+    );
+    const signalVerification = deployDevelopment.indexOf(
+      '[[ "$signal_revision" == "$candidate_revision" ]]',
+    );
+    const deployerRefresh = deployDevelopment.indexOf(
+      'refresh_installed_deployer_if_needed "$candidate_revision"',
+    );
+    const candidateMutation = deployDevelopment.indexOf(
+      'git_as_deploy merge --ff-only "$candidate_revision"',
+    );
+    expect(deployerRefresh).toBeGreaterThan(signalVerification);
+    expect(candidateMutation).toBeGreaterThan(deployerRefresh);
+    expect(deployDevelopment).toContain(
+      'expected_oid="$(git_as_deploy rev-parse "$revision:$relative_path")"',
+    );
+    expect(deployDevelopment).toContain(
+      'observed_oid="$(git_as_deploy hash-object --stdin <"$candidate_source")"',
+    );
+    expect(deployDevelopment).toContain(
+      'mv -T -- "$staged_target" "$installed_deployer"',
+    );
+    expect(deployDevelopment).toContain('exec env -i PATH="$clean_path" "$installed_deployer"');
     expect(deployDevelopment).toContain("http://127.0.0.1:3200/api/health");
     expect(deployDevelopment).not.toContain("/etc/business-finlynq/compose.env");
     expect(deployDevelopment).not.toContain("refs/remotes/origin/main");
