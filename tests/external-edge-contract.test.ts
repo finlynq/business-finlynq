@@ -278,6 +278,12 @@ describe("externally managed edge contract", () => {
     );
     expect(verifier).toContain('readonly release_router_revision="release-router-v2"');
     expect(verifier).toContain('readonly release_router_contract="v2"');
+    expect(verifier).toContain(
+      'readonly production_router_control_network="business_finlynq_private-router-control"',
+    );
+    expect(verifier).toContain(
+      'readonly development_router_control_network="business_finlynq_development_private-router-control"',
+    );
     expect(verifier).toContain('expected_image="$release_router_reference"');
     expect(verifier).toContain(
       'Config.Labels["org.opencontainers.image.revision"] == $routerRevision',
@@ -294,6 +300,7 @@ describe("externally managed edge contract", () => {
     expect(verifier).toContain('and ((.[0].Mounts // []) | length) == 1');
     expect(verifier).toContain('.[0].Mounts[0].Name == $stateVolume');
     expect(verifier).toContain('.[0].Mounts[0].Destination == "/state"');
+    expect(verifier).toContain('([$control, $frontend, $ingress] | sort)');
     expect(verifier).toContain('"$router_mode" == "$expected_router_mode"');
     expect(verifier).toContain('"$expected_router_mode" == active-or-maintenance');
     const aliasOwnership = extractShellFunction(verifier, "verify_unique_network_alias_owner");
