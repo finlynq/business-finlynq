@@ -3082,7 +3082,7 @@ verify_initial_state_contract() {
           case "$service_name" in
             database) logical_image=database ;;
             app) logical_image=app ;;
-            migrate|bootstrap_demo) logical_image=migrator ;;
+            migrate|verify_database_contract|bootstrap_demo) logical_image=migrator ;;
             release_acceptance) logical_image=acceptance ;;
           esac
           expected_resume_image_id="$(jq -r --arg name "$logical_image" \
@@ -4195,8 +4195,11 @@ run_installed_monitor() {
     # acceptance only, invoke the reviewed implementation directly so it can
     # attest the live candidate while the restart sentinel is still
     # maintenance; its freshly replaced metric is verified below unchanged.
-    bash "$repository_root/deploy/monitoring/check-production.sh" \
-      --allow-transitional-router-maintenance
+    (
+      cd -- "$repository_root"
+      bash "$repository_root/deploy/monitoring/check-production.sh" \
+        --allow-transitional-router-maintenance
+    )
   elif [[ "$scheduler_mode" == "systemd" ]]; then
     run_fresh_systemd_oneshot business-finlynq-monitor.service \
       "the resumed systemd monitor"
