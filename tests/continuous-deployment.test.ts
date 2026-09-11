@@ -656,6 +656,19 @@ describe("continuous deployment safety boundary", () => {
     expect(installDevelopment).toContain("--disable-yahoo-fx");
   });
 
+  it("keeps pre-OIDC development revisions recoverable across the SSO release boundary", () => {
+    expect(deployDevelopment).toContain("revision_uses_oidc_runtime_contract() {");
+    expect(deployDevelopment).toContain(
+      'revision_uses_oidc_runtime_contract "$expected_revision"',
+    );
+    expect(deployDevelopment).toContain(
+      '"$app_container" "$rendered" "$oidc_contract_expected"',
+    );
+    expect(deployDevelopment).toContain(
+      'for setting in "${required_environment_settings[@]}"',
+    );
+  });
+
   it("enables every development feature only with isolated provider secrets", () => {
     expect(installDevelopment).toContain("--enable-all-features");
     expect(installDevelopment).toContain("resend-api-key turnstile-secret-key");
