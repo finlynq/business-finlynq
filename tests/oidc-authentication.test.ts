@@ -77,6 +77,7 @@ describe("Business OIDC configuration and browser-bound authorization", () => {
 
   it("binds state, nonce, PKCE verifier, redirect, and expiry to an encrypted browser cookie", () => {
     vi.stubEnv("NODE_ENV", "test");
+    vi.stubEnv("IDENTITY_SECRET_FILE", "");
     vi.stubEnv("IDENTITY_SECRET", identitySecret);
     const configuration = loadOidcConfiguration(environment());
     let sequence = 0;

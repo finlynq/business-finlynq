@@ -159,7 +159,7 @@ BEGIN
   END IF;
 
   IF selected_organization.is_demo THEN
-    IF selected_organization.organization_mode <> 'SANDBOX'
+    IF selected_organization.organization_mode <> 'PUBLIC_DEMO'
       OR selected_session.session_mode <> 'DEMO'
       OR coalesce(current_setting('app.session_mode', true), '') <> 'demo' THEN
       RAISE EXCEPTION 'Organization administration session mode is invalid'
