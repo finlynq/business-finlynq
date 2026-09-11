@@ -260,6 +260,13 @@ revision_release_topology() {
   fi
 }
 
+revision_uses_oidc_runtime_contract() {
+  local revision="$1" compose_source
+  validate_revision "$revision"
+  compose_source="$(git_as_deploy show "$revision:docker-compose.yml")" || return 2
+  grep -Eq '^[[:space:]]+AUTH_OIDC_ENABLED:' <<<"$compose_source"
+}
+
 verify_external_edge_if_selected() {
   local verifier_revision="$1" selected_mode selected_count
   validate_revision "$verifier_revision"
@@ -1110,7 +1117,12 @@ verify_compose_boundary() {
 
 document_provider_configuration_matches() {
   local container="$1" rendered="$2" provider setting expected_record actual_record source target \
-    mounts expected_digest actual_digest provider_record
+    mounts expected_digest actual_digest provider_record oidc_contract_expected="${3:-true}"
+  local -a oidc_secret_settings=()
+  [[ "$oidc_contract_expected" == true || "$oidc_contract_expected" == false ]] || return 1
+  if [[ "$oidc_contract_expected" == true ]]; then
+    oidc_secret_settings=(AUTH_OIDC_CLIENT_SECRET_FILE AUTH_OIDC_IDENTITY_MAP_FILE)
+  fi
   mounts="$(docker inspect --format '{{json .Mounts}}' "$container")" || return 1
   for provider in GOOGLE MICROSOFT; do
     for setting in "DOCUMENT_${provider}_CLIENT_ID" "DOCUMENT_${provider}_CLIENT_SECRET_FILE"; do
@@ -1181,7 +1193,7 @@ document_provider_configuration_matches() {
   # OIDC uses the same immutable, read-only secret boundary as document
   # providers. Verify both mounted files even while the feature gate is off so
   # an atomic host-side rotation cannot leave the running app on a stale inode.
-  for setting in AUTH_OIDC_CLIENT_SECRET_FILE AUTH_OIDC_IDENTITY_MAP_FILE; do
+  for setting in "${oidc_secret_settings[@]}"; do
     expected_record="$(jq -ce --arg setting "$setting" '
       .services.app.environment as $environment |
       if ($environment | has($setting)) then
@@ -1389,10 +1401,29 @@ restore_legacy_development_app_alias() {
 release_is_accepted() {
   local expected_revision="$1" topology app_container app_environment actual expected detailed_health \
     public_health rendered hostname require_public setting app_container_output app_revision router_container_output \
-    app_network_contract public_policy="${2:-full}"
-  local -a app_containers router_containers public_health_headers=()
+    app_network_contract oidc_contract_expected oidc_contract_status public_policy="${2:-full}"
+  local -a app_containers router_containers public_health_headers=() required_environment_settings=(
+    DEMO_LOGIN_ENABLED DEMO_WRITES_ENABLED ACCOUNT_LOGIN_ENABLED
+    ACCOUNT_SIGNUP_ENABLED AUTH_EMAIL_DELIVERY_ENABLED AUTH_EMAIL_PROVIDER AUTH_EMAIL_FROM
+    AUTH_EMAIL_REPLY_TO SIGNUP_TURNSTILE_ENABLED SIGNUP_TURNSTILE_SITE_KEY
+    BUSINESS_WRITES_ENABLED BANK_FEEDS_ENABLED YAHOO_FX_ENABLED DOCUMENT_INBOX_MAX_DEPTH
+    DOCUMENT_INBOX_MAX_PROVIDER_CALLS
+  )
   validate_revision "$expected_revision"
   [[ "$public_policy" == full || "$public_policy" == private ]] || return 1
+  oidc_contract_expected=false
+  if revision_uses_oidc_runtime_contract "$expected_revision"; then
+    oidc_contract_expected=true
+    required_environment_settings+=(
+      AUTH_OIDC_ENABLED AUTH_OIDC_ISSUER AUTH_OIDC_AUTHORIZATION_ENDPOINT
+      AUTH_OIDC_TOKEN_ENDPOINT AUTH_OIDC_JWKS_URI AUTH_OIDC_CLIENT_ID
+      AUTH_OIDC_ALLOWED_TENANTS AUTH_OIDC_MAXIMUM_TOKEN_LIFETIME_SECONDS
+      AUTH_OIDC_TOKEN_TIMEOUT_MILLISECONDS AUTH_OIDC_JWKS_TIMEOUT_MILLISECONDS
+    )
+  else
+    oidc_contract_status="$?"
+    [[ "$oidc_contract_status" == 1 ]] || return 1
+  fi
   app_container_output="$(docker ps --no-trunc --quiet \
     --filter label=com.docker.compose.project="$project" \
     --filter label=com.docker.compose.service=app)" || return 1
@@ -1448,18 +1479,11 @@ release_is_accepted() {
       business_finlynq_development_edge development-app \
       "$app_container" || return 1
   fi
-  document_provider_configuration_matches "$app_container" "$rendered" || return 1
+  document_provider_configuration_matches \
+    "$app_container" "$rendered" "$oidc_contract_expected" || return 1
   app_environment="$(docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' \
     "$app_container")" || return 1
-  for setting in DEMO_LOGIN_ENABLED DEMO_WRITES_ENABLED ACCOUNT_LOGIN_ENABLED \
-    AUTH_OIDC_ENABLED AUTH_OIDC_ISSUER AUTH_OIDC_AUTHORIZATION_ENDPOINT \
-    AUTH_OIDC_TOKEN_ENDPOINT AUTH_OIDC_JWKS_URI AUTH_OIDC_CLIENT_ID \
-    AUTH_OIDC_ALLOWED_TENANTS AUTH_OIDC_MAXIMUM_TOKEN_LIFETIME_SECONDS \
-    AUTH_OIDC_TOKEN_TIMEOUT_MILLISECONDS AUTH_OIDC_JWKS_TIMEOUT_MILLISECONDS \
-    ACCOUNT_SIGNUP_ENABLED AUTH_EMAIL_DELIVERY_ENABLED AUTH_EMAIL_PROVIDER AUTH_EMAIL_FROM \
-    AUTH_EMAIL_REPLY_TO SIGNUP_TURNSTILE_ENABLED SIGNUP_TURNSTILE_SITE_KEY \
-    BUSINESS_WRITES_ENABLED BANK_FEEDS_ENABLED YAHOO_FX_ENABLED DOCUMENT_INBOX_MAX_DEPTH \
-    DOCUMENT_INBOX_MAX_PROVIDER_CALLS; do
+  for setting in "${required_environment_settings[@]}"; do
     expected="$(jq -er --arg setting "$setting" '
       .services.app.environment as $environment |
       if ($environment | has($setting)) then ($environment[$setting] | tostring)
@@ -2133,7 +2157,16 @@ document_app_container="$(compose ps --quiet app)" \
   || fail "the development app container could not be identified"
 document_rendered="$(compose config --format json)" \
   || fail "the development Compose configuration could not be rendered after apply"
-if ! document_provider_configuration_matches "$document_app_container" "$document_rendered"; then
+document_oidc_contract_expected=false
+if revision_uses_oidc_runtime_contract "$candidate_revision"; then
+  document_oidc_contract_expected=true
+else
+  document_oidc_contract_status="$?"
+  [[ "$document_oidc_contract_status" == 1 ]] \
+    || fail "the candidate OIDC runtime contract could not be classified"
+fi
+if ! document_provider_configuration_matches \
+  "$document_app_container" "$document_rendered" "$document_oidc_contract_expected"; then
   compose up --detach --wait --no-deps --no-build --force-recreate app
 fi
 
