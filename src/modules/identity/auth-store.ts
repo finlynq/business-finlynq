@@ -94,12 +94,30 @@ export type EmailDeliveryReadiness = Readonly<{
   stuck_count: string;
 }>;
 
+export type StoredOidcIdentity = Readonly<{
+  user_id: string;
+  organization_id: string;
+  membership_id: string;
+}>;
+
 export async function consumeRateLimit(scope: string, keyHash: string, limit: number, windowSeconds: number) {
   const result = await queryDatabase<{ allowed: boolean; retry_after_seconds: number }>(
     "SELECT * FROM app.auth_consume_rate_limit($1, $2, $3, $4)",
     [scope, keyHash, limit, windowSeconds],
   );
   return result.rows[0] ?? { allowed: false, retry_after_seconds: windowSeconds };
+}
+
+export async function resolveOidcIdentity(input: Readonly<{
+  issuer: string;
+  externalTenantId: string;
+  externalPrincipalId: string;
+}>): Promise<StoredOidcIdentity | null> {
+  const result = await queryDatabase<StoredOidcIdentity>(
+    "SELECT * FROM app.auth_resolve_oidc_identity($1,$2,$3)",
+    [input.issuer, input.externalTenantId, input.externalPrincipalId],
+  );
+  return result.rows[0] ?? null;
 }
 
 type RateLimitDecision = Readonly<{ allowed: boolean; retry_after_seconds: number }>;

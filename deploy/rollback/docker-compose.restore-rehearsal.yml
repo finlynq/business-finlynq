@@ -19,6 +19,7 @@ services:
       DEMO_WRITES_ENABLED: "false"
       ACCOUNT_LOGIN_ENABLED: "false"
       AUTH_OIDC_ENABLED: "false"
+      AUTH_OIDC_SIGNUP_ENABLED: "false"
       ACCOUNT_SIGNUP_ENABLED: "false"
       SIGNUP_TURNSTILE_ENABLED: "false"
       AUTH_EMAIL_DELIVERY_ENABLED: "false"

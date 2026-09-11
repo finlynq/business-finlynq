@@ -147,4 +147,24 @@ describe("self-service signup security", () => {
       else process.env.APP_ORIGIN = previousOrigin;
     }
   });
+
+  it("keeps Microsoft identity and contact-email verification separate", () => {
+    const previousOrigin = process.env.APP_ORIGIN;
+    process.env.APP_ORIGIN = "https://business.finlynq.com";
+    try {
+      const rendered = renderAuthenticationEmail({
+        templateType: "ORGANIZATION_SIGNUP",
+        payload: { token: "microsoft-signup-secret" },
+        templateData: { organizationName: "Example Books", authentication: "OIDC" },
+      });
+      expect(rendered.text).toContain("/complete-signup?method=microsoft#token=microsoft-signup-secret");
+      expect(rendered.text).toContain("No Business Finlynq password is required");
+      expect(rendered.text).toContain("Owner authenticator enrollment is required");
+      expect(rendered.text).toContain("confirm the same Microsoft account again");
+      expect(rendered.text).not.toContain("?token=");
+    } finally {
+      if (previousOrigin === undefined) delete process.env.APP_ORIGIN;
+      else process.env.APP_ORIGIN = previousOrigin;
+    }
+  });
 });

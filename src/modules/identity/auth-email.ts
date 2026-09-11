@@ -57,14 +57,19 @@ export function renderAuthenticationEmail(input: {
   if (input.templateType === "ORGANIZATION_SIGNUP") {
     const token = typeof input.payload.token === "string" ? input.payload.token : "";
     if (!token) throw new Error("Organization-signup email has no token");
-    const link = actionLink("/complete-signup", "token", token);
+    const microsoft = input.templateData.authentication === "OIDC";
+    const link = actionLink(microsoft ? "/complete-signup?method=microsoft" : "/complete-signup", "token", token);
     const organizationName = typeof input.templateData.organizationName === "string"
       ? input.templateData.organizationName
       : "your business";
     return {
       subject: "Verify your Business Finlynq account",
-      text: `Verify your email to create the ${organizationName} workspace:\n\n${link}\n\nThis one-use link expires in 24 hours. You will create a password and can enroll an authenticator for stronger security now or later. If you did not request this, ignore the email.`,
-      html: wrapHtml("Verify your business account", `<p>Verify your email to create the <strong>${escapeHtml(organizationName)}</strong> workspace.</p><p><a href="${escapeHtml(link)}">Verify and secure account</a></p><p>This one-use link expires in 24 hours. The business is provisioned after password setup; authenticator enrollment is recommended and can be completed now or later.</p><p>If you did not request this, ignore the email.</p>`),
+      text: microsoft
+        ? `Verify your contact email to continue creating the ${organizationName} workspace:\n\n${link}\n\nThis one-use link expires in 24 hours. You will confirm the same Microsoft account again before activation. No Business Finlynq password is required unless you choose to enable both sign-in methods. Owner authenticator enrollment is required. If you did not request this, ignore the email.`
+        : `Verify your email to create the ${organizationName} workspace:\n\n${link}\n\nThis one-use link expires in 24 hours. You will create a password and can enroll an authenticator for stronger security now or later. If you did not request this, ignore the email.`,
+      html: microsoft
+        ? wrapHtml("Verify your Microsoft business account", `<p>Verify your contact email to continue creating the <strong>${escapeHtml(organizationName)}</strong> workspace.</p><p><a href="${escapeHtml(link)}">Verify and finish Microsoft signup</a></p><p>This one-use link expires in 24 hours. You will confirm the same Microsoft account again before activation. No Business Finlynq password is required unless you choose to enable both methods. Owner authenticator enrollment is required.</p><p>If you did not request this, ignore the email.</p>`)
+        : wrapHtml("Verify your business account", `<p>Verify your email to create the <strong>${escapeHtml(organizationName)}</strong> workspace.</p><p><a href="${escapeHtml(link)}">Verify and secure account</a></p><p>This one-use link expires in 24 hours. The business is provisioned after password setup; authenticator enrollment is recommended and can be completed now or later.</p><p>If you did not request this, ignore the email.</p>`),
     };
   }
   if (input.templateType === "RECOVERY_APPROVAL") {

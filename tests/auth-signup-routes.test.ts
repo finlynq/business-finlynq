@@ -5,7 +5,11 @@ const mocks = vi.hoisted(() => ({
   limit: vi.fn(async () => ({ allowed: true, retry_after_seconds: 0 })),
   verifyChallenge: vi.fn(async () => true),
   requestSignup: vi.fn(async () => true),
+  requestOidcSignup: vi.fn(async () => true),
   acceptSignup: vi.fn(),
+  acceptOidcSignup: vi.fn(),
+  consumeOidcSignupProof: vi.fn(),
+  clearOidcSignupCookie: vi.fn(),
 }));
 
 vi.mock("@/modules/identity/auth-store", () => ({
@@ -29,7 +33,16 @@ vi.mock("@/modules/identity/signup-challenge", () => ({
 }));
 vi.mock("@/modules/identity/signup-service", () => ({
   requestOwnerSignup: mocks.requestSignup,
+  requestOidcOwnerSignup: mocks.requestOidcSignup,
   acceptOwnerSignup: mocks.acceptSignup,
+  acceptOidcOwnerSignup: mocks.acceptOidcSignup,
+}));
+vi.mock("@/modules/identity/oidc", () => ({
+  oidcSignupEnabled: () => process.env.AUTH_OIDC_SIGNUP_ENABLED === "true",
+  oidcSignupCookieName: () => "business_finlynq_oidc_signup",
+  clearOidcSignupCookie: mocks.clearOidcSignupCookie,
+  consumeOidcSignupProof: mocks.consumeOidcSignupProof,
+  loadOidcConfiguration: vi.fn(() => ({ issuer: "https://issuer.example.test" })),
 }));
 vi.mock("@/security/identity-secret", () => ({
   normalizeEmail: vi.fn((value: string) => value.trim().toLowerCase()),
@@ -39,18 +52,29 @@ vi.mock("@/security/identity-secret", () => ({
 
 import { POST as requestSignup } from "@/app/api/auth/signup/request/route";
 import { POST as acceptSignup } from "@/app/api/auth/signup/accept/route";
+import { POST as requestOidcSignup } from "@/app/api/auth/signup/oidc-request/route";
+import { POST as acceptOidcSignup } from "@/app/api/auth/signup/oidc-accept/route";
 
 const previousSignupEnabled = process.env.ACCOUNT_SIGNUP_ENABLED;
 const previousLoginEnabled = process.env.ACCOUNT_LOGIN_ENABLED;
+const previousOidcSignupEnabled = process.env.AUTH_OIDC_SIGNUP_ENABLED;
 
 beforeEach(() => {
   vi.clearAllMocks();
   process.env.ACCOUNT_SIGNUP_ENABLED = "true";
   process.env.ACCOUNT_LOGIN_ENABLED = "true";
+  process.env.AUTH_OIDC_SIGNUP_ENABLED = "true";
   mocks.limit.mockResolvedValue({ allowed: true, retry_after_seconds: 0 });
   mocks.verifyChallenge.mockResolvedValue(true);
   mocks.requestSignup.mockResolvedValue(true);
   mocks.acceptSignup.mockResolvedValue({ status: "invalid" });
+  mocks.acceptOidcSignup.mockResolvedValue({ status: "invalid" });
+  mocks.consumeOidcSignupProof.mockReturnValue({
+    issuer: "https://issuer.example.test",
+    externalTenantId: "external-tenant",
+    externalPrincipalId: "external-principal",
+    credentialHash: "c".repeat(64),
+  });
 });
 
 afterAll(() => {
@@ -58,6 +82,8 @@ afterAll(() => {
   else process.env.ACCOUNT_SIGNUP_ENABLED = previousSignupEnabled;
   if (previousLoginEnabled === undefined) delete process.env.ACCOUNT_LOGIN_ENABLED;
   else process.env.ACCOUNT_LOGIN_ENABLED = previousLoginEnabled;
+  if (previousOidcSignupEnabled === undefined) delete process.env.AUTH_OIDC_SIGNUP_ENABLED;
+  else process.env.AUTH_OIDC_SIGNUP_ENABLED = previousOidcSignupEnabled;
 });
 
 function request(
@@ -236,5 +262,72 @@ describe("public owner signup routes", () => {
     }));
     expect(response.status).toBe(200);
     expect(mocks.acceptSignup).toHaveBeenCalledOnce();
+  });
+
+  it("uses an encrypted Microsoft principal proof instead of an email claim or bot challenge", async () => {
+    const response = await requestOidcSignup(request(
+      "/api/auth/signup/oidc-request",
+      validRequest,
+      "application/json",
+      { Cookie: "business_finlynq_oidc_signup=encrypted-proof" },
+    ));
+
+    expect(response.status).toBe(202);
+    expect(mocks.verifyChallenge).not.toHaveBeenCalled();
+    expect(mocks.requestOidcSignup).toHaveBeenCalledWith(expect.objectContaining({
+      email: "owner@example.com",
+      oidcIdentity: {
+        issuer: "https://issuer.example.test",
+        externalTenantId: "external-tenant",
+        externalPrincipalId: "external-principal",
+        credentialHash: "c".repeat(64),
+      },
+    }));
+    expect(mocks.clearOidcSignupCookie).toHaveBeenCalledOnce();
+  });
+
+  it("requires a fresh Microsoft proof before accepting business details", async () => {
+    mocks.consumeOidcSignupProof.mockImplementationOnce(() => { throw new Error("expired"); });
+    const response = await requestOidcSignup(request(
+      "/api/auth/signup/oidc-request",
+      validRequest,
+    ));
+
+    expect(response.status).toBe(503);
+    expect(mocks.requestOidcSignup).not.toHaveBeenCalled();
+    expect(mocks.clearOidcSignupCookie).toHaveBeenCalledOnce();
+  });
+
+  it("activates Microsoft-only signup without collecting a Business password", async () => {
+    mocks.acceptOidcSignup.mockResolvedValue({
+      status: "accepted",
+      setupToken: "setup-token",
+      secret: "TOTPSECRET",
+      enrollmentUri: "otpauth://example",
+      organizationName: "Example Books",
+    });
+    const response = await acceptOidcSignup(request("/api/auth/signup/oidc-accept", {
+      token: "t".repeat(48),
+    }));
+
+    expect(response.status).toBe(200);
+    expect(mocks.acceptOidcSignup).toHaveBeenCalledWith(expect.objectContaining({
+      token: "t".repeat(48),
+      requestId: expect.any(String),
+      oidcIdentity: expect.objectContaining({ externalPrincipalId: "external-principal" }),
+    }));
+    expect(mocks.acceptOidcSignup.mock.calls[0]?.[0]).not.toHaveProperty("password");
+  });
+
+  it("supports independent Business credentials when the Microsoft user opts into both", async () => {
+    mocks.acceptOidcSignup.mockResolvedValue({ status: "invalid" });
+    await acceptOidcSignup(request("/api/auth/signup/oidc-accept", {
+      token: "t".repeat(48),
+      password: "an independent long password",
+    }));
+
+    expect(mocks.acceptOidcSignup).toHaveBeenCalledWith(expect.objectContaining({
+      password: "an independent long password",
+    }));
   });
 });

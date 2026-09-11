@@ -5,16 +5,22 @@ import { observeRouteHandler } from "@/observability/request-observability";
 import {
   assertEmailDeliveryReady,
   issueOidcUserSession,
+  resolveOidcIdentity,
 } from "@/modules/identity/auth-store";
 import { assertAccountAuthenticationConfigured } from "@/modules/identity/email-provider";
 import {
   clearOidcLoginCookie,
+  clearOidcSignupCookie,
   consumeOidcLoginAttempt,
+  createOidcSignupProof,
   exchangeOidcAuthorizationCode,
   loadOidcConfiguration,
   OidcAuthenticationError,
+  type OidcIntent,
   oidcLoginCookieName,
-  verifyOidcIdToken,
+  oidcSignupEnabled,
+  setOidcSignupCookie,
+  verifyOidcPrincipal,
 } from "@/modules/identity/oidc";
 import { configuredAppOrigin, requestFingerprints } from "@/modules/identity/request-security";
 import {
@@ -43,12 +49,17 @@ function callbackQuery(request: NextRequest): Readonly<Record<string, string>> {
   return values;
 }
 
-function loginError(code: string): NextResponse {
-  const location = new URL("/login", configuredAppOrigin());
-  location.searchParams.set("ssoError", code);
+function oidcError(code: string, intent: OidcIntent = "login"): NextResponse {
+  const location = new URL(
+    intent === "signup" ? "/signup" : intent === "signup-accept" ? "/complete-signup" : "/login",
+    configuredAppOrigin(),
+  );
+  if (intent === "signup-accept") location.searchParams.set("method", "microsoft");
+  location.searchParams.set(intent === "login" ? "ssoError" : "microsoftError", code);
   const response = NextResponse.redirect(location, 303);
   for (const [name, value] of Object.entries(noStoreHeaders)) response.headers.set(name, value);
   clearOidcLoginCookie(response);
+  if (intent !== "login") clearOidcSignupCookie(response);
   return response;
 }
 
@@ -62,9 +73,10 @@ function publicErrorCode(error: unknown): string {
 
 async function get(request: NextRequest) {
   const requestId = requestIdFor(request);
+  let intent: OidcIntent = "login";
   try {
     if (process.env.ACCOUNT_LOGIN_ENABLED !== "true" || process.env.AUTH_OIDC_ENABLED !== "true") {
-      return loginError("disabled");
+      return oidcError("disabled", intent);
     }
     const configuration = loadOidcConfiguration();
     const query = callbackQuery(request);
@@ -73,6 +85,7 @@ async function get(request: NextRequest) {
       query.state ?? null,
       configuration,
     );
+    intent = attempt.intent;
     if (query.iss !== undefined && query.iss !== configuration.issuer) {
       throw new OidcAuthenticationError("issuer_mismatch");
     }
@@ -80,15 +93,53 @@ async function get(request: NextRequest) {
     if (!query.code) throw new OidcAuthenticationError("code_invalid");
 
     const idToken = await exchangeOidcAuthorizationCode(configuration, query.code, attempt.verifier);
-    const identity = await verifyOidcIdToken(configuration, idToken, attempt.nonce);
+    const principal = await verifyOidcPrincipal(configuration, idToken, attempt.nonce);
     assertAccountAuthenticationConfigured();
     await assertEmailDeliveryReady();
+
+    if (intent === "signup-accept") {
+      if (!oidcSignupEnabled()) throw new OidcAuthenticationError("identity_unassigned");
+      const location = new URL(attempt.next, configuredAppOrigin());
+      location.searchParams.set("method", "microsoft");
+      location.searchParams.set("identity", "verified");
+      const response = NextResponse.redirect(location, 303);
+      for (const [name, value] of Object.entries(noStoreHeaders)) response.headers.set(name, value);
+      clearOidcLoginCookie(response);
+      setOidcSignupCookie(response, createOidcSignupProof(configuration, principal));
+      return response;
+    }
 
     const existing = await requestPrincipal(request);
     if (existing?.sessionMode === "real") {
       const response = NextResponse.redirect(new URL("/app", configuredAppOrigin()), 303);
       for (const [name, value] of Object.entries(noStoreHeaders)) response.headers.set(name, value);
       clearOidcLoginCookie(response);
+      clearOidcSignupCookie(response);
+      return response;
+    }
+    const storedIdentity = await resolveOidcIdentity({
+      issuer: principal.issuer,
+      externalTenantId: principal.externalTenantId,
+      externalPrincipalId: principal.externalPrincipalId,
+    });
+    const identity = storedIdentity
+      ? {
+          userId: storedIdentity.user_id,
+          organizationId: storedIdentity.organization_id,
+          membershipId: storedIdentity.membership_id,
+        }
+      : principal.mappedIdentity;
+    if (!identity) {
+      if (intent !== "signup" || !oidcSignupEnabled()) {
+        throw new OidcAuthenticationError("identity_unassigned");
+      }
+      const response = NextResponse.redirect(
+        new URL("/signup?method=microsoft", configuredAppOrigin()),
+        303,
+      );
+      for (const [name, value] of Object.entries(noStoreHeaders)) response.headers.set(name, value);
+      clearOidcLoginCookie(response);
+      setOidcSignupCookie(response, createOidcSignupProof(configuration, principal));
       return response;
     }
     const existingSessionToken = request.cookies.get(sessionCookieName())?.value;
@@ -105,7 +156,7 @@ async function get(request: NextRequest) {
       ipHash,
       userAgentHash,
       requestId,
-      credentialHash: identity.credentialHash,
+      credentialHash: principal.credentialHash,
       replacedDemoSessionTokenHash,
     });
     if (!sessionId) throw new OidcAuthenticationError("identity_unassigned");
@@ -113,11 +164,12 @@ async function get(request: NextRequest) {
     const response = NextResponse.redirect(new URL(attempt.next, configuredAppOrigin()), 303);
     for (const [name, value] of Object.entries(noStoreHeaders)) response.headers.set(name, value);
     clearOidcLoginCookie(response);
+    clearOidcSignupCookie(response);
     setSessionCookie(response, sessionToken.raw, 24 * 60 * 60);
     return response;
   } catch (error) {
     logRouteFailure("oidc-login", requestId, error);
-    return loginError(publicErrorCode(error));
+    return oidcError(publicErrorCode(error), intent);
   }
 }
 

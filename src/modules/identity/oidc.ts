@@ -12,6 +12,7 @@ import { decryptAuthPayload, encryptAuthPayload } from "@/security/identity-secr
 type OidcEnvironment = Readonly<Record<string, string | undefined>>;
 
 const LOGIN_TTL_SECONDS = 5 * 60;
+const SIGNUP_PROOF_TTL_SECONDS = 15 * 60;
 const MAXIMUM_MAP_BYTES = 2 * 1024 * 1024;
 const PORTABLE_IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9_.:@/-]{0,255}$/;
 const OPAQUE_TOKEN = /^[A-Za-z0-9_-]{43}$/;
@@ -20,11 +21,22 @@ const MAP_SCHEMA_VERSION = "business-finlynq-oidc-identity-map/v1";
 const noControlCharacters = /^[^\u0000-\u001f\u007f]+$/;
 
 const loginAttemptSchema = z.object({
-  version: z.literal(1),
+  version: z.literal(2),
   state: z.string().regex(OPAQUE_TOKEN),
   nonce: z.string().regex(OPAQUE_TOKEN),
   verifier: z.string().regex(OPAQUE_TOKEN),
   next: z.string().max(2_000),
+  intent: z.enum(["login", "signup", "signup-accept"]),
+  issuedAt: z.number().int().nonnegative(),
+  configurationHash: z.string().regex(/^[0-9a-f]{64}$/),
+}).strict();
+
+const signupProofSchema = z.object({
+  version: z.literal(1),
+  issuer: z.string().url().max(2_048),
+  externalTenantId: z.string().regex(PORTABLE_IDENTIFIER),
+  externalPrincipalId: z.string().regex(PORTABLE_IDENTIFIER),
+  credentialHash: z.string().regex(/^[0-9a-f]{64}$/),
   issuedAt: z.number().int().nonnegative(),
   configurationHash: z.string().regex(/^[0-9a-f]{64}$/),
 }).strict();
@@ -63,6 +75,23 @@ export type VerifiedOidcIdentity = OidcMappedIdentity & Readonly<{
   credentialHash: string;
 }>;
 
+export type VerifiedOidcPrincipal = Readonly<{
+  issuer: string;
+  externalTenantId: string;
+  externalPrincipalId: string;
+  credentialHash: string;
+  mappedIdentity: OidcMappedIdentity | null;
+}>;
+
+export type OidcSignupProof = Readonly<{
+  issuer: string;
+  externalTenantId: string;
+  externalPrincipalId: string;
+  credentialHash: string;
+}>;
+
+export type OidcIntent = "login" | "signup" | "signup-accept";
+
 export class OidcAuthenticationError extends Error {
   constructor(public readonly code: string) {
     super(`OIDC authentication failed (${code})`);
@@ -82,6 +111,10 @@ function exactBoolean(value: string | undefined, name: string): boolean {
 
 export function oidcLoginEnabled(environment: OidcEnvironment = process.env): boolean {
   return environment.ACCOUNT_LOGIN_ENABLED === "true" && environment.AUTH_OIDC_ENABLED === "true";
+}
+
+export function oidcSignupEnabled(environment: OidcEnvironment = process.env): boolean {
+  return oidcLoginEnabled(environment) && environment.AUTH_OIDC_SIGNUP_ENABLED === "true";
 }
 
 function required(value: string | undefined, name: string, maximum = 4_096): string {
@@ -185,8 +218,8 @@ export function parseOidcIdentityMap(input: string): readonly IdentityMapEntry[]
     throw new Error("OIDC identity map contains an unknown root field");
   }
   if (root.schemaVersion !== MAP_SCHEMA_VERSION) throw new Error(`OIDC identity map must use ${MAP_SCHEMA_VERSION}`);
-  if (!Array.isArray(root.mappings) || root.mappings.length < 1 || root.mappings.length > 1_000) {
-    throw new Error("OIDC identity map must contain 1 through 1000 mappings");
+  if (!Array.isArray(root.mappings) || root.mappings.length > 1_000) {
+    throw new Error("OIDC identity map must contain at most 1000 mappings");
   }
   const entries = root.mappings.map((value, index) => {
     if (!value || typeof value !== "object" || Array.isArray(value)) {
@@ -331,17 +364,22 @@ function sameSecret(left: string, right: string): boolean {
 export function createOidcAuthorization(
   configuration: OidcConfiguration,
   next: string | null | undefined,
-  options: Readonly<{ now?: number; random?: (size: number) => Buffer }> = {},
+  options: Readonly<{
+    now?: number;
+    random?: (size: number) => Buffer;
+    intent?: OidcIntent;
+  }> = {},
 ): { location: string; loginCookie: string } {
   const state = opaqueToken(options.random);
   const nonce = opaqueToken(options.random);
   const verifier = opaqueToken(options.random);
   const loginCookie = encryptAuthPayload(JSON.stringify({
-    version: 1,
+    version: 2,
     state,
     nonce,
     verifier,
     next: safeAppPath(next),
+    intent: options.intent ?? "login",
     issuedAt: options.now ?? Date.now(),
     configurationHash: configuration.configurationHash,
   }), "oidc-login", "oidc-login");
@@ -363,7 +401,7 @@ export function consumeOidcLoginAttempt(
   state: string | null,
   configuration: OidcConfiguration,
   now = Date.now(),
-): Readonly<{ nonce: string; verifier: string; next: string }> {
+): Readonly<{ nonce: string; verifier: string; next: string; intent: OidcIntent }> {
   if (!encryptedAttempt || encryptedAttempt.length > 4_096 || !state || !OPAQUE_TOKEN.test(state)) {
     fail("state_invalid");
   }
@@ -381,7 +419,12 @@ export function consumeOidcLoginAttempt(
   if (parsed.issuedAt > now + 30_000 || now - parsed.issuedAt > LOGIN_TTL_SECONDS * 1_000) {
     fail("state_expired");
   }
-  return Object.freeze({ nonce: parsed.nonce, verifier: parsed.verifier, next: safeAppPath(parsed.next) });
+  return Object.freeze({
+    nonce: parsed.nonce,
+    verifier: parsed.verifier,
+    next: safeAppPath(parsed.next),
+    intent: parsed.intent,
+  });
 }
 
 function formEncodedComponent(value: string): string {
@@ -459,12 +502,12 @@ function jwksFor(configuration: OidcConfiguration): ReturnType<typeof createRemo
   return selected;
 }
 
-export async function verifyOidcIdToken(
+export async function verifyOidcPrincipal(
   configuration: OidcConfiguration,
   idToken: string,
   expectedNonce: string,
   keyResolver: JWTVerifyGetKey = jwksFor(configuration),
-): Promise<VerifiedOidcIdentity> {
+): Promise<VerifiedOidcPrincipal> {
   let payload: JWTPayload;
   let protectedHeader: Readonly<Record<string, unknown>>;
   try {
@@ -508,17 +551,83 @@ export async function verifyOidcIdToken(
   const mapped = configuration.identityMap.get(
     sourceKey(configuration.issuer, externalTenantId, externalPrincipalId),
   );
-  if (!mapped) fail("identity_unassigned");
   const credentialHash = createHash("sha256")
     .update([configuration.issuer, configuration.clientId, externalTenantId, externalPrincipalId].join("\0"), "utf8")
     .digest("hex");
   return Object.freeze({
-    userId: mapped.userId,
-    organizationId: mapped.organizationId,
-    membershipId: mapped.membershipId,
+    issuer: configuration.issuer,
     externalTenantId,
     externalPrincipalId,
     credentialHash,
+    mappedIdentity: mapped
+      ? Object.freeze({
+          userId: mapped.userId,
+          organizationId: mapped.organizationId,
+          membershipId: mapped.membershipId,
+        })
+      : null,
+  });
+}
+
+export async function verifyOidcIdToken(
+  configuration: OidcConfiguration,
+  idToken: string,
+  expectedNonce: string,
+  keyResolver: JWTVerifyGetKey = jwksFor(configuration),
+): Promise<VerifiedOidcIdentity> {
+  const principal = await verifyOidcPrincipal(configuration, idToken, expectedNonce, keyResolver);
+  if (!principal.mappedIdentity) fail("identity_unassigned");
+  return Object.freeze({
+    ...principal.mappedIdentity,
+    externalTenantId: principal.externalTenantId,
+    externalPrincipalId: principal.externalPrincipalId,
+    credentialHash: principal.credentialHash,
+  });
+}
+
+export function createOidcSignupProof(
+  configuration: OidcConfiguration,
+  principal: VerifiedOidcPrincipal,
+  now = Date.now(),
+): string {
+  return encryptAuthPayload(JSON.stringify({
+    version: 1,
+    issuer: principal.issuer,
+    externalTenantId: principal.externalTenantId,
+    externalPrincipalId: principal.externalPrincipalId,
+    credentialHash: principal.credentialHash,
+    issuedAt: now,
+    configurationHash: configuration.configurationHash,
+  }), "oidc-signup", "oidc-signup");
+}
+
+export function consumeOidcSignupProof(
+  encryptedProof: string | undefined,
+  configuration: OidcConfiguration,
+  now = Date.now(),
+): OidcSignupProof {
+  if (!encryptedProof || encryptedProof.length > 4_096) fail("signup_proof_invalid");
+  let parsed: z.infer<typeof signupProofSchema>;
+  try {
+    parsed = signupProofSchema.parse(JSON.parse(
+      decryptAuthPayload(encryptedProof, "oidc-signup", "oidc-signup"),
+    ));
+  } catch {
+    fail("signup_proof_invalid");
+  }
+  if (!sameSecret(parsed.configurationHash, configuration.configurationHash) ||
+      parsed.issuer !== configuration.issuer ||
+      !configuration.allowedTenants.has(parsed.externalTenantId)) {
+    fail("signup_proof_invalid");
+  }
+  if (parsed.issuedAt > now + 30_000 || now - parsed.issuedAt > SIGNUP_PROOF_TTL_SECONDS * 1_000) {
+    fail("signup_proof_expired");
+  }
+  return Object.freeze({
+    issuer: parsed.issuer,
+    externalTenantId: parsed.externalTenantId,
+    externalPrincipalId: parsed.externalPrincipalId,
+    credentialHash: parsed.credentialHash,
   });
 }
 
@@ -541,6 +650,34 @@ export function setOidcLoginCookie(response: NextResponse, value: string): void 
 
 export function clearOidcLoginCookie(response: NextResponse): void {
   response.cookies.set(oidcLoginCookieName(), "", {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === "production",
+    sameSite: "lax",
+    path: "/",
+    maxAge: 0,
+    priority: "high",
+  });
+}
+
+export function oidcSignupCookieName(): string {
+  return process.env.NODE_ENV === "production"
+    ? "__Host-business_finlynq_oidc_signup"
+    : "business_finlynq_oidc_signup";
+}
+
+export function setOidcSignupCookie(response: NextResponse, value: string): void {
+  response.cookies.set(oidcSignupCookieName(), value, {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === "production",
+    sameSite: "lax",
+    path: "/",
+    maxAge: SIGNUP_PROOF_TTL_SECONDS,
+    priority: "high",
+  });
+}
+
+export function clearOidcSignupCookie(response: NextResponse): void {
+  response.cookies.set(oidcSignupCookieName(), "", {
     httpOnly: true,
     secure: process.env.NODE_ENV === "production",
     sameSite: "lax",

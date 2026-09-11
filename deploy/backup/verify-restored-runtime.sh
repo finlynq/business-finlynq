@@ -137,6 +137,7 @@ jq -e '
   .checks.identityKey == "ready" and
   .checks.accountAuthentication == "disabled" and
   .checks.oidcAuthentication == "disabled" and
+  .checks.oidcSignup == "disabled" and
   .checks.emailWorker == "disabled"
 ' "$body_path" >/dev/null || fail "Restored application readiness payload is invalid"
 grep -Eiq '^cache-control:.*no-store' "$headers_path" || fail "Restored readiness response is cacheable"

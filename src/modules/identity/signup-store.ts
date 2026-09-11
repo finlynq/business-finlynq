@@ -5,6 +5,13 @@ import { queryDatabase } from "@/db/transaction";
 export type SignupAccountingProfile = "CAN_ASPE" | "US_GAAP_NONPUBLIC";
 export type SignupPostingMode = "REVIEW_REQUIRED" | "AUTO_POST";
 
+export type OidcSignupIdentity = Readonly<{
+  issuer: string;
+  externalTenantId: string;
+  externalPrincipalId: string;
+  credentialHash: string;
+}>;
+
 export type BeginOrganizationSignup = Readonly<{
   signupId: string;
   userId: string;
@@ -33,12 +40,26 @@ export type BeginOrganizationSignup = Readonly<{
   termsVersion: string;
 }>;
 
-export async function beginOrganizationSignup(input: BeginOrganizationSignup): Promise<boolean> {
+export async function beginOrganizationSignup(
+  input: BeginOrganizationSignup,
+  oidcIdentity: OidcSignupIdentity | null = null,
+): Promise<boolean> {
   const result = await queryDatabase<{ queued: boolean }>(
-    `SELECT app.auth_begin_organization_signup(
-       $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,
-       $18,$19,$20,$21,$22,$23,$24,$25
-     ) AS queued`,
+    `WITH begun AS MATERIALIZED (
+       SELECT app.auth_begin_organization_signup(
+         $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,
+         $18,$19,$20,$21,$22,$23,$24,$25
+       ) AS queued
+     ), configured AS MATERIALIZED (
+       SELECT app.auth_configure_organization_signup_oidc(
+         $1,$22,$26,$27,$28,$29
+       ) AS configured
+       FROM begun
+       WHERE begun.queued
+     )
+     SELECT begun.queued AND coalesce(configured.configured, false) AS queued
+     FROM begun
+     LEFT JOIN configured ON true`,
     [
       input.signupId,
       input.userId,
@@ -65,9 +86,51 @@ export async function beginOrganizationSignup(input: BeginOrganizationSignup): P
       input.ipHash,
       input.requestId,
       input.termsVersion,
+      oidcIdentity?.issuer ?? null,
+      oidcIdentity?.externalTenantId ?? null,
+      oidcIdentity?.externalPrincipalId ?? null,
+      oidcIdentity?.credentialHash ?? null,
     ],
   );
   return result.rows[0]?.queued ?? false;
+}
+
+export async function acceptOidcOrganizationSignup(input: Readonly<{
+  tokenHash: string;
+  passwordHash: string;
+  passwordEnabled: boolean;
+  factorId: string;
+  factorSecretCiphertext: string;
+  setupTokenHash: string;
+  requestId: string;
+  oidcIdentity: OidcSignupIdentity;
+}>): Promise<Readonly<{
+  user_id: string;
+  email_ciphertext: string;
+  organization_name: string;
+  factor_id: string;
+}> | null> {
+  const result = await queryDatabase<{
+    user_id: string;
+    email_ciphertext: string;
+    organization_name: string;
+    factor_id: string;
+  }>(
+    "SELECT * FROM app.auth_accept_oidc_organization_signup($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)",
+    [
+      input.tokenHash,
+      input.passwordHash,
+      input.passwordEnabled,
+      input.factorId,
+      input.factorSecretCiphertext,
+      input.setupTokenHash,
+      input.requestId,
+      input.oidcIdentity.issuer,
+      input.oidcIdentity.externalTenantId,
+      input.oidcIdentity.externalPrincipalId,
+    ],
+  );
+  return result.rows[0] ?? null;
 }
 
 export type SignupAcceptRateLimit = Readonly<{
@@ -103,7 +166,7 @@ export async function acceptOrganizationSignup(input: Readonly<{
     organization_name: string;
     factor_id: string;
   }>(
-    "SELECT * FROM app.auth_accept_organization_signup($1,$2,$3,$4,$5,$6)",
+    "SELECT * FROM app.auth_accept_local_organization_signup($1,$2,$3,$4,$5,$6)",
     [
       input.tokenHash,
       input.passwordHash,

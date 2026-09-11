@@ -31,11 +31,15 @@ async function get(request: NextRequest) {
     const accountAuthentication = process.env.ACCOUNT_LOGIN_ENABLED === "true" ? "ready" : "disabled";
     const accountSignup = process.env.ACCOUNT_SIGNUP_ENABLED === "true" ? "ready" : "disabled";
     const oidcAuthentication = process.env.AUTH_OIDC_ENABLED === "true" ? "ready" : "disabled";
+    const oidcSignup = process.env.AUTH_OIDC_SIGNUP_ENABLED === "true" ? "ready" : "disabled";
     const bankFeeds = process.env.BANK_FEEDS_ENABLED === "true" ? "ready" : "disabled";
     if (accountSignup === "ready" && accountAuthentication !== "ready") {
       throw new Error("Self-service signup requires real-account authentication");
     }
     if (oidcAuthentication === "ready") loadOidcConfiguration();
+    if (oidcSignup === "ready" && oidcAuthentication !== "ready") {
+      throw new Error("Microsoft signup requires OIDC authentication");
+    }
     let emailWorker = "disabled";
     if (accountAuthentication === "ready") {
       assertAccountAuthenticationConfigured();
@@ -60,6 +64,7 @@ async function get(request: NextRequest) {
         accountAuthentication,
         accountSignup,
         oidcAuthentication,
+        oidcSignup,
         emailWorker,
         bankFeeds,
       },

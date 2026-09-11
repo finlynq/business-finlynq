@@ -4,6 +4,8 @@ import { safeFxRateUnavailableDetails } from "@/modules/fx/error-transport";
 export type RouteFailureOperation =
   | "account-login"
   | "account-signup-acceptance"
+  | "account-oidc-signup-acceptance"
+  | "account-oidc-signup-request"
   | "account-signup-request"
   | "banking-mutation"
   | "demo-login"

@@ -36,12 +36,15 @@ AUTH_OIDC_ALLOWED_TENANTS=56ed1f1b-7e98-4a32-8711-534e375b9d6d
 Provider metadata must be checked against Entra before an environment is
 enabled. Never infer or copy the EPM client ID or secret.
 
-## Identity assignment
+## Identity assignment and self-service signup
 
-OIDC email claims do not create or link Business accounts. A root-managed,
-read-only identity map assigns the verified Entra `(issuer, tid, oid)` tuple to
-one existing Business user, organization, and membership. This avoids account
-takeover through mutable or ambiguous email claims.
+OIDC email claims never authorize or link Business accounts. Business Finlynq
+keys a Microsoft identity only by the verified Entra `(issuer, tid, oid)`
+tuple. The static, root-managed identity map remains a transitional way to
+assign an existing account. Microsoft self-service signup persists the same
+exact tuple in the database after separately verifying the contact email and
+before activating the owner account. Mutable Microsoft email claims are not
+used for either path.
 
 The mounted JSON file uses this shape:
 
@@ -61,9 +64,25 @@ The mounted JSON file uses this shape:
 }
 ```
 
-Source tuples and Business target tuples must both be unique. The database
-revalidates that the mapped user, real organization, and membership are active
-and that the Business email was verified before issuing a session.
+The map may contain zero mappings once every required legacy assignment is
+persisted. Source tuples and Business target tuples must both be unique. The
+database revalidates that a mapped or persisted user, real organization, and
+membership are active and that the Business contact email was verified before
+issuing a session.
+
+With Microsoft signup enabled, a new user:
+
+1. authenticates with Microsoft;
+2. enters Business and contact-email details;
+3. verifies the contact email from a one-use link;
+4. re-confirms the same immutable Microsoft principal;
+5. optionally creates an independent Business Finlynq password; and
+6. enrolls a TOTP authenticator before the owner account becomes active.
+
+If the optional password is omitted, the account has no usable Business
+password and signs in through Microsoft. If it is supplied, Microsoft and
+email/password are independent login methods. A Microsoft password is never
+requested, transmitted to, or stored by Business Finlynq.
 
 ## Environment activation
 
@@ -76,11 +95,17 @@ AUTH_OIDC_CLIENT_ID=<environment-specific-client-id>
 AUTH_OIDC_CLIENT_SECRET_FILE=<environment-secret-directory>/oidc-client-secret
 AUTH_OIDC_IDENTITY_MAP_FILE=<environment-secret-directory>/oidc-identity-map.json
 AUTH_OIDC_ENABLED=true
+AUTH_OIDC_SIGNUP_ENABLED=false
 ```
 
 `ACCOUNT_LOGIN_ENABLED`, authentication email delivery, and its worker must
 also be ready. The internal health response reports `oidcAuthentication` as
 `ready` only after it has parsed the provider, client secret, and identity map.
+Enable `AUTH_OIDC_SIGNUP_ENABLED=true` independently only after the database
+migration, verification-email worker, and complete Microsoft signup acceptance
+have passed in that environment. The detailed health response then reports
+`oidcSignup` as `ready`. This gate does not enable local email/password signup;
+`ACCOUNT_SIGNUP_ENABLED` remains separate.
 
 ## Acceptance and promotion
 
@@ -91,9 +116,16 @@ Validate development before promotion:
    **Continue with Microsoft**.
 3. Confirm Entra does not request credentials again and Business Finlynq opens
    the mapped real workspace.
-4. Confirm an unassigned Entra account is rejected, a demo session is replaced,
-   and sign-out revokes only the Business Finlynq session.
-5. Confirm password login, public demo access, local MFA step-up, session
+4. With Microsoft signup disabled, confirm an unassigned identity is rejected.
+5. Enable Microsoft signup, use a new Entra identity, verify a separate contact
+   email, enroll the owner authenticator, and sign in without a Business
+   password.
+6. Repeat with the optional Business password enabled and verify both sign-in
+   methods independently. Confirm that editing the verification URL cannot
+   switch the signup to a different activation method.
+7. Confirm a demo session is replaced and sign-out revokes only the Business
+   Finlynq session.
+8. Confirm password login, public demo access, local MFA step-up, session
    revocation, and internal readiness continue to work.
 
 Promote only the exact development revision that passed these checks. Production

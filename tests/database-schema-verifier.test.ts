@@ -802,7 +802,7 @@ describe("database schema verifier", () => {
       }),
       { checks: 0, foreignKeys: 0, indexes: 0, uniqueConstraints: 0 },
     );
-    expect(counts).toEqual({ checks: 223, foreignKeys: 113, indexes: 156, uniqueConstraints: 54 });
+    expect(counts).toEqual({ checks: 227, foreignKeys: 113, indexes: 159, uniqueConstraints: 54 });
     expect(migrationContract.get("bank_connections")?.checks.get("bank_connections_provider_check"))
       .toMatchObject({ expression: "provider=any(array['SIMPLEFIN','FILE_IMPORT'])" });
     expect(migrationContract.get("bank_match_allocations")?.checks.get("bank_match_allocations_command_hash_sha256"))

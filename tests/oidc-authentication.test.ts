@@ -8,11 +8,14 @@ import {
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   consumeOidcLoginAttempt,
+  consumeOidcSignupProof,
   createOidcAuthorization,
+  createOidcSignupProof,
   exchangeOidcAuthorizationCode,
   loadOidcConfiguration,
   parseOidcIdentityMap,
   verifyOidcIdToken,
+  verifyOidcPrincipal,
 } from "@/modules/identity/oidc";
 
 const ids = {
@@ -105,7 +108,19 @@ describe("Business OIDC configuration and browser-bound authorization", () => {
     )).toMatchObject({
       verifier,
       next: "/app/receivables?status=open",
+      intent: "login",
     });
+    const signupAuthorization = createOidcAuthorization(
+      configuration,
+      "/app",
+      { now: startedAt, random: (size) => Buffer.alloc(size, 7), intent: "signup" },
+    );
+    expect(consumeOidcLoginAttempt(
+      signupAuthorization.loginCookie,
+      new URL(signupAuthorization.location).searchParams.get("state"),
+      configuration,
+      startedAt,
+    ).intent).toBe("signup");
     expect(() => consumeOidcLoginAttempt(
       authorization.loginCookie,
       Buffer.alloc(32, 9).toString("base64url"),
@@ -188,5 +203,43 @@ describe("OIDC code exchange and identity verification", () => {
       nonce,
       keyResolver,
     )).rejects.toThrow(/token_rejected/);
+
+    const unassignedConfiguration = Object.freeze({
+      ...configuration,
+      identityMap: new Map(),
+    });
+    const unassigned = await verifyOidcPrincipal(
+      unassignedConfiguration,
+      token,
+      nonce,
+      keyResolver,
+    );
+    expect(unassigned).toMatchObject({
+      issuer,
+      externalTenantId: tenantId,
+      externalPrincipalId: principalId,
+      mappedIdentity: null,
+    });
+    await expect(verifyOidcIdToken(
+      unassignedConfiguration,
+      token,
+      nonce,
+      keyResolver,
+    )).rejects.toThrow(/identity_unassigned/);
+
+    vi.stubEnv("IDENTITY_SECRET_FILE", "");
+    vi.stubEnv("IDENTITY_SECRET", identitySecret);
+    const proof = createOidcSignupProof(unassignedConfiguration, unassigned, Date.now());
+    expect(consumeOidcSignupProof(proof, unassignedConfiguration)).toEqual({
+      issuer,
+      externalTenantId: tenantId,
+      externalPrincipalId: principalId,
+      credentialHash: unassigned.credentialHash,
+    });
+    expect(() => consumeOidcSignupProof(
+      proof,
+      unassignedConfiguration,
+      Date.now() + 15 * 60 * 1_000 + 1,
+    )).toThrow(/signup_proof_expired/);
   });
 });

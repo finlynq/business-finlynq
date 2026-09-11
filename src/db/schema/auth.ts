@@ -223,14 +223,49 @@ export const authOrganizationSignups = pgTable(
     expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
     acceptedAt: timestamp("accepted_at", { withTimezone: true }),
     completedAt: timestamp("completed_at", { withTimezone: true }),
+    oidcIssuer: text("oidc_issuer"),
+    oidcExternalTenantId: text("oidc_external_tenant_id"),
+    oidcExternalPrincipalId: text("oidc_external_principal_id"),
+    oidcCredentialHash: text("oidc_credential_hash"),
   },
   (table) => [
     index("auth_organization_signups_status_expiry_idx").on(table.status, table.expiresAt),
+    uniqueIndex("auth_organization_signups_oidc_source_unique")
+      .on(table.oidcIssuer, table.oidcExternalTenantId, table.oidcExternalPrincipalId)
+      .where(sql`${table.oidcExternalPrincipalId} IS NOT NULL`),
+    check(
+      "auth_organization_signups_oidc_binding_check",
+      sql`(${table.oidcIssuer} IS NULL AND ${table.oidcExternalTenantId} IS NULL AND ${table.oidcExternalPrincipalId} IS NULL AND ${table.oidcCredentialHash} IS NULL) OR (${table.oidcIssuer} IS NOT NULL AND ${table.oidcExternalTenantId} IS NOT NULL AND ${table.oidcExternalPrincipalId} IS NOT NULL AND ${table.oidcCredentialHash} ~ '^[0-9a-f]{64}$')`,
+    ),
     foreignKey({
       columns: [table.functionalCurrency],
       foreignColumns: [currencyDefinitions.code],
       name: "auth_organization_signups_functional_currency_fk",
     }).onDelete("restrict"),
+  ],
+);
+
+export const authOidcIdentities = pgTable(
+  "auth_oidc_identities",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    issuer: text("issuer").notNull(),
+    externalTenantId: text("external_tenant_id").notNull(),
+    externalPrincipalId: text("external_principal_id").notNull(),
+    userId: uuid("user_id").notNull().references(() => users.id, { onDelete: "restrict" }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    lastUsedAt: timestamp("last_used_at", { withTimezone: true }),
+  },
+  (table) => [
+    uniqueIndex("auth_oidc_identities_source_unique").on(
+      table.issuer,
+      table.externalTenantId,
+      table.externalPrincipalId,
+    ),
+    uniqueIndex("auth_oidc_identities_user_unique").on(table.userId),
+    check("auth_oidc_identities_issuer_check", sql`length(${table.issuer}) BETWEEN 8 AND 2048 AND ${table.issuer} !~ '[[:cntrl:]]'`),
+    check("auth_oidc_identities_tenant_check", sql`${table.externalTenantId} ~ '^[A-Za-z0-9][A-Za-z0-9_.:@/-]{0,255}$'`),
+    check("auth_oidc_identities_principal_check", sql`${table.externalPrincipalId} ~ '^[A-Za-z0-9][A-Za-z0-9_.:@/-]{0,255}$'`),
   ],
 );
 

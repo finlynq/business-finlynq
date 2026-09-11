@@ -36,6 +36,7 @@ import { journalTypeSeedDefinitions } from "@/modules/ledger/journal-type-regist
 const controlledEnvironment = [
   "ACCOUNT_LOGIN_ENABLED",
   "AUTH_OIDC_ENABLED",
+  "AUTH_OIDC_SIGNUP_ENABLED",
   "ACCOUNT_SIGNUP_ENABLED",
   "BANK_FEEDS_ENABLED",
   "BUSINESS_FINLYNQ_IMAGE_REVISION",
@@ -49,6 +50,7 @@ beforeEach(() => {
   Object.assign(process.env, {
     ACCOUNT_LOGIN_ENABLED: "false",
     AUTH_OIDC_ENABLED: "false",
+    AUTH_OIDC_SIGNUP_ENABLED: "false",
     ACCOUNT_SIGNUP_ENABLED: "false",
     BANK_FEEDS_ENABLED: "false",
     BUSINESS_FINLYNQ_IMAGE_REVISION: "a".repeat(40),
@@ -109,6 +111,7 @@ describe("health information boundary", () => {
         accountAuthentication: "disabled",
         accountSignup: "disabled",
         oidcAuthentication: "disabled",
+        oidcSignup: "disabled",
         emailWorker: "disabled",
         bankFeeds: "disabled",
       },
@@ -119,6 +122,7 @@ describe("health information boundary", () => {
   it("validates OIDC configuration before reporting federated authentication ready", async () => {
     process.env.ACCOUNT_LOGIN_ENABLED = "true";
     process.env.AUTH_OIDC_ENABLED = "true";
+    process.env.AUTH_OIDC_SIGNUP_ENABLED = "true";
     const response = await health(new NextRequest("http://127.0.0.1:3100/api/health", {
       headers: { "x-business-finlynq-internal-health": "1" },
     }));
@@ -132,6 +136,7 @@ describe("health information boundary", () => {
       checks: {
         accountAuthentication: "ready",
         oidcAuthentication: "ready",
+        oidcSignup: "ready",
         emailWorker: "ready",
       },
     });

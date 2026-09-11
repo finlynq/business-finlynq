@@ -437,6 +437,7 @@ for (const [gate, expected] of [
   ["DEMO_WRITES_ENABLED", "true"],
   ["ACCOUNT_LOGIN_ENABLED", "false"],
   ["AUTH_OIDC_ENABLED", "false"],
+  ["AUTH_OIDC_SIGNUP_ENABLED", "false"],
   ["ACCOUNT_SIGNUP_ENABLED", "false"],
   ["BUSINESS_WRITES_ENABLED", "false"],
   ["BANK_FEEDS_ENABLED", "false"],
@@ -843,7 +844,7 @@ if (rollbackApp.environment?.BUSINESS_FINLYNQ_DB_PASSWORD_FILE !== "/run/secrets
 if (rollbackApp.environment?.BUSINESS_FINLYNQ_IMAGE_REVISION !== "f8485ca86fef5b5fb4a38be9cb4cf3bea5ac2107") {
   fail("legacy rollback override is not pinned to the reviewed prior revision");
 }
-for (const disabledFlag of ["DEMO_LOGIN_ENABLED", "DEMO_WRITES_ENABLED", "ACCOUNT_LOGIN_ENABLED", "AUTH_OIDC_ENABLED", "ACCOUNT_SIGNUP_ENABLED", "SIGNUP_TURNSTILE_ENABLED", "AUTH_EMAIL_DELIVERY_ENABLED", "BUSINESS_WRITES_ENABLED", "BANK_FEEDS_ENABLED", "YAHOO_FX_ENABLED"]) {
+for (const disabledFlag of ["DEMO_LOGIN_ENABLED", "DEMO_WRITES_ENABLED", "ACCOUNT_LOGIN_ENABLED", "AUTH_OIDC_ENABLED", "AUTH_OIDC_SIGNUP_ENABLED", "ACCOUNT_SIGNUP_ENABLED", "SIGNUP_TURNSTILE_ENABLED", "AUTH_EMAIL_DELIVERY_ENABLED", "BUSINESS_WRITES_ENABLED", "BANK_FEEDS_ENABLED", "YAHOO_FX_ENABLED"]) {
   if (rollbackApp.environment?.[disabledFlag] !== "false") fail(`legacy rollback override does not force ${disabledFlag} off`);
 }
 if ((rollbackApp.entrypoint ?? []).join(" ") !== "/bin/sh /usr/local/bin/business-finlynq-legacy-db-password") {
@@ -884,7 +885,7 @@ if (!secretSources(rehearsalApp).includes(appDatabaseSecret)) fail("restore rehe
 if (secretSources(rehearsalApp).includes(providerSecret) || secretSources(rehearsalApp).includes(turnstileSecret) || secretSources(rehearsalApp).includes(workerDatabaseSecret)) {
   fail("restore rehearsal receives an unrelated provider, challenge, or worker credential");
 }
-for (const disabledFlag of ["DEMO_LOGIN_ENABLED", "DEMO_WRITES_ENABLED", "ACCOUNT_LOGIN_ENABLED", "AUTH_OIDC_ENABLED", "ACCOUNT_SIGNUP_ENABLED", "SIGNUP_TURNSTILE_ENABLED", "AUTH_EMAIL_DELIVERY_ENABLED", "BUSINESS_WRITES_ENABLED", "BANK_FEEDS_ENABLED", "YAHOO_FX_ENABLED"]) {
+for (const disabledFlag of ["DEMO_LOGIN_ENABLED", "DEMO_WRITES_ENABLED", "ACCOUNT_LOGIN_ENABLED", "AUTH_OIDC_ENABLED", "AUTH_OIDC_SIGNUP_ENABLED", "ACCOUNT_SIGNUP_ENABLED", "SIGNUP_TURNSTILE_ENABLED", "AUTH_EMAIL_DELIVERY_ENABLED", "BUSINESS_WRITES_ENABLED", "BANK_FEEDS_ENABLED", "YAHOO_FX_ENABLED"]) {
   if (rehearsalApp.environment?.[disabledFlag] !== "false") fail(`restore rehearsal does not force ${disabledFlag} off`);
 }
 if ((rehearsalVerify.secrets ?? []).length > 0) fail("legacy restore verifier receives a secret");

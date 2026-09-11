@@ -25,9 +25,11 @@ declare global {
 export function SignupForm({
   challenge,
   nonce,
+  authentication = "password",
 }: Readonly<{
   challenge: { enabled: boolean; siteKey: string | null; action: string };
   nonce?: string;
+  authentication?: "password" | "microsoft";
 }>) {
   const [countryChoice, setCountryChoice] = useState<"CA" | "US" | "OTHER">("CA");
   const [otherCountryCode, setOtherCountryCode] = useState("");
@@ -77,25 +79,28 @@ export function SignupForm({
     setError("");
     const form = new FormData(event.currentTarget);
     try {
-      const response = await fetch("/api/auth/signup/request", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          email: form.get("email"),
-          displayName: form.get("displayName"),
-          organizationName: form.get("organizationName"),
-          entityCode: form.get("entityCode"),
-          entityName: form.get("entityName"),
-          countryCode: countryChoice === "OTHER" ? otherCountryCode.trim().toUpperCase() : countryChoice,
-          regionCode: region,
-          functionalCurrency,
-          accountingProfile,
-          fiscalYear: Number(form.get("fiscalYear")),
-          manualPostingMode: form.get("manualPostingMode"),
-          termsAccepted: form.get("termsAccepted") === "on",
-          challengeToken,
-        }),
-      });
+      const response = await fetch(
+        authentication === "microsoft" ? "/api/auth/signup/oidc-request" : "/api/auth/signup/request",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            email: form.get("email"),
+            displayName: form.get("displayName"),
+            organizationName: form.get("organizationName"),
+            entityCode: form.get("entityCode"),
+            entityName: form.get("entityName"),
+            countryCode: countryChoice === "OTHER" ? otherCountryCode.trim().toUpperCase() : countryChoice,
+            regionCode: region,
+            functionalCurrency,
+            accountingProfile,
+            fiscalYear: Number(form.get("fiscalYear")),
+            manualPostingMode: form.get("manualPostingMode"),
+            termsAccepted: form.get("termsAccepted") === "on",
+            challengeToken,
+          }),
+        },
+      );
       const result = await response.json() as { error?: string; message?: string };
       if (response.status === 429) {
         throw new Error(signupRateLimitMessage(response.headers.get("Retry-After")));
@@ -113,7 +118,9 @@ export function SignupForm({
   if (message) return (
     <div className={styles.successStack}>
       <div className={styles.successAlert} role="status">{message}</div>
-      <p>Open the one-use link in the email to create your password. You can scan an authenticator QR code for stronger security or continue with password-only sign-in.</p>
+      <p>{authentication === "microsoft"
+        ? "Open the one-use link in the email to verify your contact address. Microsoft-only signup does not require a Business Finlynq password; owner accounts finish by enrolling an authenticator."
+        : "Open the one-use link in the email to create your password. You can scan an authenticator QR code for stronger security or continue with password-only sign-in."}</p>
       <Link className={styles.submitButton} href="/login">Continue to sign in</Link>
     </div>
   );
@@ -131,9 +138,10 @@ export function SignupForm({
       )}
       <form className={styles.form} onSubmit={(event) => { void submit(event); }}>
         {error && <div className={styles.alert} role="alert">{error}</div>}
+        {authentication === "microsoft" && <div className={styles.successAlert} role="status">Microsoft identity verified. No Business Finlynq password is required.</div>}
         <div className={styles.formGrid}>
           <label><span>Your name</span><input name="displayName" autoComplete="name" required minLength={2} maxLength={120} /></label>
-          <label><span>Work email</span><input name="email" type="email" autoComplete="email" inputMode="email" required maxLength={254} /></label>
+          <label><span>{authentication === "microsoft" ? "Contact email" : "Work email"}</span><input name="email" type="email" autoComplete="email" inputMode="email" required maxLength={254} /><small>{authentication === "microsoft" ? "Verified separately for security notices and recovery; it does not have to match the Microsoft address." : "Used to verify and recover your account."}</small></label>
         </div>
         <label><span>Business name</span><input name="organizationName" autoComplete="organization" required minLength={2} maxLength={200} /><small>Enter at least 2 characters.</small></label>
         <label><span>Legal entity name</span><input name="entityName" autoComplete="organization" required minLength={2} maxLength={200} /><small>Enter the legal name registered for this entity.</small></label>
@@ -159,8 +167,10 @@ export function SignupForm({
         <label><span>Manual journal posting</span><select name="manualPostingMode" defaultValue="AUTO_POST"><option value="AUTO_POST">Auto-post for simpler workflows</option><option value="REVIEW_REQUIRED">Require review before posting</option></select><small>Posting permissions still apply in either mode.</small></label>
         <label className={styles.checkboxLabel}><input name="termsAccepted" type="checkbox" required /><span>I agree to the <Link href="/terms" target="_blank">terms</Link> and acknowledge the <Link href="/privacy" target="_blank">privacy notice</Link>.</span></label>
         {challenge.enabled && <div ref={challengeContainer} className={styles.challenge} aria-label="Signup verification" />}
-        <button className={styles.submitButton} type="submit" disabled={busy}>{busy ? "Sending verification…" : "Create account"}</button>
-        <p className={styles.securityNote}>This creates an evaluation workspace in the hosted preview, not a production system of record. Do not enter regulated, confidential, or customer data under the current preview terms. The owner remains disabled until email verification and password setup finish; authenticator enrollment is recommended and may be completed now or later.</p>
+        <button className={styles.submitButton} type="submit" disabled={busy}>{busy ? "Sending verification…" : authentication === "microsoft" ? "Verify email and continue" : "Create account"}</button>
+        <p className={styles.securityNote}>{authentication === "microsoft"
+          ? "This creates an evaluation workspace in the hosted preview, not a production system of record. The account remains disabled until the contact email is verified and owner authenticator enrollment finishes. The immutable Microsoft tenant and Object ID—not an email claim—become the sign-in identity."
+          : "This creates an evaluation workspace in the hosted preview, not a production system of record. Do not enter regulated, confidential, or customer data under the current preview terms. The owner remains disabled until email verification and password setup finish; authenticator enrollment is recommended and may be completed now or later."}</p>
       </form>
     </>
   );
