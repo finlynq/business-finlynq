@@ -267,6 +267,13 @@ revision_uses_oidc_runtime_contract() {
   grep -Eq '^[[:space:]]+AUTH_OIDC_ENABLED:' <<<"$compose_source"
 }
 
+revision_uses_oidc_signup_runtime_contract() {
+  local revision="$1" compose_source
+  validate_revision "$revision"
+  compose_source="$(git_as_deploy show "$revision:docker-compose.yml")" || return 2
+  grep -Eq '^[[:space:]]+AUTH_OIDC_SIGNUP_ENABLED:' <<<"$compose_source"
+}
+
 verify_external_edge_if_selected() {
   local verifier_revision="$1" selected_mode selected_count
   validate_revision "$verifier_revision"
@@ -1420,6 +1427,12 @@ release_is_accepted() {
       AUTH_OIDC_ALLOWED_TENANTS AUTH_OIDC_MAXIMUM_TOKEN_LIFETIME_SECONDS
       AUTH_OIDC_TOKEN_TIMEOUT_MILLISECONDS AUTH_OIDC_JWKS_TIMEOUT_MILLISECONDS
     )
+  else
+    oidc_contract_status="$?"
+    [[ "$oidc_contract_status" == 1 ]] || return 1
+  fi
+  if revision_uses_oidc_signup_runtime_contract "$expected_revision"; then
+    required_environment_settings+=(AUTH_OIDC_SIGNUP_ENABLED)
   else
     oidc_contract_status="$?"
     [[ "$oidc_contract_status" == 1 ]] || return 1

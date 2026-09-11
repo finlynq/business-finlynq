@@ -202,6 +202,7 @@ if [[ ! -e "$compose_environment" ]]; then
     printf 'DEMO_WRITES_ENABLED=true\n'
     printf 'ACCOUNT_LOGIN_ENABLED=false\n'
     printf 'AUTH_OIDC_ENABLED=false\n'
+    printf 'AUTH_OIDC_SIGNUP_ENABLED=false\n'
     printf 'AUTH_OIDC_ISSUER=\n'
     printf 'AUTH_OIDC_AUTHORIZATION_ENDPOINT=\n'
     printf 'AUTH_OIDC_TOKEN_ENDPOINT=\n'

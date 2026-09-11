@@ -24,9 +24,11 @@ import {
   type SignupCountry,
 } from "./signup-policy";
 import {
+  acceptOidcOrganizationSignup,
   acceptOrganizationSignup,
   beginOrganizationSignup,
   consumeSignupAcceptLimits,
+  type OidcSignupIdentity,
   type SignupPostingMode,
 } from "./signup-store";
 import { createTotpSecret, totpEnrollmentUri } from "./totp";
@@ -48,6 +50,19 @@ export type OwnerSignupRequest = Readonly<{
 }>;
 
 export async function requestOwnerSignup(input: OwnerSignupRequest): Promise<boolean> {
+  return requestOwnerSignupForIdentity(input, null);
+}
+
+export async function requestOidcOwnerSignup(
+  input: OwnerSignupRequest & Readonly<{ oidcIdentity: OidcSignupIdentity }>,
+): Promise<boolean> {
+  return requestOwnerSignupForIdentity(input, input.oidcIdentity);
+}
+
+async function requestOwnerSignupForIdentity(
+  input: OwnerSignupRequest,
+  oidcIdentity: OidcSignupIdentity | null,
+): Promise<boolean> {
   const identitySecret = loadIdentitySecret();
   const rootKey = loadOrganizationRootKek();
   const dek = generateOrganizationDek();
@@ -95,7 +110,7 @@ export async function requestOwnerSignup(input: OwnerSignupRequest): Promise<boo
       ipHash: input.ipHash,
       requestId: input.requestId,
       termsVersion: CURRENT_SIGNUP_TERMS_VERSION,
-    });
+    }, oidcIdentity);
   } finally {
     dek.fill(0);
     rootKey.fill(0);
@@ -137,6 +152,48 @@ export async function acceptOwnerSignup(input: Readonly<{
     factorSecretCiphertext: encryptAuthPayload(secret, "totp-secret", factorId),
     setupTokenHash: setupToken.hash,
     requestId: input.requestId,
+  });
+  if (!result) return { status: "invalid" };
+  const email = decryptIdentityField(result.email_ciphertext, "email", result.user_id);
+  return {
+    status: "accepted",
+    setupToken: setupToken.raw,
+    secret,
+    enrollmentUri: totpEnrollmentUri({ secret, account: email }),
+    organizationName: result.organization_name,
+  };
+}
+
+export async function acceptOidcOwnerSignup(input: Readonly<{
+  token: string;
+  password?: string;
+  requestId: string;
+  oidcIdentity: OidcSignupIdentity;
+}>): Promise<OwnerSignupAcceptance> {
+  const tokenHash = hashOpaqueToken(input.token);
+  const limits = await consumeSignupAcceptLimits(tokenHash);
+  if (!limits.eligible) return { status: "invalid" };
+  if (!limits.allowed) {
+    return { status: "rate-limited", retryAfterSeconds: limits.retry_after_seconds };
+  }
+
+  const factorId = randomUUID();
+  const secret = createTotpSecret();
+  const setupToken = createOpaqueToken();
+  // A discarded high-entropy value satisfies the legacy non-null password
+  // column during shared provisioning. The database replaces it with the
+  // explicit OIDC-only sentinel unless the user opted into a local password.
+  const passwordEnabled = input.password !== undefined;
+  const passwordHash = await hashPassword(input.password ?? createOpaqueToken().raw);
+  const result = await acceptOidcOrganizationSignup({
+    tokenHash,
+    passwordHash,
+    passwordEnabled,
+    factorId,
+    factorSecretCiphertext: encryptAuthPayload(secret, "totp-secret", factorId),
+    setupTokenHash: setupToken.hash,
+    requestId: input.requestId,
+    oidcIdentity: input.oidcIdentity,
   });
   if (!result) return { status: "invalid" };
   const email = decryptIdentityField(result.email_ciphertext, "email", result.user_id);

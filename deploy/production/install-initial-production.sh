@@ -1096,6 +1096,7 @@ write_compose_environment() {
     printf 'DEMO_WRITES_ENABLED=true\n'
     printf 'ACCOUNT_LOGIN_ENABLED=false\n'
     printf 'AUTH_OIDC_ENABLED=false\n'
+    printf 'AUTH_OIDC_SIGNUP_ENABLED=false\n'
     printf 'AUTH_OIDC_ISSUER=\n'
     printf 'AUTH_OIDC_AUTHORIZATION_ENDPOINT=\n'
     printf 'AUTH_OIDC_TOKEN_ENDPOINT=\n'
@@ -3639,6 +3640,7 @@ recover_accepted_stopped_app() {
     .checks.identityKey == "ready" and
     .checks.accountAuthentication == "disabled" and
     .checks.oidcAuthentication == "disabled" and
+    .checks.oidcSignup == "disabled" and
     .checks.accountSignup == "disabled" and .checks.emailWorker == "disabled" and
     .checks.bankFeeds == "disabled"
   ' <<<"$readiness" >/dev/null \

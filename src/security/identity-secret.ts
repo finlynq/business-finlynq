@@ -5,6 +5,7 @@ const SECRET_BYTES = 64;
 const CANONICAL_BASE64 = /^[A-Za-z0-9+/]+={0,2}$/;
 const PREFIX = "idv1";
 const AUTH_PAYLOAD_PREFIX = "authv1";
+type AuthPayloadPurpose = "email-payload" | "totp-secret" | "oidc-login" | "oidc-signup";
 
 type IdentitySecretEnvironment = Readonly<Record<string, string | undefined>>;
 
@@ -116,7 +117,7 @@ export function decryptIdentityField(
  */
 export function encryptAuthPayload(
   plaintext: string,
-  purpose: "email-payload" | "totp-secret" | "oidc-login",
+  purpose: AuthPayloadPurpose,
   recordId: string,
   secret = loadIdentitySecret(),
 ): string {
@@ -129,7 +130,7 @@ export function encryptAuthPayload(
 
 export function decryptAuthPayload(
   envelope: string,
-  purpose: "email-payload" | "totp-secret" | "oidc-login",
+  purpose: AuthPayloadPurpose,
   recordId: string,
   secret = loadIdentitySecret(),
 ): string {

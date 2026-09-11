@@ -13,12 +13,18 @@ import MarketingHomePage from "@/app/(marketing)/page";
 
 const previousLoginGate = process.env.ACCOUNT_LOGIN_ENABLED;
 const previousSignupGate = process.env.ACCOUNT_SIGNUP_ENABLED;
+const previousOidcGate = process.env.AUTH_OIDC_ENABLED;
+const previousOidcSignupGate = process.env.AUTH_OIDC_SIGNUP_ENABLED;
 
 afterEach(() => {
   if (previousLoginGate === undefined) delete process.env.ACCOUNT_LOGIN_ENABLED;
   else process.env.ACCOUNT_LOGIN_ENABLED = previousLoginGate;
   if (previousSignupGate === undefined) delete process.env.ACCOUNT_SIGNUP_ENABLED;
   else process.env.ACCOUNT_SIGNUP_ENABLED = previousSignupGate;
+  if (previousOidcGate === undefined) delete process.env.AUTH_OIDC_ENABLED;
+  else process.env.AUTH_OIDC_ENABLED = previousOidcGate;
+  if (previousOidcSignupGate === undefined) delete process.env.AUTH_OIDC_SIGNUP_ENABLED;
+  else process.env.AUTH_OIDC_SIGNUP_ENABLED = previousOidcSignupGate;
 });
 
 describe("public account entry points", () => {
@@ -100,5 +106,26 @@ describe("public account entry points", () => {
     expect(markup).toContain("Open the live demo");
     expect(markup).toContain("Sign in to an existing account");
     expect(markup).not.toContain("<form");
+  });
+
+  it("offers Microsoft-only signup independently from email and password signup", async () => {
+    process.env.ACCOUNT_LOGIN_ENABLED = "true";
+    process.env.ACCOUNT_SIGNUP_ENABLED = "false";
+    process.env.AUTH_OIDC_ENABLED = "true";
+    process.env.AUTH_OIDC_SIGNUP_ENABLED = "true";
+
+    const markup = renderToStaticMarkup(await SignupPage({
+      searchParams: Promise.resolve({}),
+    }));
+    expect(markup).toContain("Sign up with Microsoft");
+    expect(markup).toContain("/api/auth/oidc/start?intent=signup");
+    expect(markup).not.toContain("Create account</button>");
+
+    const verifiedMarkup = renderToStaticMarkup(await SignupPage({
+      searchParams: Promise.resolve({ method: "microsoft" }),
+    }));
+    expect(verifiedMarkup).toContain("Microsoft identity verified");
+    expect(verifiedMarkup).toContain("Contact email");
+    expect(verifiedMarkup).not.toContain("challenges.cloudflare.com");
   });
 });

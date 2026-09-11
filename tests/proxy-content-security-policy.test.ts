@@ -98,7 +98,7 @@ describe("request-scoped content security policy", () => {
     );
 
     expect(signupPage).toContain('(await headers()).get("x-nonce")');
-    expect(signupPage).toContain("<SignupForm challenge={challenge} nonce={nonce} />");
+    expect(signupPage).toContain('<SignupForm authentication="password" challenge={challenge} nonce={nonce} />');
     expect(signupForm).toContain("nonce={nonce}");
   });
 });

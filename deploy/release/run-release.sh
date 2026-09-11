@@ -650,7 +650,7 @@ run_compose() {
         [[ "$value" =~ ^[a-f0-9]{64}$ ]] \
           || fail "release acceptance token override is invalid"
         ;;
-      DEMO_LOGIN_ENABLED|DEMO_WRITES_ENABLED|ACCOUNT_LOGIN_ENABLED|AUTH_OIDC_ENABLED|ACCOUNT_SIGNUP_ENABLED|AUTH_EMAIL_DELIVERY_ENABLED|SIGNUP_TURNSTILE_ENABLED|BUSINESS_WRITES_ENABLED|BANK_FEEDS_ENABLED)
+      DEMO_LOGIN_ENABLED|DEMO_WRITES_ENABLED|ACCOUNT_LOGIN_ENABLED|AUTH_OIDC_ENABLED|AUTH_OIDC_SIGNUP_ENABLED|ACCOUNT_SIGNUP_ENABLED|AUTH_EMAIL_DELIVERY_ENABLED|SIGNUP_TURNSTILE_ENABLED|BUSINESS_WRITES_ENABLED|BANK_FEEDS_ENABLED)
         [[ "$value" == "true" || "$value" == "false" ]] \
           || fail "controlled Compose gate override is not boolean: $key"
         ;;
@@ -1157,7 +1157,7 @@ restore_stopped_previous_app_anchor() {
   compose_with_overrides \
     "BUSINESS_FINLYNQ_RELEASE_APP_IMAGE=$previous_app_id" \
     DEMO_LOGIN_ENABLED=false DEMO_WRITES_ENABLED=false \
-    ACCOUNT_LOGIN_ENABLED=false AUTH_OIDC_ENABLED=false ACCOUNT_SIGNUP_ENABLED=false \
+    ACCOUNT_LOGIN_ENABLED=false AUTH_OIDC_ENABLED=false AUTH_OIDC_SIGNUP_ENABLED=false ACCOUNT_SIGNUP_ENABLED=false \
     AUTH_EMAIL_DELIVERY_ENABLED=false SIGNUP_TURNSTILE_ENABLED=false \
     BUSINESS_WRITES_ENABLED=false BANK_FEEDS_ENABLED=false -- \
     up --no-start --no-deps --no-build --force-recreate app >/dev/null 2>&1 \
@@ -2399,7 +2399,7 @@ app_origin="$(jq -r '.services.app.environment.APP_ORIGIN // empty' <<<"$rendere
 session_cookie_name="$(jq -r '.services.app.environment.SESSION_COOKIE_NAME // empty' <<<"$rendered_compose")"
 public_base_url=""
 
-for gate in DEMO_LOGIN_ENABLED DEMO_WRITES_ENABLED ACCOUNT_LOGIN_ENABLED AUTH_OIDC_ENABLED \
+for gate in DEMO_LOGIN_ENABLED DEMO_WRITES_ENABLED ACCOUNT_LOGIN_ENABLED AUTH_OIDC_ENABLED AUTH_OIDC_SIGNUP_ENABLED \
   ACCOUNT_SIGNUP_ENABLED AUTH_EMAIL_DELIVERY_ENABLED SIGNUP_TURNSTILE_ENABLED \
   BUSINESS_WRITES_ENABLED BANK_FEEDS_ENABLED YAHOO_FX_ENABLED; do
   gate_value="$(jq -r --arg gate "$gate" '.services.app.environment[$gate] // empty' <<<"$rendered_compose")"
@@ -2562,6 +2562,7 @@ if [[ "$mode" != "rehearsal" ]]; then
       && "$release_DEMO_WRITES_ENABLED" == "true" \
       && "$release_ACCOUNT_LOGIN_ENABLED" == "false" \
       && "$release_AUTH_OIDC_ENABLED" == "false" \
+      && "$release_AUTH_OIDC_SIGNUP_ENABLED" == "false" \
       && "$release_ACCOUNT_SIGNUP_ENABLED" == "false" \
       && "$release_AUTH_EMAIL_DELIVERY_ENABLED" == "false" \
       && "$release_SIGNUP_TURNSTILE_ENABLED" == "false" \
@@ -5412,7 +5413,7 @@ stage="candidate-readiness-with-writes-disabled"
 run_quiesced_app() (
   compose_with_overrides \
     DEMO_LOGIN_ENABLED=false DEMO_WRITES_ENABLED=false \
-    ACCOUNT_LOGIN_ENABLED=false AUTH_OIDC_ENABLED=false ACCOUNT_SIGNUP_ENABLED=false \
+    ACCOUNT_LOGIN_ENABLED=false AUTH_OIDC_ENABLED=false AUTH_OIDC_SIGNUP_ENABLED=false ACCOUNT_SIGNUP_ENABLED=false \
     AUTH_EMAIL_DELIVERY_ENABLED=false SIGNUP_TURNSTILE_ENABLED=false \
     BUSINESS_WRITES_ENABLED=false BANK_FEEDS_ENABLED=false -- \
     up --detach --no-deps --no-build --force-recreate app
@@ -5442,7 +5443,7 @@ done
 quiesced_container="$(compose ps --quiet app)"
 [[ -n "$quiesced_container" ]] || fail "quiesced candidate app container is missing"
 quiesced_environment="$(docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$quiesced_container")"
-for disabled_gate in DEMO_LOGIN_ENABLED DEMO_WRITES_ENABLED ACCOUNT_LOGIN_ENABLED AUTH_OIDC_ENABLED \
+for disabled_gate in DEMO_LOGIN_ENABLED DEMO_WRITES_ENABLED ACCOUNT_LOGIN_ENABLED AUTH_OIDC_ENABLED AUTH_OIDC_SIGNUP_ENABLED \
   ACCOUNT_SIGNUP_ENABLED AUTH_EMAIL_DELIVERY_ENABLED SIGNUP_TURNSTILE_ENABLED \
   BUSINESS_WRITES_ENABLED BANK_FEEDS_ENABLED; do
   gate_value="$(awk -F= -v key="$disabled_gate" '$1 == key { sub(/^[^=]*=/, ""); print; exit }' <<<"$quiesced_environment")"
@@ -5505,13 +5506,14 @@ verify_release_router_maintenance
 
 expected_auth="disabled"; [[ "$release_ACCOUNT_LOGIN_ENABLED" == "true" ]] && expected_auth="ready"
 expected_oidc="disabled"; [[ "$release_AUTH_OIDC_ENABLED" == "true" ]] && expected_oidc="ready"
+expected_oidc_signup="disabled"; [[ "$release_AUTH_OIDC_SIGNUP_ENABLED" == "true" ]] && expected_oidc_signup="ready"
 expected_signup="disabled"; [[ "$release_ACCOUNT_SIGNUP_ENABLED" == "true" ]] && expected_signup="ready"
 expected_worker="disabled"; [[ "$release_ACCOUNT_LOGIN_ENABLED" == "true" ]] && expected_worker="ready"
 expected_bank="disabled"
 jq -e \
   --arg revision "$revision" --arg auth "$expected_auth" --arg signup "$expected_signup" --arg worker "$expected_worker" --arg bank "$expected_bank" \
-  --arg oidc "$expected_oidc" \
-  '.status == "ready" and .revision == $revision and .checks.database == "ready" and .checks.organizationKey == "ready" and .checks.identityKey == "ready" and .checks.accountAuthentication == $auth and .checks.oidcAuthentication == $oidc and .checks.accountSignup == $signup and .checks.emailWorker == $worker and .checks.bankFeeds == $bank' \
+  --arg oidc "$expected_oidc" --arg oidcSignup "$expected_oidc_signup" \
+  '.status == "ready" and .revision == $revision and .checks.database == "ready" and .checks.organizationKey == "ready" and .checks.identityKey == "ready" and .checks.accountAuthentication == $auth and .checks.oidcAuthentication == $oidc and .checks.oidcSignup == $oidcSignup and .checks.accountSignup == $signup and .checks.emailWorker == $worker and .checks.bankFeeds == $bank' \
   "$evidence_directory/64-internal-readiness.json" >/dev/null || fail "detailed readiness does not match the reviewed release gates"
 
 stage="browser-acceptance"
