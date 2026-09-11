@@ -248,7 +248,7 @@ verify_exact_f8485_rollback_app() {
     .[0].State.Running == true and .[0].State.Health.Status == "healthy" and
     (.[0].NetworkSettings.Networks | has($frontend)) and
     any(.[0].NetworkSettings.Networks[$frontend].Aliases[]?; . == "release-app") and
-    (["ACCOUNT_LOGIN_ENABLED", "ACCOUNT_SIGNUP_ENABLED", "AUTH_EMAIL_DELIVERY_ENABLED",
+    (["ACCOUNT_LOGIN_ENABLED", "AUTH_OIDC_ENABLED", "ACCOUNT_SIGNUP_ENABLED", "AUTH_EMAIL_DELIVERY_ENABLED",
       "BANK_FEEDS_ENABLED", "BUSINESS_WRITES_ENABLED", "DEMO_LOGIN_ENABLED",
       "DEMO_WRITES_ENABLED", "SIGNUP_TURNSTILE_ENABLED", "YAHOO_FX_ENABLED"] |
       all(.[] as $gate; ($root[0].Config.Env | index($gate + "=false")) != null))

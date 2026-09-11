@@ -24,7 +24,7 @@ export type StoredPrincipal = Readonly<{
   organization_id: string;
   membership_id: string;
   session_mode: "REAL" | "DEMO";
-  auth_method: "PASSWORD" | "DEMO_LINK" | "PASSWORD_RESET";
+  auth_method: "PASSWORD" | "DEMO_LINK" | "PASSWORD_RESET" | "OIDC";
   organization_name: string;
   role_label: string;
   email_ciphertext: string;
@@ -257,6 +257,30 @@ export async function issuePasswordUserSession(input: {
      LEFT JOIN demo_replacement ON true`,
     [input.userId, input.organizationId, input.membershipId, input.tokenHash,
       input.ipHash, input.userAgentHash, input.requestId,
+      input.replacedDemoSessionTokenHash ?? null],
+  );
+  return result.rows[0]?.session_id ?? null;
+}
+
+export async function issueOidcUserSession(input: {
+  userId: string; organizationId: string; membershipId: string;
+  tokenHash: string; ipHash: string; userAgentHash: string; requestId: string;
+  credentialHash: string; replacedDemoSessionTokenHash?: string | null;
+}): Promise<string | null> {
+  const result = await queryDatabase<{ session_id: string | null }>(
+    `WITH issued AS MATERIALIZED (
+       SELECT app.auth_issue_oidc_user_session($1,$2,$3,$4,$5,$6,$7,$8) AS session_id
+     ), demo_replacement AS MATERIALIZED (
+       SELECT app.auth_revoke_session($9,$7) AS revoked
+       FROM issued
+       WHERE issued.session_id IS NOT NULL
+         AND $9::text IS NOT NULL
+     )
+     SELECT issued.session_id
+     FROM issued
+     LEFT JOIN demo_replacement ON true`,
+    [input.userId, input.organizationId, input.membershipId, input.tokenHash,
+      input.ipHash, input.userAgentHash, input.requestId, input.credentialHash,
       input.replacedDemoSessionTokenHash ?? null],
   );
   return result.rows[0]?.session_id ?? null;

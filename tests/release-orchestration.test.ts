@@ -254,6 +254,7 @@ function writeAcceptedRehearsal(directory: string, revision: string, runId: stri
     identityKey: "ready",
     accountAuthentication: "disabled",
     accountSignup: "disabled",
+    oidcAuthentication: "disabled",
     emailWorker: "disabled",
     bankFeeds: "disabled",
   };

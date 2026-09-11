@@ -154,6 +154,8 @@ fi
     for (const secretName of [
       "business_finlynq_document_google_secret",
       "business_finlynq_document_microsoft_secret",
+      "business_finlynq_oidc_client_secret",
+      "business_finlynq_oidc_identity_map",
       "business_finlynq_resend_api_key",
       "business_finlynq_turnstile_secret_key",
       "business_finlynq_rclone_config",

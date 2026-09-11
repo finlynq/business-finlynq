@@ -645,6 +645,7 @@ describe("continuous deployment safety boundary", () => {
 
   it("starts development with external identity integrations disabled", () => {
     expect(installDevelopment).toContain("ACCOUNT_LOGIN_ENABLED=false");
+    expect(installDevelopment).toContain("AUTH_OIDC_ENABLED=false");
     expect(installDevelopment).toContain("ACCOUNT_SIGNUP_ENABLED=false");
     expect(installDevelopment).toContain("AUTH_EMAIL_DELIVERY_ENABLED=false");
     expect(installDevelopment).toContain("SIGNUP_TURNSTILE_ENABLED=false");

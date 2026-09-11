@@ -15,6 +15,7 @@ export type RouteFailureOperation =
   | "mfa-step-up"
   | "metrics-readiness"
   | "mcp-settings"
+  | "oidc-login"
   | "optional-mfa-activation"
   | "organization-administration"
   | "password-reset-confirmation"

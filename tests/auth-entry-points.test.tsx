@@ -53,6 +53,19 @@ describe("public account entry points", () => {
     expect(markup).not.toContain("<form");
   });
 
+  it("offers Microsoft SSO only when its server gate is enabled", () => {
+    const disabled = renderToStaticMarkup(
+      <LoginForm next="/app" accountLoginEnabled ssoLoginEnabled={false} />,
+    );
+    const enabled = renderToStaticMarkup(
+      <LoginForm next="/app/receivables" accountLoginEnabled ssoLoginEnabled />,
+    );
+
+    expect(disabled).not.toContain("Continue with Microsoft");
+    expect(enabled).toContain("Continue with Microsoft");
+    expect(enabled).toContain("/api/auth/oidc/start?next=%2Fapp%2Freceivables");
+  });
+
   it("offers account creation from the authenticated demo menu", () => {
     const accountMenuSource = readFileSync(join(
       process.cwd(),

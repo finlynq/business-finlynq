@@ -6,6 +6,7 @@ import { queryDatabase } from "@/db/transaction";
 import { emailDeliveryReadiness } from "@/modules/identity/auth-store";
 import { assertAccountAuthenticationConfigured } from "@/modules/identity/email-provider";
 import { assertSignupChallengeConfigured } from "@/modules/identity/signup-challenge";
+import { loadOidcConfiguration } from "@/modules/identity/oidc";
 import {
   assertJournalTypeRegistryDatabase,
   type JournalTypeDatabaseDefinition,
@@ -29,10 +30,12 @@ async function get(request: NextRequest) {
     loadOrganizationRootKek();
     const accountAuthentication = process.env.ACCOUNT_LOGIN_ENABLED === "true" ? "ready" : "disabled";
     const accountSignup = process.env.ACCOUNT_SIGNUP_ENABLED === "true" ? "ready" : "disabled";
+    const oidcAuthentication = process.env.AUTH_OIDC_ENABLED === "true" ? "ready" : "disabled";
     const bankFeeds = process.env.BANK_FEEDS_ENABLED === "true" ? "ready" : "disabled";
     if (accountSignup === "ready" && accountAuthentication !== "ready") {
       throw new Error("Self-service signup requires real-account authentication");
     }
+    if (oidcAuthentication === "ready") loadOidcConfiguration();
     let emailWorker = "disabled";
     if (accountAuthentication === "ready") {
       assertAccountAuthenticationConfigured();
@@ -56,6 +59,7 @@ async function get(request: NextRequest) {
         identityKey: "ready",
         accountAuthentication,
         accountSignup,
+        oidcAuthentication,
         emailWorker,
         bankFeeds,
       },

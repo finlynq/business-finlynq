@@ -24,6 +24,19 @@ function fixture() {
     secrets[name] = { file }; appSecrets.push({ source: name, target });
     mounts.push({ Source: file, Destination: target, RW: false });
   }
+  for (const [setting, name] of [
+    ["AUTH_OIDC_CLIENT_SECRET_FILE", "oidc-client-secret"],
+    ["AUTH_OIDC_IDENTITY_MAP_FILE", "oidc-identity-map"],
+  ] as const) {
+    const target = `/run/secrets/${name}`;
+    const file = join(directory, name);
+    writeFileSync(file, `${name}-synthetic-value\n`, { mode: 0o600 });
+    writeFileSync(join(runtime, name), readFileSync(file), { mode: 0o600 });
+    environment[setting] = target;
+    secrets[name] = { file };
+    appSecrets.push({ source: name, target });
+    mounts.push({ Source: file, Destination: target, RW: false });
+  }
   const config = { services: { app: { environment, secrets: appSecrets } }, secrets };
   const running = { ...environment };
   function run(failRead = false) {
@@ -83,6 +96,13 @@ describe("development document-provider configuration drift", () => {
     writeFileSync(join(f.runtime, "microsoft"), readFileSync(f.config.secrets.microsoft.file));
     expect(f.run().status).toBe(0);
     expect(f.run(true).status).toBe(1);
+  });
+  it.skipIf(process.platform === "win32")("detects a stale OIDC identity-map bind after atomic replacement", () => {
+    const f = fixture();
+    writeFileSync(f.config.secrets["oidc-identity-map"].file, "rotated-oidc-map\n");
+    expect(f.run().status).toBe(1);
+    writeFileSync(join(f.runtime, "oidc-identity-map"), "rotated-oidc-map\n");
+    expect(f.run().status).toBe(0);
   });
   it.skipIf(process.platform === "win32")("supports recovery to a revision that predates cloud-provider configuration", () => {
     const f = fixture();
