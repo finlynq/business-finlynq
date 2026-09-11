@@ -504,8 +504,6 @@ readonly -a edge_contract_keys=(
   BUSINESS_FINLYNQ_EXTERNAL_EDGE_ACTIVE_CONFIG_SHA256
   BUSINESS_FINLYNQ_EXTERNAL_EDGE_DATA_VOLUME
   BUSINESS_FINLYNQ_EXTERNAL_EDGE_CONFIG_VOLUME
-  BUSINESS_FINLYNQ_EXTERNAL_EDGE_EPM_SECRET_SOURCE
-  BUSINESS_FINLYNQ_EXTERNAL_EDGE_EPM_SECRET_DESTINATION
   EPM_FINLYNQ_HOSTNAME
 )
 declare -A edge_values=()
@@ -555,8 +553,6 @@ validate_edge_contract() {
     && "${edge_values[BUSINESS_FINLYNQ_EXTERNAL_EDGE_ROUTE_SOURCE]}" == "$edge_route" \
     && "${edge_values[BUSINESS_FINLYNQ_EXTERNAL_EDGE_ROUTE_DESTINATION]}" \
       == /etc/caddy/business-finlynq-routes.caddy \
-    && "${edge_values[BUSINESS_FINLYNQ_EXTERNAL_EDGE_EPM_SECRET_DESTINATION]}" \
-      == /config/epm-basic-auth \
     && "${edge_values[EPM_FINLYNQ_HOSTNAME]}" == epm.finlynq.com ]] \
     || fail "edge mount, route, or hostname metadata differs from the reviewed contract"
   [[ "${edge_values[BUSINESS_FINLYNQ_EXTERNAL_EDGE_ROUTE_SHA256]}" \
@@ -586,12 +582,6 @@ validate_edge_contract() {
     || fail "external Caddy source mode is invalid"
   (( (8#$config_mode & 8#022) == 0 )) \
     || fail "external Caddy source must not be group- or other-writable"
-  [[ -f "${edge_values[BUSINESS_FINLYNQ_EXTERNAL_EDGE_EPM_SECRET_SOURCE]}" \
-    && ! -L "${edge_values[BUSINESS_FINLYNQ_EXTERNAL_EDGE_EPM_SECRET_SOURCE]}" \
-    && -s "${edge_values[BUSINESS_FINLYNQ_EXTERNAL_EDGE_EPM_SECRET_SOURCE]}" \
-    && "$(stat -c '%u:%a' -- \
-      "${edge_values[BUSINESS_FINLYNQ_EXTERNAL_EDGE_EPM_SECRET_SOURCE]}")" == 0:400 ]] \
-    || fail "the preserved EPM authentication source is unavailable or unsafe"
 }
 
 if [[ -n "$edge_contract_input" ]]; then
@@ -1021,8 +1011,7 @@ write_compose_environment() {
   local external_config_source="" external_public_ipv4s="" external_route_source="$edge_route"
   local external_route_destination="/etc/caddy/business-finlynq-routes.caddy"
   local external_route_sha256="" external_active_config_sha256=""
-  local external_data_volume="" external_config_volume="" external_epm_secret_source=""
-  local external_epm_secret_destination="/config/epm-basic-auth"
+  local external_data_volume="" external_config_volume=""
 
   if [[ -e "$target" || -L "$target" ]]; then
     [[ -f "$target" && ! -L "$target" \
@@ -1046,8 +1035,6 @@ write_compose_environment() {
     external_active_config_sha256="${edge_values[BUSINESS_FINLYNQ_EXTERNAL_EDGE_ACTIVE_CONFIG_SHA256]}"
     external_data_volume="${edge_values[BUSINESS_FINLYNQ_EXTERNAL_EDGE_DATA_VOLUME]}"
     external_config_volume="${edge_values[BUSINESS_FINLYNQ_EXTERNAL_EDGE_CONFIG_VOLUME]}"
-    external_epm_secret_source="${edge_values[BUSINESS_FINLYNQ_EXTERNAL_EDGE_EPM_SECRET_SOURCE]}"
-    external_epm_secret_destination="${edge_values[BUSINESS_FINLYNQ_EXTERNAL_EDGE_EPM_SECRET_DESTINATION]}"
   fi
 
   temporary="$(mktemp "${target%/*}/.compose-env.XXXXXX")"
@@ -1088,8 +1075,6 @@ write_compose_environment() {
     printf 'BUSINESS_FINLYNQ_EXTERNAL_EDGE_ACTIVE_CONFIG_SHA256=%s\n' "$external_active_config_sha256"
     printf 'BUSINESS_FINLYNQ_EXTERNAL_EDGE_DATA_VOLUME=%s\n' "$external_data_volume"
     printf 'BUSINESS_FINLYNQ_EXTERNAL_EDGE_CONFIG_VOLUME=%s\n' "$external_config_volume"
-    printf 'BUSINESS_FINLYNQ_EXTERNAL_EDGE_EPM_SECRET_SOURCE=%s\n' "$external_epm_secret_source"
-    printf 'BUSINESS_FINLYNQ_EXTERNAL_EDGE_EPM_SECRET_DESTINATION=%s\n' "$external_epm_secret_destination"
     printf 'TRUSTED_PROXY_HOPS=%s\n' "$([[ "$selected_edge_mode" == external ]] && printf 1 || printf 0)"
     printf 'SESSION_COOKIE_NAME=%s\n' "$cookie_name"
     printf 'DEMO_LOGIN_ENABLED=true\n'

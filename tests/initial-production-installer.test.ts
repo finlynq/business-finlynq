@@ -192,6 +192,7 @@ describe("fresh production bootstrap installer", () => {
     expect(installer).toContain("external edge contract source must be a root:root mode 0400");
     expect(installer).toContain("edge_contract_keys");
     expect(installer).toContain("edge-contract.env does not have the exact reviewed key set");
+    expect(installer).not.toContain("BUSINESS_FINLYNQ_EXTERNAL_EDGE_EPM_SECRET");
     expect(installer).toContain("partial canonical edge contract is unsafe");
     expect(installer).toContain('sync -f -- "$edge_directory"');
     expect(installer).toContain("install_protected_external_edge_verifier");
