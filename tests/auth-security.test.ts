@@ -201,6 +201,8 @@ describe("session and demo navigation controls", () => {
     };
     expect(transactionAuthMethod(principal, 9_999)).toBe("password+mfa");
     expect(transactionAuthMethod(principal, 10_000)).toBe("password");
+    expect(transactionAuthMethod({ ...principal, authMethod: "OIDC" }, 9_999)).toBe("oidc+mfa");
+    expect(transactionAuthMethod({ ...principal, authMethod: "OIDC" }, 10_000)).toBe("oidc");
     expect(transactionAuthMethod({ ...principal, sessionMode: "demo", authMethod: "DEMO_LINK" }, 1)).toBe("demo-link+mfa");
     expect(transactionAuthMethod({ ...principal, sessionMode: "demo", authMethod: "DEMO_LINK" }, 10_000)).toBe("demo-link");
   });

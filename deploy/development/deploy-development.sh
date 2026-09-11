@@ -1177,6 +1177,53 @@ document_provider_configuration_matches() {
       "$target" 2>/dev/null)" || return 1
     [[ "$actual_digest" == "$expected_digest" ]] || return 1
   done
+
+  # OIDC uses the same immutable, read-only secret boundary as document
+  # providers. Verify both mounted files even while the feature gate is off so
+  # an atomic host-side rotation cannot leave the running app on a stale inode.
+  for setting in AUTH_OIDC_CLIENT_SECRET_FILE AUTH_OIDC_IDENTITY_MAP_FILE; do
+    expected_record="$(jq -ce --arg setting "$setting" '
+      .services.app.environment as $environment |
+      if ($environment | has($setting)) then
+        {present: true, value: ($environment[$setting] | tostring)}
+      else
+        {present: false, value: ""}
+      end
+    ' <<<"$rendered")" || return 1
+    actual_record="$(docker inspect --format '{{json .Config.Env}}' "$container" \
+      | jq -ce --arg prefix "$setting=" '
+        [.[] | select(startswith($prefix)) | ltrimstr($prefix)] as $values |
+        if ($values | length) == 1 then
+          {present: true, value: $values[0]}
+        elif ($values | length) == 0 then
+          {present: false, value: ""}
+        else
+          error("duplicate container environment setting")
+        end
+      ')" || return 1
+    [[ "$actual_record" == "$expected_record" ]] || return 1
+    jq -e '.present == true and .value != ""' <<<"$expected_record" >/dev/null \
+      || continue
+    target="$(jq -er '.value' <<<"$expected_record")" || return 1
+    source="$(jq -er --arg target "$target" '
+      . as $config |
+      [.services.app.secrets[] |
+        select((.target // .source) == $target or
+          (.target // .source) == ($target | split("/") | last)) |
+        $config.secrets[.source].file] |
+      if length == 1 then .[0] else error("secret mount source is not unique") end
+    ' <<<"$rendered")" || return 1
+    [[ -f "$source" && ! -L "$source" ]] || return 1
+    jq -e --arg source "$source" --arg target "$target" \
+      '[.[] | select(.Source == $source and .Destination == $target and .RW == false)] | length == 1' \
+      <<<"$mounts" >/dev/null || return 1
+    expected_digest="$(sha256sum -- "$source")" || return 1
+    expected_digest="${expected_digest%% *}"
+    actual_digest="$(docker exec "$container" node -e \
+      'process.stdout.write(require("node:crypto").createHash("sha256").update(require("node:fs").readFileSync(process.argv[1])).digest("hex"))' \
+      "$target" 2>/dev/null)" || return 1
+    [[ "$actual_digest" == "$expected_digest" ]] || return 1
+  done
 }
 
 network_alias_has_exact_owner() {
@@ -1405,6 +1452,10 @@ release_is_accepted() {
   app_environment="$(docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' \
     "$app_container")" || return 1
   for setting in DEMO_LOGIN_ENABLED DEMO_WRITES_ENABLED ACCOUNT_LOGIN_ENABLED \
+    AUTH_OIDC_ENABLED AUTH_OIDC_ISSUER AUTH_OIDC_AUTHORIZATION_ENDPOINT \
+    AUTH_OIDC_TOKEN_ENDPOINT AUTH_OIDC_JWKS_URI AUTH_OIDC_CLIENT_ID \
+    AUTH_OIDC_ALLOWED_TENANTS AUTH_OIDC_MAXIMUM_TOKEN_LIFETIME_SECONDS \
+    AUTH_OIDC_TOKEN_TIMEOUT_MILLISECONDS AUTH_OIDC_JWKS_TIMEOUT_MILLISECONDS \
     ACCOUNT_SIGNUP_ENABLED AUTH_EMAIL_DELIVERY_ENABLED AUTH_EMAIL_PROVIDER AUTH_EMAIL_FROM \
     AUTH_EMAIL_REPLY_TO SIGNUP_TURNSTILE_ENABLED SIGNUP_TURNSTILE_SITE_KEY \
     BUSINESS_WRITES_ENABLED BANK_FEEDS_ENABLED YAHOO_FX_ENABLED DOCUMENT_INBOX_MAX_DEPTH \

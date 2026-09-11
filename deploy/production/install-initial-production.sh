@@ -1095,6 +1095,16 @@ write_compose_environment() {
     printf 'DEMO_LOGIN_ENABLED=true\n'
     printf 'DEMO_WRITES_ENABLED=true\n'
     printf 'ACCOUNT_LOGIN_ENABLED=false\n'
+    printf 'AUTH_OIDC_ENABLED=false\n'
+    printf 'AUTH_OIDC_ISSUER=\n'
+    printf 'AUTH_OIDC_AUTHORIZATION_ENDPOINT=\n'
+    printf 'AUTH_OIDC_TOKEN_ENDPOINT=\n'
+    printf 'AUTH_OIDC_JWKS_URI=\n'
+    printf 'AUTH_OIDC_CLIENT_ID=\n'
+    printf 'AUTH_OIDC_ALLOWED_TENANTS=\n'
+    printf 'AUTH_OIDC_MAXIMUM_TOKEN_LIFETIME_SECONDS=7200\n'
+    printf 'AUTH_OIDC_TOKEN_TIMEOUT_MILLISECONDS=10000\n'
+    printf 'AUTH_OIDC_JWKS_TIMEOUT_MILLISECONDS=5000\n'
     printf 'ACCOUNT_SIGNUP_ENABLED=false\n'
     printf 'AUTH_EMAIL_DELIVERY_ENABLED=false\n'
     printf 'SIGNUP_TURNSTILE_ENABLED=false\n'
@@ -1106,6 +1116,8 @@ write_compose_environment() {
     printf 'AUTH_EMAIL_FROM=\n'
     printf 'AUTH_EMAIL_REPLY_TO=\n'
     printf 'AUTH_RESEND_API_KEY_FILE=%s/not-configured\n' "$bundle_directory"
+    printf 'AUTH_OIDC_CLIENT_SECRET_FILE=%s/not-configured\n' "$bundle_directory"
+    printf 'AUTH_OIDC_IDENTITY_MAP_FILE=%s/not-configured\n' "$bundle_directory"
     printf 'TURNSTILE_SECRET_KEY_FILE=%s/not-configured\n' "$bundle_directory"
     printf 'DOCUMENT_GOOGLE_CLIENT_ID=\n'
     printf 'DOCUMENT_GOOGLE_CLIENT_SECRET_FILE=%s/not-configured\n' "$bundle_directory"
@@ -3324,7 +3336,7 @@ verify_live_accepted_initial_runtime() {
           (.[0].HostConfig.CapDrop | sort) == ["ALL"] and
           (.[0].HostConfig.SecurityOpt | index("no-new-privileges:true") != null) and
           ((.[0].HostConfig.PortBindings // {}) | length) == 0 and
-          (.[0].Mounts | length) == 6 and
+          (.[0].Mounts | length) == 8 and
           all(.[0].Mounts[]; .Type == "bind" and .RW == false and
             ((.Source == ($secretDirectory + "/app-db-password") and
                 .Destination == "/run/secrets/business_finlynq_app_db_password") or
@@ -3333,10 +3345,12 @@ verify_live_accepted_initial_runtime() {
              (.Source == ($secretDirectory + "/identity-secret") and
                 .Destination == "/run/secrets/business_finlynq_identity_secret") or
              (.Source == ($secretDirectory + "/not-configured") and
-                (.Destination == "/run/secrets/business_finlynq_turnstile_secret_key" or
+                (.Destination == "/run/secrets/business_finlynq_oidc_client_secret" or
+                 .Destination == "/run/secrets/business_finlynq_oidc_identity_map" or
+                 .Destination == "/run/secrets/business_finlynq_turnstile_secret_key" or
                  .Destination == "/run/secrets/business_finlynq_document_google_secret" or
                  .Destination == "/run/secrets/business_finlynq_document_microsoft_secret")))) and
-          ([.[0].Mounts[].Destination] | unique | length) == 6 and
+          ([.[0].Mounts[].Destination] | unique | length) == 8 and
           ([.[0].NetworkSettings.Networks | keys[]] | sort) ==
             ["business_finlynq_egress", "business_finlynq_private",
               "business_finlynq_private-frontend", "business_finlynq_private_evidence"] and
@@ -3563,7 +3577,7 @@ recover_accepted_stopped_app() {
     (.[0].HostConfig.CapDrop | sort) == ["ALL"] and
     (.[0].HostConfig.SecurityOpt | index("no-new-privileges:true") != null) and
     ((.[0].HostConfig.PortBindings // {}) | length) == 0 and
-    (.[0].Mounts | length) == 6 and
+    (.[0].Mounts | length) == 8 and
     all(.[0].Mounts[]; .Type == "bind" and .RW == false and
       ((.Source == ($secretDirectory + "/app-db-password") and
           .Destination == "/run/secrets/business_finlynq_app_db_password") or
@@ -3572,10 +3586,12 @@ recover_accepted_stopped_app() {
        (.Source == ($secretDirectory + "/identity-secret") and
           .Destination == "/run/secrets/business_finlynq_identity_secret") or
        (.Source == ($secretDirectory + "/not-configured") and
-          (.Destination == "/run/secrets/business_finlynq_turnstile_secret_key" or
+          (.Destination == "/run/secrets/business_finlynq_oidc_client_secret" or
+           .Destination == "/run/secrets/business_finlynq_oidc_identity_map" or
+           .Destination == "/run/secrets/business_finlynq_turnstile_secret_key" or
            .Destination == "/run/secrets/business_finlynq_document_google_secret" or
            .Destination == "/run/secrets/business_finlynq_document_microsoft_secret")))) and
-    ([.[0].Mounts[].Destination] | unique | length) == 6 and
+    ([.[0].Mounts[].Destination] | unique | length) == 8 and
     ([.[0].NetworkSettings.Networks | keys[]] | sort) ==
       ["business_finlynq_egress", "business_finlynq_private",
         "business_finlynq_private-frontend", "business_finlynq_private_evidence"] and
@@ -3622,6 +3638,7 @@ recover_accepted_stopped_app() {
     .checks.database == "ready" and .checks.organizationKey == "ready" and
     .checks.identityKey == "ready" and
     .checks.accountAuthentication == "disabled" and
+    .checks.oidcAuthentication == "disabled" and
     .checks.accountSignup == "disabled" and .checks.emailWorker == "disabled" and
     .checks.bankFeeds == "disabled"
   ' <<<"$readiness" >/dev/null \

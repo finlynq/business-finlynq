@@ -770,7 +770,7 @@ rollback_compose() {
     "BUSINESS_FINLYNQ_ROLLBACK_APP_IMAGE=$previous_image_id" \
     "BUSINESS_FINLYNQ_IMAGE_REVISION=$previous_revision" \
     DEMO_LOGIN_ENABLED=false DEMO_WRITES_ENABLED=false \
-    ACCOUNT_LOGIN_ENABLED=false ACCOUNT_SIGNUP_ENABLED=false \
+    ACCOUNT_LOGIN_ENABLED=false AUTH_OIDC_ENABLED=false ACCOUNT_SIGNUP_ENABLED=false \
     AUTH_EMAIL_DELIVERY_ENABLED=false SIGNUP_TURNSTILE_ENABLED=false \
     BUSINESS_WRITES_ENABLED=false BANK_FEEDS_ENABLED=false YAHOO_FX_ENABLED=false \
     docker compose --project-name business-finlynq --project-directory "$candidate_source_root" \
@@ -1423,7 +1423,7 @@ if [[ "$legacy_rollback_adapter_required" == true ]]; then
     $root.services.app.command == ["node", "server.js"] and
     $root.services.app.environment.BUSINESS_FINLYNQ_IMAGE_REVISION == $revision and
     $root.services.app.environment.ROLLBACK_COMPATIBILITY_ACK == "f8485-one-release-only" and
-    (["ACCOUNT_LOGIN_ENABLED", "ACCOUNT_SIGNUP_ENABLED",
+    (["ACCOUNT_LOGIN_ENABLED", "AUTH_OIDC_ENABLED", "ACCOUNT_SIGNUP_ENABLED",
       "SIGNUP_TURNSTILE_ENABLED", "AUTH_EMAIL_DELIVERY_ENABLED",
       "BUSINESS_WRITES_ENABLED", "BANK_FEEDS_ENABLED", "YAHOO_FX_ENABLED",
       "DEMO_LOGIN_ENABLED", "DEMO_WRITES_ENABLED"] |
@@ -1491,6 +1491,7 @@ for _ in {1..60}; do
       jq -e --arg revision "$previous_revision" \
         '.status == "ready" and .revision == $revision
           and .checks.accountAuthentication == "disabled"
+          and .checks.oidcAuthentication == "disabled"
           and .checks.accountSignup == "disabled"
           and .checks.emailWorker == "disabled"
           and .checks.bankFeeds == "disabled"' <<<"$body" >/dev/null \
@@ -1502,7 +1503,7 @@ for _ in {1..60}; do
     verify_rollback_maintenance \
       || fail "public traffic escaped maintenance before rollback acceptance completed"
     rollback_environment="$(docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$rollback_container")"
-    for disabled_gate in DEMO_LOGIN_ENABLED DEMO_WRITES_ENABLED ACCOUNT_LOGIN_ENABLED \
+    for disabled_gate in DEMO_LOGIN_ENABLED DEMO_WRITES_ENABLED ACCOUNT_LOGIN_ENABLED AUTH_OIDC_ENABLED \
       ACCOUNT_SIGNUP_ENABLED AUTH_EMAIL_DELIVERY_ENABLED SIGNUP_TURNSTILE_ENABLED \
       BUSINESS_WRITES_ENABLED BANK_FEEDS_ENABLED YAHOO_FX_ENABLED; do
       gate_value="$(awk -F= -v key="$disabled_gate" '$1 == key { sub(/^[^=]*=/, ""); print; exit }' <<<"$rollback_environment")"

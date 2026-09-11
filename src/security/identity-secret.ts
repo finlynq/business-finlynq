@@ -116,7 +116,7 @@ export function decryptIdentityField(
  */
 export function encryptAuthPayload(
   plaintext: string,
-  purpose: "email-payload" | "totp-secret",
+  purpose: "email-payload" | "totp-secret" | "oidc-login",
   recordId: string,
   secret = loadIdentitySecret(),
 ): string {
@@ -129,7 +129,7 @@ export function encryptAuthPayload(
 
 export function decryptAuthPayload(
   envelope: string,
-  purpose: "email-payload" | "totp-secret",
+  purpose: "email-payload" | "totp-secret" | "oidc-login",
   recordId: string,
   secret = loadIdentitySecret(),
 ): string {

@@ -342,6 +342,7 @@ BEGIN
     'app.auth_lookup_login_v2(text)',
     'app.auth_lookup_login_v3(text)',
     'app.auth_issue_demo_session(text,text,text,text,text,text)',
+    'app.auth_issue_oidc_user_session(uuid,uuid,uuid,text,text,text,text,text)',
     'app.auth_demo_session_lease_valid(uuid)',
     'app.auth_mark_demo_step_up(uuid,text)',
     'app.shared_demo_operations_state()',

@@ -8,6 +8,7 @@ import {
   finishSessionMfaEnrollment,
   issueDemoSession,
   issueMfaUserSession,
+  issueOidcUserSession,
   issuePasswordUserSession,
   resolveStoredSession,
 } from "@/modules/identity/auth-store";
@@ -94,6 +95,27 @@ describe("MFA session issuance", () => {
     expect(passwordValues[5]).toBe("empty-user-agent-hash");
     expect(demoValues.slice(1, 3)).toEqual([null, null]);
     expect(demoValues[4]).toBe("empty-user-agent-hash");
+  });
+
+  it("issues a mapped OIDC session and atomically replaces a demo session", async () => {
+    await issueOidcUserSession({
+      userId: "30000000-0000-4000-8000-000000000001",
+      organizationId: "30000000-0000-4000-8000-000000000002",
+      membershipId: "30000000-0000-4000-8000-000000000003",
+      tokenHash: "oidc-session-token-hash",
+      ipHash: "ip-hash",
+      userAgentHash: "empty-user-agent-hash",
+      requestId: "oidc-session-request",
+      credentialHash: "c".repeat(64),
+      replacedDemoSessionTokenHash: "old-demo-token-hash",
+    });
+
+    const [statement, values] = mocks.queryDatabase.mock.calls[0] as [string, unknown[]];
+    expect(statement).toContain("app.auth_issue_oidc_user_session($1,$2,$3,$4,$5,$6,$7,$8)");
+    expect(statement).toContain("app.auth_revoke_session($9,$7)");
+    expect(values).toHaveLength(9);
+    expect(values[7]).toBe("c".repeat(64));
+    expect(values[8]).toBe("old-demo-token-hash");
   });
 
   it("passes a fresh bearer hash into atomic later-enrollment completion", async () => {

@@ -476,6 +476,18 @@ services:
       DEMO_LOGIN_ENABLED: ${DEMO_LOGIN_ENABLED:-false}
       DEMO_WRITES_ENABLED: ${DEMO_WRITES_ENABLED:-false}
       ACCOUNT_LOGIN_ENABLED: ${ACCOUNT_LOGIN_ENABLED:-false}
+      AUTH_OIDC_ENABLED: ${AUTH_OIDC_ENABLED:-false}
+      AUTH_OIDC_ISSUER: ${AUTH_OIDC_ISSUER:-}
+      AUTH_OIDC_AUTHORIZATION_ENDPOINT: ${AUTH_OIDC_AUTHORIZATION_ENDPOINT:-}
+      AUTH_OIDC_TOKEN_ENDPOINT: ${AUTH_OIDC_TOKEN_ENDPOINT:-}
+      AUTH_OIDC_JWKS_URI: ${AUTH_OIDC_JWKS_URI:-}
+      AUTH_OIDC_CLIENT_ID: ${AUTH_OIDC_CLIENT_ID:-}
+      AUTH_OIDC_CLIENT_SECRET_FILE: /run/secrets/business_finlynq_oidc_client_secret
+      AUTH_OIDC_ALLOWED_TENANTS: ${AUTH_OIDC_ALLOWED_TENANTS:-}
+      AUTH_OIDC_IDENTITY_MAP_FILE: /run/secrets/business_finlynq_oidc_identity_map
+      AUTH_OIDC_MAXIMUM_TOKEN_LIFETIME_SECONDS: ${AUTH_OIDC_MAXIMUM_TOKEN_LIFETIME_SECONDS:-7200}
+      AUTH_OIDC_TOKEN_TIMEOUT_MILLISECONDS: ${AUTH_OIDC_TOKEN_TIMEOUT_MILLISECONDS:-10000}
+      AUTH_OIDC_JWKS_TIMEOUT_MILLISECONDS: ${AUTH_OIDC_JWKS_TIMEOUT_MILLISECONDS:-5000}
       ACCOUNT_SIGNUP_ENABLED: ${ACCOUNT_SIGNUP_ENABLED:-false}
       SIGNUP_TURNSTILE_ENABLED: ${SIGNUP_TURNSTILE_ENABLED:-false}
       SIGNUP_TURNSTILE_SITE_KEY: ${SIGNUP_TURNSTILE_SITE_KEY:-}
@@ -502,6 +514,8 @@ services:
       - business_finlynq_root_kek
       - business_finlynq_identity_secret
       - business_finlynq_app_db_password
+      - business_finlynq_oidc_client_secret
+      - business_finlynq_oidc_identity_map
       - business_finlynq_turnstile_secret_key
       - business_finlynq_document_google_secret
       - business_finlynq_document_microsoft_secret
@@ -1382,6 +1396,7 @@ services:
       # operators and maintenance timers are not part of this drill surface.
       DEMO_WRITES_ENABLED: "false"
       ACCOUNT_LOGIN_ENABLED: "false"
+      AUTH_OIDC_ENABLED: "false"
       ACCOUNT_SIGNUP_ENABLED: "false"
       SIGNUP_TURNSTILE_ENABLED: "false"
       AUTH_EMAIL_DELIVERY_ENABLED: "false"
@@ -1542,6 +1557,10 @@ volumes:
     name: ${BUSINESS_FINLYNQ_CADDY_CONFIG_VOLUME:-business_finlynq_caddy_config}
 
 secrets:
+  business_finlynq_oidc_client_secret:
+    file: ${AUTH_OIDC_CLIENT_SECRET_FILE:-./deploy/backup/not-configured}
+  business_finlynq_oidc_identity_map:
+    file: ${AUTH_OIDC_IDENTITY_MAP_FILE:-./deploy/backup/not-configured}
   business_finlynq_document_google_secret:
     file: ${DOCUMENT_GOOGLE_CLIENT_SECRET_FILE:-./deploy/backup/not-configured}
   business_finlynq_document_microsoft_secret:
