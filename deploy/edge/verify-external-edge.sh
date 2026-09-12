@@ -119,6 +119,20 @@ read_development_environment_value() {
   printf '%s' "$value"
 }
 
+header_value_is_exact() {
+  local headers="$1" header_name="$2" expected_value="$3" observed
+  observed="$(awk -F: -v selected="$header_name" '
+    tolower($1) == tolower(selected) {
+      count += 1
+      sub(/^[^:]*:[[:space:]]*/, "")
+      sub(/\r$/, "")
+      print
+    }
+    END { if (count != 1) exit 1 }
+  ' <<<"$headers")" || return 1
+  [[ "$observed" == "$expected_value" ]]
+}
+
 container_for_service() {
   local project="$1" service="$2" query container
   local -a containers=()
@@ -1071,12 +1085,12 @@ for address in "${expected_public_ipv4s[@]}"; do
     epm_status="$(awk 'NR == 1 { print $2 }' <<<"$epm_headers")"
     [[ "$epm_status" == 302 ]] \
       || fail "the EPM console did not begin the application-owned OIDC flow on $address"
-    grep -Eiq '^location:[[:space:]]*/auth/login\r?$' <<<"$epm_headers" \
+    header_value_is_exact "$epm_headers" location /auth/login \
       || fail "the EPM console did not redirect to its OIDC login endpoint on $address"
     ! grep -Eiq '^www-authenticate:' <<<"$epm_headers" \
       || fail "the EPM console still advertises proxy authentication on $address"
-    grep -Eiq '^permissions-policy:[[:space:]]*camera=\(\), microphone=\(\), geolocation=\(\), payment=\(\)\r?$' \
-      <<<"$epm_headers" \
+    header_value_is_exact "$epm_headers" permissions-policy \
+      'camera=(), microphone=(), geolocation=(), payment=()' \
       || fail "the EPM console response is missing its browser permissions policy on $address"
   fi
 done

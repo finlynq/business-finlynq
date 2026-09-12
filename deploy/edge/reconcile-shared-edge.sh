@@ -15,6 +15,20 @@ fail() {
   exit 1
 }
 
+header_value_is_exact() {
+  local headers="$1" header_name="$2" expected_value="$3" observed
+  observed="$(awk -F: -v selected="$header_name" '
+    tolower($1) == tolower(selected) {
+      count += 1
+      sub(/^[^:]*:[[:space:]]*/, "")
+      sub(/\r$/, "")
+      print
+    }
+    END { if (count != 1) exit 1 }
+  ' <<<"$headers")" || return 1
+  [[ "$observed" == "$expected_value" ]]
+}
+
 [[ "$#" == 0 ]] || fail "this command accepts no arguments"
 [[ "$(id -u)" == 0 ]] || fail "run this command as root"
 [[ "$repository" == "/home/deploy/business-finlynq" ]] \
@@ -160,12 +174,12 @@ epm_headers="$(curl --silent --show-error --max-time 20 --dump-header - \
 epm_status="$(awk 'NR == 1 { print $2 }' <<<"$epm_headers")"
 [[ "$epm_status" == "302" ]] \
   || fail "the EPM console did not begin the application-owned OIDC flow"
-grep -Eiq '^location:[[:space:]]*/auth/login\r?$' <<<"$epm_headers" \
+header_value_is_exact "$epm_headers" location /auth/login \
   || fail "the EPM console did not redirect to its OIDC login endpoint"
 ! grep -Eiq '^www-authenticate:' <<<"$epm_headers" \
   || fail "the EPM console still advertises proxy authentication"
-grep -Eiq '^permissions-policy:[[:space:]]*camera=\(\), microphone=\(\), geolocation=\(\), payment=\(\)\r?$' \
-  <<<"$epm_headers" \
+header_value_is_exact "$epm_headers" permissions-policy \
+  'camera=(), microphone=(), geolocation=(), payment=()' \
   || fail "the EPM console response is missing its browser permissions policy"
 curl --fail --silent --show-error --max-time 20 \
   https://consult.finlynq.com/ >/dev/null \
