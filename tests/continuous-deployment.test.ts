@@ -25,6 +25,11 @@ const deployService = read(
 const reconcileSharedEdge = read("deploy", "edge", "reconcile-shared-edge.sh");
 const deployDevelopment = read("deploy", "development", "deploy-development.sh");
 const installDevelopment = read("deploy", "development", "install-development.sh");
+const verifyDevelopmentFinalized = read(
+  "deploy",
+  "development",
+  "verify-development-finalized.sh",
+);
 const playwrightConfig = read("playwright.config.ts");
 const compose = read("docker-compose.yml");
 const allowRevisions = read(
@@ -39,6 +44,98 @@ const receiverInstaller = read(
 );
 
 describe("continuous deployment safety boundary", () => {
+  it("installs a root-owned read-only staging finalization verifier", () => {
+    expect(installDevelopment).toContain(
+      'readonly finalization_verifier_target="/usr/local/sbin/business-finlynq-verify-development-finalized"',
+    );
+    expect(installDevelopment).toContain(
+      'readonly external_edge_verifier_target="$installed_verifier_directory/verify-external-edge.sh"',
+    );
+    expect(installDevelopment).toContain(
+      'install -o root -g root -m 0550 \\\n  -- "$script_directory/verify-development-finalized.sh" "$finalization_verifier_target"',
+    );
+    expect(installDevelopment).toContain(
+      'install -o root -g root -m 0550 \\\n  -- "$script_directory/../edge/verify-external-edge.sh" "$external_edge_verifier_target"',
+    );
+    expect(installDevelopment).toContain(
+      "/usr/local/sbin/business-finlynq-verify-development-finalized",
+    );
+
+    expect(verifyDevelopmentFinalized).toContain(
+      'readonly external_edge_verifier="/usr/local/libexec/business-finlynq/verify-external-edge.sh"',
+    );
+    expect(verifyDevelopmentFinalized).toContain(
+      'readonly repository="/home/deploy/business-finlynq-stage"',
+    );
+    expect(verifyDevelopmentFinalized).toContain(
+      '(( $# == 0 )) || fail "this command accepts no arguments"',
+    );
+    expect(verifyDevelopmentFinalized.startsWith("#!/usr/bin/bash\n")).toBe(true);
+    expect(verifyDevelopmentFinalized).toContain(
+      '[[ "$(readlink -f -- "$0")" == "$finalization_verifier" ]]',
+    );
+    expect(verifyDevelopmentFinalized).toContain(
+      'safe_regular_file "$external_edge_verifier" root:root:550',
+    );
+    expect(verifyDevelopmentFinalized).toContain(
+      'safe_regular_file "$host_deployment_lock" root:deploy:660',
+    );
+    expect(verifyDevelopmentFinalized).toContain(
+      'flock --exclusive --nonblock "$deployment_lock_fd"',
+    );
+    expect(verifyDevelopmentFinalized.match(/verify_opened_deployment_lock/g)).toHaveLength(3);
+    expect(verifyDevelopmentFinalized).toContain(
+      '[[ "$path_identity" == "$descriptor_identity" ]]',
+    );
+    expect(verifyDevelopmentFinalized).toContain(
+      '"$path_contract" == "0:$deploy_gid:660:1"',
+    );
+    expect(verifyDevelopmentFinalized).toContain(
+      '"$finalization_verifier" deploy/development/verify-development-finalized.sh',
+    );
+    expect(verifyDevelopmentFinalized).toContain(
+      '"$external_edge_verifier" deploy/edge/verify-external-edge.sh',
+    );
+    expect(verifyDevelopmentFinalized).toContain(
+      '[[ "$compose_revision" == "$accepted_revision" ]]',
+    );
+    expect(verifyDevelopmentFinalized).toContain(
+      "for failure_state in deployment-failed deployment-hard-failed quarantined-candidate",
+    );
+    expect(verifyDevelopmentFinalized).toContain(
+      '[[ "$router_mode" == active ]]',
+    );
+    expect(verifyDevelopmentFinalized).toContain(
+      'verify_runtime_revision "$app_container" app business-finlynq-app true',
+    );
+    expect(verifyDevelopmentFinalized).toContain(
+      '"$worker_container" auth_email_worker business-finlynq-auth-worker false',
+    );
+    expect(verifyDevelopmentFinalized).toContain(
+      'tagged_image_id="$(docker image inspect --format \'{{.Id}}\' "$image")"',
+    );
+    expect(verifyDevelopmentFinalized).toContain(
+      'container_image_id="$(docker inspect --format \'{{.Image}}\' "$container")"',
+    );
+    expect(verifyDevelopmentFinalized).not.toContain('bash "/home/deploy/');
+    expect(verifyDevelopmentFinalized).not.toContain('source "/home/deploy/');
+    expect(verifyDevelopmentFinalized).toContain(
+      "GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null",
+    );
+    for (const forbidden of [
+      "docker compose",
+      "docker restart",
+      "docker rm",
+      "systemctl start",
+      "systemctl stop",
+      "systemctl restart",
+      "sudo ",
+      "eval ",
+    ]) {
+      expect(verifyDevelopmentFinalized).not.toContain(forbidden);
+    }
+  });
+
   it("runs branch pushes deliberately and cancels only stale pull-request checks", () => {
     expect(qualityGateWorkflow).toContain([
       "on:",
