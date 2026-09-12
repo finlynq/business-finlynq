@@ -16,7 +16,7 @@ fail() {
 }
 
 header_value_is_exact() {
-  local headers="$1" header_name="$2" pattern count
+  local headers="$1" header_name="$2" pattern header_count matching_count
   case "$header_name" in
     location) pattern='^location:[[:space:]]*/auth/login[[:space:]]*$' ;;
     permissions-policy)
@@ -24,8 +24,9 @@ header_value_is_exact() {
       ;;
     *) return 1 ;;
   esac
-  count="$(grep -Eic "$pattern" <<<"$headers" || true)"
-  [[ "$count" == 1 ]]
+  header_count="$(grep -Eic "^${header_name}:" <<<"$headers" || true)"
+  matching_count="$(grep -Eic "$pattern" <<<"$headers" || true)"
+  [[ "$header_count" == 1 && "$matching_count" == 1 ]]
 }
 
 [[ "$#" == 0 ]] || fail "this command accepts no arguments"

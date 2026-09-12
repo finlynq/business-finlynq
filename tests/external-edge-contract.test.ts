@@ -340,6 +340,13 @@ describe("externally managed edge contract", () => {
         "permissions-policy: camera=(), microphone=(), geolocation=(), payment=()",
         "",
       ].join("\r\n");
+      const conflictingLocation = [
+        "HTTP/2 302",
+        "location: /auth/login",
+        "location: https://attacker.example/",
+        "permissions-policy: camera=(), microphone=(), geolocation=(), payment=()",
+        "",
+      ].join("\r\n");
       const alteredPolicy = [
         "HTTP/2 302",
         "location: /auth/login",
@@ -348,6 +355,7 @@ describe("externally managed edge contract", () => {
       ].join("\r\n");
       for (const source of [verifier, reconciler]) {
         expect(epmOidcHeaderFixture(source, duplicateLocation).status).not.toBe(0);
+        expect(epmOidcHeaderFixture(source, conflictingLocation).status).not.toBe(0);
         expect(epmOidcHeaderFixture(source, alteredPolicy).status).not.toBe(0);
       }
     },
