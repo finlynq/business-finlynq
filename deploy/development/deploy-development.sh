@@ -562,7 +562,7 @@ wait_for_public_readiness() {
   local -a readiness_headers=()
   hostname="$(read_environment_value BUSINESS_FINLYNQ_HOSTNAME)" \
     || fail "BUSINESS_FINLYNQ_HOSTNAME could not be read"
-  [[ "$hostname" == dev.business.finlynq.com ]] \
+  [[ "$hostname" == stage.business.finlynq.com ]] \
     || fail "public acceptance requires the exact development hostname"
   if [[ -n "$release_acceptance_token" ]]; then
     [[ "$release_acceptance_token" =~ ^[a-f0-9]{64}$ ]] \
@@ -1028,7 +1028,7 @@ verify_compose_boundary() {
     || fail "development Compose configuration could not be rendered"
   app_origin="$(jq -er '.services.app.environment.APP_ORIGIN' <<<"$rendered")" \
     || fail "development APP_ORIGIN could not be read from Compose"
-  [[ "$app_origin" == https://dev.business.finlynq.com ]] \
+  [[ "$app_origin" == https://stage.business.finlynq.com ]] \
     || fail "development APP_ORIGIN must use the exact HTTPS development hostname"
   if [[ "$topology" == router ]]; then
     expected_resources+=(
@@ -1496,7 +1496,7 @@ release_is_accepted() {
   [[ "$require_public" == true || "$require_public" == false ]] || return 1
   if [[ "$require_public" == true && "$public_policy" == full ]]; then
     hostname="$(read_environment_value BUSINESS_FINLYNQ_HOSTNAME)" || return 1
-    [[ "$hostname" == dev.business.finlynq.com ]] || return 1
+    [[ "$hostname" == stage.business.finlynq.com ]] || return 1
     if [[ -n "$release_acceptance_token" ]]; then
       [[ "$release_acceptance_token" =~ ^[a-f0-9]{64}$ ]] || return 1
       public_health_headers=(
