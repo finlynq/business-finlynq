@@ -208,6 +208,17 @@ describe("shared-edge contract v1 ownership", () => {
     expect(forwardRepair.status, forwardRepair.stderr).toBe(0);
     expect(forwardRepair.stdout).toBe("maintenance");
 
+    const forwardRepairWithoutMaintenance = resolveProductionPublicContract(
+      "active",
+      false,
+      true,
+      false,
+    );
+    expect(forwardRepairWithoutMaintenance.status).not.toBe(0);
+    expect(forwardRepairWithoutMaintenance.stderr).toContain(
+      "forward-repair verification requires durable maintenance mode",
+    );
+
     const transition = resolveProductionPublicContract("maintenance", false, false, true);
     expect(transition.status, transition.stderr).toBe(0);
     expect(transition.stdout).toBe("active");
@@ -224,6 +235,39 @@ describe("shared-edge contract v1 ownership", () => {
     expect(rollback.match(/--expect-production-live-uncommitted/gu)).toHaveLength(1);
     expect(verifier).toContain(
       'production_public_contract="$(resolve_production_public_contract "$production_mode")"',
+    );
+  });
+
+  it("binds forward-repair edge verification to the exact protected journal and stopped anchor", () => {
+    expect(verifier).toContain(
+      'readonly first_router_recovery_journal="$release_recovery_state_directory/first-router-pre-cutover.json"',
+    );
+    expect(verifier).toContain(
+      '"$(stat -c \'%u:%g:%a:%h\' -- "$first_router_recovery_journal")"',
+    );
+    expect(verifier).toContain(
+      'actual_digest="$(sha256sum -- "$first_router_recovery_journal")"',
+    );
+    expect(verifier).toContain(
+      'actual_digest" == "$first_router_forward_repair_journal_sha256',
+    );
+    expect(verifier).toContain('.phase == "forward-repair-required"');
+    expect(verifier).toContain('.databaseMutationStarted == true');
+    expect(verifier).toContain('.candidateRevision == $candidateRevision');
+    expect(verifier).toContain('docker ps --all --quiet --no-trunc');
+    expect(verifier).toContain('.[0].State.Running == false');
+    expect(verifier).toContain('readonly production_private_app_alias="release-app"');
+    expect(verifier).toContain(
+      '"${FIRST_ROUTER_FORWARD_REPAIR_ACK:-}"',
+    );
+    expect(verifier).toContain(
+      '"forward-repair:$expected_production_revision:$first_router_forward_repair_journal_sha256"',
+    );
+    expect(release).toContain(
+      'export FIRST_ROUTER_FORWARD_REPAIR_ACK="forward-repair:$journal_candidate_revision:$first_router_recovery_journal_sha256"',
+    );
+    expect(release).toContain(
+      '--allow-first-router-forward-repair "$first_router_recovery_journal_sha256"',
     );
   });
 
