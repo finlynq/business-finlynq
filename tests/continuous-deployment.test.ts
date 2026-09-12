@@ -354,6 +354,7 @@ describe("continuous deployment safety boundary", () => {
     expect(evidenceVerifier).toContain("sha256sum --check --strict --quiet SHA256SUMS");
     expect(evidenceVerifier).toContain("90-release-complete.json");
     expect(evidenceVerifier).toContain('.mode == "release"');
+    expect(evidenceVerifier).toContain('.mode == "initial"');
     expect(evidenceVerifier).toContain('.status == "accepted"');
     expect(evidenceVerifier).toContain('.candidateAppImageId == $appImage');
     expect(evidenceVerifier).toContain('.releaseRouterImageId == $routerImage');
@@ -388,6 +389,13 @@ describe("continuous deployment safety boundary", () => {
     );
     expect(evidenceVerifier).toContain(
       '.previousAppImageId | type == "string" and test("^sha256:[a-f0-9]{64}$")',
+    );
+    expect(evidenceVerifier).toContain('.previousAppImageId == null');
+    expect(evidenceVerifier).toContain(
+      '.containedInitial == true and .localEncryptedBackupVerified == true',
+    );
+    expect(evidenceVerifier).toContain(
+      '.offsiteBackupDeferred == true and .schedulerActivationDeferred == true',
     );
     expect(evidenceVerifier).toContain(
       '.releaseRouterConfigSha256 | type == "string" and test("^[a-f0-9]{64}$")',

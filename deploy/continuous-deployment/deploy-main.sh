@@ -230,20 +230,27 @@ accepted_terminal_evidence_exists() {
         ] | sort) and
         .schemaVersion == 1 and
         .product == "business-finlynq" and .status == "accepted" and
-        .mode == "release" and .revision == $revision and .runId == $runId and
+        (.mode == "release" or .mode == "initial") and
+        .revision == $revision and .runId == $runId and
         .candidateAppImageId == $appImage and .releaseRouterImageId == $routerImage and
         (.completedAt | type == "string" and
           test("^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]Z$")) and
         (.releaseRouterConfigSha256 | type == "string" and test("^[a-f0-9]{64}$")) and
-        (.previousAppImageId | type == "string" and test("^sha256:[a-f0-9]{64}$")) and
         .maintenanceConfirmedBeforeSchemaMigration == true and
         .preTrafficDatabaseContractVerified == true and
         .postBootstrapAccountingEvidenceVerified == true and
         .browserAcceptancePassed == true and
         .browserLogSha256 == $browserLogSha256 and
         .databaseRollback == "forward-repair-only" and
-        .containedInitial == false and .localEncryptedBackupVerified == false and
-        .offsiteBackupDeferred == false and .schedulerActivationDeferred == false
+        (if .mode == "release" then
+          (.previousAppImageId | type == "string" and test("^sha256:[a-f0-9]{64}$")) and
+          .containedInitial == false and .localEncryptedBackupVerified == false and
+          .offsiteBackupDeferred == false and .schedulerActivationDeferred == false
+        elif .mode == "initial" then
+          .previousAppImageId == null and
+          .containedInitial == true and .localEncryptedBackupVerified == true and
+          .offsiteBackupDeferred == true and .schedulerActivationDeferred == true
+        else false end)
       ' "$terminal" >/dev/null; then
       return 0
     fi
