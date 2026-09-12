@@ -1003,6 +1003,7 @@ ensure_stable_release_router_maintenance_before_fetch() (
     || return 1
   status="$(curl --noproxy '*' --silent --show-error --max-time 5 \
     --output /dev/null --write-out '%{http_code}' \
+    --header 'X-Request-Id: continuous-deployment-pre-fetch-maintenance' \
     http://127.0.0.1:3100/api/health 2>/dev/null)" || return 1
   [[ "$status" == 503 ]] || return 1
   body="$(curl --noproxy '*' --fail --silent --show-error --max-time 5 \
@@ -1575,7 +1576,9 @@ force_parent_release_router_maintenance() {
     --adapter caddyfile --address unix//tmp/caddy-admin.sock >/dev/null 2>&1 \
     || return 1
   status="$(curl --silent --show-error --max-time 5 --output /dev/null \
-    --write-out '%{http_code}' http://127.0.0.1:3100/api/health 2>/dev/null)" \
+    --write-out '%{http_code}' \
+    --header 'X-Request-Id: continuous-deployment-parent-containment' \
+    http://127.0.0.1:3100/api/health 2>/dev/null)" \
     || return 1
   [[ "$status" == 503 ]] || return 1
   body="$(curl --fail --silent --show-error --max-time 5 \
