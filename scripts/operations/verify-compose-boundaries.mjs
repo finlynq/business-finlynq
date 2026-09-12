@@ -418,8 +418,12 @@ if (releaseAcceptance.environment?.PLAYWRIGHT_BASE_URL
   || releaseAcceptance.environment?.E2E_EXPECT_ACCOUNT_LOGIN_ENABLED
     !== (process.env.ACCOUNT_LOGIN_ENABLED ?? "false")
   || releaseAcceptance.environment?.E2E_EXPECT_ACCOUNT_SIGNUP_ENABLED
-    !== (process.env.ACCOUNT_SIGNUP_ENABLED ?? "false")) {
-  fail("release browser acceptance does not inherit the reviewed origin and account gates");
+    !== (process.env.ACCOUNT_SIGNUP_ENABLED ?? "false")
+  || releaseAcceptance.environment?.E2E_EXPECT_AUTH_OIDC_ENABLED
+    !== (process.env.AUTH_OIDC_ENABLED ?? "false")
+  || releaseAcceptance.environment?.E2E_EXPECT_AUTH_OIDC_SIGNUP_ENABLED
+    !== (process.env.AUTH_OIDC_SIGNUP_ENABLED ?? "false")) {
+  fail("release browser acceptance does not inherit the reviewed origin and authentication gates");
 }
 for (const requiredTmpfs of ["/tmp", "/app/test-results", "/app/playwright-report"]) {
   if (!acceptanceTmpfsTargets.includes(requiredTmpfs)) {
