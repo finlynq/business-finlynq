@@ -573,6 +573,7 @@ describe("commit-addressed release orchestration", () => {
     const preview = release.indexOf('stage="private-candidate-preview-readiness"');
     const browser = release.indexOf('stage="browser-acceptance"');
     const finalWrites = release.indexOf('stage="activate-reviewed-write-gates"');
+    const finalContainerHealth = release.indexOf('stage="final-container-health"');
     const activateRouter = release.indexOf('stage="activate-accepted-application"');
     const proveMaintenance = release.lastIndexOf("verify_release_router_maintenance", activateRouter);
     const finalPublic = release.indexOf('stage="final-public-readiness"');
@@ -588,7 +589,7 @@ describe("commit-addressed release orchestration", () => {
     expect([
       pause, prepareBackup, onlineBackup, enterMaintenance, stopWrites, bootstrapRouter,
       proveMaintenance, backup, migrate,
-      start, preview, browser, finalWrites, activateRouter, finalPublic, externalEdge,
+      start, preview, browser, finalWrites, finalContainerHealth, activateRouter, finalPublic, externalEdge,
       finalizationPrepared, resume,
     ]
       .every((position) => position >= 0)).toBe(true);
@@ -613,6 +614,7 @@ describe("commit-addressed release orchestration", () => {
     expect(preview).toBeLessThan(browser);
     expect(start).toBeLessThan(browser);
     expect(browser).toBeLessThan(finalWrites);
+    expect(finalWrites).toBeLessThan(finalContainerHealth);
     expect(finalWrites).toBeLessThan(proveMaintenance);
     expect(proveMaintenance).toBeLessThan(finalizationPrepared);
     expect(finalizationPrepared).toBeLessThan(activateRouter);
@@ -623,6 +625,8 @@ describe("commit-addressed release orchestration", () => {
     const finalEdgeFlow = release.slice(externalEdge, resume);
     expect(finalEdgeFlow).toContain("--scope production --warmup-host production");
     expect(finalEdgeFlow).toContain('--expected-production-revision "$revision"');
+    expect(finalEdgeFlow).toContain("--expect-production-live-uncommitted");
+    expect(finalEdgeFlow).not.toContain("--allow-production-router-maintenance");
     expect(resume).toBeLessThan(terminalEvidence);
     expect(terminalEvidence).toBeLessThan(finalizationAuthorization);
     expect(finalizationAuthorization).toBeLessThan(durableActivation);
@@ -662,9 +666,10 @@ describe("commit-addressed release orchestration", () => {
     expect(release).toContain("75-release-router-active.log");
     expect(release).toContain("76-final-public-readiness.headers");
     expect(release).toContain("76-final-public-readiness.json");
+    expect(release).toContain("73-final-container-health.json");
     expect(release).toContain("77-external-edge-contract.log");
     expect(release).toContain("77-external-edge-contract.json");
-    expect(release).toContain("--allow-production-router-maintenance");
+    expect(release).toContain("--expect-production-live-uncommitted");
     expect(release).toContain("contractVersion: $contract");
     expect(release).toContain("durableStateVolume: $stateVolume");
     expect(release).toContain("durableMode: $stateMode");
@@ -938,8 +943,9 @@ describe("commit-addressed release orchestration", () => {
     expect(rollback).toContain("maintenanceConfirmedBeforeSwitch");
     expect(rollback).toContain("finalPublicReadinessAccepted: true");
     expect(rollback).toContain("--scope production --warmup-host production");
-    expect(rollback).toContain("--allow-production-router-maintenance");
+    expect(rollback).toContain("--expect-production-live-uncommitted");
     expect(rollback).toContain('--expected-production-revision "$previous_revision"');
+    expect(rollback).toContain('"$rollback_container_state" != true\\|healthy');
     expect(rollback).toContain('schedulersPaused: true');
     expect(rollback).toContain('trap contain_failed_rollback EXIT');
     expect(rollback).toContain('git --no-optional-locks -c safe.directory="$repository_root" -C "$repository_root"');

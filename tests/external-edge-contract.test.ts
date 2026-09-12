@@ -100,6 +100,38 @@ resolve_development_public_contract "$DURABLE_MODE"
     },
   );
 
+const resolveProductionPublicContract = (
+  durableMode: "active" | "maintenance",
+  allowMaintenance: boolean,
+  allowForwardRepair: boolean,
+  expectLiveUncommitted: boolean,
+) =>
+  spawnSync(
+    bashExecutable ?? "/bin/bash",
+    [
+      "-c",
+      `
+set -Eeuo pipefail
+fail() { printf '%s\n' "$*" >&2; exit 1; }
+${extractShellFunction(verifier, "resolve_production_public_contract")}
+allow_production_router_maintenance="$ALLOW_MAINTENANCE"
+allow_first_router_forward_repair="$ALLOW_FORWARD_REPAIR"
+expect_production_live_uncommitted="$EXPECT_LIVE_UNCOMMITTED"
+resolve_production_public_contract "$DURABLE_MODE"
+`,
+    ],
+    {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        ALLOW_MAINTENANCE: String(allowMaintenance),
+        ALLOW_FORWARD_REPAIR: String(allowForwardRepair),
+        EXPECT_LIVE_UNCOMMITTED: String(expectLiveUncommitted),
+        DURABLE_MODE: durableMode,
+      },
+    },
+  );
+
 describe("shared-edge contract v1 ownership", () => {
   it("removes public Caddy, public ports, and shared Caddy volumes from application Compose", () => {
     expect(compose).not.toMatch(/^  edge:\s*$/mu);
@@ -165,6 +197,34 @@ describe("shared-edge contract v1 ownership", () => {
     expect(productionInstaller).not.toContain("business-finlynq-routes.caddy");
     expect(productionInstaller).not.toContain("BUSINESS_FINLYNQ_CADDY_DATA_VOLUME");
     expect(productionInstaller).not.toContain("BUSINESS_FINLYNQ_CADDY_CONFIG_VOLUME");
+  });
+
+  it("maps only the explicit production deployment boundary to its live route", () => {
+    const maintenance = resolveProductionPublicContract("maintenance", true, false, false);
+    expect(maintenance.status, maintenance.stderr).toBe(0);
+    expect(maintenance.stdout).toBe("maintenance");
+
+    const forwardRepair = resolveProductionPublicContract("maintenance", false, true, false);
+    expect(forwardRepair.status, forwardRepair.stderr).toBe(0);
+    expect(forwardRepair.stdout).toBe("maintenance");
+
+    const transition = resolveProductionPublicContract("maintenance", false, false, true);
+    expect(transition.status, transition.stderr).toBe(0);
+    expect(transition.stdout).toBe("active");
+
+    const alreadyCommitted = resolveProductionPublicContract("active", false, false, true);
+    expect(alreadyCommitted.status).not.toBe(0);
+    expect(alreadyCommitted.stderr).toContain("requires durable maintenance mode");
+
+    const ambiguous = resolveProductionPublicContract("maintenance", true, false, true);
+    expect(ambiguous.status).not.toBe(0);
+    expect(ambiguous.stderr).toContain("flags are ambiguous");
+
+    expect(release.match(/--expect-production-live-uncommitted/gu)).toHaveLength(1);
+    expect(rollback.match(/--expect-production-live-uncommitted/gu)).toHaveLength(1);
+    expect(verifier).toContain(
+      'production_public_contract="$(resolve_production_public_contract "$production_mode")"',
+    );
   });
 
   it("keeps durable development maintenance mapped to the public 503 contract", () => {

@@ -722,6 +722,8 @@ release_transition_router_was_preexisting="false"
 release_transition_router_container_id=""
 release_transition_router_image_id=""
 release_forward_repair_pending="false"
+release_forward_repair_superseded="false"
+release_forward_repair_original_candidate_revision=""
 
 load_release_transition_journal() {
   local digest_output expected_candidate_revision
@@ -739,7 +741,7 @@ load_release_transition_journal() {
       == "$first_router_recovery_journal" \
     && "$(stat -c '%u:%g:%a:%h' -- "$first_router_recovery_journal")" \
       == 0:0:600:1 ]] || return 1
-  jq -e --arg candidateRevision "$expected_candidate_revision" '
+  jq -e '
     type == "object" and
     (keys == (["app", "authWorker", "candidateRevision", "createdAt",
       "databaseMutationStarted", "kind", "phase", "product", "router",
@@ -754,7 +756,7 @@ load_release_transition_journal() {
      (.phase == "forward-repair-required" and .databaseMutationStarted == true and
       (.mutationArmedAt | type == "string" and
         test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$")))) and
-    .candidateRevision == $candidateRevision and
+    (.candidateRevision | type == "string" and test("^[a-f0-9]{40}$")) and
     (.sourceRevision | type == "string" and test("^[a-f0-9]{40}$")) and
     (.runId | type == "string" and test("^[a-z0-9][a-z0-9._-]{2,30}$")) and
     (.createdAt | type == "string" and
@@ -804,6 +806,11 @@ load_release_transition_journal() {
   [[ "$release_transition_journal_sha256" =~ ^[a-f0-9]{64}$ ]] || return 1
   git_as_deploy cat-file -e "$release_transition_source_revision^{commit}" \
     || return 1
+  git_as_deploy cat-file -e "$release_transition_candidate_revision^{commit}" \
+    || return 1
+  git_as_deploy merge-base --is-ancestor \
+    "$release_transition_candidate_revision" "$expected_candidate_revision" \
+    || return 1
   [[ "$(docker image inspect --format '{{.Id}}' \
     "$release_transition_app_image_id" 2>/dev/null)" \
       == "$release_transition_app_image_id" ]] || return 1
@@ -816,6 +823,52 @@ load_release_transition_journal() {
   fi
   release_transition_journal_loaded="true"
 }
+
+supersede_loaded_release_transition_journal() (
+  set -Eeuo pipefail
+  local current_digest digest_output temporary
+  [[ "$release_forward_repair_superseded" == true \
+    && "$release_transition_journal_loaded" == true \
+    && "$release_transition_phase" == forward-repair-required \
+    && "$release_transition_candidate_revision" \
+      == "$release_forward_repair_original_candidate_revision" \
+    && "$candidate_revision" != "$release_transition_candidate_revision" \
+    && -f "$first_router_recovery_journal" \
+    && ! -L "$first_router_recovery_journal" \
+    && "$(readlink -f -- "$first_router_recovery_journal")" \
+      == "$first_router_recovery_journal" \
+    && "$(stat -c '%u:%g:%a:%h' -- "$first_router_recovery_journal")" \
+      == 0:0:600:1 ]] || return 1
+  digest_output="$(sha256sum -- "$first_router_recovery_journal")" || return 1
+  current_digest="${digest_output%% *}"
+  [[ "$current_digest" == "$release_transition_journal_sha256" ]] || return 1
+  git_as_deploy merge-base --is-ancestor \
+    "$release_transition_candidate_revision" "$candidate_revision" || return 1
+  temporary="$(mktemp \
+    "$release_recovery_state_directory/.first-router-supersession.XXXXXX")" \
+    || return 1
+  trap 'rm -f -- "$temporary"' EXIT INT TERM
+  jq -e \
+    --arg oldCandidateRevision "$release_transition_candidate_revision" \
+    --arg newCandidateRevision "$candidate_revision" '
+      if .schemaVersion == 1 and .product == "business-finlynq" and
+        .kind == "first-router-pre-cutover" and
+        .phase == "forward-repair-required" and
+        .databaseMutationStarted == true and
+        .candidateRevision == $oldCandidateRevision
+      then .candidateRevision = $newCandidateRevision
+      else error("release-transition journal changed before supersession")
+      end
+    ' "$first_router_recovery_journal" >"$temporary" || return 1
+  chmod 0600 -- "$temporary" || return 1
+  chown root:root -- "$temporary" || return 1
+  [[ "$(stat -c '%u:%g:%a:%h' -- "$temporary")" == 0:0:600:1 ]] \
+    || return 1
+  sync -f -- "$temporary" || return 1
+  mv -f -- "$temporary" "$first_router_recovery_journal" || return 1
+  sync -f -- "$release_recovery_state_directory" || return 1
+  trap - EXIT INT TERM
+)
 
 clear_loaded_release_transition_journal() {
   local digest_output current_digest
@@ -1285,12 +1338,17 @@ remote_main_revision="$(git_as_deploy rev-parse refs/remotes/origin/main)"
 validate_revision "$remote_main_revision"
 candidate_revision="$remote_main_revision"
 if [[ "$release_forward_repair_pending" == true ]]; then
-  [[ "$source_revision" == "$release_transition_candidate_revision" ]] \
-    || fail "forward repair is not running from its exact journaled candidate checkout"
   git_as_deploy merge-base --is-ancestor \
     "$release_transition_candidate_revision" "$remote_main_revision" \
     || fail "origin/main no longer contains the journaled forward-repair candidate"
-  candidate_revision="$release_transition_candidate_revision"
+  git_as_deploy merge-base --is-ancestor \
+    "$release_transition_candidate_revision" "$source_revision" \
+    || fail "the production checkout no longer contains the journaled forward-repair candidate"
+  candidate_revision="$remote_main_revision"
+  if [[ "$candidate_revision" != "$release_transition_candidate_revision" ]]; then
+    release_forward_repair_superseded="true"
+    release_forward_repair_original_candidate_revision="$release_transition_candidate_revision"
+  fi
 fi
 validate_revision "$candidate_revision"
 git_as_deploy merge-base --is-ancestor "$source_revision" "$candidate_revision" \
@@ -1412,13 +1470,17 @@ if [[ "$release_forward_repair_pending" == true ]]; then
   retained_app_image_id="$release_transition_app_image_id"
   if [[ "${#retained_app_containers[@]}" == 1 ]]; then
     retained_app_container="${retained_app_containers[0]}"
+    retained_candidate_revision="$candidate_revision"
+    if [[ "$release_forward_repair_superseded" == true ]]; then
+      retained_candidate_revision="$release_transition_candidate_revision"
+    fi
     retained_candidate_image_id="$(docker image inspect --format '{{.Id}}' \
-      "business-finlynq-app:$candidate_revision" 2>/dev/null)" \
-      || fail "forward repair lost the exact candidate application image"
+      "business-finlynq-app:$retained_candidate_revision" 2>/dev/null)" \
+      || fail "forward repair lost the exact prior candidate application image"
     docker inspect "$retained_app_container" | jq -e \
       --arg sourceRevision "$backup_source_revision" \
       --arg sourceImage "$retained_app_image_id" \
-      --arg candidateRevision "$candidate_revision" \
+      --arg candidateRevision "$retained_candidate_revision" \
       --arg candidateImage "$retained_candidate_image_id" \
       --arg legacyRevision "$legacy_f8485_revision" '
         length == 1 and
@@ -1442,6 +1504,10 @@ if [[ "$release_forward_repair_pending" == true ]]; then
     current_retained_app_image="$(docker inspect --format '{{.Image}}' \
       "$retained_app_container")" \
       || fail "forward repair application image could not be inspected"
+    if [[ "$release_forward_repair_superseded" == true ]]; then
+      [[ "$current_retained_app_image" == "$retained_app_image_id" ]] \
+        || fail "superseded forward repair requires the exact source application anchor"
+    fi
     if [[ "$release_transition_router_was_preexisting" == true \
       || "$current_retained_app_image" == "$retained_candidate_image_id" ]]; then
       network_alias_has_exact_owner business_finlynq_private-frontend release-app \
@@ -1795,6 +1861,11 @@ temporary_files=()
 sync -f -- "$compose_environment"
 sync -f -- "$operations_environment"
 sync -f -- "$repository_environment"
+
+if [[ "$release_forward_repair_superseded" == true ]]; then
+  supersede_loaded_release_transition_journal \
+    || fail "the forward-repair journal could not be atomically superseded"
+fi
 
 run_id="auto-${candidate_revision:0:10}-$(date -u +%H%M%S)"
 export RELEASE_EXECUTION_ACK="release:$candidate_revision:$run_id"
