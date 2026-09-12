@@ -266,8 +266,14 @@ revision_uses_oidc_signup_runtime_contract() {
 }
 
 verify_external_edge_if_selected() {
-  local verifier_revision="$1" selected_mode selected_count
+  local verifier_revision="$1" verification_boundary="${2:-normal}"
+  local selected_mode selected_count verifier_boundary_flag
   validate_revision "$verifier_revision"
+  case "$verification_boundary" in
+    normal) verifier_boundary_flag="--allow-development-router-maintenance" ;;
+    live-uncommitted) verifier_boundary_flag="--expect-development-live-uncommitted" ;;
+    *) fail "external-edge verification boundary is invalid" ;;
+  esac
   selected_count="$(awk -F= '$1 == "BUSINESS_FINLYNQ_EDGE_MODE" { count++ } END { print count + 0 }' \
     "$compose_environment")" \
     || fail "BUSINESS_FINLYNQ_EDGE_MODE definitions could not be counted"
@@ -319,7 +325,7 @@ verify_external_edge_if_selected() {
     chmod 0500 "$verifier_path" \
       || fail "candidate external-edge verifier staging mode could not be set"
     bash "$verifier_path" --scope development --warmup-host development \
-      --allow-development-router-maintenance
+      "$verifier_boundary_flag"
   )
 }
 
@@ -1890,7 +1896,7 @@ elif [[ "$source_revision" != "$accepted_revision" ]]; then
       release_is_accepted "$source_revision" \
         || fail "interrupted development finalization did not pass active-routing acceptance"
       if [[ "$interrupted_require_public" == true ]]; then
-        verify_external_edge_if_selected "$source_revision"
+        verify_external_edge_if_selected "$source_revision" live-uncommitted
       fi
       commit_release_router_acceptance "$source_revision" "$accepted_revision" \
         || fail "interrupted development finalization could not commit active routing"
@@ -1984,7 +1990,7 @@ if [[ "$source_revision" == "$candidate_revision" ]]; then
     fi
     if [[ "$require_public_acceptance" == true ]]; then
       run_public_acceptance || fail "same-revision development public acceptance failed twice"
-      verify_external_edge_if_selected "$candidate_revision"
+      verify_external_edge_if_selected "$candidate_revision" live-uncommitted
     fi
     release_is_accepted "$candidate_revision" \
       || fail "same-revision development finalization did not pass active-routing acceptance"
@@ -2192,7 +2198,7 @@ if [[ "$candidate_topology" == router ]]; then
 fi
 if [[ "$require_public_acceptance" == true ]]; then
   deployment_stage=external-edge-verification
-  verify_external_edge_if_selected "$candidate_revision"
+  verify_external_edge_if_selected "$candidate_revision" live-uncommitted
 fi
 deployment_stage=final-verification
 release_is_accepted "$candidate_revision" \

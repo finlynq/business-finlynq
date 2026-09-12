@@ -71,6 +71,35 @@ cache_control_is_safe_no_store "$FIXTURE_HEADERS"
     },
   );
 
+const resolveDevelopmentPublicContract = (
+  durableMode: "active" | "maintenance",
+  allowMaintenance: boolean,
+  expectLiveUncommitted: boolean,
+) =>
+  spawnSync(
+    bashExecutable ?? "/bin/bash",
+    [
+      "-c",
+      `
+set -Eeuo pipefail
+fail() { printf '%s\n' "$*" >&2; exit 1; }
+${extractShellFunction(verifier, "resolve_development_public_contract")}
+allow_development_router_maintenance="$ALLOW_MAINTENANCE"
+expect_development_live_uncommitted="$EXPECT_LIVE_UNCOMMITTED"
+resolve_development_public_contract "$DURABLE_MODE"
+`,
+    ],
+    {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        ALLOW_MAINTENANCE: String(allowMaintenance),
+        EXPECT_LIVE_UNCOMMITTED: String(expectLiveUncommitted),
+        DURABLE_MODE: durableMode,
+      },
+    },
+  );
+
 describe("shared-edge contract v1 ownership", () => {
   it("removes public Caddy, public ports, and shared Caddy volumes from application Compose", () => {
     expect(compose).not.toMatch(/^  edge:\s*$/mu);
@@ -136,6 +165,42 @@ describe("shared-edge contract v1 ownership", () => {
     expect(productionInstaller).not.toContain("business-finlynq-routes.caddy");
     expect(productionInstaller).not.toContain("BUSINESS_FINLYNQ_CADDY_DATA_VOLUME");
     expect(productionInstaller).not.toContain("BUSINESS_FINLYNQ_CADDY_CONFIG_VOLUME");
+  });
+
+  it("keeps durable development maintenance mapped to the public 503 contract", () => {
+    const result = resolveDevelopmentPublicContract("maintenance", true, false);
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toBe("maintenance");
+    expect(verifier).toContain(
+      'maintenance) public_maintenance_contract_is_valid "$development_hostname"',
+    );
+  });
+
+  it("allows only the deployment boundary to verify live routes before durable commit", () => {
+    const transition = resolveDevelopmentPublicContract("maintenance", false, true);
+    expect(transition.status, transition.stderr).toBe(0);
+    expect(transition.stdout).toBe("active");
+
+    const alreadyCommitted = resolveDevelopmentPublicContract("active", false, true);
+    expect(alreadyCommitted.status).not.toBe(0);
+    expect(alreadyCommitted.stderr).toContain("requires durable maintenance mode");
+
+    const ambiguous = resolveDevelopmentPublicContract("maintenance", true, true);
+    expect(ambiguous.status).not.toBe(0);
+    expect(ambiguous.stderr).toContain("flags are ambiguous");
+    expect(verifier).toContain(
+      'if [[ "$router_mode" == active || "$expect_live_uncommitted" == true ]]',
+    );
+    expect(verifier).toContain('.status == "ready" and .revision == $revision');
+    expect(developmentDeployer.match(/--expect-development-live-uncommitted/gu)).toHaveLength(1);
+    expect(
+      developmentDeployer.match(
+        /verify_external_edge_if_selected "\$[a-z_]+" live-uncommitted/gu,
+      ),
+    ).toHaveLength(3);
+    expect(developmentDeployer).toContain(
+      'verify_external_edge_if_selected "$candidate_revision"\n  elif',
+    );
   });
 
   it("documents unchanged rollback-only legacy input outside active paths", () => {

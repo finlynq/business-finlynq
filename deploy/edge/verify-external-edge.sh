@@ -39,6 +39,7 @@ allow_legacy_minimal_production_health="false"
 allow_pre_router_production="false"
 allow_production_router_maintenance="false"
 allow_development_router_maintenance="false"
+expect_development_live_uncommitted="false"
 allow_first_router_forward_repair="false"
 first_router_forward_repair_journal_sha256=""
 temporary_files=()
@@ -206,6 +207,7 @@ verify_unique_network_alias_owner() {
 verify_business_runtime() {
   local project="$1" network="$2" alias="$3" loopback_port="$4"
   local expected_revision="$5" allow_pre_router="$6" allow_legacy_minimal="$7"
+  local expect_live_uncommitted="$8"
   local router app app_inspection router_query router_mode detailed_health
   local edge_query router_image_id tagged_router_image_id
   network_is_contract_dependency "$network" \
@@ -307,7 +309,11 @@ verify_business_runtime() {
     || fail "$project release-router mode could not be read"
   [[ "$router_mode" == active || "$router_mode" == maintenance ]] \
     || fail "$project release-router mode is invalid"
-  if [[ "$router_mode" == active ]]; then
+  if [[ "$expect_live_uncommitted" == true ]]; then
+    [[ "$project" == "$development_project" && "$router_mode" == maintenance ]] \
+      || fail "development live-uncommitted verification requires durable maintenance mode"
+  fi
+  if [[ "$router_mode" == active || "$expect_live_uncommitted" == true ]]; then
     detailed_health="$(curl --disable --noproxy '*' --fail --silent --show-error --max-time 10 \
       -H 'X-Business-Finlynq-Internal-Health: 1' \
       "http://127.0.0.1:$loopback_port/api/health")" \
@@ -324,6 +330,25 @@ verify_business_runtime() {
     fi
   fi
   printf '%s' "$router_mode"
+}
+
+resolve_development_public_contract() {
+  local durable_mode="$1"
+  [[ "$durable_mode" == active || "$durable_mode" == maintenance ]] \
+    || fail "development release-router mode is invalid"
+  if [[ "$expect_development_live_uncommitted" == true ]]; then
+    [[ "$allow_development_router_maintenance" == false ]] \
+      || fail "development router verification flags are ambiguous"
+    [[ "$durable_mode" == maintenance ]] \
+      || fail "development live-uncommitted verification requires durable maintenance mode"
+    printf 'active'
+  elif [[ "$durable_mode" == maintenance ]]; then
+    [[ "$allow_development_router_maintenance" == true ]] \
+      || fail "development maintenance was not explicitly allowed"
+    printf 'maintenance'
+  else
+    printf 'active'
+  fi
 }
 
 verify_central_edge() {
@@ -495,6 +520,7 @@ while (( $# > 0 )); do
     --allow-pre-router-production) allow_pre_router_production="true"; shift ;;
     --allow-production-router-maintenance) allow_production_router_maintenance="true"; shift ;;
     --allow-development-router-maintenance) allow_development_router_maintenance="true"; shift ;;
+    --expect-development-live-uncommitted) expect_development_live_uncommitted="true"; shift ;;
     --allow-first-router-forward-repair)
       (( $# >= 2 )) || fail "--allow-first-router-forward-repair requires a digest"
       allow_first_router_forward_repair="true"; first_router_forward_repair_journal_sha256="$2"; shift 2 ;;
@@ -521,6 +547,11 @@ fi
 if [[ "$allow_pre_router_production" == true ]]; then
   [[ "$scope" == production && -n "$expected_production_revision" ]] \
     || fail "pre-router production verification requires an exact production revision"
+fi
+if [[ "$expect_development_live_uncommitted" == true ]]; then
+  [[ "$scope" == development && "$warmup_host" == development \
+    && "$allow_development_router_maintenance" == false ]] \
+    || fail "live-uncommitted verification is restricted to the development deployment boundary"
 fi
 [[ "$(id -u)" == 0 ]] || fail "run this command as root"
 for command_name in awk curl docker env grep jq mktemp openssl rm sleep sort timeout; do
@@ -558,7 +589,7 @@ elif [[ "$scope" == production || "$scope" == full ]]; then
     || fail "production revision metadata is invalid"
   production_mode="$(verify_business_runtime "$production_project" "$production_network" \
     "$production_alias" "$production_loopback_port" "$production_revision" \
-    "$allow_pre_router_production" "$allow_legacy_minimal_production_health")"
+    "$allow_pre_router_production" "$allow_legacy_minimal_production_health" false)"
 fi
 if [[ "$scope" == development || "$scope" == full ]]; then
   [[ -f "$development_environment" && ! -L "$development_environment" ]] \
@@ -577,7 +608,8 @@ if [[ "$scope" == development || "$scope" == full ]]; then
   [[ "$development_revision" =~ ^[a-f0-9]{40}$ && ! "$development_revision" =~ ^0+$ ]] \
     || fail "development revision metadata is invalid"
   development_mode="$(verify_business_runtime "$development_project" "$development_network" \
-    "$development_alias" "$development_loopback_port" "$development_revision" false false)"
+    "$development_alias" "$development_loopback_port" "$development_revision" false false \
+    "$expect_development_live_uncommitted")"
 fi
 
 if [[ "$scope" == preflight ]]; then
@@ -605,13 +637,12 @@ if [[ "$scope" == production || "$scope" == full ]]; then
 fi
 if [[ "$scope" == development || "$scope" == full ]]; then
   development_warmup=false; [[ "$warmup_host" == development ]] && development_warmup=true
-  if [[ "$development_mode" == maintenance ]]; then
-    [[ "$allow_development_router_maintenance" == true ]] \
-      || fail "development maintenance was not explicitly allowed"
-    public_maintenance_contract_is_valid "$development_hostname" "$development_warmup"
-  else
-    public_contract_is_valid "$development_hostname" "$development_warmup"
-  fi
+  development_public_contract="$(resolve_development_public_contract "$development_mode")"
+  case "$development_public_contract" in
+    active) public_contract_is_valid "$development_hostname" "$development_warmup" ;;
+    maintenance) public_maintenance_contract_is_valid "$development_hostname" "$development_warmup" ;;
+    *) fail "development public contract resolution is invalid" ;;
+  esac
 fi
 
 printf 'Shared-edge contract v1 accepted: container=%s networks=%s\n' \
