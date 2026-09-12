@@ -53,6 +53,8 @@ allow_pre_router_production="false"
 allow_production_router_maintenance="false"
 allow_first_router_forward_repair="false"
 first_router_forward_repair_journal_sha256=""
+observed_production_router_mode=""
+observed_development_router_mode=""
 
 fail() {
   printf 'Business Finlynq external-edge verification failed: %s\n' "$*" >&2
@@ -326,6 +328,11 @@ verify_release_router_runtime() {
     || ( "$expected_router_mode" == active-or-maintenance \
       && ( "$router_mode" == active || "$router_mode" == maintenance ) ) ]] \
     || fail "$project/release_router is not durably committed to $expected_router_mode mode"
+  case "$project" in
+    "$production_project") observed_production_router_mode="$router_mode" ;;
+    "$development_project") observed_development_router_mode="$router_mode" ;;
+    *) fail "cannot record the durable mode for an unknown release-router project" ;;
+  esac
   verify_unique_network_alias_owner \
     "$ingress_network" "$alias" "$router" "$project public backend"
   if [[ "$require_upstream" == true ]]; then
@@ -480,20 +487,22 @@ public_contract_is_valid() {
 }
 
 public_maintenance_contract_is_valid() {
-  local hostname="$1" address="$2" journal_sha256="$3"
+  local hostname="$1" address="$2" journal_sha256="${3:-}"
   local headers body status request_id attempt_limit=1
-  [[ "$journal_sha256" =~ ^[a-f0-9]{64}$ ]] \
-    || fail "$hostname forward-repair journal digest is invalid"
+  [[ -z "$journal_sha256" || "$journal_sha256" =~ ^[a-f0-9]{64}$ ]] \
+    || fail "$hostname maintenance authorization digest is invalid"
   headers="$(mktemp)"
   body="$(mktemp)"
   temporary_files+=("$headers" "$body")
-  if [[ "$warmup_host" == production && "$hostname" == "$production_hostname" ]]; then
+  if [[ ( "$warmup_host" == production && "$hostname" == "$production_hostname" ) \
+    || ( "$warmup_host" == development && "$hostname" == "$development_hostname" ) ]]; then
     attempt_limit="$public_warmup_attempts"
   fi
 
   # The stable router remains independently live while every application route
-  # stays deterministic maintenance. This mode is used only to prove a
-  # journal-authorized, no-upstream first-router recovery boundary.
+  # stays deterministic maintenance. A production first-router repair binds
+  # this proof to its journal; an already established router may instead be
+  # accepted here only through its explicit active-or-maintenance mode.
   verify_public_liveness_contract "$hostname" "$address" "$headers" "$body" "$attempt_limit"
   : >"$headers" || fail "could not reset the $hostname maintenance response headers"
   : >"$body" || fail "could not reset the $hostname maintenance response body"
@@ -506,17 +515,17 @@ public_maintenance_contract_is_valid() {
     "https://$hostname/api/health")" \
     || fail "$hostname maintenance readiness route is unavailable through the external edge"
   [[ "$status" == 503 ]] \
-    || fail "$hostname forward-repair readiness must return deterministic HTTP 503"
+    || fail "$hostname maintenance readiness must return deterministic HTTP 503"
   jq -e 'type == "object" and keys == ["status"] and .status == "unavailable"' \
     "$body" >/dev/null \
-    || fail "$hostname forward-repair readiness body is not deterministic maintenance"
+    || fail "$hostname readiness body is not deterministic maintenance"
   grep -Eiq '^cache-control:.*no-store' "$headers" \
-    || fail "$hostname forward-repair readiness is missing no-store"
+    || fail "$hostname maintenance readiness is missing no-store"
   grep -Eiq '^retry-after:[[:space:]]*5[[:space:]\r]*$' "$headers" \
-    || fail "$hostname forward-repair readiness is missing the reviewed retry boundary"
+    || fail "$hostname maintenance readiness is missing the reviewed retry boundary"
   grep -Eiq '^content-type:[[:space:]]*application/json;[[:space:]]*charset=utf-8[[:space:]\r]*$' \
     "$headers" \
-    || fail "$hostname forward-repair readiness has an unexpected content type"
+    || fail "$hostname maintenance readiness has an unexpected content type"
   verify_security_headers "$hostname" "$headers"
   request_id="$(awk -F: 'tolower($1) == "x-request-id" { sub(/^[^:]*:[[:space:]]*/, ""); sub(/\r$/, ""); print }' \
     "$headers")"
@@ -1035,6 +1044,10 @@ for address in "${expected_public_ipv4s[@]}"; do
     if [[ "$allow_first_router_forward_repair" == true ]]; then
       public_maintenance_contract_is_valid "$production_hostname" "$address" \
         "$first_router_forward_repair_journal_sha256"
+    elif [[ "$observed_production_router_mode" == maintenance ]]; then
+      [[ "$allow_production_router_maintenance" == true ]] \
+        || fail "production public maintenance was not explicitly allowed"
+      public_maintenance_contract_is_valid "$production_hostname" "$address"
     else
       public_contract_is_valid "$production_hostname" "$address" "$pre_router_legacy_mode"
     fi
@@ -1053,7 +1066,13 @@ for address in "${expected_public_ipv4s[@]}"; do
     tls_is_valid "$production_hostname" "$address"
   fi
   if [[ "$scope" != production ]]; then
-    public_contract_is_valid "$development_hostname" "$address"
+    if [[ "$observed_development_router_mode" == maintenance ]]; then
+      [[ "$development_router_mode" == active-or-maintenance ]] \
+        || fail "development public maintenance was not explicitly allowed"
+      public_maintenance_contract_is_valid "$development_hostname" "$address"
+    else
+      public_contract_is_valid "$development_hostname" "$address"
+    fi
     http_redirect_is_exact "$epm_hostname" "$address"
     tls_is_valid "$epm_hostname" "$address"
     epm_status="$(curl --disable --noproxy '*' --silent --show-error --max-time 20 --output /dev/null \

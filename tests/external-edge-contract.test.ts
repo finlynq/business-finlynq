@@ -113,6 +113,7 @@ const publicMaintenanceFixture = (
     body?: string;
     retryAfter?: string;
     requestId?: string;
+    includeAuthorizationDigest?: boolean;
   } = {},
 ) =>
   spawnSync(
@@ -159,7 +160,9 @@ curl() {
   printf '%s' "$FIXTURE_STATUS"
 }
 ${extractShellFunction(verifier, "public_maintenance_contract_is_valid")}
-public_maintenance_contract_is_valid example.test 192.0.2.10 '${"a".repeat(64)}'
+${options.includeAuthorizationDigest === false
+    ? "public_maintenance_contract_is_valid example.test 192.0.2.10"
+    : `public_maintenance_contract_is_valid example.test 192.0.2.10 '${"a".repeat(64)}'`}
 cat "$trace"
 `,
     ],
@@ -312,6 +315,8 @@ describe("externally managed edge contract", () => {
     expect(verifier).toContain('([$control, $frontend, $ingress] | sort)');
     expect(verifier).toContain('"$router_mode" == "$expected_router_mode"');
     expect(verifier).toContain('"$expected_router_mode" == active-or-maintenance');
+    expect(verifier).toContain('observed_production_router_mode="$router_mode"');
+    expect(verifier).toContain('observed_development_router_mode="$router_mode"');
     const aliasOwnership = extractShellFunction(verifier, "verify_unique_network_alias_owner");
     expect(aliasOwnership).toContain('--filter "network=$network"');
     expect(aliasOwnership).not.toContain("com.docker.compose.project");
@@ -348,7 +353,7 @@ describe("externally managed edge contract", () => {
     expect(verifier).toContain("maintenance false");
     expect(verifier).toContain('if [[ "$require_upstream" == true ]]; then');
     expect(verifier).toContain("public_maintenance_contract_is_valid");
-    expect(verifier).toContain("forward-repair readiness must return deterministic HTTP 503");
+    expect(verifier).toContain("maintenance readiness must return deterministic HTTP 503");
     expect(verifier).toContain('.status == "unavailable"');
     expect(verifier).toContain("the maintenance router returned an unexpected liveness response");
   });
@@ -357,6 +362,18 @@ describe("externally managed edge contract", () => {
     "accepts exact public maintenance during journal-authorized forward repair",
     () => {
       const result = publicMaintenanceFixture();
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.stdout).toContain("liveness");
+      expect(result.stdout).toContain("security");
+      expect(result.stdout).toContain("redirect");
+      expect(result.stdout).toContain("tls");
+    },
+  );
+
+  it.skipIf(bashExecutable === null)(
+    "accepts exact public maintenance for an explicitly allowed established router",
+    () => {
+      const result = publicMaintenanceFixture({ includeAuthorizationDigest: false });
       expect(result.status, result.stderr).toBe(0);
       expect(result.stdout).toContain("liveness");
       expect(result.stdout).toContain("security");
@@ -572,6 +589,11 @@ describe("externally managed edge contract", () => {
     );
     expect(developmentDeployer).toContain("--allow-development-router-maintenance");
     expect(developmentDeployer).toContain("same-revision development public acceptance failed twice");
+    expect(verifier).toContain('if [[ "$observed_development_router_mode" == maintenance ]]');
+    expect(verifier).toContain(
+      'public_maintenance_contract_is_valid "$development_hostname" "$address"',
+    );
+    expect(verifier).toContain("development public maintenance was not explicitly allowed");
   });
 
   it("keeps post-cutover production acceptance independent of development health", () => {
@@ -583,6 +605,8 @@ describe("externally managed edge contract", () => {
     expect(verifier).toContain('[[ "$scope" == production ]] && control_hostname="$production_hostname"');
     expect(verifier).toContain('if [[ "$scope" == full || "$scope" == production ]]; then');
     expect(verifier).toContain("--allow-production-router-maintenance");
+    expect(verifier).toContain('elif [[ "$observed_production_router_mode" == maintenance ]]');
+    expect(verifier).toContain("production public maintenance was not explicitly allowed");
     expect(verifier).toContain(
       "production maintenance mode is valid only for the production scope",
     );
