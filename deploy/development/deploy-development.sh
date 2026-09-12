@@ -1713,15 +1713,21 @@ restore_accepted_revision() {
     recovery_router_maintenance=true
   fi
   start_revision_runtime "$recovery_revision" || return 1
-  ( release_is_accepted "$recovery_revision" ) || return 1
   if [[ "$recovery_topology" == router ]]; then
     [[ "$recovery_router_maintenance" == true ]] || return 1
+    # The stable router is intentionally serving maintenance until the
+    # recovered app has passed its private checks. A full acceptance probe at
+    # this point would necessarily receive the router's fail-closed 503 and
+    # turn every otherwise-successful router recovery into a hard failure.
+    ( release_is_accepted "$recovery_revision" private ) || return 1
     development_router_live_uncommitted="true"
     reload_release_router_live active || return 1
     release_acceptance_token=""
     ( release_is_accepted "$recovery_revision" ) || return 1
     persist_release_router_mode active || return 1
     development_router_live_uncommitted="false"
+  else
+    ( release_is_accepted "$recovery_revision" ) || return 1
   fi
 }
 

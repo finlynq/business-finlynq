@@ -1203,6 +1203,10 @@ describe("continuous deployment safety boundary", () => {
       "reload_release_router_live active",
       recoveryStart,
     );
+    const recoveryPrivateProof = deployDevelopment.indexOf(
+      'release_is_accepted "$recovery_revision" private',
+      recoveryStart,
+    );
     const recoveryProof = deployDevelopment.indexOf(
       'release_is_accepted "$recovery_revision"',
       recoveryActive,
@@ -1213,6 +1217,8 @@ describe("continuous deployment safety boundary", () => {
     );
     expect(recoveryMaintenance).toBeGreaterThan(recoveryFunctionStart);
     expect(recoveryReset).toBeGreaterThan(recoveryMaintenance);
+    expect(recoveryPrivateProof).toBeGreaterThan(recoveryStart);
+    expect(recoveryActive).toBeGreaterThan(recoveryPrivateProof);
     expect(recoveryActive).toBeGreaterThan(recoveryStart);
     expect(recoveryProof).toBeGreaterThan(recoveryActive);
     expect(recoveryDurableActive).toBeGreaterThan(recoveryProof);
