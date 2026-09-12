@@ -307,6 +307,41 @@ describe("continuous deployment safety boundary", () => {
     expect(deployService).toContain("KillSignal=SIGTERM");
   });
 
+  it("proves maintenance through request-marked public health probes", () => {
+    const preFetch = deployMain.slice(
+      deployMain.indexOf("ensure_stable_release_router_maintenance_before_fetch() ("),
+      deployMain.indexOf("\nnetwork_alias_has_no_owner() {"),
+    );
+    const parentContainment = deployMain.slice(
+      deployMain.indexOf("force_parent_release_router_maintenance() {"),
+      deployMain.indexOf("\nstop_parent_release_service() {"),
+    );
+
+    expect(preFetch).toContain(
+      "--header 'X-Request-Id: continuous-deployment-pre-fetch-maintenance'",
+    );
+    expect(parentContainment).toContain(
+      "--header 'X-Request-Id: continuous-deployment-parent-containment'",
+    );
+    for (const maintenanceProof of [preFetch, parentContainment]) {
+      const reload = maintenanceProof.indexOf("Caddyfile.maintenance");
+      const requestId = maintenanceProof.indexOf("--header 'X-Request-Id:", reload);
+      const health = maintenanceProof.indexOf(
+        "http://127.0.0.1:3100/api/health",
+        requestId,
+      );
+      const unavailable = maintenanceProof.indexOf(
+        '[[ "$status" == 503 ]]',
+        health,
+      );
+
+      expect(reload).toBeGreaterThan(-1);
+      expect(requestId).toBeGreaterThan(reload);
+      expect(health).toBeGreaterThan(requestId);
+      expect(unavailable).toBeGreaterThan(health);
+    }
+  });
+
   it("never blesses an interrupted same-revision production release from health alone", () => {
     const evidenceVerifier = deployMain.slice(
       deployMain.indexOf("evidence_inventory_is_valid() {"),
