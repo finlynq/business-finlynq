@@ -11,6 +11,8 @@ readonly production_network="business_finlynq_edge"
 readonly development_network="business_finlynq_development_edge"
 readonly production_alias="production-app"
 readonly development_alias="development-app"
+readonly production_private_frontend_network="business_finlynq_private-frontend"
+readonly production_private_app_alias="release-app"
 readonly production_loopback_port="3100"
 readonly development_loopback_port="3200"
 readonly production_hostname="business.finlynq.com"
@@ -26,6 +28,8 @@ readonly legacy_f8485_image_id="sha256:2135e8e936bf8befdc44132771698dfb942fc97dc
 readonly release_router_reference="business-finlynq-release-router:v2"
 readonly release_router_revision="release-router-v2"
 readonly release_router_contract="v2"
+readonly release_recovery_state_directory="/var/lib/business-finlynq/release-recovery"
+readonly first_router_recovery_journal="$release_recovery_state_directory/first-router-pre-cutover.json"
 readonly minimum_tls_seconds="$((21 * 24 * 60 * 60))"
 readonly public_warmup_attempts=15
 readonly public_warmup_retry_seconds=2
@@ -175,6 +179,13 @@ container_for_service() {
   printf '%s' "${containers[0]}"
 }
 
+containers_for_service_all() {
+  local project="$1" service="$2"
+  docker ps --all --quiet --no-trunc \
+    --filter "label=com.docker.compose.project=$project" \
+    --filter "label=com.docker.compose.service=$service"
+}
+
 network_is_contract_dependency() {
   local network="$1"
   docker network inspect "$network" 2>/dev/null | jq -e '
@@ -205,6 +216,129 @@ verify_unique_network_alias_owner() {
   [[ "$owner_count" == 1 ]] || fail "$description alias must be owned exactly once"
 }
 
+verify_first_router_forward_repair_anchor() {
+  local expected_revision="$1" actual_digest source_revision source_image candidate_image
+  local router_was_preexisting inventory current_container current_image
+  local -a containers=()
+  [[ -d "$release_recovery_state_directory" \
+    && ! -L "$release_recovery_state_directory" \
+    && "$(readlink -f -- "$release_recovery_state_directory")" \
+      == "$release_recovery_state_directory" \
+    && "$(stat -c '%u:%g:%a' -- "$release_recovery_state_directory")" == 0:0:700 ]] \
+    || fail "first-router forward-repair directory is unsafe"
+  [[ -f "$first_router_recovery_journal" \
+    && ! -L "$first_router_recovery_journal" \
+    && "$(readlink -f -- "$first_router_recovery_journal")" \
+      == "$first_router_recovery_journal" \
+    && "$(stat -c '%u:%g:%a:%h' -- "$first_router_recovery_journal")" \
+      == 0:0:600:1 ]] \
+    || fail "first-router forward-repair journal is unsafe"
+  actual_digest="$(sha256sum -- "$first_router_recovery_journal")" \
+    || fail "first-router forward-repair journal could not be hashed"
+  actual_digest="${actual_digest%% *}"
+  [[ "$actual_digest" == "$first_router_forward_repair_journal_sha256" ]] \
+    || fail "first-router forward-repair journal digest changed"
+  jq -e --arg candidateRevision "$expected_revision" '
+      type == "object" and
+      keys == (["app", "authWorker", "candidateRevision", "createdAt",
+        "databaseMutationStarted", "kind", "mutationArmedAt", "phase", "product",
+        "router", "routerWasPreexisting", "runId", "schemaVersion", "sourceRevision"] | sort) and
+      .schemaVersion == 1 and .product == "business-finlynq" and
+      .kind == "first-router-pre-cutover" and .phase == "forward-repair-required" and
+      .databaseMutationStarted == true and .candidateRevision == $candidateRevision and
+      (.sourceRevision | type == "string" and test("^[a-f0-9]{40}$")) and
+      (.runId | type == "string" and test("^[a-z0-9][a-z0-9._-]{2,30}$")) and
+      (.createdAt | type == "string" and
+        test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$")) and
+      (.mutationArmedAt | type == "string" and
+        test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$")) and
+      (.app.containerId | type == "string" and test("^[a-f0-9]{64}$")) and
+      (.app.imageId | type == "string" and test("^sha256:[a-f0-9]{64}$")) and
+      (.routerWasPreexisting | type == "boolean") and
+      (if .routerWasPreexisting then
+        (.router.containerId | type == "string" and test("^[a-f0-9]{64}$")) and
+        (.router.imageId | type == "string" and test("^sha256:[a-f0-9]{64}$"))
+      else .router == {containerId: null, imageId: null} end) and
+      (.authWorker.wasRunning | type == "boolean") and
+      (if .authWorker.wasRunning then
+        (.authWorker.containerId | type == "string" and test("^[a-f0-9]{64}$")) and
+        (.authWorker.imageId | type == "string" and test("^sha256:[a-f0-9]{64}$")) and
+        .authWorker.revision == .sourceRevision
+      else
+        .authWorker == {wasRunning: false, containerId: null, imageId: null, revision: null}
+      end)
+    ' "$first_router_recovery_journal" >/dev/null \
+    || fail "first-router forward-repair journal does not match this exact candidate"
+  source_revision="$(jq -er '.sourceRevision' "$first_router_recovery_journal")" \
+    || fail "first-router forward-repair source revision could not be read"
+  source_image="$(jq -er '.app.imageId' "$first_router_recovery_journal")" \
+    || fail "first-router forward-repair source image could not be read"
+  router_was_preexisting="$(jq -r '.routerWasPreexisting | tostring' \
+    "$first_router_recovery_journal")" \
+    || fail "first-router forward-repair router history could not be read"
+  if [[ "$source_revision" == "$legacy_f8485_revision" ]]; then
+    [[ "$source_image" == "$legacy_f8485_image_id" ]] \
+      || fail "journaled legacy application differs from its exact compatibility artifact"
+  else
+    [[ "$(docker image inspect --format '{{.Id}}' \
+      "business-finlynq-app:$source_revision" 2>/dev/null)" == "$source_image" ]] \
+      || fail "journaled source application lost its immutable tag"
+  fi
+  candidate_image="$(docker image inspect --format '{{.Id}}' \
+    "business-finlynq-app:$expected_revision" 2>/dev/null)" \
+    || fail "forward-repair candidate application image is unavailable"
+  [[ "$candidate_image" =~ ^sha256:[a-f0-9]{64}$ ]] \
+    || fail "forward-repair candidate application image identity is invalid"
+
+  inventory="$(containers_for_service_all "$production_project" app)" \
+    || fail "forward-repair application inventory could not be read"
+  if [[ -n "$inventory" ]]; then
+    mapfile -t containers <<<"$inventory"
+  fi
+  (( ${#containers[@]} <= 1 )) \
+    || fail "forward repair found an ambiguous application inventory"
+  (( ${#containers[@]} == 1 )) || return 0
+
+  current_container="${containers[0]}"
+  docker inspect "$current_container" | jq -e \
+    --arg sourceRevision "$source_revision" \
+    --arg sourceImage "$source_image" \
+    --arg candidateRevision "$expected_revision" \
+    --arg candidateImage "$candidate_image" \
+    --arg legacyRevision "$legacy_f8485_revision" '
+      length == 1 and
+      .[0].Config.Labels["com.docker.compose.project"] == "business-finlynq" and
+      .[0].Config.Labels["com.docker.compose.service"] == "app" and
+      .[0].State.Running == false and .[0].HostConfig.ReadonlyRootfs == true and
+      .[0].HostConfig.Privileged == false and
+      .[0].HostConfig.RestartPolicy.Name == "unless-stopped" and
+      ((.[0].HostConfig.CapDrop // []) | sort) == ["ALL"] and
+      ((.[0].HostConfig.SecurityOpt // []) | index("no-new-privileges:true")) != null and
+      ((.[0].Image == $sourceImage and
+        (if $sourceRevision == $legacyRevision then
+           ((.[0].Config.Labels["org.opencontainers.image.revision"] // "") == "")
+         else
+           .[0].Config.Labels["org.opencontainers.image.revision"] == $sourceRevision
+         end)) or
+       (.[0].Image == $candidateImage and
+        .[0].Config.Labels["org.opencontainers.image.revision"] == $candidateRevision))
+    ' >/dev/null || fail "forward repair retained an unexpected application container"
+  current_image="$(docker inspect --format '{{.Image}}' "$current_container")" \
+    || fail "forward-repair application image could not be inspected"
+  if [[ "$router_was_preexisting" == true || "$current_image" == "$candidate_image" ]]; then
+    verify_unique_network_alias_owner "$production_private_frontend_network" \
+      "$production_private_app_alias" "$current_container" \
+      "production forward-repair private application" \
+      || fail "forward-repair application lost its unique private alias"
+  else
+    [[ "$current_image" == "$source_image" \
+      && "$(docker inspect --format \
+        '{{if index .NetworkSettings.Networks "business_finlynq_edge"}}attached{{end}}' \
+        "$current_container")" == "" ]] \
+      || fail "forward-repair legacy source application retained the public edge"
+  fi
+}
+
 verify_business_runtime() {
   local project="$1" network="$2" alias="$3" loopback_port="$4"
   local expected_revision="$5" allow_pre_router="$6" allow_legacy_minimal="$7"
@@ -219,22 +353,29 @@ verify_business_runtime() {
     || fail "could not inspect $project edge residue"
   [[ -z "$edge_query" ]] || fail "$project must not run an application-owned edge service"
 
-  app="$(container_for_service "$project" app)"
-  app_inspection="$(docker inspect "$app")" || fail "could not inspect $project application"
-  jq -e --arg project "$project" --arg revision "$expected_revision" \
-    --arg legacyRevision "$legacy_f8485_revision" --arg legacyImage "$legacy_f8485_image_id" '
-    length == 1 and .[0].Config.Labels["com.docker.compose.project"] == $project and
-    .[0].Config.Labels["com.docker.compose.service"] == "app" and
-    .[0].State.Running == true and .[0].State.Health.Status == "healthy" and
-    (if $revision == $legacyRevision then
-       .[0].Image == $legacyImage and
-       ((.[0].Config.Labels["org.opencontainers.image.revision"] // "") == "")
-     else
-       .[0].Config.Labels["org.opencontainers.image.revision"] == $revision and
-       (.[0].Config.Env | index("BUSINESS_FINLYNQ_IMAGE_REVISION=" + $revision)) != null
-     end)
-  ' <<<"$app_inspection" >/dev/null \
-    || fail "$project application does not run the expected immutable revision"
+  if [[ "$allow_first_router_forward_repair" == true ]]; then
+    [[ "$project" == "$production_project" ]] \
+      || fail "first-router forward repair is restricted to production"
+    verify_first_router_forward_repair_anchor "$expected_revision"
+  else
+    app="$(container_for_service "$project" app)" \
+      || fail "could not resolve $project application"
+    app_inspection="$(docker inspect "$app")" || fail "could not inspect $project application"
+    jq -e --arg project "$project" --arg revision "$expected_revision" \
+      --arg legacyRevision "$legacy_f8485_revision" --arg legacyImage "$legacy_f8485_image_id" '
+      length == 1 and .[0].Config.Labels["com.docker.compose.project"] == $project and
+      .[0].Config.Labels["com.docker.compose.service"] == "app" and
+      .[0].State.Running == true and .[0].State.Health.Status == "healthy" and
+      (if $revision == $legacyRevision then
+         .[0].Image == $legacyImage and
+         ((.[0].Config.Labels["org.opencontainers.image.revision"] // "") == "")
+       else
+         .[0].Config.Labels["org.opencontainers.image.revision"] == $revision and
+         (.[0].Config.Env | index("BUSINESS_FINLYNQ_IMAGE_REVISION=" + $revision)) != null
+       end)
+    ' <<<"$app_inspection" >/dev/null \
+      || fail "$project application does not run the expected immutable revision"
+  fi
   if [[ "$expected_revision" == "$legacy_f8485_revision" ]]; then
     [[ "$allow_pre_router" == true || "$allow_legacy_minimal" == true ]] \
       || fail "the f8485 application requires its explicit compatibility boundary"
@@ -278,7 +419,8 @@ verify_business_runtime() {
     return 0
   fi
 
-  router="$(container_for_service "$project" release_router)"
+  router="$(container_for_service "$project" release_router)" \
+    || fail "could not resolve $project release router"
   docker inspect "$router" | jq -e --arg project "$project" --arg network "$network" \
     --arg alias "$alias" --arg port "$loopback_port" \
     --arg routerRevision "$release_router_revision" \
@@ -310,6 +452,10 @@ verify_business_runtime() {
     || fail "$project release-router mode could not be read"
   [[ "$router_mode" == active || "$router_mode" == maintenance ]] \
     || fail "$project release-router mode is invalid"
+  if [[ "$allow_first_router_forward_repair" == true ]]; then
+    [[ "$router_mode" == maintenance ]] \
+      || fail "$project forward-repair verification requires durable maintenance mode"
+  fi
   if [[ "$expect_live_uncommitted" == true ]]; then
     [[ "$router_mode" == maintenance ]] \
       || fail "$project live-uncommitted verification requires durable maintenance mode"
@@ -344,6 +490,12 @@ resolve_production_public_contract() {
     [[ "$durable_mode" == maintenance ]] \
       || fail "production live-uncommitted verification requires durable maintenance mode"
     printf 'active'
+  elif [[ "$allow_first_router_forward_repair" == true ]]; then
+    [[ "$durable_mode" == maintenance ]] \
+      || fail "production forward-repair verification requires durable maintenance mode"
+    [[ "$allow_production_router_maintenance" == false ]] \
+      || fail "production router verification flags are ambiguous"
+    printf 'maintenance'
   elif [[ "$durable_mode" == maintenance ]]; then
     [[ "$allow_production_router_maintenance" == true \
       || "$allow_first_router_forward_repair" == true ]] \
@@ -579,13 +731,24 @@ if [[ "$allow_pre_router_production" == true ]]; then
   [[ "$scope" == production && -n "$expected_production_revision" ]] \
     || fail "pre-router production verification requires an exact production revision"
 fi
+if [[ "$allow_first_router_forward_repair" == true ]]; then
+  [[ "$scope" == production && "$warmup_host" == production \
+    && -n "$expected_production_revision" \
+    && "$allow_legacy_minimal_production_health" == false \
+    && "$allow_pre_router_production" == false \
+    && "$allow_production_router_maintenance" == false \
+    && "$expect_production_live_uncommitted" == false \
+    && "${FIRST_ROUTER_FORWARD_REPAIR_ACK:-}" \
+      == "forward-repair:$expected_production_revision:$first_router_forward_repair_journal_sha256" ]] \
+    || fail "first-router forward repair is restricted to its exact deployment journal"
+fi
 if [[ "$expect_development_live_uncommitted" == true ]]; then
   [[ "$scope" == development && "$warmup_host" == development \
     && "$allow_development_router_maintenance" == false ]] \
     || fail "live-uncommitted verification is restricted to the development deployment boundary"
 fi
 [[ "$(id -u)" == 0 ]] || fail "run this command as root"
-for command_name in awk curl docker env grep jq mktemp openssl rm sleep sort timeout; do
+for command_name in awk curl docker env grep jq mktemp openssl readlink rm sha256sum sleep sort stat timeout; do
   command -v "$command_name" >/dev/null 2>&1 || fail "required command is unavailable: $command_name"
 done
 
