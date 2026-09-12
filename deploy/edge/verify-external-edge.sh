@@ -673,10 +673,6 @@ caddy_data_volume="$(read_environment_value BUSINESS_FINLYNQ_EXTERNAL_EDGE_DATA_
   || fail "could not read BUSINESS_FINLYNQ_EXTERNAL_EDGE_DATA_VOLUME"
 caddy_config_volume="$(read_environment_value BUSINESS_FINLYNQ_EXTERNAL_EDGE_CONFIG_VOLUME)" \
   || fail "could not read BUSINESS_FINLYNQ_EXTERNAL_EDGE_CONFIG_VOLUME"
-epm_secret_source="$(read_environment_value BUSINESS_FINLYNQ_EXTERNAL_EDGE_EPM_SECRET_SOURCE)" \
-  || fail "could not read BUSINESS_FINLYNQ_EXTERNAL_EDGE_EPM_SECRET_SOURCE"
-epm_secret_destination="$(read_environment_value BUSINESS_FINLYNQ_EXTERNAL_EDGE_EPM_SECRET_DESTINATION)" \
-  || fail "could not read BUSINESS_FINLYNQ_EXTERNAL_EDGE_EPM_SECRET_DESTINATION"
 active_config_sha256="$(read_environment_value BUSINESS_FINLYNQ_EXTERNAL_EDGE_ACTIVE_CONFIG_SHA256)" \
   || fail "could not read BUSINESS_FINLYNQ_EXTERNAL_EDGE_ACTIVE_CONFIG_SHA256"
 production_network="$(read_environment_value BUSINESS_FINLYNQ_EDGE_NETWORK)" \
@@ -736,7 +732,7 @@ fi
 readonly external_project external_service external_owner external_image external_image_id
 readonly external_config external_config_source external_public_ipv4s_csv route_source
 readonly route_destination route_sha256 caddy_data_volume caddy_config_volume
-readonly epm_secret_source epm_secret_destination active_config_sha256 production_network
+readonly active_config_sha256 production_network
 readonly production_private_network production_alias configured_production_revision production_revision
 readonly pre_router_legacy_mode
 readonly development_edge_network development_private_network development_alias development_revision
@@ -780,11 +776,6 @@ deploy_uid="$(id -u deploy 2>/dev/null)" || fail "the deploy account is unavaila
   || fail "the external edge configuration source has unsafe ownership or mode"
 (( (8#$config_source_mode & 8#022) == 0 )) \
   || fail "the external edge configuration source is group- or other-writable"
-[[ -f "$epm_secret_source" && ! -L "$epm_secret_source" && -s "$epm_secret_source" \
-  && "$(stat -c '%u:%a' -- "$epm_secret_source")" == 0:400 ]] \
-  || fail "the preserved EPM authentication source is unavailable or unsafe"
-[[ "$epm_secret_destination" == /config/epm-basic-auth ]] \
-  || fail "the preserved EPM authentication destination is unexpected"
 [[ "$production_network" == business_finlynq_edge ]] \
   || fail "production must use the reviewed external edge network"
 [[ "$production_private_network" == business_finlynq_private \
@@ -911,25 +902,23 @@ mounts="$(docker inspect --format '{{json .Mounts}}' "$edge_container")" \
   || fail "could not inspect external edge mounts"
 jq -e --arg configSource "$external_config_source" --arg configDestination "$external_config" \
     --arg routeSource "$route_source" --arg routeDestination "$route_destination" \
-    --arg secretSource "$epm_secret_source" --arg secretDestination "$epm_secret_destination" \
     --arg consultSource "$consult_route_source" \
     --arg consultDestination "$consult_route_destination" \
     --arg dataVolume "$caddy_data_volume" --arg configVolume "$caddy_config_volume" '
-    length == 6
+    length == 5
     and any(.[]; .Type == "bind" and .Source == $configSource
       and .Destination == $configDestination and .RW == false)
     and any(.[]; .Type == "bind" and .Source == $routeSource
       and .Destination == $routeDestination and .RW == false)
-    and any(.[]; .Type == "bind" and .Source == $secretSource
-      and .Destination == $secretDestination and .RW == false)
     and any(.[]; .Type == "bind" and .Source == $consultSource
       and .Destination == $consultDestination and .RW == false)
     and any(.[]; .Type == "volume" and .Name == $dataVolume
       and .Destination == "/data" and .RW == true)
     and any(.[]; .Type == "volume" and .Name == $configVolume
       and .Destination == "/config" and .RW == true)
+    and all(.[]; .Destination != "/config/epm-basic-auth")
   ' <<<"$mounts" >/dev/null \
-  || fail "external edge mounts differ from the protected full Caddy, EPM, and Consult inventory"
+  || fail "external edge mounts differ from the protected Caddy and Consult inventory"
 unset mounts
 
 readonly expected_route_sha256="$route_sha256"
@@ -1075,12 +1064,20 @@ for address in "${expected_public_ipv4s[@]}"; do
     fi
     http_redirect_is_exact "$epm_hostname" "$address"
     tls_is_valid "$epm_hostname" "$address"
-    epm_status="$(curl --disable --noproxy '*' --silent --show-error --max-time 20 --output /dev/null \
-      --resolve "$epm_hostname:443:$address" \
-      --write-out '%{http_code}' "https://$epm_hostname/")" \
+    epm_headers="$(curl --disable --noproxy '*' --silent --show-error --max-time 20 \
+      --resolve "$epm_hostname:443:$address" --dump-header - --output /dev/null \
+      "https://$epm_hostname/")" \
       || fail "the EPM public route could not be checked on $address"
-    [[ "$epm_status" == 401 ]] \
-      || fail "the preserved EPM console is not protected by authentication on $address"
+    epm_status="$(awk 'NR == 1 { print $2 }' <<<"$epm_headers")"
+    [[ "$epm_status" == 302 ]] \
+      || fail "the EPM console did not begin the application-owned OIDC flow on $address"
+    grep -Eiq '^location:[[:space:]]*/auth/login\r?$' <<<"$epm_headers" \
+      || fail "the EPM console did not redirect to its OIDC login endpoint on $address"
+    ! grep -Eiq '^www-authenticate:' <<<"$epm_headers" \
+      || fail "the EPM console still advertises proxy authentication on $address"
+    grep -Eiq '^permissions-policy:[[:space:]]*camera=\(\), microphone=\(\), geolocation=\(\), payment=\(\)\r?$' \
+      <<<"$epm_headers" \
+      || fail "the EPM console response is missing its browser permissions policy on $address"
   fi
 done
 
