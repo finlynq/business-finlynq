@@ -15,7 +15,7 @@ session and authorization model.
 Create distinct Entra app registrations for development and production with
 these exact Web redirect URIs:
 
-- `https://dev.business.finlynq.com/api/auth/oidc/callback`
+- `https://stage.business.finlynq.com/api/auth/oidc/callback`
 - `https://business.finlynq.com/api/auth/oidc/callback`
 
 Use the existing Finlynq External ID tenant (`56ed1f1b-7e98-4a32-8711-534e375b9d6d`)

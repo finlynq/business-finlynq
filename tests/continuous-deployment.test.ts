@@ -626,6 +626,25 @@ describe("continuous deployment safety boundary", () => {
     expect(installDevelopment).toContain("--disable-yahoo-fx");
   });
 
+  it("migrates staging to its exact hostname only after explicit cutover acknowledgement", () => {
+    expect(installDevelopment).toContain("--migrate-stage-hostname");
+    expect(installDevelopment).toContain(
+      'legacy_hostname="dev.business.finlynq.com"',
+    );
+    expect(installDevelopment).toContain(
+      'stage_hostname="stage.business.finlynq.com"',
+    );
+    expect(installDevelopment).toContain(
+      '[[ "$migrate_stage_hostname" == true ]]',
+    );
+    expect(installDevelopment).toContain(
+      "the staging hostname configuration is neither the reviewed legacy nor target contract",
+    );
+    expect(deployDevelopment).toContain(
+      '[[ "$app_origin" == https://stage.business.finlynq.com ]]',
+    );
+  });
+
   it("keeps pre-OIDC development revisions recoverable across the SSO release boundary", () => {
     expect(deployDevelopment).toContain("revision_uses_oidc_runtime_contract() {");
     expect(deployDevelopment).toContain(

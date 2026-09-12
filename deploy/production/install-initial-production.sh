@@ -947,7 +947,7 @@ write_compose_environment() {
     printf 'IDENTITY_SECRET_FILE=%s/identity-secret\n' "$bundle_directory"
     printf 'BUSINESS_FINLYNQ_SECRET_GID=%s\n' "$secret_gid"
     printf 'BUSINESS_FINLYNQ_HOSTNAME=business.finlynq.com\n'
-    printf 'BUSINESS_FINLYNQ_DEVELOPMENT_HOSTNAME=dev.business.finlynq.com\n'
+    printf 'BUSINESS_FINLYNQ_DEVELOPMENT_HOSTNAME=stage.business.finlynq.com\n'
     printf 'BUSINESS_FINLYNQ_APP_ORIGIN=%s\n' "$app_origin"
     printf 'BUSINESS_FINLYNQ_APP_PORT=%s\n' "$app_port"
     printf 'BUSINESS_FINLYNQ_APP_NETWORK_ALIAS=production-app\n'

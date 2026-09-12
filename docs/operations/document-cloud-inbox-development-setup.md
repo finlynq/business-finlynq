@@ -1,6 +1,6 @@
 # Enable cloud document storage on development
 
-Target: `https://dev.business.finlynq.com`. Each customer signs in to their own Google or Microsoft account. These registrations identify FinLynQ on the provider's consent screen; files are stored in the consenting customer's drive.
+Target: `https://stage.business.finlynq.com`. Each customer signs in to their own Google or Microsoft account. These registrations identify FinLynQ on the provider's consent screen; files are stored in the consenting customer's drive.
 
 ## Baseline inspected before this update (2026-09-04)
 
@@ -22,13 +22,13 @@ For existing-connection recovery, in its FinLynQ-owned Google Cloud project, ena
 | Audience | External; keep the development registration in Testing |
 | Test users | The Google accounts that will test the dev integration |
 | Support and developer email | A monitored address available to the project owner |
-| App homepage | `https://dev.business.finlynq.com` |
-| Privacy policy | `https://dev.business.finlynq.com/privacy` |
-| Terms | `https://dev.business.finlynq.com/terms` |
+| App homepage | `https://stage.business.finlynq.com` |
+| Privacy policy | `https://stage.business.finlynq.com/privacy` |
+| Terms | `https://stage.business.finlynq.com/terms` |
 | Authorized domain | `finlynq.com` |
 | Requested Drive scope | `https://www.googleapis.com/auth/drive` |
 | OAuth client type | Web application |
-| Authorized redirect URI | `https://dev.business.finlynq.com/api/document-storage/callback/GOOGLE_DRIVE` |
+| Authorized redirect URI | `https://stage.business.finlynq.com/api/document-storage/callback/GOOGLE_DRIVE` |
 
 Existing Google connections use the restricted `drive` scope. Google does not enforce the application folder filter. `drive.file` plus selecting a folder does not establish access to all existing children or future external drops; explicit per-file import is a separate workflow. Google requires restricted-scope verification and, where applicable, a security assessment before public rollout. The folder restriction in FinLynQ does not narrow the provider's account-wide grant. Development testing does not establish public verification.
 
@@ -47,7 +47,7 @@ Create an application in the FinLynQ-owned Microsoft Entra tenant:
 | Name | Business FinLynQ Development |
 | Supported account types | Any organizational directory and personal Microsoft accounts |
 | Redirect platform | Web |
-| Redirect URI | `https://dev.business.finlynq.com/api/document-storage/callback/ONEDRIVE` |
+| Redirect URI | `https://stage.business.finlynq.com/api/document-storage/callback/ONEDRIVE` |
 | Microsoft Graph delegated permissions | `Files.ReadWrite.AppFolder`, `offline_access` |
 | Credential | A development client secret, with its expiry recorded for rotation |
 

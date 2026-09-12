@@ -3,7 +3,7 @@
 Business Finlynq uses three long-lived branches with a one-way promotion path:
 
 - `dev` is the daily development branch and has no hosted deployment;
-- `stage` deploys to the staging stack at `dev.business.finlynq.com`;
+- `stage` deploys to the staging stack at `stage.business.finlynq.com`;
 - `main` deploys to production at `business.finlynq.com`.
 
 A same-repository push to `stage` must pass the complete `quality-gate` job before CI publishes the immutable `deploy-stage-<full-sha>` tag. The staging timer accepts only that exact tag and a fast-forward `origin/stage` commit. Production instead accepts only the exact keyless deployment-signal attestation for `origin/main` documented in [Continuous deployment from main](./continuous-deployment.md).
@@ -24,7 +24,7 @@ The development stack uses its own checkout, Compose project, loopback port, dat
 | State | `/var/lib/business-finlynq-development` | `/var/lib/business-finlynq` |
 | Loopback router ingress | `3200` | `3100` |
 | Database volume | `business_finlynq_development_pgdata` | `business_finlynq_pgdata` |
-| Public hostname | `dev.business.finlynq.com` | `business.finlynq.com` |
+| Public hostname | `stage.business.finlynq.com` | `business.finlynq.com` |
 
 Both deployment services acquire `/var/lib/business-finlynq/deployment-host.lock`, so builds and migrations cannot overlap on the shared server. The centrally owned shared edge joins the development ingress network only to reach the `development-app` alias; the application database and private network remain inaccessible from production containers.
 
@@ -41,11 +41,33 @@ sudo systemctl start business-finlynq-development-deployment.service
 
 The installer creates independent random database credentials and encryption secrets without printing them. It also creates the external development edge network and gives `deploy` narrowly scoped permission to start, inspect, and read the journal for the development deployment service.
 
+## Staging hostname cutover
+
+The legacy staging hostname was `dev.business.finlynq.com`. Cut over to `stage.business.finlynq.com` in this order so login and public acceptance never authorize a partially configured origin:
+
+1. In GoDaddy DNS, create an `A` record for `stage.business` pointing to `51.161.113.222`. Keep the existing `dev.business` record during the transition.
+2. Add `https://stage.business.finlynq.com/api/auth/oidc/callback` to the staging Microsoft Entra app registration. Keep the legacy callback until the cutover is accepted. Update any enabled document-provider and Turnstile registrations to allow the new hostname.
+3. Through the separately governed `/home/ubuntu/finlynq-shared-edge` release process, add the new staging hostname to the Business route while retaining the legacy route during validation. Confirm Caddy has obtained a valid certificate for the new hostname.
+4. From the clean, reviewed `stage` checkout, atomically migrate the three application-origin settings and enable the existing staging deployer:
+
+   ```bash
+   sudo bash deploy/development/install-development.sh \
+     --migrate-stage-hostname \
+     --external-edge \
+     --require-public-acceptance \
+     --enable
+   sudo systemctl start business-finlynq-development-deployment.service
+   ```
+
+5. Verify `/api/live`, `/api/health`, password login, Microsoft login/signup, and any enabled document OAuth flow at the new hostname. Only then replace the legacy shared-edge route with a permanent redirect to `https://stage.business.finlynq.com{uri}`. Host-only session cookies do not migrate between names, so existing staging users must sign in again.
+
+The migration flag accepts only the exact legacy origin triplet and rewrites it to the exact staging triplet. It refuses mixed or unexpected hostname configuration.
+
 The environment sets `BUSINESS_FINLYNQ_EDGE_MODE=external` because shared-edge contract v1 is the only supported public-ingress mode. The installer requires the pre-existing `business_finlynq_development_edge` internal bridge and never creates or repairs it. `DEVELOPMENT_REQUIRE_PUBLIC_ACCEPTANCE=false` permits the first internal deployment before central route activation. After central cutover, rerun the installer with `--external-edge --require-public-acceptance`. That protected update changes only `DEVELOPMENT_REQUIRE_PUBLIC_ACCEPTANCE`; it does not enable login, email, Turnstile, bank-feed, or other provider gates. Rerun the development deployer at the same accepted revision to force configuration reconciliation and prove public browser acceptance. When public acceptance is required, the deployer waits up to two minutes for a private-preview `/api/health` request through the exact development hostname to return `ready` before starting browser acceptance. The request carries the deployment's ephemeral preview token; uncredentialed public health and application routes remain in maintenance with `503` until activation. The acceptance container marks that public target as an already managed server so Playwright cannot fall back to starting a second local Next.js process; ordinary CI browser runs still start their own reviewed build.
 
 ## Enable every development feature
 
-Keep the initial fail-closed installation until development-specific provider credentials exist. Create a separate Resend sending-access key and a separate Cloudflare Turnstile widget restricted to `dev.business.finlynq.com`; using the same verified sending domain is acceptable, but never copy a production API key or Turnstile secret into development. Treat the sender address domain as an exact provider contract: if Resend lists only `finlynq.com` as verified, use an address ending in `@finlynq.com`, such as `noreply-dev-business@finlynq.com`. Do not assume an unlisted nested sender domain such as `dev.business.finlynq.com` is covered; verify the intended `From` address with one delivery to an operator-owned mailbox before enabling automated delivery.
+Keep the initial fail-closed installation until staging-specific provider credentials exist. Create a separate Resend sending-access key and a separate Cloudflare Turnstile widget restricted to `stage.business.finlynq.com`; using the same verified sending domain is acceptable, but never copy a production API key or Turnstile secret into staging. Treat the sender address domain as an exact provider contract: if Resend lists only `finlynq.com` as verified, use an address ending in `@finlynq.com`, such as `noreply-stage-business@finlynq.com`. Do not assume an unlisted nested sender domain such as `stage.business.finlynq.com` is covered; verify the intended `From` address with one delivery to an operator-owned mailbox before enabling automated delivery.
 
 Install each one-line secret without placing its value in shell history, then make it readable only by the deployment secret group:
 
@@ -157,7 +179,7 @@ release-gate dependency.
 
 ## Direct-to-development acceptance and automatic recovery
 
-Every signalled candidate is installed directly on the development stack; there is no second shadow stack, and the PostgreSQL volume remains mounted throughout deployment and recovery. With `DEVELOPMENT_REQUIRE_PUBLIC_ACCEPTANCE=true`, browser acceptance targets `https://dev.business.finlynq.com` through the private-preview token and is attempted twice before the candidate is rejected. With the flag false, the deployer performs only its private/internal candidate checks and does not claim public browser acceptance.
+Every signalled candidate is installed directly on the staging stack; there is no second shadow stack, and the PostgreSQL volume remains mounted throughout deployment and recovery. With `DEVELOPMENT_REQUIRE_PUBLIC_ACCEPTANCE=true`, browser acceptance targets `https://stage.business.finlynq.com` through the private-preview token and is attempted twice before the candidate is rejected. With the flag false, the deployer performs only its private/internal candidate checks and does not claim public browser acceptance.
 
 For router-aware routine releases, candidate images are built before the maintenance interval. The existing stable router is then atomically reloaded to maintenance, so uncredentialed development traffic receives deterministic `503` responses while the old app is stopped, migration/bootstrap dependencies and the candidate start, and any required two-attempt browser gate runs. A candidate that passes every private and public check reloads the same listener live-active while durable state remains maintenance; the accepted-revision record is atomically published, then the router's durable `active` sentinel is committed last. A failed finalization restores the prior accepted pointer and fail-closes the router, so a restarted listener cannot select an unaccepted candidate. The one-time legacy transition cannot enter router maintenance until the old app releases port `3200`; that bootstrap may briefly refuse connections before the stable router starts fail-closed in maintenance.
 
