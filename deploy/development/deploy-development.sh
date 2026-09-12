@@ -4,7 +4,7 @@ set +x
 
 umask 077
 
-readonly repository="/home/deploy/business-finlynq-development"
+readonly repository="/home/deploy/business-finlynq-stage"
 readonly expected_origin="https://github.com/finlynq/business-finlynq.git"
 readonly installed_deployer="/usr/local/sbin/business-finlynq-deploy-development"
 readonly compose_environment="/etc/business-finlynq-development/compose.env"
@@ -562,7 +562,7 @@ wait_for_public_readiness() {
   local -a readiness_headers=()
   hostname="$(read_environment_value BUSINESS_FINLYNQ_HOSTNAME)" \
     || fail "BUSINESS_FINLYNQ_HOSTNAME could not be read"
-  [[ "$hostname" == dev.business.finlynq.com ]] \
+  [[ "$hostname" == stage.business.finlynq.com ]] \
     || fail "public acceptance requires the exact development hostname"
   if [[ -n "$release_acceptance_token" ]]; then
     [[ "$release_acceptance_token" =~ ^[a-f0-9]{64}$ ]] \
@@ -981,8 +981,8 @@ repository_root="$(git_as_deploy rev-parse --show-toplevel)" \
   || fail "the canonical development repository root changed"
 repository_branch="$(git_as_deploy symbolic-ref --short HEAD)" \
   || fail "the development checkout branch could not be read"
-[[ "$repository_branch" == dev ]] \
-  || fail "the development checkout is not on dev"
+[[ "$repository_branch" == stage ]] \
+  || fail "the staging checkout is not on stage"
 repository_origin="$(git_as_deploy remote get-url origin)" \
   || fail "the development origin could not be read"
 [[ "$repository_origin" == "$expected_origin" ]] \
@@ -993,19 +993,19 @@ repository_status="$(git_as_deploy status --porcelain=v1 --untracked-files=all)"
   || fail "the development checkout is not clean"
 
 git_as_deploy fetch --prune --force --no-tags origin \
-  '+refs/heads/dev:refs/remotes/origin/dev' \
-  '+refs/tags/deploy-development-*:refs/tags/deploy-development-*'
+  '+refs/heads/stage:refs/remotes/origin/stage' \
+  '+refs/tags/deploy-stage-*:refs/tags/deploy-stage-*'
 
 source_revision="$(git_as_deploy rev-parse HEAD)" \
   || fail "the deployed development revision could not be read"
-candidate_revision="$(git_as_deploy rev-parse refs/remotes/origin/dev)" \
+candidate_revision="$(git_as_deploy rev-parse refs/remotes/origin/stage)" \
   || fail "the fetched development revision could not be read"
 validate_revision "$source_revision"
 validate_revision "$candidate_revision"
 git_as_deploy merge-base --is-ancestor "$source_revision" "$candidate_revision" \
-  || fail "origin/dev is not a fast-forward descendant of the deployed revision"
+  || fail "origin/stage is not a fast-forward descendant of the deployed revision"
 
-signal_tag="deploy-development-$candidate_revision"
+signal_tag="deploy-stage-$candidate_revision"
 signal_revision="$(git_as_deploy rev-parse "refs/tags/$signal_tag^{commit}" 2>/dev/null)" \
   || fail "the immutable development deployment signal is unavailable"
 [[ "$signal_revision" == "$candidate_revision" ]] \
@@ -1028,7 +1028,7 @@ verify_compose_boundary() {
     || fail "development Compose configuration could not be rendered"
   app_origin="$(jq -er '.services.app.environment.APP_ORIGIN' <<<"$rendered")" \
     || fail "development APP_ORIGIN could not be read from Compose"
-  [[ "$app_origin" == https://dev.business.finlynq.com ]] \
+  [[ "$app_origin" == https://stage.business.finlynq.com ]] \
     || fail "development APP_ORIGIN must use the exact HTTPS development hostname"
   if [[ "$topology" == router ]]; then
     expected_resources+=(
@@ -1496,7 +1496,7 @@ release_is_accepted() {
   [[ "$require_public" == true || "$require_public" == false ]] || return 1
   if [[ "$require_public" == true && "$public_policy" == full ]]; then
     hostname="$(read_environment_value BUSINESS_FINLYNQ_HOSTNAME)" || return 1
-    [[ "$hostname" == dev.business.finlynq.com ]] || return 1
+    [[ "$hostname" == stage.business.finlynq.com ]] || return 1
     if [[ -n "$release_acceptance_token" ]]; then
       [[ "$release_acceptance_token" =~ ^[a-f0-9]{64}$ ]] || return 1
       public_health_headers=(

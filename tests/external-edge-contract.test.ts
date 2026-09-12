@@ -122,6 +122,9 @@ describe("shared-edge contract v1 ownership", () => {
     expect(verifier).toContain('readonly development_network="business_finlynq_development_edge"');
     expect(verifier).toContain('readonly production_alias="production-app"');
     expect(verifier).toContain('readonly development_alias="development-app"');
+    expect(verifier).toContain(
+      'readonly development_hostname="stage.business.finlynq.com"',
+    );
   });
 
   it("recognizes only the central runtime identity and contract-v1 labels", () => {
