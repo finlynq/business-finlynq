@@ -980,7 +980,7 @@ describe("continuous deployment safety boundary", () => {
       candidateProof,
     );
     const externalProof = deployDevelopment.indexOf(
-      'verify_external_edge_if_selected "$candidate_revision"',
+      'verify_external_edge_if_selected "$candidate_revision" live-uncommitted',
       liveActivation,
     );
     const finalProof = deployDevelopment.indexOf("deployment_stage=final-verification", externalProof);
@@ -1031,7 +1031,7 @@ describe("continuous deployment safety boundary", () => {
       interruptedReload,
     );
     const interruptedExternal = interrupted.indexOf(
-      'verify_external_edge_if_selected "$source_revision"',
+      'verify_external_edge_if_selected "$source_revision" live-uncommitted',
       interruptedProof,
     );
     const interruptedCommit = interrupted.indexOf(
