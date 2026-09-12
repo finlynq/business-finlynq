@@ -120,17 +120,16 @@ read_development_environment_value() {
 }
 
 header_value_is_exact() {
-  local headers="$1" header_name="$2" expected_value="$3" observed
-  observed="$(awk -F: -v selected="$header_name" '
-    tolower($1) == tolower(selected) {
-      count += 1
-      sub(/^[^:]*:[[:space:]]*/, "")
-      sub(/\r$/, "")
-      print
-    }
-    END { if (count != 1) exit 1 }
-  ' <<<"$headers")" || return 1
-  [[ "$observed" == "$expected_value" ]]
+  local headers="$1" header_name="$2" pattern count
+  case "$header_name" in
+    location) pattern='^location:[[:space:]]*/auth/login[[:space:]]*$' ;;
+    permissions-policy)
+      pattern='^permissions-policy:[[:space:]]*camera=\(\), microphone=\(\), geolocation=\(\), payment=\(\)[[:space:]]*$'
+      ;;
+    *) return 1 ;;
+  esac
+  count="$(grep -Eic "$pattern" <<<"$headers" || true)"
+  [[ "$count" == 1 ]]
 }
 
 container_for_service() {
@@ -1085,12 +1084,11 @@ for address in "${expected_public_ipv4s[@]}"; do
     epm_status="$(awk 'NR == 1 { print $2 }' <<<"$epm_headers")"
     [[ "$epm_status" == 302 ]] \
       || fail "the EPM console did not begin the application-owned OIDC flow on $address"
-    header_value_is_exact "$epm_headers" location /auth/login \
+    header_value_is_exact "$epm_headers" location \
       || fail "the EPM console did not redirect to its OIDC login endpoint on $address"
     ! grep -Eiq '^www-authenticate:' <<<"$epm_headers" \
       || fail "the EPM console still advertises proxy authentication on $address"
     header_value_is_exact "$epm_headers" permissions-policy \
-      'camera=(), microphone=(), geolocation=(), payment=()' \
       || fail "the EPM console response is missing its browser permissions policy on $address"
   fi
 done

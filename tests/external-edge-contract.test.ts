@@ -187,9 +187,8 @@ const epmOidcHeaderFixture = (source: string, headers: string) =>
       `
 set -Eeuo pipefail
 ${extractShellFunction(source, "header_value_is_exact")}
-header_value_is_exact "$FIXTURE_HEADERS" location /auth/login
-header_value_is_exact "$FIXTURE_HEADERS" permissions-policy \
-  'camera=(), microphone=(), geolocation=(), payment=()'
+header_value_is_exact "$FIXTURE_HEADERS" location
+header_value_is_exact "$FIXTURE_HEADERS" permissions-policy
 `,
     ],
     {
@@ -318,6 +317,13 @@ describe("externally managed edge contract", () => {
         "",
       ].join("\r\n");
       for (const source of [verifier, reconciler]) {
+        expect(source).toContain(
+          "^location:[[:space:]]*/auth/login[[:space:]]*$",
+        );
+        expect(source).toContain(
+          "^permissions-policy:[[:space:]]*camera=\\(\\), microphone=\\(\\), geolocation=\\(\\), payment=\\(\\)[[:space:]]*$",
+        );
+        expect(source).not.toContain("\\r?$");
         const result = epmOidcHeaderFixture(source, headers);
         expect(result.status, result.stderr).toBe(0);
       }
