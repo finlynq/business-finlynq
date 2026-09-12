@@ -618,6 +618,8 @@ services:
       PLAYWRIGHT_MANAGED_SERVER: "true"
       E2E_EXPECT_ACCOUNT_LOGIN_ENABLED: ${ACCOUNT_LOGIN_ENABLED:-false}
       E2E_EXPECT_ACCOUNT_SIGNUP_ENABLED: ${ACCOUNT_SIGNUP_ENABLED:-false}
+      E2E_EXPECT_AUTH_OIDC_ENABLED: ${AUTH_OIDC_ENABLED:-false}
+      E2E_EXPECT_AUTH_OIDC_SIGNUP_ENABLED: ${AUTH_OIDC_SIGNUP_ENABLED:-false}
       PLAYWRIGHT_RELEASE_ACCEPTANCE_TOKEN: ${BUSINESS_FINLYNQ_RELEASE_ACCEPTANCE_TOKEN:-}
       # Playwright removes its output directories before every run. Keep the
       # removable directories below, rather than at, the tmpfs mountpoints.

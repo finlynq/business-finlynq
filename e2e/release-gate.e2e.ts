@@ -6,8 +6,10 @@ import {
   releaseGet,
   releasePost,
 } from "./release-acceptance";
-
-type ReadinessState = "ready" | "disabled";
+import {
+  resolveExpectedSignupMethods,
+  type ReadinessState,
+} from "./release-gate-expectations";
 
 function expectedReadiness(...environmentNames: string[]): ReadinessState | null {
   const configured = environmentNames
@@ -27,6 +29,20 @@ const expectedAccountSignup = expectedReadiness(
   "E2E_EXPECT_ACCOUNT_SIGNUP_ENABLED",
   "ACCOUNT_SIGNUP_ENABLED",
 );
+const expectedOidcAuthentication = expectedReadiness(
+  "E2E_EXPECT_AUTH_OIDC_ENABLED",
+  "AUTH_OIDC_ENABLED",
+);
+const expectedOidcSignup = expectedReadiness(
+  "E2E_EXPECT_AUTH_OIDC_SIGNUP_ENABLED",
+  "AUTH_OIDC_SIGNUP_ENABLED",
+);
+const expectedSignupMethods = resolveExpectedSignupMethods({
+  accountAuthentication: expectedAccountAuthentication,
+  passwordSignup: expectedAccountSignup,
+  oidcAuthentication: expectedOidcAuthentication,
+  oidcSignup: expectedOidcSignup,
+});
 
 test.beforeEach(async ({ context }) => {
   await installReleaseAcceptanceRoute(context);
@@ -186,22 +202,33 @@ test("public website, readiness, and security headers are release-ready", async 
   });
   await expect(enabledSignup.or(disabledSignup)).toBeVisible();
   const signupIsEnabled = await enabledSignup.isVisible();
-  if (expectedAccountAuthentication === "disabled" || expectedAccountSignup === "disabled") {
-    expect(signupIsEnabled).toBe(false);
-  } else if (expectedAccountAuthentication === "ready" && expectedAccountSignup === "ready") {
-    expect(signupIsEnabled).toBe(true);
+  const microsoftSignup = page.getByRole("link", { name: "Sign up with Microsoft" });
+  const passwordSignup = page.getByRole("button", { name: "Create account" });
+  if (expectedSignupMethods) {
+    expect(signupIsEnabled).toBe(expectedSignupMethods.password || expectedSignupMethods.microsoft);
+    await expect(microsoftSignup).toHaveCount(expectedSignupMethods.microsoft ? 1 : 0);
+    await expect(passwordSignup).toHaveCount(expectedSignupMethods.password ? 1 : 0);
   }
   if (signupIsEnabled) {
     await expect(page.getByRole("heading", { level: 1, name: "Create your workspace" })).toBeVisible();
-    await expect(page.getByRole("button", { name: "Create account" })).toBeVisible();
-    const signupVerification = page.getByLabel("Signup verification");
-    await expect(signupVerification).toBeVisible();
-    // Turnstile's iframe can live behind Cloudflare-controlled implementation
-    // details and managed challenges may solve without displaying it. The
-    // response input is created only after the public widget API renders.
-    await expect(signupVerification.locator('input[name="cf-turnstile-response"]')).toHaveCount(1, {
-      timeout: 15_000,
-    });
+    const microsoftSignupIsEnabled = await microsoftSignup.isVisible();
+    const passwordSignupIsEnabled = await passwordSignup.isVisible();
+    expect(microsoftSignupIsEnabled || passwordSignupIsEnabled).toBe(true);
+    if (microsoftSignupIsEnabled) {
+      await expect(microsoftSignup).toHaveAttribute("href", "/api/auth/oidc/start?intent=signup");
+    }
+    if (passwordSignupIsEnabled) {
+      const signupVerification = page.getByLabel("Signup verification");
+      await expect(signupVerification).toBeVisible();
+      // Turnstile's iframe can live behind Cloudflare-controlled implementation
+      // details and managed challenges may solve without displaying it. The
+      // response input is created only after the public widget API renders.
+      await expect(signupVerification.locator('input[name="cf-turnstile-response"]')).toHaveCount(1, {
+        timeout: 15_000,
+      });
+    } else {
+      await expect(page.locator("form")).toHaveCount(0);
+    }
   } else {
     await expect(disabledSignup).toBeVisible();
     await expect(page.getByRole("link", { name: /Open the live demo/ })).toBeVisible();
