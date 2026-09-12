@@ -39,6 +39,7 @@ allow_legacy_minimal_production_health="false"
 allow_pre_router_production="false"
 allow_production_router_maintenance="false"
 allow_development_router_maintenance="false"
+expect_production_live_uncommitted="false"
 expect_development_live_uncommitted="false"
 allow_first_router_forward_repair="false"
 first_router_forward_repair_journal_sha256=""
@@ -310,8 +311,8 @@ verify_business_runtime() {
   [[ "$router_mode" == active || "$router_mode" == maintenance ]] \
     || fail "$project release-router mode is invalid"
   if [[ "$expect_live_uncommitted" == true ]]; then
-    [[ "$project" == "$development_project" && "$router_mode" == maintenance ]] \
-      || fail "development live-uncommitted verification requires durable maintenance mode"
+    [[ "$router_mode" == maintenance ]] \
+      || fail "$project live-uncommitted verification requires durable maintenance mode"
   fi
   if [[ "$router_mode" == active || "$expect_live_uncommitted" == true ]]; then
     detailed_health="$(curl --disable --noproxy '*' --fail --silent --show-error --max-time 10 \
@@ -330,6 +331,27 @@ verify_business_runtime() {
     fi
   fi
   printf '%s' "$router_mode"
+}
+
+resolve_production_public_contract() {
+  local durable_mode="$1"
+  [[ "$durable_mode" == active || "$durable_mode" == maintenance ]] \
+    || fail "production release-router mode is invalid"
+  if [[ "$expect_production_live_uncommitted" == true ]]; then
+    [[ "$allow_production_router_maintenance" == false \
+      && "$allow_first_router_forward_repair" == false ]] \
+      || fail "production router verification flags are ambiguous"
+    [[ "$durable_mode" == maintenance ]] \
+      || fail "production live-uncommitted verification requires durable maintenance mode"
+    printf 'active'
+  elif [[ "$durable_mode" == maintenance ]]; then
+    [[ "$allow_production_router_maintenance" == true \
+      || "$allow_first_router_forward_repair" == true ]] \
+      || fail "production maintenance was not explicitly allowed"
+    printf 'maintenance'
+  else
+    printf 'active'
+  fi
 }
 
 resolve_development_public_contract() {
@@ -520,6 +542,7 @@ while (( $# > 0 )); do
     --allow-pre-router-production) allow_pre_router_production="true"; shift ;;
     --allow-production-router-maintenance) allow_production_router_maintenance="true"; shift ;;
     --allow-development-router-maintenance) allow_development_router_maintenance="true"; shift ;;
+    --expect-production-live-uncommitted) expect_production_live_uncommitted="true"; shift ;;
     --expect-development-live-uncommitted) expect_development_live_uncommitted="true"; shift ;;
     --allow-first-router-forward-repair)
       (( $# >= 2 )) || fail "--allow-first-router-forward-repair requires a digest"
@@ -543,6 +566,14 @@ if [[ "$allow_legacy_minimal_production_health" == true ]]; then
     && "$expected_production_revision" == "$legacy_f8485_revision" \
     && "${ROLLBACK_COMPATIBILITY_ACK:-}" == f8485-one-release-only ]] \
     || fail "minimal production health is restricted to the acknowledged exact f8485 rollback"
+fi
+if [[ "$expect_production_live_uncommitted" == true ]]; then
+  [[ "$scope" == production && "$warmup_host" == production \
+    && -n "$expected_production_revision" \
+    && "$allow_pre_router_production" == false \
+    && "$allow_production_router_maintenance" == false \
+    && "$allow_first_router_forward_repair" == false ]] \
+    || fail "live-uncommitted verification is restricted to the production deployment boundary"
 fi
 if [[ "$allow_pre_router_production" == true ]]; then
   [[ "$scope" == production && -n "$expected_production_revision" ]] \
@@ -589,7 +620,8 @@ elif [[ "$scope" == production || "$scope" == full ]]; then
     || fail "production revision metadata is invalid"
   production_mode="$(verify_business_runtime "$production_project" "$production_network" \
     "$production_alias" "$production_loopback_port" "$production_revision" \
-    "$allow_pre_router_production" "$allow_legacy_minimal_production_health" false)"
+    "$allow_pre_router_production" "$allow_legacy_minimal_production_health" \
+    "$expect_production_live_uncommitted")"
 fi
 if [[ "$scope" == development || "$scope" == full ]]; then
   [[ -f "$development_environment" && ! -L "$development_environment" ]] \
@@ -626,14 +658,17 @@ if [[ "$scope" == preflight ]]; then
 fi
 if [[ "$scope" == production || "$scope" == full ]]; then
   production_warmup=false; [[ "$warmup_host" == production ]] && production_warmup=true
-  if [[ "$production_mode" == maintenance ]]; then
-    [[ "$allow_production_router_maintenance" == true || "$allow_first_router_forward_repair" == true ]] \
-      || fail "production maintenance was not explicitly allowed"
-    public_maintenance_contract_is_valid "$production_hostname" "$production_warmup"
-  else
-    public_contract_is_valid "$production_hostname" "$production_warmup" \
-      "$allow_legacy_minimal_production_health"
-  fi
+  production_public_contract="$(resolve_production_public_contract "$production_mode")"
+  case "$production_public_contract" in
+    active)
+      public_contract_is_valid "$production_hostname" "$production_warmup" \
+        "$allow_legacy_minimal_production_health"
+      ;;
+    maintenance)
+      public_maintenance_contract_is_valid "$production_hostname" "$production_warmup"
+      ;;
+    *) fail "production public contract resolution is invalid" ;;
+  esac
 fi
 if [[ "$scope" == development || "$scope" == full ]]; then
   development_warmup=false; [[ "$warmup_host" == development ]] && development_warmup=true

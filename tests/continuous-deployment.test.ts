@@ -135,9 +135,13 @@ describe("continuous deployment safety boundary", () => {
     );
     expect(deployMain).toContain('candidate_revision="$remote_main_revision"');
     expect(deployMain).toContain('if [[ "$release_forward_repair_pending" == true ]]');
-    expect(deployMain).toContain('candidate_revision="$release_transition_candidate_revision"');
     expect(deployMain).toContain(
       '"$release_transition_candidate_revision" "$remote_main_revision"',
+    );
+    expect(deployMain).toContain('release_forward_repair_superseded="true"');
+    expect(deployMain).toContain("supersede_loaded_release_transition_journal() (");
+    expect(deployMain).toContain(
+      '.candidateRevision = $newCandidateRevision',
     );
     expect(deployMain).toContain(
       'git_as_deploy merge-base --is-ancestor "$source_revision" "$candidate_revision"',
@@ -204,12 +208,20 @@ describe("continuous deployment safety boundary", () => {
       'prepare_revision_file "$compose_environment"',
     );
     const mutationArmed = deployMain.indexOf('mutated="true"');
+    const journalSuperseded = deployMain.lastIndexOf(
+      "supersede_loaded_release_transition_journal \\",
+    );
+    const releaseChild = deployMain.indexOf(
+      'bash "$repository/deploy/release/run-release.sh"',
+    );
     expect(trustedWorkflows).toBeGreaterThan(fetchedMain);
     expect(signalVerified).toBeGreaterThan(trustedWorkflows);
     expect(signalVerified).toBeLessThan(receiverUpdated);
     expect(receiverUpdated).toBeLessThan(candidateEnvironmentPrepared);
     expect(candidateEnvironmentPrepared).toBeLessThan(mutationArmed);
     expect(signalVerified).toBeLessThan(mutationArmed);
+    expect(journalSuperseded).toBeGreaterThan(mutationArmed);
+    expect(journalSuperseded).toBeLessThan(releaseChild);
     expect(installProduction).toContain('readonly github_cli="/usr/bin/gh"');
     expect(installProduction).toContain("GitHub CLI 2.100.0 or newer is required");
     expect(installProduction).toContain("--bundle");
@@ -426,12 +438,20 @@ describe("continuous deployment safety boundary", () => {
     );
   });
 
-  it("recovers journaled same-revision reruns after a host interruption", () => {
-    expect(deployMain).toContain(".candidateRevision == $candidateRevision");
+  it("recovers journaled reruns and safely supersedes them with attested descendants", () => {
+    expect(deployMain).toContain(
+      '(.candidateRevision | type == "string" and test("^[a-f0-9]{40}$"))',
+    );
+    expect(deployMain).toContain(
+      '"$release_transition_candidate_revision" "$expected_candidate_revision"',
+    );
     expect(deployMain).not.toContain(".sourceRevision != .candidateRevision");
     expect(releaseRunner).toContain(".candidateRevision == $candidateRevision");
     expect(releaseRunner).not.toContain(".sourceRevision != $candidateRevision");
     expect(deployMain).toContain('if [[ "$source_revision" == "$candidate_revision" ]]');
+    expect(deployMain).toContain(
+      'superseded forward repair requires the exact source application anchor',
+    );
   });
 
   it("finalizes only an evidenced live-active release left durably in maintenance", () => {
