@@ -7,7 +7,6 @@ readonly script_directory="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P
 readonly repository="$(cd -- "$script_directory/../.." && pwd -P)"
 readonly expected_origin="https://github.com/finlynq/business-finlynq.git"
 readonly compose_environment="/etc/business-finlynq/compose.env"
-readonly external_basic_auth="/home/deploy/epm-finlynq/secrets/external-basic-auth.caddy"
 readonly host_deployment_lock="/var/lib/business-finlynq/deployment-host.lock"
 readonly shared_edge_lock="/var/lib/business-finlynq/shared-edge.lock"
 
@@ -20,7 +19,7 @@ fail() {
 [[ "$(id -u)" == 0 ]] || fail "run this command as root"
 [[ "$repository" == "/home/deploy/business-finlynq" ]] \
   || fail "run this command from the canonical production checkout"
-for command_name in awk bash chmod chown curl docker flock git id install jq readlink sha256sum stat timeout; do
+for command_name in awk bash chmod chown curl docker flock git grep id install jq readlink sha256sum stat timeout; do
   command -v "$command_name" >/dev/null 2>&1 \
     || fail "required command is unavailable: $command_name"
 done
@@ -90,10 +89,9 @@ fi
   && ! -L "$repository/deploy/Caddyfile.container" \
   && "$(stat -c '%U:%G:%a' -- "$repository/deploy/Caddyfile.container")" == "deploy:deploy:644" ]] \
   || fail "the reviewed Caddy configuration is unavailable or unsafe"
-[[ -f "$external_basic_auth" && ! -L "$external_basic_auth" \
-  && -s "$external_basic_auth" \
-  && "$(stat -c '%U:%G:%a' -- "$external_basic_auth")" == "root:root:400" ]] \
-  || fail "the EPM basic-auth include must be a non-empty root-owned mode-0400 file"
+! grep -Eq '^[[:space:]]*basic_auth([[:space:]]|$)' \
+  "$repository/deploy/Caddyfile.container" \
+  || fail "the EPM console must rely on application-owned OIDC, not proxy Basic Auth"
 
 for network_name in business_finlynq_edge business_finlynq_development_edge \
   epm_finlynq_edge consult_finlynq_edge; do
@@ -142,11 +140,10 @@ edge_container="${edge_containers[0]}"
 [[ "$(docker inspect --format '{{.State.Health.Status}}' "$edge_container")" == "healthy" ]] \
   || fail "the shared edge container is not healthy"
 docker inspect --format '{{json .Mounts}}' "$edge_container" \
-  | jq -e --arg source "$external_basic_auth" '
-      any(.[]; .Type == "bind" and .Source == $source
-        and .Destination == "/config/epm-basic-auth" and .RW == false)
+  | jq -e '
+      all(.[]; .Destination != "/config/epm-basic-auth")
     ' >/dev/null \
-  || fail "the live edge does not use the reviewed read-only EPM secret mount"
+  || fail "the live edge still mounts the retired EPM Basic-Auth secret"
 
 production_health="$(curl --fail --silent --show-error --max-time 20 \
   https://business.finlynq.com/api/health)" \
@@ -157,10 +154,19 @@ jq -e 'type == "object" and keys == ["status"] and .status == "ready"' \
 curl --fail --silent --show-error --max-time 20 \
   https://dev.business.finlynq.com/api/health >/dev/null \
   || fail "the development hostname is unavailable through the shared edge"
-epm_status="$(curl --silent --show-error --max-time 20 --output /dev/null \
-  --write-out '%{http_code}' https://epm.finlynq.com/)" \
+epm_headers="$(curl --silent --show-error --max-time 20 --dump-header - \
+  --output /dev/null https://epm.finlynq.com/)" \
   || fail "the EPM hostname is unavailable through the shared edge"
-[[ "$epm_status" == "401" ]] || fail "the EPM console is not protected by basic authentication"
+epm_status="$(awk 'NR == 1 { print $2 }' <<<"$epm_headers")"
+[[ "$epm_status" == "302" ]] \
+  || fail "the EPM console did not begin the application-owned OIDC flow"
+grep -Eiq '^location:[[:space:]]*/auth/login\r?$' <<<"$epm_headers" \
+  || fail "the EPM console did not redirect to its OIDC login endpoint"
+! grep -Eiq '^www-authenticate:' <<<"$epm_headers" \
+  || fail "the EPM console still advertises proxy authentication"
+grep -Eiq '^permissions-policy:[[:space:]]*camera=\(\), microphone=\(\), geolocation=\(\), payment=\(\)\r?$' \
+  <<<"$epm_headers" \
+  || fail "the EPM console response is missing its browser permissions policy"
 curl --fail --silent --show-error --max-time 20 \
   https://consult.finlynq.com/ >/dev/null \
   || fail "the consultation hostname is unavailable through the shared edge"

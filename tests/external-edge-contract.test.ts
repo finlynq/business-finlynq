@@ -243,7 +243,8 @@ describe("externally managed edge contract", () => {
     expect(verifier).toContain('"$address|80|80/tcp"');
     expect(verifier).toContain('"$address|443|443/tcp"');
     expect(verifier).toContain('"$address|443|443/udp"');
-    expect(verifier).toContain("length == 6");
+    expect(verifier).toContain("length == 5");
+    expect(verifier).toContain('all(.[]; .Destination != "/config/epm-basic-auth")');
     expect(verifier).toContain(
       'readonly consult_route_source="/home/deploy/consult-finlynq/deploy/server04/Caddyfile.consult-finlynq"',
     );
@@ -270,6 +271,11 @@ describe("externally managed edge contract", () => {
     expect(verifier).toContain('public_contract_is_valid "$production_hostname"');
     expect(verifier).toContain('public_contract_is_valid "$development_hostname"');
     expect(verifier).toContain('http_redirect_is_exact "$epm_hostname"');
+    expect(verifier).toContain('[[ "$epm_status" == 302 ]]');
+    expect(verifier).toContain("/auth/login");
+    expect(verifier).toContain("www-authenticate");
+    expect(verifier).toContain("permissions-policy");
+    expect(verifier).not.toContain('[[ "$epm_status" == 401 ]]');
     expect(verifier).toContain("positive edge log control was not observed");
     expect(verifier).toContain("external edge logs could not be read");
     expect(verifier).toContain("callback_targets+=(");
@@ -598,11 +604,11 @@ describe("externally managed edge contract", () => {
     expect(verifier).toContain(
       '[[ "$actual_edge_networks" == "$expected_edge_networks_sorted" ]]',
     );
-    expect(verifier).toContain("length == 6");
-    expect(verifier).toContain('--arg secretSource "$epm_secret_source"');
+    expect(verifier).toContain("length == 5");
+    expect(verifier).not.toContain('epm_secret_source');
     expect(verifier).toContain('--arg consultSource "$consult_route_source"');
     expect(verifier).toContain(
-      "external edge mounts differ from the protected full Caddy, EPM, and Consult inventory",
+      "external edge mounts differ from the protected Caddy and Consult inventory",
     );
     expect(verifier).toContain(
       'if [[ "$scope" != production ]]; then\n  development_outer_health=',

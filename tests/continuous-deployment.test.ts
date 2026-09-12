@@ -608,9 +608,8 @@ describe("continuous deployment safety boundary", () => {
 
   it("reconciles only the shared edge after validating every attached deployment", () => {
     expect(reconcileSharedEdge).toContain('[[ "$(id -u)" == 0 ]]');
-    expect(reconcileSharedEdge).toContain('stat -c \'%U:%G:%a\' -- "$external_basic_auth"');
-    expect(reconcileSharedEdge).toContain('== "root:root:400"');
-    expect(reconcileSharedEdge).toContain("/config/epm-basic-auth");
+    expect(reconcileSharedEdge).not.toContain("external_basic_auth");
+    expect(reconcileSharedEdge).toContain('all(.[]; .Destination != "/config/epm-basic-auth")');
     expect(reconcileSharedEdge).toContain("--project-name business-finlynq");
     for (const network of [
       "business_finlynq_edge",
@@ -639,7 +638,9 @@ describe("continuous deployment safety boundary", () => {
     expect(reconcileSharedEdge).toContain("https://business.finlynq.com/api/health");
     expect(reconcileSharedEdge).toContain("https://dev.business.finlynq.com/api/health");
     expect(reconcileSharedEdge).toContain("https://epm.finlynq.com/");
-    expect(reconcileSharedEdge).toContain('[[ "$epm_status" == "401" ]]');
+    expect(reconcileSharedEdge).toContain('[[ "$epm_status" == "302" ]]');
+    expect(reconcileSharedEdge).toContain("/auth/login");
+    expect(reconcileSharedEdge).toContain("www-authenticate");
     expect(reconcileSharedEdge).toContain("https://consult.finlynq.com/");
   });
 
