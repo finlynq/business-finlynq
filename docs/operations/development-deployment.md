@@ -36,6 +36,32 @@ sudo systemctl start business-finlynq-development-deployment.service
 
 The installer creates independent random database credentials and encryption secrets without printing them. It also creates the external development edge network and gives `deploy` narrowly scoped permission to start, inspect, and read the journal for the development deployment service.
 
+The installer also publishes a root-owned, read-only finalization verifier. It
+accepts no arguments and derives the accepted revision from protected state, so
+the `deploy` account can request the same complete post-deployment proof without
+selecting files or subcommands:
+
+```bash
+sudo /usr/local/sbin/business-finlynq-verify-development-finalized
+```
+
+The verifier requires a successful inactive deployment service, exact parity
+between the protected accepted revision, Compose environment, and immutable app
+and worker image IDs, no failure or quarantine state, one healthy durably active
+release router, and the complete read-only development shared-edge contract. It
+also refuses stale installed verifier code by matching both root-owned verifier
+blobs to the accepted Git revision. A successful run ends with
+`FINALIZED revision=<full-sha>`.
+
+If an accepted release changes either verifier blob, this command fails closed
+until an operator reruns the installer from that clean accepted `dev` checkout.
+Ordinary application-only releases do not require that root refresh.
+
+This is an operational consistency check, not an attestation against a
+compromised `deploy` account. On hosts where `deploy` can access the Docker
+daemon, that account is already root-equivalent. Removing that broader access
+requires a separate review of every deployment and troubleshooting workflow.
+
 The environment sets `BUSINESS_FINLYNQ_EDGE_MODE=external` because shared-edge contract v1 is the only supported public-ingress mode. The installer requires the pre-existing `business_finlynq_development_edge` internal bridge and never creates or repairs it. `DEVELOPMENT_REQUIRE_PUBLIC_ACCEPTANCE=false` permits the first internal deployment before central route activation. After central cutover, rerun the installer with `--external-edge --require-public-acceptance`. That protected update changes only `DEVELOPMENT_REQUIRE_PUBLIC_ACCEPTANCE`; it does not enable login, email, Turnstile, bank-feed, or other provider gates. Rerun the development deployer at the same accepted revision to force configuration reconciliation and prove public browser acceptance. When public acceptance is required, the deployer waits up to two minutes for a private-preview `/api/health` request through the exact development hostname to return `ready` before starting browser acceptance. The request carries the deployment's ephemeral preview token; uncredentialed public health and application routes remain in maintenance with `503` until activation. The acceptance container marks that public target as an already managed server so Playwright cannot fall back to starting a second local Next.js process; ordinary CI browser runs still start their own reviewed build.
 
 ## Enable every development feature

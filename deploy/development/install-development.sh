@@ -19,6 +19,9 @@ readonly shared_state_directory="/var/lib/business-finlynq"
 readonly host_deployment_lock="$shared_state_directory/deployment-host.lock"
 readonly development_edge_network="business_finlynq_development_edge"
 readonly deploy_target="/usr/local/sbin/business-finlynq-deploy-development"
+readonly finalization_verifier_target="/usr/local/sbin/business-finlynq-verify-development-finalized"
+readonly installed_verifier_directory="/usr/local/libexec/business-finlynq"
+readonly external_edge_verifier_target="$installed_verifier_directory/verify-external-edge.sh"
 readonly service_target="/etc/systemd/system/business-finlynq-development-deployment.service"
 readonly timer_target="/etc/systemd/system/business-finlynq-development-deployment.timer"
 readonly sudoers_target="/etc/sudoers.d/business-finlynq-development-deployment"
@@ -109,16 +112,20 @@ if [[ "$enable_all_features" != true ]] \
 fi
 
 [[ "$(id -u)" == 0 ]] || fail "run this installer as root"
-for command_name in awk chmod chown docker getent git id install mktemp mv openssl readlink rm runuser \
+for command_name in awk chmod chown docker flock getent git id install mktemp mv openssl readlink rm runuser \
   stat sync systemctl visudo wc; do
   command -v "$command_name" >/dev/null 2>&1 \
     || fail "required command is unavailable: $command_name"
 done
-for source_file in deploy-development.sh business-finlynq-development-deployment.service \
+for source_file in deploy-development.sh verify-development-finalized.sh \
+  business-finlynq-development-deployment.service \
   business-finlynq-development-deployment.timer; do
   [[ -f "$script_directory/$source_file" && ! -L "$script_directory/$source_file" ]] \
     || fail "installer source is unavailable: $source_file"
 done
+[[ -f "$script_directory/../edge/verify-external-edge.sh" \
+  && ! -L "$script_directory/../edge/verify-external-edge.sh" ]] \
+  || fail "installer source is unavailable: ../edge/verify-external-edge.sh"
 getent passwd deploy >/dev/null || fail "the deploy account is unavailable"
 getent group business-finlynq-secrets >/dev/null \
   || fail "the business-finlynq-secrets group is unavailable"
@@ -411,6 +418,11 @@ network_internal="$(docker network inspect --format '{{.Internal}}' "$developmen
 
 install -d -o root -g root -m 0755 -- /usr/local/sbin
 install -o root -g root -m 0550 -- "$script_directory/deploy-development.sh" "$deploy_target"
+install -o root -g root -m 0550 \
+  -- "$script_directory/verify-development-finalized.sh" "$finalization_verifier_target"
+install -d -o root -g root -m 0755 -- "$installed_verifier_directory"
+install -o root -g root -m 0550 \
+  -- "$script_directory/../edge/verify-external-edge.sh" "$external_edge_verifier_target"
 install -o root -g root -m 0644 \
   -- "$script_directory/business-finlynq-development-deployment.service" "$service_target"
 install -o root -g root -m 0644 \
@@ -418,7 +430,7 @@ install -o root -g root -m 0644 \
 
 sudoers_temporary="$(mktemp /etc/sudoers.d/.business-finlynq-development.XXXXXX)"
 printf '%s\n' \
-  'deploy ALL=(root) NOPASSWD: /usr/bin/systemctl start business-finlynq-development-deployment.service, /usr/bin/systemctl status business-finlynq-development-deployment.service --no-pager, /usr/bin/journalctl -u business-finlynq-development-deployment.service --since today --no-pager' \
+  'deploy ALL=(root) NOPASSWD: /usr/bin/systemctl start business-finlynq-development-deployment.service, /usr/bin/systemctl status business-finlynq-development-deployment.service --no-pager, /usr/bin/journalctl -u business-finlynq-development-deployment.service --since today --no-pager, /usr/local/sbin/business-finlynq-verify-development-finalized' \
   >"$sudoers_temporary"
 chmod 0440 "$sudoers_temporary"
 visudo -cf "$sudoers_temporary" >/dev/null
