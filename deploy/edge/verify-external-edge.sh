@@ -97,6 +97,67 @@ header_value_is_exact() {
   ' <<<"$headers"
 }
 
+# Cache-Control directives are case-insensitive and may share one field line.
+# Require one unambiguous field containing a bare no-store directive. Reject
+# directives that permit shared/public caching or a positive freshness lifetime.
+cache_control_is_safe_no_store() {
+  local headers="$1"
+  awk '
+    BEGIN { cr = sprintf("%c", 13) }
+    {
+      line = $0
+      if (substr(line, length(line), 1) == cr) {
+        line = substr(line, 1, length(line) - 1)
+      }
+      separator = index(line, ":")
+      if (separator == 0) next
+      name = substr(line, 1, separator - 1)
+      if (tolower(name) != "cache-control") next
+      header_count++
+      header_value = substr(line, separator + 1)
+      sub(/^[ \t]*/, "", header_value)
+      sub(/[ \t]*$/, "", header_value)
+    }
+    END {
+      if (header_count != 1 || header_value == "") exit 1
+      directive_count = split(header_value, directives, ",")
+      for (part_number = 1; part_number <= directive_count; part_number++) {
+        directive = directives[part_number]
+        sub(/^[ \t]*/, "", directive)
+        sub(/[ \t]*$/, "", directive)
+        if (directive == "") exit 1
+
+        equals = index(directive, "=")
+        if (equals == 0) {
+          directive_name = tolower(directive)
+          directive_value = ""
+          has_value = 0
+        } else {
+          directive_name = substr(directive, 1, equals - 1)
+          directive_value = substr(directive, equals + 1)
+          sub(/^[ \t]*/, "", directive_name)
+          sub(/[ \t]*$/, "", directive_name)
+          sub(/^[ \t]*/, "", directive_value)
+          sub(/[ \t]*$/, "", directive_value)
+          directive_name = tolower(directive_name)
+          has_value = 1
+        }
+        if (directive_name !~ /^[a-z][a-z0-9-]*$/ || seen[directive_name]++) exit 1
+
+        if (directive_name == "no-store") {
+          if (has_value) exit 1
+          found_no_store = 1
+        } else if (directive_name == "public" || directive_name == "s-maxage") {
+          exit 1
+        } else if (directive_name == "max-age") {
+          if (!has_value || directive_value !~ /^0+$/) exit 1
+        }
+      }
+      exit !found_no_store
+    }
+  ' <<<"$headers"
+}
+
 container_for_service() {
   local project="$1" service="$2" query container
   local -a containers=()
@@ -355,7 +416,7 @@ verify_public_liveness_contract() {
   wait_for_public_liveness "$hostname" "$headers" "$body" "$attempt_limit"
   jq -e 'type == "object" and keys == ["status"] and .status == "live"' "$body" >/dev/null \
     || fail "$hostname returned an unexpected liveness response"
-  header_value_is_exact "$(<"$headers")" cache-control no-store \
+  cache_control_is_safe_no_store "$(<"$headers")" \
     || fail "$hostname liveness response is missing no-store"
   verify_security_headers "$hostname" "$headers"
 }
@@ -376,7 +437,7 @@ public_contract_is_valid() {
   [[ "$status" == 200 ]] || fail "$hostname readiness route returned HTTP $status"
   jq -e 'type == "object" and keys == ["status"] and .status == "ready"' "$body" >/dev/null \
     || fail "$hostname exposed a non-minimal public readiness response"
-  header_value_is_exact "$(<"$headers")" cache-control no-store \
+  cache_control_is_safe_no_store "$(<"$headers")" \
     || fail "$hostname readiness response is missing no-store"
   verify_security_headers "$hostname" "$headers"
   request_id="$(awk -F: 'BEGIN { cr = sprintf("%c", 13) }

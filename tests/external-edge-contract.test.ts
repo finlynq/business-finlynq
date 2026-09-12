@@ -14,6 +14,7 @@ const rollback = read("deploy/release/run-application-rollback.sh");
 const continuousDeployment = read("deploy/continuous-deployment/deploy-main.sh");
 const productionMonitor = read("deploy/monitoring/check-production.sh");
 const observabilityDrill = read("deploy/monitoring/run-observability-drill.sh");
+const releaseRouter = read("deploy/release/router/Caddyfile");
 const boundaryReadme = read("deploy/edge/README.md");
 const legacyReconciler = read("deploy/edge/legacy/reconcile-shared-edge-v0.sh");
 const gitBash = "C:\\Program Files\\Git\\bin\\bash.exe";
@@ -46,6 +47,26 @@ header_value_is_exact "$FIXTURE_HEADERS" "$HEADER_NAME" "$HEADER_VALUE"
         FIXTURE_HEADERS: headers.toString("utf8"),
         HEADER_NAME: name,
         HEADER_VALUE: value,
+      },
+    },
+  );
+
+const checkCacheControl = (headers: Buffer) =>
+  spawnSync(
+    bashExecutable ?? "/bin/bash",
+    [
+      "-c",
+      `
+set -Eeuo pipefail
+${extractShellFunction(verifier, "cache_control_is_safe_no_store")}
+cache_control_is_safe_no_store "$FIXTURE_HEADERS"
+`,
+    ],
+    {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        FIXTURE_HEADERS: headers.toString("utf8"),
       },
     },
   );
@@ -160,6 +181,48 @@ describe("shared-edge contract v1 ownership", () => {
     const altered = Buffer.from(["Location: https://attacker.example/", "", ""].join("\r\n"));
     expect(checkHeader(duplicated, "location", "/app").status).not.toBe(0);
     expect(checkHeader(altered, "location", "/app").status).not.toBe(0);
+  });
+
+  it("accepts the actual router Cache-Control response with real CRLF bytes", () => {
+    const routerCacheControl = releaseRouter.match(/Cache-Control "([^"]+)"/u)?.[1];
+    expect(routerCacheControl).toBe("no-store, max-age=0");
+    const actualRouterResponse = Buffer.from(
+      [
+        "HTTP/2 200",
+        `Cache-Control: ${routerCacheControl}`,
+        "Content-Type: application/json; charset=utf-8",
+        "",
+        "",
+      ].join("\r\n"),
+      "utf8",
+    );
+
+    expect(checkCacheControl(actualRouterResponse).status).toBe(0);
+    expect(actualRouterResponse.includes(0x0d)).toBe(true);
+    expect(actualRouterResponse.includes(0x0a)).toBe(true);
+  });
+
+  it("rejects unsafe or ambiguous Cache-Control directives with real CRLF bytes", () => {
+    const response = (...fields: string[]) =>
+      Buffer.from(["HTTP/2 200", ...fields, "", ""].join("\r\n"), "utf8");
+
+    expect(checkCacheControl(response("Cache-Control: No-Store, MAX-AGE=0")).status).toBe(0);
+    expect(checkCacheControl(response()).status).not.toBe(0);
+    expect(
+      checkCacheControl(
+        response("Cache-Control: no-store", "Cache-Control: max-age=0"),
+      ).status,
+    ).not.toBe(0);
+    for (const value of [
+      "no-store, no-store",
+      "no-store=1",
+      "no-store,, max-age=0",
+      "no-store, public",
+      "no-store, s-maxage=0",
+      "no-store, max-age=1",
+    ]) {
+      expect(checkCacheControl(response(`Cache-Control: ${value}`)).status).not.toBe(0);
+    }
   });
 
   it("does not use grep's backslash-r escape as a carriage-return check", () => {
