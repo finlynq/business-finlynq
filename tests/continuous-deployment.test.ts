@@ -45,6 +45,7 @@ describe("continuous deployment safety boundary", () => {
       "  push:",
       "    branches:",
       "      - main",
+      "      - stage",
       "      - dev",
       "  pull_request:",
     ].join("\n"));
@@ -474,12 +475,12 @@ describe("continuous deployment safety boundary", () => {
     expect(exit).toBeGreaterThan(reconcile);
   });
 
-  it("signals dev only after its complete quality gate succeeds", () => {
-    expect(qualityGateWorkflow).toContain("signal-development:");
-    expect(qualityGateWorkflow).toContain("github.ref == 'refs/heads/dev'");
+  it("signals stage only after its complete quality gate succeeds", () => {
+    expect(qualityGateWorkflow).toContain("signal-staging:");
+    expect(qualityGateWorkflow).toContain("github.ref == 'refs/heads/stage'");
     expect(qualityGateWorkflow).toContain("needs: verify");
-    expect(qualityGateWorkflow).toContain('tag="deploy-development-$CANDIDATE_REVISION"');
-    expect(qualityGateWorkflow).toContain("'+refs/heads/dev:refs/remotes/origin/dev'");
+    expect(qualityGateWorkflow).toContain('tag="deploy-stage-$CANDIDATE_REVISION"');
+    expect(qualityGateWorkflow).toContain("'+refs/heads/stage:refs/remotes/origin/stage'");
   });
 
   it("requires network-wide unique router and app aliases in accepted runtimes", () => {
@@ -498,9 +499,9 @@ describe("continuous deployment safety boundary", () => {
     );
   });
 
-  it("deploys dev through a disjoint checkout, state tree, port, and resource namespace", () => {
+  it("deploys stage through a disjoint checkout, state tree, port, and resource namespace", () => {
     expect(deployDevelopment).toContain(
-      'readonly repository="/home/deploy/business-finlynq-development"',
+      'readonly repository="/home/deploy/business-finlynq-stage"',
     );
     expect(deployDevelopment).toContain(
       'readonly compose_environment="/etc/business-finlynq-development/compose.env"',
@@ -509,9 +510,9 @@ describe("continuous deployment safety boundary", () => {
       'readonly state_directory="/var/lib/business-finlynq-development"',
     );
     expect(deployDevelopment).toContain(
-      'candidate_revision="$(git_as_deploy rev-parse refs/remotes/origin/dev)"',
+      'candidate_revision="$(git_as_deploy rev-parse refs/remotes/origin/stage)"',
     );
-    expect(deployDevelopment).toContain('signal_tag="deploy-development-$candidate_revision"');
+    expect(deployDevelopment).toContain('signal_tag="deploy-stage-$candidate_revision"');
     expect(deployDevelopment).toContain(
       'readonly installed_deployer="/usr/local/sbin/business-finlynq-deploy-development"',
     );

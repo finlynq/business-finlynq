@@ -9,7 +9,7 @@ script_directory="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)" || {
   exit 1
 }
 readonly script_directory
-readonly repository="/home/deploy/business-finlynq-development"
+readonly repository="/home/deploy/business-finlynq-stage"
 readonly expected_origin="https://github.com/finlynq/business-finlynq.git"
 readonly configuration_directory="/etc/business-finlynq-development"
 readonly secret_directory="$configuration_directory/secrets"
@@ -133,15 +133,15 @@ if [[ ! -e "$repository" ]]; then
     HOME=/home/deploy USER=deploy LOGNAME=deploy SHELL=/bin/bash \
     PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
     GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null \
-    git clone --branch dev --single-branch --no-tags "$expected_origin" "$repository"
+    git clone --branch stage --single-branch --no-tags "$expected_origin" "$repository"
 fi
 [[ -d "$repository/.git" && ! -L "$repository" \
   && "$(stat -c '%U:%G' -- "$repository")" == deploy:deploy ]] \
   || fail "the development checkout is unavailable or unsafe"
 development_origin="$(runuser -u deploy -- git -C "$repository" remote get-url origin)"
 development_branch="$(runuser -u deploy -- git -C "$repository" symbolic-ref --short HEAD)"
-[[ "$development_origin" == "$expected_origin" && "$development_branch" == dev ]] \
-  || fail "the development checkout is not the reviewed dev branch"
+[[ "$development_origin" == "$expected_origin" && "$development_branch" == stage ]] \
+  || fail "the staging checkout is not the reviewed stage branch"
 
 install -d -o root -g deploy -m 0750 -- "$configuration_directory"
 install -d -o root -g business-finlynq-secrets -m 0750 -- "$secret_directory"

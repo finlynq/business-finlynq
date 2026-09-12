@@ -1,19 +1,24 @@
-# Development deployment from `dev`
+# Staging deployment from `stage`
 
-Business Finlynq keeps two long-lived deployment branches with disjoint targets:
+Business Finlynq uses three long-lived branches with a one-way promotion path:
 
-- `dev` deploys to the development stack at `dev.business.finlynq.com`;
+- `dev` is the daily development branch and has no hosted deployment;
+- `stage` deploys to the staging stack at `dev.business.finlynq.com`;
 - `main` deploys to production at `business.finlynq.com`.
 
-A same-repository push to `dev` must pass the complete `quality-gate` job before CI publishes the immutable `deploy-development-<full-sha>` tag. The development timer accepts only that exact tag and a fast-forward `origin/dev` commit. Production instead accepts only the exact keyless deployment-signal attestation for `origin/main` documented in [Continuous deployment from main](./continuous-deployment.md).
+A same-repository push to `stage` must pass the complete `quality-gate` job before CI publishes the immutable `deploy-stage-<full-sha>` tag. The staging timer accepts only that exact tag and a fast-forward `origin/stage` commit. Production instead accepts only the exact keyless deployment-signal attestation for `origin/main` documented in [Continuous deployment from main](./continuous-deployment.md).
+
+## Local development checkout
+
+Daily work happens on `dev` in `/home/deploy/business-finlynq-dev`. That checkout already contains the complete Next.js frontend and server code, so it does not need a separate hosted frontend. It also does not need a third long-lived database. Unit, lint, type, and static checks can run without one; database integration tests should use a disposable local PostgreSQL database through the `TEST_DATABASE_URL`, `TEST_APP_DATABASE_URL`, and `TEST_AUTH_WORKER_DATABASE_URL` settings documented in the repository README. Never point local development at the staging or production database.
 
 ## Isolation contract
 
 The development stack uses its own checkout, Compose project, loopback port, database volume, networks, secrets, and deployment state:
 
-| Boundary | Development | Production |
+| Boundary | Staging | Production |
 | --- | --- | --- |
-| Checkout | `/home/deploy/business-finlynq-development` | `/home/deploy/business-finlynq` |
+| Checkout | `/home/deploy/business-finlynq-stage` | `/home/deploy/business-finlynq` |
 | Compose project | `business-finlynq-development` | `business-finlynq` |
 | Configuration | `/etc/business-finlynq-development` | `/etc/business-finlynq` |
 | State | `/var/lib/business-finlynq-development` | `/var/lib/business-finlynq` |
@@ -23,11 +28,11 @@ The development stack uses its own checkout, Compose project, loopback port, dat
 
 Both deployment services acquire `/var/lib/business-finlynq/deployment-host.lock`, so builds and migrations cannot overlap on the shared server. The centrally owned shared edge joins the development ingress network only to reach the `development-app` alias; the application database and private network remain inaccessible from production containers.
 
-Development data is disposable and must never be restored from an unsanitized production backup. Development starts with demo login/writes and the real-business write engine enabled, but real account login, signup, email delivery, Turnstile, and bank feeds disabled. Enable those identity gates only after installing development-specific provider credentials; never copy production provider credentials or encryption keys.
+Staging data is disposable and must never be restored from an unsanitized production backup. Staging starts with demo login/writes and the real-business write engine enabled, but real account login, signup, email delivery, Turnstile, and bank feeds disabled. Enable those identity gates only after installing staging-specific provider credentials; never copy production provider credentials or encryption keys.
 
 ## Installation
 
-After `dev` exists remotely and its first CI run has published the immutable signal, run from a clean reviewed checkout:
+After `stage` exists remotely and its first CI run has published the immutable signal, run from a clean reviewed checkout:
 
 ```bash
 sudo bash deploy/development/install-development.sh --enable
@@ -72,7 +77,7 @@ sudo stat -c '%U:%G:%a %n' -- \
 
 The two `awk` results must each be `1`, and both `stat` results must begin with `root:business-finlynq-secrets:440`; these checks do not print either secret. When entering a secret through a browser-hosted server console, confirm the console keyboard layout before the masked prompt—on a US layout, underscore is `Shift`+`-`. Never omit or substitute a character that the console renders unexpectedly; verify the installed credential with its provider before enabling the feature gates.
 
-From a clean, reviewed `dev` checkout, opt in explicitly with the non-secret sender metadata and Turnstile site key:
+From a clean, reviewed `stage` checkout, opt in explicitly with the non-secret sender metadata and Turnstile site key:
 
 ```bash
 sudo bash deploy/development/install-development.sh \
@@ -167,7 +172,7 @@ On the one-time transition from the old global latch, the latch’s `sourceRevis
 
 ## Promotion
 
-Develop and test on `dev`, then merge the exact accepted `dev` revision into `main` with a normal fast-forward or reviewed pull request. Never force-push either deployment branch. Production remains unchanged until the resulting `main` commit passes its own quality gate and receives its separate production deployment signal.
+Develop and test on `dev`, promote the reviewed revision to `stage`, and validate the deployed staging stack. Then merge the exact accepted `stage` revision into `main` with a normal fast-forward or reviewed pull request. Never force-push a long-lived branch. Production remains unchanged until the resulting `main` commit passes its own quality gate and receives its separate production deployment signal.
 
 Inspect the development automation with:
 
