@@ -164,7 +164,7 @@ describe("stable fail-closed release router", () => {
     const edgeNetwork = between(
       networks,
       "  business_finlynq_edge:\n",
-      "\n  business_finlynq_development_edge:\n",
+      "\n  business_finlynq_restore_drill:\n",
     );
     expect(edgeNetwork).not.toContain("internal: true");
   });
@@ -621,14 +621,12 @@ describe("stable fail-closed release router", () => {
       "docker network connect --alias production-app",
     );
     expect(externalVerifier).toContain(
-      'pre_router_legacy_mode="true"',
+      'readonly legacy_f8485_image_id="sha256:2135e8e936bf8befdc44132771698dfb942fc97dccb19b71eeb3db9f3e5b66b5"',
     );
     expect(externalVerifier).toContain(
-      '[[ "$app_image" == "$legacy_f8485_image_id" ]]',
+      '.[0].Image == $legacyImage',
     );
-    expect(externalVerifier).toContain(
-      'control_path="/api/health?edge_log_control=$control_sentinel"',
-    );
+    expect(externalVerifier).not.toContain("edge_log_control");
     expect(release).toContain(
       'pre_cutover_edge_arguments+=(--allow-f8485-minimal-production-health)',
     );

@@ -185,7 +185,6 @@ refresh_installed_deployer_if_needed() {
 
 compose() {
   local edge_mode edge_mode_count
-  local -a compose_files=(-f "$repository/docker-compose.yml")
   local -a controlled_environment=()
   edge_mode="$(awk -F= '$1 == "BUSINESS_FINLYNQ_EDGE_MODE" { sub(/^[^=]*=/, ""); print }' \
     "$compose_environment")" \
@@ -195,12 +194,9 @@ compose() {
     || fail "BUSINESS_FINLYNQ_EDGE_MODE definitions could not be counted"
   [[ "$edge_mode_count" == 0 || "$edge_mode_count" == 1 ]] \
     || fail "BUSINESS_FINLYNQ_EDGE_MODE must be defined at most once"
-  edge_mode="${edge_mode:-compose}"
-  case "$edge_mode" in
-    compose) ;;
-    external) compose_files+=(-f "$repository/deploy/edge/docker-compose.external.yml") ;;
-    *) fail "BUSINESS_FINLYNQ_EDGE_MODE must be compose or external" ;;
-  esac
+  edge_mode="${edge_mode:-external}"
+  [[ "$edge_mode" == external ]] \
+    || fail "shared-edge contract v1 requires BUSINESS_FINLYNQ_EDGE_MODE=external"
   if [[ -n "$release_acceptance_token" ]]; then
     [[ "$release_acceptance_token" =~ ^[a-f0-9]{64}$ ]] \
       || fail "development release-acceptance token is invalid"
@@ -212,28 +208,23 @@ compose() {
     --project-name "$project" \
     --project-directory "$repository" \
     --env-file "$compose_environment" \
-    "${compose_files[@]}" "$@"
+    -f "$repository/docker-compose.yml" "$@"
 }
 
 compose_release_router_build() {
   local edge_mode edge_mode_count
-  local -a compose_files=(-f "$repository/docker-compose.yml")
   edge_mode="$(awk -F= '$1 == "BUSINESS_FINLYNQ_EDGE_MODE" { sub(/^[^=]*=/, ""); print }' \
     "$compose_environment")" || return 1
   edge_mode_count="$(awk -F= '$1 == "BUSINESS_FINLYNQ_EDGE_MODE" { count++ } END { print count + 0 }' \
     "$compose_environment")" || return 1
   [[ "$edge_mode_count" == 0 || "$edge_mode_count" == 1 ]] || return 1
-  edge_mode="${edge_mode:-compose}"
-  case "$edge_mode" in
-    compose) ;;
-    external) compose_files+=(-f "$repository/deploy/edge/docker-compose.external.yml") ;;
-    *) return 1 ;;
-  esac
+  edge_mode="${edge_mode:-external}"
+  [[ "$edge_mode" == external ]] || return 1
   env -i PATH="$clean_path" docker compose \
     --project-name "$release_router_build_project" \
     --project-directory "$repository" \
     --env-file "$compose_environment" \
-    "${compose_files[@]}" build --provenance=false --sbom=false \
+    -f "$repository/docker-compose.yml" build --provenance=false --sbom=false \
     --build-arg "SOURCE_DATE_EPOCH=$release_router_source_date_epoch" release_router
 }
 
@@ -285,37 +276,31 @@ verify_external_edge_if_selected() {
   selected_mode="$(awk -F= '$1 == "BUSINESS_FINLYNQ_EDGE_MODE" { sub(/^[^=]*=/, ""); print }' \
     "$compose_environment")" \
     || fail "BUSINESS_FINLYNQ_EDGE_MODE could not be read"
-  selected_mode="${selected_mode:-compose}"
-  [[ "$selected_mode" == compose || "$selected_mode" == external ]] \
-    || fail "BUSINESS_FINLYNQ_EDGE_MODE must be compose or external"
-  [[ "$selected_mode" == external ]] || return 0
+  selected_mode="${selected_mode:-external}"
+  [[ "$selected_mode" == external ]] \
+    || fail "shared-edge contract v1 requires BUSINESS_FINLYNQ_EDGE_MODE=external"
 
-  # The installed verifier can describe an older ingress topology. Stage the
-  # verifier and its reviewed route fragment directly from the immutable,
-  # CI-signalled candidate object instead. Root owns the private staging tree,
-  # and each file must round-trip to the exact Git blob before it is executed.
+  # The installed verifier can describe an older ingress topology. Stage only
+  # the read-only verifier from the immutable, CI-signalled candidate object.
+  # Shared-edge route files remain exclusively owned by the central repository.
   (
-    local staging_root verifier_path route_path relative_path target_path
+    local staging_root verifier_path relative_path target_path
     local expected_oid observed_oid
     staging_root="$(mktemp -d \
       "$state_directory/.candidate-edge-verifier.${verifier_revision}.XXXXXX")" \
       || fail "candidate external-edge verifier staging could not be created"
     verifier_path="$staging_root/deploy/edge/verify-external-edge.sh"
-    route_path="$staging_root/deploy/edge/Caddyfile.business-external"
     cleanup_candidate_verifier_staging() {
-      rm -f -- "$verifier_path" "$route_path"
+      rm -f -- "$verifier_path"
       rmdir -- "$staging_root/deploy/edge" "$staging_root/deploy" "$staging_root" \
         2>/dev/null || true
     }
     trap cleanup_candidate_verifier_staging EXIT
     install -d -o root -g root -m 0700 -- "$staging_root/deploy/edge" \
       || fail "candidate external-edge verifier staging hierarchy could not be prepared"
-    for relative_path in \
-      deploy/edge/verify-external-edge.sh \
-      deploy/edge/Caddyfile.business-external; do
+    for relative_path in deploy/edge/verify-external-edge.sh; do
       case "$relative_path" in
         deploy/edge/verify-external-edge.sh) target_path="$verifier_path" ;;
-        deploy/edge/Caddyfile.business-external) target_path="$route_path" ;;
         *) fail "unexpected candidate external-edge verifier source" ;;
       esac
       expected_oid="$(git_as_deploy rev-parse \
@@ -329,12 +314,10 @@ verify_external_edge_if_selected() {
         && -s "$target_path" ]] \
         || fail "candidate external-edge verifier staging differs from its Git blob: $relative_path"
     done
-    chown root:root -- "$verifier_path" "$route_path" \
+    chown root:root -- "$verifier_path" \
       || fail "candidate external-edge verifier staging ownership could not be set"
     chmod 0500 "$verifier_path" \
       || fail "candidate external-edge verifier staging mode could not be set"
-    chmod 0400 "$route_path" \
-      || fail "candidate external-edge route staging mode could not be set"
     bash "$verifier_path" --scope development --warmup-host development \
       --allow-development-router-maintenance
   )
@@ -796,8 +779,6 @@ assert_fresh_development_resources() {
   local -a protected_data_volumes=(
     business_finlynq_development_pgdata
     business_finlynq_development_pgdata_clamav
-    business_finlynq_development_caddy_data
-    business_finlynq_development_caddy_config
   )
   local -a protected_internal_networks=(
     business_finlynq_development_private
@@ -837,27 +818,18 @@ assert_fresh_development_resources() {
     || fail "the installer-attested development edge network is unavailable"
   edge_mode="$(read_environment_value BUSINESS_FINLYNQ_EDGE_MODE)" \
     || fail "the development edge mode could not be read for fresh installation"
-  [[ "$edge_mode" == compose || "$edge_mode" == external ]] \
-    || fail "BUSINESS_FINLYNQ_EDGE_MODE must be compose or external"
+  [[ "$edge_mode" == external ]] \
+    || fail "shared-edge contract v1 requires BUSINESS_FINLYNQ_EDGE_MODE=external"
   edge_inspection="$(docker network inspect business_finlynq_development_edge)" \
     || fail "the development edge network could not be inspected"
-  jq -e --arg mode "$edge_mode" '
+  jq -e '
     length == 1 and .[0].Name == "business_finlynq_development_edge" and
     .[0].Driver == "bridge" and .[0].Scope == "local" and
     .[0].Attachable == false and .[0].Ingress == false and
     (.[0].Options == null or .[0].Options == {}) and
-    (if $mode == "external" then
-      .[0].Internal == true and .[0].Labels == {
-        "com.business-finlynq.edge-owner": "external",
-        "com.business-finlynq.environment": "development"
-      }
-    else
-      .[0].Internal == false and .[0].Labels == {
-        "com.business-finlynq.environment": "development"
-      }
-    end)
+    .[0].Internal == true
   ' <<<"$edge_inspection" >/dev/null \
-    || fail "the development edge network no longer matches its installer contract"
+    || fail "the central development ingress network no longer matches contract v1"
 }
 
 release_router_runtime_is_accepted() {

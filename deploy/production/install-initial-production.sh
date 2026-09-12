@@ -11,7 +11,6 @@ readonly backup_configuration_directory="$configuration_directory/backup"
 readonly recovery_directory="$configuration_directory/recovery"
 readonly edge_directory="$configuration_directory/edge"
 readonly edge_contract="$edge_directory/edge-contract.env"
-readonly edge_route="$edge_directory/business-finlynq-routes.caddy"
 readonly compose_environment="$configuration_directory/compose.env"
 readonly operations_environment="$configuration_directory/operations.env"
 readonly repository_environment="$repository/.env"
@@ -30,11 +29,9 @@ readonly install_completion="$configuration_directory/initial-install-complete.j
 readonly pristine_retry_root="$state_directory/initial-pristine-retries"
 readonly production_network="business_finlynq_edge"
 readonly external_edge_verifier_source="$repository/deploy/edge/verify-external-edge.sh"
-readonly external_edge_verifier_route_source="$repository/deploy/edge/Caddyfile.business-external"
 readonly external_edge_verifier_root="/usr/local/libexec/business-finlynq"
 readonly external_edge_verifier_directory="$external_edge_verifier_root/deploy/edge"
 readonly external_edge_verifier_target="$external_edge_verifier_directory/verify-external-edge.sh"
-readonly external_edge_verifier_route_target="$external_edge_verifier_directory/Caddyfile.business-external"
 readonly release_router_reference="business-finlynq-release-router:v2"
 readonly release_router_revision="release-router-v2"
 readonly release_router_contract="v2"
@@ -441,7 +438,6 @@ assert_empty_production_runtime() {
   query="$(docker volume ls --format '{{.Name}}')" \
     || fail "Docker volumes could not be inspected"
   for resource in business_finlynq_pgdata business_finlynq_pgdata_clamav \
-    business_finlynq_caddy_data business_finlynq_caddy_config \
     "$release_router_state_volume"; do
     ! grep -Fxq "$resource" <<<"$query" \
       || fail "production volume already exists: $resource"
@@ -463,26 +459,16 @@ verify_production_edge_network() {
       length == 1 and .[0].Name == "business_finlynq_edge" and
       .[0].Driver == "bridge" and .[0].Scope == "local" and
       .[0].Internal == true and .[0].Attachable == false and .[0].Ingress == false and
-      (.[0].Options == null or .[0].Options == {}) and
-      .[0].Labels == {
-        "com.business-finlynq.edge-owner": "external",
-        "com.business-finlynq.environment": "production"
-      }
-    ' >/dev/null || fail "production ingress network does not match the external-owner contract"
+      (.[0].Options == null or .[0].Options == {})
+    ' >/dev/null || fail "production ingress network does not match shared-edge contract v1"
 }
 
 if [[ "$prepare_edge_network_only" == true ]]; then
   assert_empty_production_runtime
-  if docker network inspect "$production_network" >/dev/null 2>&1; then
-    verify_production_edge_network
-  else
-    docker network create --driver bridge --internal \
-      --label com.business-finlynq.environment=production \
-      --label com.business-finlynq.edge-owner=external "$production_network" >/dev/null \
-      || fail "production ingress network could not be created"
-    verify_production_edge_network
-  fi
-  printf 'Prepared only the attested external production ingress network: %s\n' \
+  docker network inspect "$production_network" >/dev/null 2>&1 \
+    || fail "the central shared-edge owner must create $production_network"
+  verify_production_edge_network
+  printf 'Verified only the existing central production ingress network: %s\n' \
     "$production_network"
   exit 0
 fi
@@ -493,18 +479,8 @@ readonly -a edge_contract_keys=(
   BUSINESS_FINLYNQ_EXTERNAL_EDGE_PROJECT
   BUSINESS_FINLYNQ_EXTERNAL_EDGE_SERVICE
   BUSINESS_FINLYNQ_EXTERNAL_EDGE_OWNER
-  BUSINESS_FINLYNQ_EXTERNAL_EDGE_IMAGE
-  BUSINESS_FINLYNQ_EXTERNAL_EDGE_IMAGE_ID
-  BUSINESS_FINLYNQ_EXTERNAL_EDGE_CONFIG
-  BUSINESS_FINLYNQ_EXTERNAL_EDGE_CONFIG_SOURCE
+  BUSINESS_FINLYNQ_EXTERNAL_EDGE_CONTRACT
   BUSINESS_FINLYNQ_EXTERNAL_EDGE_PUBLIC_IPV4S
-  BUSINESS_FINLYNQ_EXTERNAL_EDGE_ROUTE_SOURCE
-  BUSINESS_FINLYNQ_EXTERNAL_EDGE_ROUTE_DESTINATION
-  BUSINESS_FINLYNQ_EXTERNAL_EDGE_ROUTE_SHA256
-  BUSINESS_FINLYNQ_EXTERNAL_EDGE_ACTIVE_CONFIG_SHA256
-  BUSINESS_FINLYNQ_EXTERNAL_EDGE_DATA_VOLUME
-  BUSINESS_FINLYNQ_EXTERNAL_EDGE_CONFIG_VOLUME
-  EPM_FINLYNQ_HOSTNAME
 )
 declare -A edge_values=()
 
@@ -538,50 +514,13 @@ read_edge_contract() {
 }
 
 validate_edge_contract() {
-  local route_hash repository_route_hash config_mode
   read_edge_contract
-  [[ "${edge_values[BUSINESS_FINLYNQ_EXTERNAL_EDGE_PROJECT]}" == epm-finlynq \
+  [[ "${edge_values[BUSINESS_FINLYNQ_EXTERNAL_EDGE_PROJECT]}" == finlynq-shared-edge \
     && "${edge_values[BUSINESS_FINLYNQ_EXTERNAL_EDGE_SERVICE]}" == edge \
-    && "${edge_values[BUSINESS_FINLYNQ_EXTERNAL_EDGE_OWNER]}" == epm-finlynq ]] \
-    || fail "edge owner identity must be the reviewed EPM Compose service"
-  [[ "${edge_values[BUSINESS_FINLYNQ_EXTERNAL_EDGE_IMAGE]}" \
-      =~ ^[^[:space:]]+@sha256:[a-f0-9]{64}$ \
-    && "${edge_values[BUSINESS_FINLYNQ_EXTERNAL_EDGE_IMAGE_ID]}" \
-      =~ ^sha256:[a-f0-9]{64}$ ]] \
-    || fail "edge image metadata is not digest-pinned"
-  [[ "${edge_values[BUSINESS_FINLYNQ_EXTERNAL_EDGE_CONFIG]}" == /etc/caddy/Caddyfile \
-    && "${edge_values[BUSINESS_FINLYNQ_EXTERNAL_EDGE_ROUTE_SOURCE]}" == "$edge_route" \
-    && "${edge_values[BUSINESS_FINLYNQ_EXTERNAL_EDGE_ROUTE_DESTINATION]}" \
-      == /etc/caddy/business-finlynq-routes.caddy \
-    && "${edge_values[EPM_FINLYNQ_HOSTNAME]}" == epm.finlynq.com ]] \
-    || fail "edge mount, route, or hostname metadata differs from the reviewed contract"
-  [[ "${edge_values[BUSINESS_FINLYNQ_EXTERNAL_EDGE_ROUTE_SHA256]}" \
-      =~ ^[a-f0-9]{64}$ \
-    && "${edge_values[BUSINESS_FINLYNQ_EXTERNAL_EDGE_ACTIVE_CONFIG_SHA256]}" \
-      =~ ^[a-f0-9]{64}$ ]] \
-    || fail "edge configuration hashes are invalid"
-  [[ -f "$edge_route" && ! -L "$edge_route" \
-    && "$(stat -c '%u:%g:%a' -- "$edge_route")" == 0:0:444 ]] \
-    || fail "promoted Business edge route must be root:root mode 0444"
-  route_hash="$(checked_file_sha256 "$edge_route")" \
-    || fail "promoted Business edge route checksum could not be read"
-  repository_route_hash="$(checked_file_sha256 \
-    "$repository/deploy/edge/Caddyfile.business-external")" \
-    || fail "reviewed Business edge route checksum could not be read"
-  [[ "$route_hash" == "${edge_values[BUSINESS_FINLYNQ_EXTERNAL_EDGE_ROUTE_SHA256]}" \
-    && "$route_hash" == "$repository_route_hash" ]] \
-    || fail "promoted Business edge route differs from its metadata or reviewed source"
-  [[ -f "${edge_values[BUSINESS_FINLYNQ_EXTERNAL_EDGE_CONFIG_SOURCE]}" \
-    && ! -L "${edge_values[BUSINESS_FINLYNQ_EXTERNAL_EDGE_CONFIG_SOURCE]}" \
-    && "$(stat -c '%u' -- \
-      "${edge_values[BUSINESS_FINLYNQ_EXTERNAL_EDGE_CONFIG_SOURCE]}")" == 0 ]] \
-    || fail "the root-owned external Caddy source is unavailable"
-  config_mode="$(stat -c '%a' -- \
-    "${edge_values[BUSINESS_FINLYNQ_EXTERNAL_EDGE_CONFIG_SOURCE]}")"
-  [[ "$config_mode" =~ ^[0-7]{3,4}$ ]] \
-    || fail "external Caddy source mode is invalid"
-  (( (8#$config_mode & 8#022) == 0 )) \
-    || fail "external Caddy source must not be group- or other-writable"
+    && "${edge_values[BUSINESS_FINLYNQ_EXTERNAL_EDGE_OWNER]}" == finlynq-shared-edge \
+    && "${edge_values[BUSINESS_FINLYNQ_EXTERNAL_EDGE_CONTRACT]}" == v1 \
+    && "${edge_values[BUSINESS_FINLYNQ_EXTERNAL_EDGE_PUBLIC_IPV4S]}" == 51.161.113.222 ]] \
+    || fail "edge identity metadata must match shared-edge contract v1"
 }
 
 if [[ -n "$edge_contract_input" ]]; then
@@ -844,8 +783,6 @@ create_protected_directories() {
 
 install_protected_external_edge_verifier() {
   local tree_entry expected_output expected_sha expected_remainder target_sha
-  local route_tree_entry route_expected_output route_expected_sha route_expected_remainder
-  local route_target_sha
   [[ -f "$external_edge_verifier_source" && ! -L "$external_edge_verifier_source" ]] \
     || fail "reviewed external-edge verifier source is unavailable"
   tree_entry="$(git_as_deploy ls-tree "$revision" -- \
@@ -861,38 +798,14 @@ install_protected_external_edge_verifier() {
     || fail "external-edge verifier Git digest could not be parsed"
   [[ "$expected_sha" =~ ^[a-f0-9]{64}$ && -n "$expected_remainder" ]] \
     || fail "external-edge verifier Git digest is invalid"
-  [[ -f "$external_edge_verifier_route_source" \
-    && ! -L "$external_edge_verifier_route_source" ]] \
-    || fail "reviewed external-edge route source is unavailable"
-  route_tree_entry="$(git_as_deploy ls-tree "$revision" -- \
-    deploy/edge/Caddyfile.business-external)" \
-    || fail "external-edge route Git entry could not be inspected"
-  [[ "$route_tree_entry" =~ ^100644[[:space:]]blob[[:space:]]([a-f0-9]{40}|[a-f0-9]{64})[[:space:]]deploy/edge/Caddyfile\.business-external$ ]] \
-    || fail "external-edge route is not the exact regular Git blob"
-  if ! route_expected_output="$(git_as_deploy show \
-    "$revision:deploy/edge/Caddyfile.business-external" | sha256sum)"; then
-    fail "external-edge route Git blob could not be hashed"
-  fi
-  read -r route_expected_sha route_expected_remainder <<<"$route_expected_output" \
-    || fail "external-edge route Git digest could not be parsed"
-  [[ "$route_expected_sha" =~ ^[a-f0-9]{64}$ && -n "$route_expected_remainder" ]] \
-    || fail "external-edge route Git digest is invalid"
   install -o root -g root -m 0550 -- \
     "$external_edge_verifier_source" "$external_edge_verifier_target"
-  install -o root -g root -m 0444 -- \
-    "$external_edge_verifier_route_source" "$external_edge_verifier_route_target"
   target_sha="$(checked_file_sha256 "$external_edge_verifier_target")" \
     || fail "protected external-edge verifier checksum could not be read"
-  route_target_sha="$(checked_file_sha256 "$external_edge_verifier_route_target")" \
-    || fail "protected external-edge route checksum could not be read"
   [[ "$target_sha" == "$expected_sha" \
-    && "$(stat -c '%u:%g:%a:%h' -- "$external_edge_verifier_target")" == 0:0:550:1 \
-    && "$route_target_sha" == "$route_expected_sha" \
-    && "$(stat -c '%u:%g:%a:%h' -- "$external_edge_verifier_route_target")" \
-      == 0:0:444:1 ]] \
+    && "$(stat -c '%u:%g:%a:%h' -- "$external_edge_verifier_target")" == 0:0:550:1 ]] \
     || fail "protected external-edge verifier differs from the exact Git revision"
   sync -f -- "$external_edge_verifier_target"
-  sync -f -- "$external_edge_verifier_route_target"
   sync -f -- "$external_edge_verifier_directory"
 }
 
@@ -1007,11 +920,7 @@ write_compose_environment() {
   local cookie_name="$7" resource_prefix="$8" selected_edge_mode="$9"
   local owner_password="${10}" temporary
   local external_project="" external_service="edge" external_owner=""
-  local external_image="" external_image_id="" external_config="/etc/caddy/Caddyfile"
-  local external_config_source="" external_public_ipv4s="" external_route_source="$edge_route"
-  local external_route_destination="/etc/caddy/business-finlynq-routes.caddy"
-  local external_route_sha256="" external_active_config_sha256=""
-  local external_data_volume="" external_config_volume=""
+  local external_contract="" external_public_ipv4s=""
 
   if [[ -e "$target" || -L "$target" ]]; then
     [[ -f "$target" && ! -L "$target" \
@@ -1024,17 +933,8 @@ write_compose_environment() {
     external_project="${edge_values[BUSINESS_FINLYNQ_EXTERNAL_EDGE_PROJECT]}"
     external_service="${edge_values[BUSINESS_FINLYNQ_EXTERNAL_EDGE_SERVICE]}"
     external_owner="${edge_values[BUSINESS_FINLYNQ_EXTERNAL_EDGE_OWNER]}"
-    external_image="${edge_values[BUSINESS_FINLYNQ_EXTERNAL_EDGE_IMAGE]}"
-    external_image_id="${edge_values[BUSINESS_FINLYNQ_EXTERNAL_EDGE_IMAGE_ID]}"
-    external_config="${edge_values[BUSINESS_FINLYNQ_EXTERNAL_EDGE_CONFIG]}"
-    external_config_source="${edge_values[BUSINESS_FINLYNQ_EXTERNAL_EDGE_CONFIG_SOURCE]}"
+    external_contract="${edge_values[BUSINESS_FINLYNQ_EXTERNAL_EDGE_CONTRACT]}"
     external_public_ipv4s="${edge_values[BUSINESS_FINLYNQ_EXTERNAL_EDGE_PUBLIC_IPV4S]}"
-    external_route_source="${edge_values[BUSINESS_FINLYNQ_EXTERNAL_EDGE_ROUTE_SOURCE]}"
-    external_route_destination="${edge_values[BUSINESS_FINLYNQ_EXTERNAL_EDGE_ROUTE_DESTINATION]}"
-    external_route_sha256="${edge_values[BUSINESS_FINLYNQ_EXTERNAL_EDGE_ROUTE_SHA256]}"
-    external_active_config_sha256="${edge_values[BUSINESS_FINLYNQ_EXTERNAL_EDGE_ACTIVE_CONFIG_SHA256]}"
-    external_data_volume="${edge_values[BUSINESS_FINLYNQ_EXTERNAL_EDGE_DATA_VOLUME]}"
-    external_config_volume="${edge_values[BUSINESS_FINLYNQ_EXTERNAL_EDGE_CONFIG_VOLUME]}"
   fi
 
   temporary="$(mktemp "${target%/*}/.compose-env.XXXXXX")"
@@ -1048,14 +948,10 @@ write_compose_environment() {
     printf 'BUSINESS_FINLYNQ_SECRET_GID=%s\n' "$secret_gid"
     printf 'BUSINESS_FINLYNQ_HOSTNAME=business.finlynq.com\n'
     printf 'BUSINESS_FINLYNQ_DEVELOPMENT_HOSTNAME=dev.business.finlynq.com\n'
-    printf 'EPM_FINLYNQ_HOSTNAME=epm.finlynq.com\n'
-    printf 'CONSULT_FINLYNQ_HOSTNAME=consult.finlynq.com\n'
     printf 'BUSINESS_FINLYNQ_APP_ORIGIN=%s\n' "$app_origin"
     printf 'BUSINESS_FINLYNQ_APP_PORT=%s\n' "$app_port"
     printf 'BUSINESS_FINLYNQ_APP_NETWORK_ALIAS=production-app\n'
     printf 'BUSINESS_FINLYNQ_PGDATA_VOLUME=%s_pgdata\n' "$resource_prefix"
-    printf 'BUSINESS_FINLYNQ_CADDY_DATA_VOLUME=%s_caddy_data\n' "$resource_prefix"
-    printf 'BUSINESS_FINLYNQ_CADDY_CONFIG_VOLUME=%s_caddy_config\n' "$resource_prefix"
     printf 'BUSINESS_FINLYNQ_PRIVATE_NETWORK=%s_private\n' "$resource_prefix"
     printf 'BUSINESS_FINLYNQ_EGRESS_NETWORK=%s_egress\n' "$resource_prefix"
     printf 'BUSINESS_FINLYNQ_EDGE_NETWORK=%s_edge\n' "$resource_prefix"
@@ -1064,17 +960,8 @@ write_compose_environment() {
     printf 'BUSINESS_FINLYNQ_EXTERNAL_EDGE_PROJECT=%s\n' "$external_project"
     printf 'BUSINESS_FINLYNQ_EXTERNAL_EDGE_SERVICE=%s\n' "$external_service"
     printf 'BUSINESS_FINLYNQ_EXTERNAL_EDGE_OWNER=%s\n' "$external_owner"
-    printf 'BUSINESS_FINLYNQ_EXTERNAL_EDGE_IMAGE=%s\n' "$external_image"
-    printf 'BUSINESS_FINLYNQ_EXTERNAL_EDGE_IMAGE_ID=%s\n' "$external_image_id"
-    printf 'BUSINESS_FINLYNQ_EXTERNAL_EDGE_CONFIG=%s\n' "$external_config"
-    printf 'BUSINESS_FINLYNQ_EXTERNAL_EDGE_CONFIG_SOURCE=%s\n' "$external_config_source"
+    printf 'BUSINESS_FINLYNQ_EXTERNAL_EDGE_CONTRACT=%s\n' "$external_contract"
     printf 'BUSINESS_FINLYNQ_EXTERNAL_EDGE_PUBLIC_IPV4S=%s\n' "$external_public_ipv4s"
-    printf 'BUSINESS_FINLYNQ_EXTERNAL_EDGE_ROUTE_SOURCE=%s\n' "$external_route_source"
-    printf 'BUSINESS_FINLYNQ_EXTERNAL_EDGE_ROUTE_DESTINATION=%s\n' "$external_route_destination"
-    printf 'BUSINESS_FINLYNQ_EXTERNAL_EDGE_ROUTE_SHA256=%s\n' "$external_route_sha256"
-    printf 'BUSINESS_FINLYNQ_EXTERNAL_EDGE_ACTIVE_CONFIG_SHA256=%s\n' "$external_active_config_sha256"
-    printf 'BUSINESS_FINLYNQ_EXTERNAL_EDGE_DATA_VOLUME=%s\n' "$external_data_volume"
-    printf 'BUSINESS_FINLYNQ_EXTERNAL_EDGE_CONFIG_VOLUME=%s\n' "$external_config_volume"
     printf 'TRUSTED_PROXY_HOPS=%s\n' "$([[ "$selected_edge_mode" == external ]] && printf 1 || printf 0)"
     printf 'SESSION_COOKIE_NAME=%s\n' "$cookie_name"
     printf 'DEMO_LOGIN_ENABLED=true\n'
@@ -1205,9 +1092,7 @@ readonly second_rehearsal_recipient="$second_rehearsal_secrets/age-recipients.tx
 
 declare -a managed_configuration_files=(
   "$external_edge_verifier_target"
-  "$external_edge_verifier_route_target"
   "$edge_contract"
-  "$edge_route"
   "$compose_environment"
   "$operations_environment"
   "$repository_environment"
@@ -1268,18 +1153,11 @@ verify_protected_layout() {
     && "$(stat -c '%u:%g:%a:%h' -- "$external_edge_verifier_target")" \
       == 0:0:550:1 ]] \
     || fail "protected external-edge verifier ownership or mode changed"
-  [[ -f "$external_edge_verifier_route_target" \
-    && ! -L "$external_edge_verifier_route_target" \
-    && "$(readlink -f -- "$external_edge_verifier_route_target")" \
-      == "$external_edge_verifier_route_target" \
-    && "$(stat -c '%u:%g:%a:%h' -- "$external_edge_verifier_route_target")" \
-      == 0:0:444:1 ]] \
-    || fail "protected external-edge route ownership or mode changed"
 }
 
 write_install_state() {
   local inventory='[]' selected_file metadata file_sha file_size temporary
-  local created_at recipient_sha edge_contract_sha edge_route_sha
+  local created_at recipient_sha edge_contract_sha
   for selected_file in "${managed_configuration_files[@]}"; do
     [[ -f "$selected_file" && ! -L "$selected_file" ]] \
       || fail "managed configuration file is unavailable: $selected_file"
@@ -1301,21 +1179,17 @@ write_install_state() {
     || fail "protected backup recipient checksum could not be read"
   edge_contract_sha="$(checked_file_sha256 "$edge_contract")" \
     || fail "protected edge contract checksum could not be read"
-  edge_route_sha="$(checked_file_sha256 "$edge_route")" \
-    || fail "protected edge route checksum could not be read"
   temporary="$(mktemp "$configuration_directory/.initial-install-state.XXXXXX")"
   jq -n \
     --arg createdAt "$created_at" \
     --arg revision "$revision" \
     --arg recipientSha256 "$recipient_sha" \
     --arg edgeContractSha256 "$edge_contract_sha" \
-    --arg edgeRouteSha256 "$edge_route_sha" \
     --argjson files "$inventory" \
     '{schemaVersion: 1, product: "business-finlynq", phase: "configured",
       createdAt: $createdAt, revision: $revision,
       recipientSha256: $recipientSha256,
       edgeContractSha256: $edgeContractSha256,
-      edgeRouteSha256: $edgeRouteSha256,
       configurationFiles: $files}' >"$temporary"
   chown root:root "$temporary"
   chmod 0600 "$temporary"
@@ -1326,7 +1200,7 @@ write_install_state() {
 
 verify_install_state() {
   local records record selected_path recorded_metadata recorded_sha recorded_bytes observed_sha
-  local recipient_sha edge_contract_sha edge_route_sha
+  local recipient_sha edge_contract_sha
   local seen_count=0
   declare -A seen_paths=()
   [[ -f "$install_state" && ! -L "$install_state" \
@@ -1336,22 +1210,18 @@ verify_install_state() {
     || fail "protected backup recipient checksum could not be read"
   edge_contract_sha="$(checked_file_sha256 "$edge_contract")" \
     || fail "protected edge contract checksum could not be read"
-  edge_route_sha="$(checked_file_sha256 "$edge_route")" \
-    || fail "protected edge route checksum could not be read"
   jq -e --arg revision "$revision" \
     --arg recipientSha256 "$recipient_sha" \
     --arg edgeContractSha256 "$edge_contract_sha" \
-    --arg edgeRouteSha256 "$edge_route_sha" \
     --argjson expectedFiles "${#managed_configuration_files[@]}" '
       type == "object" and
       keys == ["configurationFiles", "createdAt", "edgeContractSha256",
-        "edgeRouteSha256", "phase", "product", "recipientSha256", "revision",
+        "phase", "product", "recipientSha256", "revision",
         "schemaVersion"] and
       .schemaVersion == 1 and .product == "business-finlynq" and
       .phase == "configured" and .revision == $revision and
       .recipientSha256 == $recipientSha256 and
       .edgeContractSha256 == $edgeContractSha256 and
-      .edgeRouteSha256 == $edgeRouteSha256 and
       (.createdAt | type == "string") and
       (.configurationFiles | type == "array" and length == $expectedFiles)
     ' "$install_state" >/dev/null \
@@ -1403,8 +1273,6 @@ validate_new_configuration_boundary() {
   done
   assert_path_absent "$external_edge_verifier_target" \
     "protected external-edge verifier"
-  assert_path_absent "$external_edge_verifier_route_target" \
-    "protected external-edge verifier route"
   if [[ -e "$backup_directory" || -L "$backup_directory" ]]; then
     [[ -d "$backup_directory" && ! -L "$backup_directory" ]] \
       || fail "fresh production backup directory must be a real directory"
@@ -1415,7 +1283,7 @@ validate_new_configuration_boundary() {
   fi
   edge_entries="$(find "$edge_directory" -mindepth 1 -maxdepth 1 -printf '%f\n' | sort)" \
     || fail "protected edge directory could not be inspected"
-  [[ "$edge_entries" == $'business-finlynq-routes.caddy\nedge-contract.env' ]] \
+  [[ "$edge_entries" == edge-contract.env ]] \
     || fail "protected edge directory contains an unexpected entry"
   for selected_path in \
     /etc/systemd/system/business-finlynq-continuous-deployment.service \
@@ -1689,14 +1557,13 @@ verify_prepared_configuration_content() {
 }
 
 render_and_verify_initial_configuration() {
-  local rendered inert_rendered rehearsal_environment rehearsal_project rehearsal_port rehearsal_backup
+  local rendered rehearsal_environment rehearsal_project rehearsal_port rehearsal_backup
   verify_prepared_configuration_content
   rendered="$(env -i "PATH=$clean_path" docker compose \
     --project-name business-finlynq \
     --project-directory "$repository" \
     --env-file "$compose_environment" \
     -f "$repository/docker-compose.yml" \
-    -f "$repository/deploy/edge/docker-compose.external.yml" \
     --profile operations --profile auth-email --profile acceptance \
     config --format json)" \
     || fail "initial production Compose configuration could not be rendered"
@@ -1753,27 +1620,6 @@ render_and_verify_initial_configuration() {
     .services.verify_latest_backup.environment.BACKUP_REQUIRE_OFFSITE_MARKER == "false"
   ' <<<"$rendered" >/dev/null \
     || fail "initial production Compose gates or external-edge isolation are invalid"
-  inert_rendered="$(env -i "PATH=$clean_path" docker compose \
-    --project-name business-finlynq \
-    --project-directory "$repository" \
-    --env-file "$compose_environment" \
-    -f "$repository/docker-compose.yml" \
-    -f "$repository/deploy/edge/docker-compose.external.yml" \
-    --profile external-edge-disabled config --format json)" \
-    || fail "disabled local-edge Compose configuration could not be rendered"
-  jq -e '
-    .services.edge.profiles == ["external-edge-disabled"] and
-    .services.edge.entrypoint == ["/bin/false"] and
-    .services.edge.restart == "no" and
-    .services.edge.network_mode == "none" and
-    ((.services.edge.ports // []) | length) == 0 and
-    ((.services.edge.volumes // []) | length) == 0 and
-    ((.services.edge.networks // {}) | length) == 0 and
-    ((.services.edge.depends_on // {}) | length) == 0 and
-    .networks.business_finlynq_edge.external == true and
-    .networks.business_finlynq_edge.name == "business_finlynq_edge"
-  ' <<<"$inert_rendered" >/dev/null \
-    || fail "external-edge overlay does not leave the local listener inert"
   for rehearsal_environment in "$first_rehearsal_environment" \
     "$second_rehearsal_environment"; do
     if [[ "$rehearsal_environment" == "$first_rehearsal_environment" ]]; then
@@ -1871,11 +1717,11 @@ prepare_new_configuration() {
   write_compose_environment "$first_rehearsal_environment" "$first_rehearsal_secrets" \
     "$first_rehearsal_recipient" "$rehearsal_evidence_root/backups/first" 3310 \
     http://127.0.0.1:3310 business_finlynq_rehearsal_a_session \
-    business_finlynq_rehearsal_a compose "$first_owner_password"
+    business_finlynq_rehearsal_a external "$first_owner_password"
   write_compose_environment "$second_rehearsal_environment" "$second_rehearsal_secrets" \
     "$second_rehearsal_recipient" "$rehearsal_evidence_root/backups/second" 3311 \
     http://127.0.0.1:3311 business_finlynq_rehearsal_b_session \
-    business_finlynq_rehearsal_b compose "$second_owner_password"
+    business_finlynq_rehearsal_b external "$second_owner_password"
   write_operations_environment
   compose_environment_sha="$(checked_file_sha256 "$compose_environment")" \
     || fail "canonical Compose environment checksum could not be read"

@@ -2,14 +2,14 @@
 
 Business Finlynq exposes two deliberately different probes:
 
-- `/api/live` confirms that the Node process can answer HTTP. It does not touch secrets or PostgreSQL and is used by the container health check that gates Caddy startup.
+- `/api/live` confirms that the Node process can answer HTTP. It does not touch secrets or PostgreSQL and is used by container and central-edge active health checks.
 - `/api/health` is readiness. Its public response is only `{"status":"ready"}` or `{"status":"unavailable"}`, with HTTP `200` or `503`. It returns `503` unless PostgreSQL, the organization root wrapping key, and the independent identity secret are available and valid. When real accounts are enabled it also requires valid non-secret delivery metadata and a fresh database heartbeat from the authentication email worker, with no expired lease or seriously delayed due item.
 
-Both endpoints are non-cacheable and excluded from indexing. Detailed readiness component state and the configured release revision are available only on the loopback/private-network application listener when the probe supplies `X-Business-Finlynq-Internal-Health: 1`. Both reviewed Caddy configurations remove that header from every proxied request, so a public client cannot request the detailed representation by spoofing it or any forwarding header. The marker is not a secret: the security boundary is the non-public app listener plus unconditional edge removal. Never expose container port `3000` or loopback port `3100` beyond the host.
+Both endpoints are non-cacheable and excluded from indexing. Detailed readiness component state and the configured release revision are available only on the loopback/private-network application listener when the probe supplies `X-Business-Finlynq-Internal-Health: 1`. Shared-edge contract v1 removes that header from every proxied request, so a public client cannot request the detailed representation by spoofing it or any forwarding header. The marker is not a secret: the security boundary is the non-public app listener plus unconditional edge removal. Never expose container port `3000` or loopback port `3100` beyond the host.
 
 ## Correlation and structured logs
 
-Caddy removes every client-supplied `X-Request-Id`, generates a UUID at the public edge, passes it to the application, returns it on the response, and writes JSON access logs. The application validates that value and generates a UUID only for a direct loopback or test request. Every API handler writes a bounded JSON `route.access` event containing only the allowlisted operation, request ID, method, status, and duration. Contained failures additionally write a `route.failure` event containing only operation, request ID, and a bounded error class; exception messages, stacks, request bodies, identities, tenant identifiers, and accounting content are prohibited.
+The centrally owned shared edge removes every client-supplied `X-Request-Id`, generates a UUID, passes it to the application, returns it on the response, and owns edge access logs. The application validates that value and generates a UUID only for a direct loopback or test request. Every API handler writes a bounded JSON `route.access` event containing only the allowlisted operation, request ID, method, status, and duration. Contained failures additionally write a `route.failure` event containing only operation, request ID, and a bounded error class; exception messages, stacks, request bodies, identities, tenant identifiers, and accounting content are prohibited.
 
 Mutation transactions set the same request context used by both `audit_events.request_id` and `outbox_events.request_id`. A database trigger rejects new outbox rows without that context and makes the value immutable. The accounting-evidence verifier checks durable request → audit → outbox lineage. Search centralized logs by the opaque request UUID, then use restricted database evidence tooling; never add customer, identity, currency, amount, or document text as log or metric labels.
 
@@ -39,7 +39,7 @@ export OBSERVABILITY_DRILL_EVIDENCE_FILE=/var/lib/business-finlynq/drills/observ
 bash deploy/monitoring/run-observability-drill.sh
 ```
 
-The runner executes `promtool check rules` and the committed rule unit tests, sends the controlled mutation through public Caddy, validates its edge-generated UUID in both audit and outbox using aggregate counts only, runs the complete accounting-evidence verifier, raises `BusinessFinlynqSyntheticFailure`, and waits for Alertmanager. After both required operators actually receive the routed notification, write the single word `delivered` to the fresh receipt file. The runner then writes mode-`0600` JSON evidence and atomically clears the synthetic signal even on failure. The alert metric has no request-ID or tenant label; only the restricted evidence file contains the opaque request UUID.
+The runner executes `promtool check rules` and the committed rule unit tests, sends the controlled mutation through the public shared edge, validates its generated UUID in the application route log and in both audit and outbox using aggregate counts only, runs the complete accounting-evidence verifier, raises `BusinessFinlynqSyntheticFailure`, and waits for Alertmanager. It does not inspect central-edge logs. After both required operators actually receive the routed notification, write the single word `delivered` to the fresh receipt file. The runner then writes mode-`0600` JSON evidence and atomically clears the synthetic signal even on failure. The alert metric has no request-ID or tenant label; only the restricted evidence file contains the opaque request UUID.
 
 This procedure does not install a scraper, rule engine, Alertmanager, notification receiver, or external uptime probe. Those production integrations and the first signed drill output remain release-evidence blockers until independently configured and witnessed.
 
@@ -49,7 +49,7 @@ This procedure does not install a scraper, rule engine, Alertmanager, notificati
 
 - public HTTPS liveness and minimal readiness, the absence of public readiness details, and required no-store/HSTS headers;
 - certificate validity beyond the configured threshold;
-- expected app, database, and edge container state;
+- expected app and database state plus read-only central-edge contract state;
 - exact app-container demo/account/business write gates for the reviewed release;
 - the selected systemd or deploy-owned cron reset/reconciliation scheduler when the writable shared demo is expected;
 - the full externally served, configured, and container release revision;
@@ -106,7 +106,7 @@ Readiness, TLS, disk, backup, container, revision, app-gate, demo-timer, shared 
 Use the full [incident response and severity policy](incident-response.md) for declaration, routing, containment, and the authentication, write-shutdown, migration, connector-credential, and accounting-discrepancy procedures.
 
 1. Acknowledge the page and record UTC time, hostname, release SHA, and failing check.
-2. Inspect `systemctl status` for the monitor, backup, accounting-evidence, and single nightly demo-reconciliation timers, then run `docker compose --profile edge --profile auth-email ps`.
+2. Inspect `systemctl status` for the monitor, backup, accounting-evidence, and single nightly demo-reconciliation timers, then run `docker compose --profile auth-email ps`.
 3. Read bounded logs with `docker compose logs --since 30m <service>`; never paste secret files or full identity/accounting records into a ticket.
 4. If readiness fails but liveness passes, check database health and secret mounts before restarting the app. Do not rotate or replace encryption keys as a troubleshooting step.
 5. If backup freshness/checksum fails, preserve the newest artifacts, repair the destination or credentials, rerun a backup, and verify off-site checksum. Do not prune the only recoverable set.

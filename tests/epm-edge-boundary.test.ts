@@ -7,11 +7,12 @@ const hostCaddy = readFileSync("deploy/Caddyfile.example", "utf8");
 const caddyfiles = [containerCaddy, hostCaddy];
 
 describe("shared edge isolation", () => {
-  it("uses the unique production alias and attaches Caddy to the external EPM network", () => {
+  it("uses the unique production alias without owning the EPM network or Caddy", () => {
     expect(containerCaddy).toContain("reverse_proxy production-app:3000");
     expect(containerCaddy).not.toMatch(/reverse_proxy\s+app:3000/u);
-    expect(compose).toMatch(/edge:[\s\S]*?networks:[\s\S]*?- epm_finlynq_edge/u);
-    expect(compose).toMatch(/epm_finlynq_edge:\s*\n\s*name: epm_finlynq_edge\s*\n\s*external: true/u);
+    expect(compose).not.toMatch(/^  edge:\s*$/mu);
+    expect(compose).not.toContain("epm_finlynq_edge");
+    expect(compose).toContain("BUSINESS_FINLYNQ_APP_NETWORK_ALIAS:-production-app");
     expect(compose).not.toContain("epm-basic-auth");
   });
 
