@@ -48,7 +48,7 @@ checked_random_base64_32() {
 
 enable_timer=false
 enable_all_features=false
-edge_mode="compose"
+edge_mode="external"
 public_acceptance_mode=""
 yahoo_fx_mode=""
 auth_email_from=""
@@ -189,8 +189,6 @@ if [[ ! -e "$compose_environment" ]]; then
     printf 'BUSINESS_FINLYNQ_APP_PORT=3200\n'
     printf 'BUSINESS_FINLYNQ_APP_NETWORK_ALIAS=development-app\n'
     printf 'BUSINESS_FINLYNQ_PGDATA_VOLUME=business_finlynq_development_pgdata\n'
-    printf 'BUSINESS_FINLYNQ_CADDY_DATA_VOLUME=business_finlynq_development_caddy_data\n'
-    printf 'BUSINESS_FINLYNQ_CADDY_CONFIG_VOLUME=business_finlynq_development_caddy_config\n'
     printf 'BUSINESS_FINLYNQ_PRIVATE_NETWORK=business_finlynq_development_private\n'
     printf 'BUSINESS_FINLYNQ_EGRESS_NETWORK=business_finlynq_development_egress\n'
     printf 'BUSINESS_FINLYNQ_EDGE_NETWORK=business_finlynq_development_edge\n'
@@ -201,6 +199,17 @@ if [[ ! -e "$compose_environment" ]]; then
     printf 'DEMO_LOGIN_ENABLED=true\n'
     printf 'DEMO_WRITES_ENABLED=true\n'
     printf 'ACCOUNT_LOGIN_ENABLED=false\n'
+    printf 'AUTH_OIDC_ENABLED=false\n'
+    printf 'AUTH_OIDC_SIGNUP_ENABLED=false\n'
+    printf 'AUTH_OIDC_ISSUER=\n'
+    printf 'AUTH_OIDC_AUTHORIZATION_ENDPOINT=\n'
+    printf 'AUTH_OIDC_TOKEN_ENDPOINT=\n'
+    printf 'AUTH_OIDC_JWKS_URI=\n'
+    printf 'AUTH_OIDC_CLIENT_ID=\n'
+    printf 'AUTH_OIDC_ALLOWED_TENANTS=\n'
+    printf 'AUTH_OIDC_MAXIMUM_TOKEN_LIFETIME_SECONDS=7200\n'
+    printf 'AUTH_OIDC_TOKEN_TIMEOUT_MILLISECONDS=10000\n'
+    printf 'AUTH_OIDC_JWKS_TIMEOUT_MILLISECONDS=5000\n'
     printf 'ACCOUNT_SIGNUP_ENABLED=false\n'
     printf 'AUTH_EMAIL_DELIVERY_ENABLED=false\n'
     printf 'SIGNUP_TURNSTILE_ENABLED=false\n'
@@ -388,41 +397,17 @@ configured_edge_mode_count="$(awk -F= '$1 == "BUSINESS_FINLYNQ_EDGE_MODE" { coun
   "$compose_environment")"
 [[ "$configured_edge_mode_count" == 0 || "$configured_edge_mode_count" == 1 ]] \
   || fail "BUSINESS_FINLYNQ_EDGE_MODE must be defined at most once"
-configured_edge_mode="${configured_edge_mode:-compose}"
-[[ "$configured_edge_mode" == compose || "$configured_edge_mode" == external ]] \
-  || fail "BUSINESS_FINLYNQ_EDGE_MODE must be compose or external"
-[[ "$edge_mode" == compose || "$configured_edge_mode" == "$edge_mode" ]] \
-  || fail "existing development environment does not match the requested edge mode"
+configured_edge_mode="${configured_edge_mode:-external}"
+[[ "$configured_edge_mode" == external && "$edge_mode" == external ]] \
+  || fail "shared-edge contract v1 requires BUSINESS_FINLYNQ_EDGE_MODE=external"
 
-if ! docker network inspect "$development_edge_network" >/dev/null 2>&1; then
-  network_create_arguments=(
-    --driver bridge
-    --label com.business-finlynq.environment=development
-  )
-  if [[ "$configured_edge_mode" == external ]]; then
-    network_create_arguments+=(
-      --internal
-      --label com.business-finlynq.edge-owner=external
-    )
-  fi
-  docker network create "${network_create_arguments[@]}" "$development_edge_network" >/dev/null
-fi
+docker network inspect "$development_edge_network" >/dev/null 2>&1 \
+  || fail "the central shared-edge ingress network is unavailable: $development_edge_network"
 network_driver="$(docker network inspect --format '{{.Driver}}' "$development_edge_network")"
 network_scope="$(docker network inspect --format '{{.Scope}}' "$development_edge_network")"
 network_internal="$(docker network inspect --format '{{.Internal}}' "$development_edge_network")"
-network_label="$(docker network inspect --format '{{ index .Labels "com.business-finlynq.environment" }}' \
-  "$development_edge_network")"
-network_owner="$(docker network inspect --format '{{ index .Labels "com.business-finlynq.edge-owner" }}' \
-  "$development_edge_network")"
-[[ "$network_driver" == bridge && "$network_scope" == local && "$network_label" == development ]] \
-  || fail "the development edge network has an unexpected driver, scope, or ownership label"
-if [[ "$configured_edge_mode" == external ]]; then
-  [[ "$network_internal" == true && "$network_owner" == external ]] \
-    || fail "external development ingress must be internally scoped and externally owned"
-else
-  [[ "$network_internal" == false && -z "$network_owner" ]] \
-    || fail "Compose-edge development ingress must remain egress-capable and Compose-owned"
-fi
+[[ "$network_driver" == bridge && "$network_scope" == local && "$network_internal" == true ]] \
+  || fail "the central development ingress must be an internal local bridge"
 
 install -d -o root -g root -m 0755 -- /usr/local/sbin
 install -o root -g root -m 0550 -- "$script_directory/deploy-development.sh" "$deploy_target"
@@ -447,4 +432,4 @@ if [[ "$enable_timer" == true ]]; then
 else
   printf 'Development deployment installed but left disabled.\n'
 fi
-printf 'Development checkout, secrets, environment, network, service, and restricted deploy access are ready.\n'
+printf 'Development checkout, secrets, central ingress dependency, service, and restricted deploy access are ready.\n'

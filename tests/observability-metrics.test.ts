@@ -256,13 +256,15 @@ describe("internal observability metrics", () => {
 
     expect(drill).toContain('promtool check rules "$rule_file"');
     expect(drill).toContain('promtool test rules "$(basename -- "$rule_test_file")"');
-    expect(drill).toContain("/^x-request-id:/");
+    expect(drill).toContain('response_header_value "$response_headers" x-request-id');
+    expect(drill).toContain('sprintf("%c", 13)');
     expect(drill).toContain("FROM public.audit_events WHERE request_id = :'request_id'");
     expect(drill).toContain("FROM public.outbox_events WHERE request_id = :'request_id'");
     expect(drill).toContain('[[ "$request_id" =~ ^[0-9a-f]{8}');
     expect(drill).toContain('[[ "$request_id" != "$spoofed_request_id" ]]');
-    expect(drill).toContain('"request_id"[[:space:]]*:[[:space:]]*"');
-    expect(drill).toContain('edgeAccessLog: "correlated"');
+    expect(drill).toContain('"requestId"[[:space:]]*:[[:space:]]*"');
+    expect(drill).toContain('applicationRouteLog: "correlated"');
+    expect(drill).not.toContain("--profile edge logs");
     expect(drill).toContain("X-Business-Finlynq-Internal-Health: 1");
     expect(drill).toContain("X-Business-Finlynq-Internal-Metrics: 1");
     expect(drill).toContain('write_drill_metric 0');

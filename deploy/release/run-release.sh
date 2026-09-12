@@ -83,7 +83,7 @@ scheduler_boundary_bootstrap_required="false"
 scheduler_boundary_bootstrap_source_revision=""
 scheduler_boundary_bootstrap_receipt=""
 scheduler_boundary_bootstrap_receipt_sha256=""
-edge_mode="compose"
+edge_mode="external"
 public_base_url=""
 app_port=""
 declare -a detached_mutator_services=()
@@ -335,8 +335,8 @@ if [[ "$edge_mode_count" == 1 ]]; then
   edge_mode="$(awk -F= '$1 == "BUSINESS_FINLYNQ_EDGE_MODE" { sub(/^[^=]*=/, ""); print }' \
     "$canonical_environment_file")"
 fi
-[[ "$edge_mode" == compose || "$edge_mode" == external ]] \
-  || fail "BUSINESS_FINLYNQ_EDGE_MODE must be compose or external"
+[[ "$edge_mode" == external ]] \
+  || fail "shared-edge contract v1 requires BUSINESS_FINLYNQ_EDGE_MODE=external"
 if [[ "$mode" != "rehearsal" ]]; then
   operations_environment_file="$(validate_secret_environment_file "$operations_environment_file" "operations environment")"
   reject_repository_path "$operations_environment_file" "operations environment"
@@ -609,9 +609,6 @@ run_compose() {
     controlled_environment+=("RELEASE_REHEARSAL_PROJECT=$compose_project")
     compose_files+=(-f "$candidate_source_root/deploy/release/docker-compose.rehearsal.yml")
   fi
-  if [[ "$mode" != "rehearsal" && "$edge_mode" == "external" ]]; then
-    compose_files+=(-f "$candidate_source_root/deploy/edge/docker-compose.external.yml")
-  fi
   if [[ "$release_images_pinned" == "true" ]]; then
     controlled_environment+=(
       "BUSINESS_FINLYNQ_RELEASE_DATABASE_IMAGE=${image_ids[database]}"
@@ -650,7 +647,7 @@ run_compose() {
         [[ "$value" =~ ^[a-f0-9]{64}$ ]] \
           || fail "release acceptance token override is invalid"
         ;;
-      DEMO_LOGIN_ENABLED|DEMO_WRITES_ENABLED|ACCOUNT_LOGIN_ENABLED|ACCOUNT_SIGNUP_ENABLED|AUTH_EMAIL_DELIVERY_ENABLED|SIGNUP_TURNSTILE_ENABLED|BUSINESS_WRITES_ENABLED|BANK_FEEDS_ENABLED)
+      DEMO_LOGIN_ENABLED|DEMO_WRITES_ENABLED|ACCOUNT_LOGIN_ENABLED|AUTH_OIDC_ENABLED|AUTH_OIDC_SIGNUP_ENABLED|ACCOUNT_SIGNUP_ENABLED|AUTH_EMAIL_DELIVERY_ENABLED|SIGNUP_TURNSTILE_ENABLED|BUSINESS_WRITES_ENABLED|BANK_FEEDS_ENABLED)
         [[ "$value" == "true" || "$value" == "false" ]] \
           || fail "controlled Compose gate override is not boolean: $key"
         ;;
@@ -1157,7 +1154,7 @@ restore_stopped_previous_app_anchor() {
   compose_with_overrides \
     "BUSINESS_FINLYNQ_RELEASE_APP_IMAGE=$previous_app_id" \
     DEMO_LOGIN_ENABLED=false DEMO_WRITES_ENABLED=false \
-    ACCOUNT_LOGIN_ENABLED=false ACCOUNT_SIGNUP_ENABLED=false \
+    ACCOUNT_LOGIN_ENABLED=false AUTH_OIDC_ENABLED=false AUTH_OIDC_SIGNUP_ENABLED=false ACCOUNT_SIGNUP_ENABLED=false \
     AUTH_EMAIL_DELIVERY_ENABLED=false SIGNUP_TURNSTILE_ENABLED=false \
     BUSINESS_WRITES_ENABLED=false BANK_FEEDS_ENABLED=false -- \
     up --no-start --no-deps --no-build --force-recreate app >/dev/null 2>&1 \
@@ -2399,7 +2396,7 @@ app_origin="$(jq -r '.services.app.environment.APP_ORIGIN // empty' <<<"$rendere
 session_cookie_name="$(jq -r '.services.app.environment.SESSION_COOKIE_NAME // empty' <<<"$rendered_compose")"
 public_base_url=""
 
-for gate in DEMO_LOGIN_ENABLED DEMO_WRITES_ENABLED ACCOUNT_LOGIN_ENABLED \
+for gate in DEMO_LOGIN_ENABLED DEMO_WRITES_ENABLED ACCOUNT_LOGIN_ENABLED AUTH_OIDC_ENABLED AUTH_OIDC_SIGNUP_ENABLED \
   ACCOUNT_SIGNUP_ENABLED AUTH_EMAIL_DELIVERY_ENABLED SIGNUP_TURNSTILE_ENABLED \
   BUSINESS_WRITES_ENABLED BANK_FEEDS_ENABLED YAHOO_FX_ENABLED; do
   gate_value="$(jq -r --arg gate "$gate" '.services.app.environment[$gate] // empty' <<<"$rendered_compose")"
@@ -2445,8 +2442,6 @@ if [[ "$mode" != "rehearsal" ]]; then
   if [[ "$mode" == "initial" ]]; then
     for initial_resource_contract in \
       "BUSINESS_FINLYNQ_PGDATA_VOLUME:business_finlynq_pgdata" \
-      "BUSINESS_FINLYNQ_CADDY_DATA_VOLUME:business_finlynq_caddy_data" \
-      "BUSINESS_FINLYNQ_CADDY_CONFIG_VOLUME:business_finlynq_caddy_config" \
       "BUSINESS_FINLYNQ_PRIVATE_NETWORK:business_finlynq_private" \
       "BUSINESS_FINLYNQ_EGRESS_NETWORK:business_finlynq_egress" \
       "BUSINESS_FINLYNQ_EDGE_NETWORK:business_finlynq_edge" \
@@ -2483,15 +2478,11 @@ if [[ "$mode" != "rehearsal" ]]; then
   MONITOR_MAX_DISK_PERCENT="$(read_operations_value MONITOR_MAX_DISK_PERCENT)"
   MONITOR_EXPECT_EDGE="$(read_operations_value MONITOR_EXPECT_EDGE)"
   MONITOR_EDGE_MODE="$(read_operations_value MONITOR_EDGE_MODE)"
-  MONITOR_EDGE_MODE="${MONITOR_EDGE_MODE:-compose}"
-  MONITOR_EXTERNAL_EDGE_PROJECT=""
-  MONITOR_EXTERNAL_EDGE_SERVICE=""
-  MONITOR_EXTERNAL_EDGE_NETWORK=""
-  if [[ "$MONITOR_EDGE_MODE" == external ]]; then
-    MONITOR_EXTERNAL_EDGE_PROJECT="$(read_operations_value MONITOR_EXTERNAL_EDGE_PROJECT)"
-    MONITOR_EXTERNAL_EDGE_SERVICE="$(read_operations_value MONITOR_EXTERNAL_EDGE_SERVICE)"
-    MONITOR_EXTERNAL_EDGE_NETWORK="$(read_operations_value MONITOR_EXTERNAL_EDGE_NETWORK)"
-  fi
+  [[ "$MONITOR_EDGE_MODE" == external ]] \
+    || fail "production monitoring must follow shared-edge contract v1"
+  MONITOR_EXTERNAL_EDGE_PROJECT="$(read_operations_value MONITOR_EXTERNAL_EDGE_PROJECT)"
+  MONITOR_EXTERNAL_EDGE_SERVICE="$(read_operations_value MONITOR_EXTERNAL_EDGE_SERVICE)"
+  MONITOR_EXTERNAL_EDGE_NETWORK="$(read_operations_value MONITOR_EXTERNAL_EDGE_NETWORK)"
   MONITOR_EXPECT_AUTH_EMAIL_WORKER="$(read_operations_value MONITOR_EXPECT_AUTH_EMAIL_WORKER)"
   MONITOR_EXPECT_OUTBOX_PUBLISHER="$(read_operations_value MONITOR_EXPECT_OUTBOX_PUBLISHER)"
   MONITOR_REQUIRE_OFFSITE="$(read_operations_value MONITOR_REQUIRE_OFFSITE)"
@@ -2536,8 +2527,8 @@ if [[ "$mode" != "rehearsal" ]]; then
     || release_quiesced_backup_timeout_seconds=300
   [[ "$MONITOR_BASE_URL" =~ ^https:// ]] || fail "production monitor base URL must use HTTPS"
   [[ "$MONITOR_EXPECT_EDGE" == "true" ]] || fail "the production release requires the reviewed edge boundary"
-  [[ "$MONITOR_EDGE_MODE" == compose || "$MONITOR_EDGE_MODE" == external ]] \
-    || fail "MONITOR_EDGE_MODE must be compose or external"
+  [[ "$MONITOR_EDGE_MODE" == external ]] \
+    || fail "MONITOR_EDGE_MODE must follow shared-edge contract v1"
   [[ "$MONITOR_EDGE_MODE" == "$edge_mode" ]] \
     || fail "monitor and Compose edge modes differ"
   if [[ "$edge_mode" == external ]]; then
@@ -2561,6 +2552,8 @@ if [[ "$mode" != "rehearsal" ]]; then
     [[ "$release_DEMO_LOGIN_ENABLED" == "true" \
       && "$release_DEMO_WRITES_ENABLED" == "true" \
       && "$release_ACCOUNT_LOGIN_ENABLED" == "false" \
+      && "$release_AUTH_OIDC_ENABLED" == "false" \
+      && "$release_AUTH_OIDC_SIGNUP_ENABLED" == "false" \
       && "$release_ACCOUNT_SIGNUP_ENABLED" == "false" \
       && "$release_AUTH_EMAIL_DELIVERY_ENABLED" == "false" \
       && "$release_SIGNUP_TURNSTILE_ENABLED" == "false" \
@@ -2609,6 +2602,8 @@ if [[ "$mode" != "rehearsal" ]]; then
       [
         .secrets.business_finlynq_document_google_secret.file,
         .secrets.business_finlynq_document_microsoft_secret.file,
+        .secrets.business_finlynq_oidc_client_secret.file,
+        .secrets.business_finlynq_oidc_identity_map.file,
         .secrets.business_finlynq_resend_api_key.file,
         .secrets.business_finlynq_turnstile_secret_key.file,
         .secrets.business_finlynq_rclone_config.file,
@@ -2652,7 +2647,7 @@ else
     [[ "$resource_name" == "$compose_project"-* ]] \
       || fail "rehearsal resource can escape its isolated project: $resource_name"
     case "$resource_name" in
-      business_finlynq_pgdata|business_finlynq_caddy_data|business_finlynq_caddy_config|business_finlynq_private|business_finlynq_egress|business_finlynq_edge|business_finlynq_development_edge|business_finlynq_restore_drill)
+      business_finlynq_pgdata|business_finlynq_private|business_finlynq_egress|business_finlynq_edge|business_finlynq_development_edge|business_finlynq_restore_drill)
         fail "rehearsal resolved a production resource name"
         ;;
     esac
@@ -2895,8 +2890,6 @@ verify_initial_state_contract() {
   local -a forbidden_volumes=(
     business_finlynq_pgdata
     business_finlynq_pgdata_clamav
-    business_finlynq_caddy_data
-    business_finlynq_caddy_config
     business_finlynq_private-release-router-state-v2
   )
   local -a forbidden_networks=(
@@ -5409,7 +5402,7 @@ stage="candidate-readiness-with-writes-disabled"
 run_quiesced_app() (
   compose_with_overrides \
     DEMO_LOGIN_ENABLED=false DEMO_WRITES_ENABLED=false \
-    ACCOUNT_LOGIN_ENABLED=false ACCOUNT_SIGNUP_ENABLED=false \
+    ACCOUNT_LOGIN_ENABLED=false AUTH_OIDC_ENABLED=false AUTH_OIDC_SIGNUP_ENABLED=false ACCOUNT_SIGNUP_ENABLED=false \
     AUTH_EMAIL_DELIVERY_ENABLED=false SIGNUP_TURNSTILE_ENABLED=false \
     BUSINESS_WRITES_ENABLED=false BANK_FEEDS_ENABLED=false -- \
     up --detach --no-deps --no-build --force-recreate app
@@ -5432,14 +5425,14 @@ wait_for_internal_readiness() {
 }
 wait_for_internal_readiness "$evidence_directory/61-quiesced-readiness.json" || fail "candidate did not become ready with all write surfaces disabled"
 chmod 0600 -- "$evidence_directory/61-quiesced-readiness.json"
-for disabled_check in accountAuthentication accountSignup emailWorker bankFeeds; do
+for disabled_check in accountAuthentication accountSignup oidcAuthentication emailWorker bankFeeds; do
   jq -e --arg check "$disabled_check" '.checks[$check] == "disabled"' "$evidence_directory/61-quiesced-readiness.json" >/dev/null \
     || fail "quiesced candidate unexpectedly enabled $disabled_check"
 done
 quiesced_container="$(compose ps --quiet app)"
 [[ -n "$quiesced_container" ]] || fail "quiesced candidate app container is missing"
 quiesced_environment="$(docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$quiesced_container")"
-for disabled_gate in DEMO_LOGIN_ENABLED DEMO_WRITES_ENABLED ACCOUNT_LOGIN_ENABLED \
+for disabled_gate in DEMO_LOGIN_ENABLED DEMO_WRITES_ENABLED ACCOUNT_LOGIN_ENABLED AUTH_OIDC_ENABLED AUTH_OIDC_SIGNUP_ENABLED \
   ACCOUNT_SIGNUP_ENABLED AUTH_EMAIL_DELIVERY_ENABLED SIGNUP_TURNSTILE_ENABLED \
   BUSINESS_WRITES_ENABLED BANK_FEEDS_ENABLED; do
   gate_value="$(awk -F= -v key="$disabled_gate" '$1 == key { sub(/^[^=]*=/, ""); print; exit }' <<<"$quiesced_environment")"
@@ -5501,12 +5494,15 @@ chmod 0600 -- "$public_headers" "$public_body"
 verify_release_router_maintenance
 
 expected_auth="disabled"; [[ "$release_ACCOUNT_LOGIN_ENABLED" == "true" ]] && expected_auth="ready"
+expected_oidc="disabled"; [[ "$release_AUTH_OIDC_ENABLED" == "true" ]] && expected_oidc="ready"
+expected_oidc_signup="disabled"; [[ "$release_AUTH_OIDC_SIGNUP_ENABLED" == "true" ]] && expected_oidc_signup="ready"
 expected_signup="disabled"; [[ "$release_ACCOUNT_SIGNUP_ENABLED" == "true" ]] && expected_signup="ready"
 expected_worker="disabled"; [[ "$release_ACCOUNT_LOGIN_ENABLED" == "true" ]] && expected_worker="ready"
 expected_bank="disabled"
 jq -e \
   --arg revision "$revision" --arg auth "$expected_auth" --arg signup "$expected_signup" --arg worker "$expected_worker" --arg bank "$expected_bank" \
-  '.status == "ready" and .revision == $revision and .checks.database == "ready" and .checks.organizationKey == "ready" and .checks.identityKey == "ready" and .checks.accountAuthentication == $auth and .checks.accountSignup == $signup and .checks.emailWorker == $worker and .checks.bankFeeds == $bank' \
+  --arg oidc "$expected_oidc" --arg oidcSignup "$expected_oidc_signup" \
+  '.status == "ready" and .revision == $revision and .checks.database == "ready" and .checks.organizationKey == "ready" and .checks.identityKey == "ready" and .checks.accountAuthentication == $auth and .checks.oidcAuthentication == $oidc and .checks.oidcSignup == $oidcSignup and .checks.accountSignup == $signup and .checks.emailWorker == $worker and .checks.bankFeeds == $bank' \
   "$evidence_directory/64-internal-readiness.json" >/dev/null || fail "detailed readiness does not match the reviewed release gates"
 
 stage="browser-acceptance"

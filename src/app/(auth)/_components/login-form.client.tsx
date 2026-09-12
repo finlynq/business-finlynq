@@ -4,7 +4,17 @@ import Link from "next/link";
 import { FormEvent, useState } from "react";
 import styles from "../auth.module.css";
 
-export function LoginForm({ next, initialMessage, accountLoginEnabled }: { next: string; initialMessage?: string; accountLoginEnabled: boolean }) {
+export function LoginForm({
+  next,
+  initialMessage,
+  accountLoginEnabled,
+  ssoLoginEnabled = false,
+}: {
+  next: string;
+  initialMessage?: string;
+  accountLoginEnabled: boolean;
+  ssoLoginEnabled?: boolean;
+}) {
   const [error, setError] = useState(initialMessage ?? "");
   const [busy, setBusy] = useState(false);
   const [mfaRequired, setMfaRequired] = useState(false);
@@ -56,6 +66,18 @@ export function LoginForm({ next, initialMessage, accountLoginEnabled }: { next:
       {error && <div className={styles.alert} role="alert">{error}</div>}
       {accountLoginEnabled && (
         <>
+          {ssoLoginEnabled && (
+            <>
+              <Link
+                className={styles.demoButton}
+                href={`/api/auth/oidc/start?next=${encodeURIComponent(next)}`}
+                prefetch={false}
+              >
+                Continue with Microsoft <span aria-hidden="true">→</span>
+              </Link>
+              <div className={styles.divider}><span>or use email</span></div>
+            </>
+          )}
           <form className={styles.form} onSubmit={(event) => { void submit(event); }} noValidate>
             <label><span>Email address</span><input name="email" type="email" autoComplete="username" inputMode="email" required maxLength={254} /></label>
             <label><span>Password</span><input name="password" type="password" autoComplete="current-password" required maxLength={128} /></label>

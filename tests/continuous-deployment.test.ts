@@ -27,7 +27,6 @@ const deployDevelopment = read("deploy", "development", "deploy-development.sh")
 const installDevelopment = read("deploy", "development", "install-development.sh");
 const playwrightConfig = read("playwright.config.ts");
 const compose = read("docker-compose.yml");
-const caddy = read("deploy", "Caddyfile.container");
 const allowRevisions = read(
   "deploy",
   "continuous-deployment",
@@ -244,7 +243,7 @@ describe("continuous deployment safety boundary", () => {
       'release_is_accepted || fail "the release runner returned without an accepted live revision"',
     );
     const edgeReconciled = deployMain.lastIndexOf(
-      'bash "$repository/deploy/edge/reconcile-shared-edge.sh"',
+      'bash "$repository/deploy/edge/verify-external-edge.sh" --scope production',
     );
     expect(edgeReconciled).toBeGreaterThan(releaseAccepted);
     expect(deployMain.indexOf('mutated="false"', edgeReconciled)).toBeGreaterThan(edgeReconciled);
@@ -464,7 +463,7 @@ describe("continuous deployment safety boundary", () => {
     );
     const strictRecheck = sameRevision.indexOf("release_is_accepted", commit);
     const reconcile = sameRevision.indexOf(
-      'bash "$repository/deploy/edge/reconcile-shared-edge.sh"',
+      'bash "$repository/deploy/edge/verify-external-edge.sh" --scope production',
       strictRecheck,
     );
     const exit = sameRevision.indexOf("exit 0", reconcile);
@@ -542,8 +541,6 @@ describe("continuous deployment safety boundary", () => {
     expect(deployDevelopment).not.toContain("refs/remotes/origin/main");
     for (const resource of [
       "pgdata",
-      "caddy_data",
-      "caddy_config",
       "private",
       "egress",
       "edge",
@@ -551,6 +548,8 @@ describe("continuous deployment safety boundary", () => {
     ]) {
       expect(installDevelopment).toContain(`business_finlynq_development_${resource}`);
     }
+    expect(installDevelopment).not.toContain("business_finlynq_development_caddy_data");
+    expect(installDevelopment).not.toContain("business_finlynq_development_caddy_config");
   });
 
   it("creates the candidate deployer staging file with the reviewed mktemp command", () => {
@@ -585,18 +584,15 @@ describe("continuous deployment safety boundary", () => {
     }
   });
 
-  it("serializes production and development deployments and keeps the public routes separate", () => {
+  it("serializes application deployments while preserving central-edge aliases", () => {
     const sharedLock = 'readonly host_deployment_lock="/var/lib/business-finlynq/deployment-host.lock"';
     expect(deployMain).toContain(sharedLock);
     expect(deployDevelopment).toContain(sharedLock);
     expect(compose).toContain("BUSINESS_FINLYNQ_APP_NETWORK_ALIAS:-production-app");
-    expect(compose).toContain("business_finlynq_development_edge:");
-    expect(caddy).toContain("reverse_proxy production-app:3000");
-    expect(caddy).toContain("BUSINESS_FINLYNQ_DEVELOPMENT_HOSTNAME:dev.business.finlynq.com");
-    expect(caddy).toContain("reverse_proxy development-app:3000");
-    expect(caddy).not.toContain("reverse_proxy app:3000");
-    expect(reconcileSharedEdge).toContain(sharedLock);
-    for (const script of [deployMain, deployDevelopment, reconcileSharedEdge]) {
+    expect(compose).toContain("BUSINESS_FINLYNQ_EDGE_NETWORK:-business_finlynq_edge");
+    expect(compose).not.toMatch(/^  edge:\s*$/mu);
+    expect(reconcileSharedEdge).toContain("verify-external-edge.sh");
+    for (const script of [deployMain, deployDevelopment]) {
       expect(script).toContain("0:$deploy_gid:660:1");
       expect(script).toContain('exec 8<>"$host_deployment_lock"');
     }
@@ -606,45 +602,19 @@ describe("continuous deployment safety boundary", () => {
     expect(installDevelopment).toContain("0:$deploy_gid:660:1");
   });
 
-  it("reconciles only the shared edge after validating every attached deployment", () => {
-    expect(reconcileSharedEdge).toContain('[[ "$(id -u)" == 0 ]]');
-    expect(reconcileSharedEdge).toContain('stat -c \'%U:%G:%a\' -- "$external_basic_auth"');
-    expect(reconcileSharedEdge).toContain('== "root:root:400"');
-    expect(reconcileSharedEdge).toContain("/config/epm-basic-auth");
-    expect(reconcileSharedEdge).toContain("--project-name business-finlynq");
-    for (const network of [
-      "business_finlynq_edge",
-      "business_finlynq_development_edge",
-      "epm_finlynq_edge",
-      "consult_finlynq_edge",
-    ]) {
-      expect(reconcileSharedEdge).toContain(network);
-    }
-    for (const backend of [
-      "production-app:3000/api/health",
-      "development-app:3000/api/health",
-      "epm-finlynq-api:7100/health",
-      "epm-finlynq-console:7090/api/health",
-      "consult-finlynq-app:8080/",
-    ]) {
-      expect(reconcileSharedEdge).toContain(backend);
-    }
-    expect(reconcileSharedEdge.match(/--header="X-Business-Finlynq-Internal-Health: 1"/gu))
-      .toHaveLength(2);
-    expect(reconcileSharedEdge).toContain("caddy validate --config /etc/caddy/Caddyfile");
-    expect(reconcileSharedEdge).toContain("up --detach --no-deps --no-build");
-    expect(reconcileSharedEdge).toContain("--wait --wait-timeout 120 edge");
-    expect(reconcileSharedEdge).not.toMatch(/^[ \t]*(?!#)[^\n]*--force-recreate/mu);
-    expect(reconcileSharedEdge).not.toMatch(/^[ \t]*(?!#)[^\n]*\bdown\b/mu);
-    expect(reconcileSharedEdge).toContain("https://business.finlynq.com/api/health");
-    expect(reconcileSharedEdge).toContain("https://dev.business.finlynq.com/api/health");
-    expect(reconcileSharedEdge).toContain("https://epm.finlynq.com/");
-    expect(reconcileSharedEdge).toContain('[[ "$epm_status" == "401" ]]');
-    expect(reconcileSharedEdge).toContain("https://consult.finlynq.com/");
+  it("keeps the legacy reconciler name read-only", () => {
+    expect(reconcileSharedEdge).toContain("verify-external-edge.sh");
+    expect(reconcileSharedEdge).toContain("--scope production");
+    expect(reconcileSharedEdge).not.toContain("docker compose");
+    expect(reconcileSharedEdge).not.toContain("caddy reload");
+    expect(reconcileSharedEdge).not.toContain("epm-finlynq");
+    expect(reconcileSharedEdge).not.toContain("consult-finlynq");
   });
 
   it("starts development with external identity integrations disabled", () => {
     expect(installDevelopment).toContain("ACCOUNT_LOGIN_ENABLED=false");
+    expect(installDevelopment).toContain("AUTH_OIDC_ENABLED=false");
+    expect(installDevelopment).toContain("AUTH_OIDC_SIGNUP_ENABLED=false");
     expect(installDevelopment).toContain("ACCOUNT_SIGNUP_ENABLED=false");
     expect(installDevelopment).toContain("AUTH_EMAIL_DELIVERY_ENABLED=false");
     expect(installDevelopment).toContain("SIGNUP_TURNSTILE_ENABLED=false");
@@ -653,6 +623,19 @@ describe("continuous deployment safety boundary", () => {
     expect(installDevelopment).toContain("YAHOO_FX_ENABLED=false");
     expect(installDevelopment).toContain("--enable-yahoo-fx-experimental");
     expect(installDevelopment).toContain("--disable-yahoo-fx");
+  });
+
+  it("keeps pre-OIDC development revisions recoverable across the SSO release boundary", () => {
+    expect(deployDevelopment).toContain("revision_uses_oidc_runtime_contract() {");
+    expect(deployDevelopment).toContain(
+      'revision_uses_oidc_runtime_contract "$expected_revision"',
+    );
+    expect(deployDevelopment).toContain(
+      '"$app_container" "$rendered" "$oidc_contract_expected"',
+    );
+    expect(deployDevelopment).toContain(
+      'for setting in "${required_environment_settings[@]}"',
+    );
   });
 
   it("enables every development feature only with isolated provider secrets", () => {
@@ -865,8 +848,8 @@ describe("continuous deployment safety boundary", () => {
     expect(resourceGuard).toContain("docker volume ls --format '{{.Name}}'");
     expect(resourceGuard).toContain("business_finlynq_development_pgdata");
     expect(resourceGuard).toContain("business_finlynq_development_pgdata_clamav");
-    expect(resourceGuard).toContain("business_finlynq_development_caddy_data");
-    expect(resourceGuard).toContain("business_finlynq_development_caddy_config");
+    expect(resourceGuard).not.toContain("business_finlynq_development_caddy_data");
+    expect(resourceGuard).not.toContain("business_finlynq_development_caddy_config");
     expect(resourceGuard).toContain('docker volume inspect "$release_router_state_volume"');
     expect(resourceGuard).toContain(
       '.[0].Labels["com.docker.compose.volume"] == "business_finlynq_release_router_state"',
@@ -886,8 +869,8 @@ describe("continuous deployment safety boundary", () => {
     expect(resourceGuard).toContain(
       "docker network inspect business_finlynq_development_edge",
     );
-    expect(resourceGuard).toContain('"com.business-finlynq.edge-owner": "external"');
-    expect(resourceGuard).toContain('"com.business-finlynq.environment": "development"');
+    expect(resourceGuard).not.toContain("com.business-finlynq.edge-owner");
+    expect(resourceGuard).toContain('.[0].Internal == true');
 
     const initialization = deployDevelopment.slice(
       deployDevelopment.indexOf('accepted_revision=""'),
@@ -997,7 +980,7 @@ describe("continuous deployment safety boundary", () => {
       candidateProof,
     );
     const externalProof = deployDevelopment.indexOf(
-      'verify_external_edge_if_selected "$candidate_revision"',
+      'verify_external_edge_if_selected "$candidate_revision" live-uncommitted',
       liveActivation,
     );
     const finalProof = deployDevelopment.indexOf("deployment_stage=final-verification", externalProof);
@@ -1048,7 +1031,7 @@ describe("continuous deployment safety boundary", () => {
       interruptedReload,
     );
     const interruptedExternal = interrupted.indexOf(
-      'verify_external_edge_if_selected "$source_revision"',
+      'verify_external_edge_if_selected "$source_revision" live-uncommitted',
       interruptedProof,
     );
     const interruptedCommit = interrupted.indexOf(
@@ -1187,6 +1170,10 @@ describe("continuous deployment safety boundary", () => {
       "reload_release_router_live active",
       recoveryStart,
     );
+    const recoveryPrivateProof = deployDevelopment.indexOf(
+      'release_is_accepted "$recovery_revision" private',
+      recoveryStart,
+    );
     const recoveryProof = deployDevelopment.indexOf(
       'release_is_accepted "$recovery_revision"',
       recoveryActive,
@@ -1197,6 +1184,8 @@ describe("continuous deployment safety boundary", () => {
     );
     expect(recoveryMaintenance).toBeGreaterThan(recoveryFunctionStart);
     expect(recoveryReset).toBeGreaterThan(recoveryMaintenance);
+    expect(recoveryPrivateProof).toBeGreaterThan(recoveryStart);
+    expect(recoveryActive).toBeGreaterThan(recoveryPrivateProof);
     expect(recoveryActive).toBeGreaterThan(recoveryStart);
     expect(recoveryProof).toBeGreaterThan(recoveryActive);
     expect(recoveryDurableActive).toBeGreaterThan(recoveryProof);

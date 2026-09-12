@@ -197,6 +197,53 @@ runDatabaseTests("PostgreSQL identity controls", () => {
     expect(blocked.retry_after_seconds).toBeGreaterThan(0);
   });
 
+  it("issues a verified-email OIDC session with distinct, auditable provenance", async () => {
+    const organizationId = randomUUID();
+    const userId = randomUUID();
+    const membershipId = randomUUID();
+    const tokenHash = randomUUID().replaceAll("-", "").repeat(2);
+    const requestId = randomUUID();
+    const credentialHash = "c".repeat(64);
+    await pool.query(
+      "INSERT INTO organizations(id,slug,display_name) VALUES($1,$2,'OIDC Test')",
+      [organizationId, `oidc-${organizationId}`],
+    );
+    await pool.query(
+      "INSERT INTO users(id,email_lookup_hash,email_ciphertext,password_hash,email_verified_at) VALUES($1,$2,'oidc-email','password-hash',now())",
+      [userId, randomUUID().replaceAll("-", "")],
+    );
+    await pool.query(
+      "INSERT INTO organization_memberships(id,organization_id,user_id) VALUES($1,$2,$3)",
+      [membershipId, organizationId, userId],
+    );
+
+    const issued = await pool.query(
+      "SELECT app.auth_issue_oidc_user_session($1,$2,$3,$4,$5,$6,$7,$8) AS session_id",
+      [userId, organizationId, membershipId, tokenHash, "a".repeat(64), "b".repeat(64), requestId, credentialHash],
+    );
+    expect(issued.rows[0]?.session_id).toBeTruthy();
+    expect((await pool.query(
+      "SELECT * FROM app.auth_resolve_session_v3($1,$2)",
+      [tokenHash, "b".repeat(64)],
+    )).rows[0]).toMatchObject({
+      user_id: userId,
+      organization_id: organizationId,
+      membership_id: membershipId,
+      session_mode: "REAL",
+      auth_method: "OIDC",
+      mfa_verified_at: null,
+      step_up_expires_at: null,
+    });
+    expect((await pool.query(
+      "SELECT event_type,outcome,metadata FROM auth_security_events WHERE session_id=$1",
+      [issued.rows[0].session_id],
+    )).rows[0]).toMatchObject({
+      event_type: "LOGIN_OIDC",
+      outcome: "SUCCESS",
+      metadata: { credentialHash },
+    });
+  });
+
   it("consumes a reset token once, revokes sessions, and preserves organization keys", async () => {
     const orgId = randomUUID();
     const userId = randomUUID();
@@ -554,6 +601,10 @@ runRuntimeRoleTests("PostgreSQL runtime authentication boundary", () => {
     await expect(runtimePool.query("SELECT * FROM app.auth_consume_password_reset_escalation_limits($1)", ["e".repeat(64)])).resolves.toBeTruthy();
     await expect(runtimePool.query("SELECT * FROM app.auth_consume_recovery_approval_limits($1,$2)", [issued.rows[0].session_id, randomUUID()])).resolves.toBeTruthy();
     await expect(runtimePool.query("SELECT * FROM app.auth_consume_mfa_enrollment_limits($1)", ["m".repeat(64)])).resolves.toBeTruthy();
+    expect((await runtimePool.query(
+      "SELECT app.auth_issue_oidc_user_session($1,$2,$3,$4,$5,$6,$7,$8) AS session_id",
+      [randomUUID(), randomUUID(), randomUUID(), "d".repeat(64), "a".repeat(64), "b".repeat(64), randomUUID(), "c".repeat(64)],
+    )).rows[0].session_id).toBeNull();
     const resolved = await runtimePool.query("SELECT * FROM app.auth_resolve_session_v3($1, $2)", [tokenHash, "a".repeat(64)]);
     expect(resolved.rows[0]).toMatchObject({
       session_mode: "DEMO",

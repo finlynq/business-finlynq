@@ -113,10 +113,6 @@
 	}
 
 	handle {
-		basic_auth {
-			import /config/epm-basic-auth
-		}
-
 		request_body {
 			max_size 32MB
 		}
@@ -151,6 +147,7 @@
 		X-Content-Type-Options "nosniff"
 		X-Frame-Options "DENY"
 		Referrer-Policy "no-referrer"
+		Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=()"
 		-Server
 	}
 

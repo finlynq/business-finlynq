@@ -8,6 +8,32 @@ fail() {
   exit 1
 }
 
+response_header_value() {
+  local headers="$1" header_name="$2"
+  awk -v wanted_name="$header_name" '
+    BEGIN { cr = sprintf("%c", 13) }
+    {
+      line = $0
+      if (substr(line, length(line), 1) == cr) {
+        line = substr(line, 1, length(line) - 1)
+      }
+      separator = index(line, ":")
+      if (separator == 0) next
+      name = substr(line, 1, separator - 1)
+      if (tolower(name) != tolower(wanted_name)) next
+      value = substr(line, separator + 1)
+      sub(/^[ \t]*/, "", value)
+      sub(/[ \t]*$/, "", value)
+      count++
+      selected = value
+    }
+    END {
+      if (count != 1) exit 1
+      print selected
+    }
+  ' "$headers"
+}
+
 for command_name in awk basename chmod curl date dirname docker grep id install jq mktemp mv promtool rm sleep stat; do
   command -v "$command_name" >/dev/null 2>&1 \
     || fail "required command is unavailable: $command_name"
@@ -73,7 +99,7 @@ response_headers="$(mktemp)"
 response_body="$(mktemp)"
 accounting_evidence_output="$(mktemp)"
 alert_response="$(mktemp)"
-edge_log_output="$(mktemp)"
+application_log_output="$(mktemp)"
 drill_succeeded=0
 
 write_drill_metric() {
@@ -96,7 +122,7 @@ cleanup() {
   write_drill_metric 0
   rm -f -- \
     "$response_headers" "$response_body" "$accounting_evidence_output" \
-    "$alert_response" "$edge_log_output"
+    "$alert_response" "$application_log_output"
   [[ "$drill_succeeded" == "1" ]] || printf '%s\n' "Synthetic alert signal was cleared after a failed drill" >&2
   exit "$exit_status"
 }
@@ -126,7 +152,8 @@ public_spoof_health_status="$(curl \
 [[ "$public_spoof_health_status" == "200" ]] \
   && jq -e 'type == "object" and keys == ["status"] and .status == "ready"' "$response_body" >/dev/null \
   || fail "public edge exposed internal readiness details"
-if grep -Eiq "^x-request-id:[[:space:]]*$spoofed_request_id[[:space:]\r]*$" "$response_headers"; then
+probe_request_id="$(response_header_value "$response_headers" x-request-id || true)"
+if [[ "$probe_request_id" == "$spoofed_request_id" ]]; then
   fail "public edge retained a client-supplied readiness request ID"
 fi
 
@@ -142,7 +169,8 @@ public_spoof_metrics_status="$(curl \
   "$base_url/api/metrics")" || fail "public metrics spoof probe did not complete"
 [[ "$public_spoof_metrics_status" == "404" ]] && grep -Fxq 'Not found.' "$response_body" \
   || fail "public edge exposed internal metrics"
-if grep -Eiq "^x-request-id:[[:space:]]*$spoofed_request_id[[:space:]\r]*$" "$response_headers"; then
+probe_request_id="$(response_header_value "$response_headers" x-request-id || true)"
+if [[ "$probe_request_id" == "$spoofed_request_id" ]]; then
   fail "public edge retained a client-supplied metrics request ID"
 fi
 
@@ -163,33 +191,25 @@ mutation_status="$(curl \
 [[ "$mutation_status" =~ ^2[0-9][0-9]$ ]] \
   || fail "controlled mutation did not return a successful status"
 
-request_id="$(awk '
-  BEGIN { IGNORECASE = 1 }
-  /^x-request-id:/ {
-    sub(/^[^:]+:[[:space:]]*/, "")
-    sub(/[[:space:]\r]+$/, "")
-    value = $0
-  }
-  END { print value }
-' "$response_headers")"
+request_id="$(response_header_value "$response_headers" x-request-id || true)"
 [[ "$request_id" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$ ]] \
   || fail "public edge did not return a valid UUID request ID"
 [[ "$request_id" != "$spoofed_request_id" ]] \
   || fail "public edge retained the client-supplied mutation request ID"
 
-edge_log_seen=0
-edge_log_deadline=$(( $(date +%s) + 30 ))
-while (( $(date +%s) <= edge_log_deadline )); do
-  if docker compose --profile edge logs --since 5m --no-color edge \
-      >"$edge_log_output" 2>/dev/null \
-    && grep -Eq '"request_id"[[:space:]]*:[[:space:]]*"'"$request_id"'"' "$edge_log_output"; then
-    edge_log_seen=1
+application_log_seen=0
+application_log_deadline=$(( $(date +%s) + 30 ))
+while (( $(date +%s) <= application_log_deadline )); do
+  if docker compose logs --since 5m --no-color app \
+      >"$application_log_output" 2>/dev/null \
+    && grep -Eq '"requestId"[[:space:]]*:[[:space:]]*"'"$request_id"'"' "$application_log_output"; then
+    application_log_seen=1
     break
   fi
   sleep 2
 done
-[[ "$edge_log_seen" == "1" ]] \
-  || fail "edge access logs did not retain the generated request ID"
+[[ "$application_log_seen" == "1" ]] \
+  || fail "application route logs did not retain the generated request ID"
 
 lineage_row="$(docker compose exec -T database psql \
   --no-password \
@@ -271,7 +291,7 @@ jq -cn \
     auditEvents: $auditEvents,
     outboxEvents: $outboxEvents,
     unmatchedOutboxEvents: 0,
-    edgeAccessLog: "correlated",
+    applicationRouteLog: "correlated",
     alertmanager: "active",
     operatorDelivery: "confirmed"
   }' >"$evidence_temporary"

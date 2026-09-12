@@ -15,7 +15,7 @@ export type SessionPrincipal = Readonly<{
   displayName: string;
   initials: string;
   sessionMode: "real" | "demo";
-  authMethod: "PASSWORD" | "DEMO_LINK" | "PASSWORD_RESET";
+  authMethod: "PASSWORD" | "DEMO_LINK" | "PASSWORD_RESET" | "OIDC";
   expiresAt: Date;
   mfaVerifiedAt: Date | null;
   stepUpExpiresAt: Date | null;
@@ -82,7 +82,8 @@ export function hasRecentStepUp(principal: SessionPrincipal, now = Date.now()): 
  */
 export function transactionAuthMethod(principal: SessionPrincipal, now = Date.now()): string {
   if (principal.sessionMode === "demo") return hasRecentStepUp(principal, now) ? "demo-link+mfa" : "demo-link";
-  return hasRecentStepUp(principal, now) ? "password+mfa" : "password";
+  const primaryMethod = principal.authMethod === "OIDC" ? "oidc" : "password";
+  return hasRecentStepUp(principal, now) ? `${primaryMethod}+mfa` : primaryMethod;
 }
 
 export async function resolveSession(rawToken: string | undefined, userAgent: string | null): Promise<SessionPrincipal | null> {

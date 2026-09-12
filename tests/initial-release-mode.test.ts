@@ -114,12 +114,8 @@ fi
   );
 
   it("validates inactive initial resources through a combined all-profile render", () => {
-    expect(runner).toContain(
-      '"BUSINESS_FINLYNQ_CADDY_DATA_VOLUME:business_finlynq_caddy_data"',
-    );
-    expect(runner).toContain(
-      '"BUSINESS_FINLYNQ_CADDY_CONFIG_VOLUME:business_finlynq_caddy_config"',
-    );
+    expect(runner).not.toContain("BUSINESS_FINLYNQ_CADDY_DATA_VOLUME");
+    expect(runner).not.toContain("BUSINESS_FINLYNQ_CADDY_CONFIG_VOLUME");
     expect(runner).toContain(
       '"BUSINESS_FINLYNQ_RESTORE_DRILL_NETWORK:business_finlynq_restore_drill"',
     );
@@ -154,6 +150,8 @@ fi
     for (const secretName of [
       "business_finlynq_document_google_secret",
       "business_finlynq_document_microsoft_secret",
+      "business_finlynq_oidc_client_secret",
+      "business_finlynq_oidc_identity_map",
       "business_finlynq_resend_api_key",
       "business_finlynq_turnstile_secret_key",
       "business_finlynq_rclone_config",

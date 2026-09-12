@@ -61,18 +61,18 @@ describe("trusted proxy request-IP boundary", () => {
     })).toBe("unknown");
   });
 
-  it("keeps both reviewed Caddy deployments on one explicit trusted hop", () => {
+  it("documents one explicit trusted hop for the central shared edge", () => {
     const root = process.cwd();
     const environmentExample = readFileSync(join(root, ".env.example"), "utf8");
     const compose = readFileSync(join(root, "docker-compose.yml"), "utf8");
     const deploymentGuide = readFileSync(join(root, "docs/deployment/vps.md"), "utf8");
-    const caddyfiles = ["deploy/Caddyfile.container", "deploy/Caddyfile.example"]
-      .map((path) => readFileSync(join(root, path), "utf8"));
 
     expect(environmentExample).toMatch(/^TRUSTED_PROXY_HOPS=0$/m);
+    expect(environmentExample).toMatch(/^BUSINESS_FINLYNQ_EDGE_MODE=external$/m);
     expect(compose).toContain("TRUSTED_PROXY_HOPS: ${TRUSTED_PROXY_HOPS:-0}");
-    expect(deploymentGuide).toContain("set `TRUSTED_PROXY_HOPS=1` for either reviewed Caddy arrangement");
+    expect(deploymentGuide).toContain(
+      "set `TRUSTED_PROXY_HOPS=1` behind shared-edge contract v1",
+    );
     expect(deploymentGuide).toContain("`X-Real-IP` is never a fallback");
-    for (const caddyfile of caddyfiles) expect(caddyfile).toMatch(/reverse_proxy\s+\S+\s*\{/);
   });
 });

@@ -185,7 +185,6 @@ refresh_installed_deployer_if_needed() {
 
 compose() {
   local edge_mode edge_mode_count
-  local -a compose_files=(-f "$repository/docker-compose.yml")
   local -a controlled_environment=()
   edge_mode="$(awk -F= '$1 == "BUSINESS_FINLYNQ_EDGE_MODE" { sub(/^[^=]*=/, ""); print }' \
     "$compose_environment")" \
@@ -195,12 +194,9 @@ compose() {
     || fail "BUSINESS_FINLYNQ_EDGE_MODE definitions could not be counted"
   [[ "$edge_mode_count" == 0 || "$edge_mode_count" == 1 ]] \
     || fail "BUSINESS_FINLYNQ_EDGE_MODE must be defined at most once"
-  edge_mode="${edge_mode:-compose}"
-  case "$edge_mode" in
-    compose) ;;
-    external) compose_files+=(-f "$repository/deploy/edge/docker-compose.external.yml") ;;
-    *) fail "BUSINESS_FINLYNQ_EDGE_MODE must be compose or external" ;;
-  esac
+  edge_mode="${edge_mode:-external}"
+  [[ "$edge_mode" == external ]] \
+    || fail "shared-edge contract v1 requires BUSINESS_FINLYNQ_EDGE_MODE=external"
   if [[ -n "$release_acceptance_token" ]]; then
     [[ "$release_acceptance_token" =~ ^[a-f0-9]{64}$ ]] \
       || fail "development release-acceptance token is invalid"
@@ -212,28 +208,23 @@ compose() {
     --project-name "$project" \
     --project-directory "$repository" \
     --env-file "$compose_environment" \
-    "${compose_files[@]}" "$@"
+    -f "$repository/docker-compose.yml" "$@"
 }
 
 compose_release_router_build() {
   local edge_mode edge_mode_count
-  local -a compose_files=(-f "$repository/docker-compose.yml")
   edge_mode="$(awk -F= '$1 == "BUSINESS_FINLYNQ_EDGE_MODE" { sub(/^[^=]*=/, ""); print }' \
     "$compose_environment")" || return 1
   edge_mode_count="$(awk -F= '$1 == "BUSINESS_FINLYNQ_EDGE_MODE" { count++ } END { print count + 0 }' \
     "$compose_environment")" || return 1
   [[ "$edge_mode_count" == 0 || "$edge_mode_count" == 1 ]] || return 1
-  edge_mode="${edge_mode:-compose}"
-  case "$edge_mode" in
-    compose) ;;
-    external) compose_files+=(-f "$repository/deploy/edge/docker-compose.external.yml") ;;
-    *) return 1 ;;
-  esac
+  edge_mode="${edge_mode:-external}"
+  [[ "$edge_mode" == external ]] || return 1
   env -i PATH="$clean_path" docker compose \
     --project-name "$release_router_build_project" \
     --project-directory "$repository" \
     --env-file "$compose_environment" \
-    "${compose_files[@]}" build --provenance=false --sbom=false \
+    -f "$repository/docker-compose.yml" build --provenance=false --sbom=false \
     --build-arg "SOURCE_DATE_EPOCH=$release_router_source_date_epoch" release_router
 }
 
@@ -260,9 +251,29 @@ revision_release_topology() {
   fi
 }
 
+revision_uses_oidc_runtime_contract() {
+  local revision="$1" compose_source
+  validate_revision "$revision"
+  compose_source="$(git_as_deploy show "$revision:docker-compose.yml")" || return 2
+  grep -Eq '^[[:space:]]+AUTH_OIDC_ENABLED:' <<<"$compose_source"
+}
+
+revision_uses_oidc_signup_runtime_contract() {
+  local revision="$1" compose_source
+  validate_revision "$revision"
+  compose_source="$(git_as_deploy show "$revision:docker-compose.yml")" || return 2
+  grep -Eq '^[[:space:]]+AUTH_OIDC_SIGNUP_ENABLED:' <<<"$compose_source"
+}
+
 verify_external_edge_if_selected() {
-  local verifier_revision="$1" selected_mode selected_count
+  local verifier_revision="$1" verification_boundary="${2:-normal}"
+  local selected_mode selected_count verifier_boundary_flag
   validate_revision "$verifier_revision"
+  case "$verification_boundary" in
+    normal) verifier_boundary_flag="--allow-development-router-maintenance" ;;
+    live-uncommitted) verifier_boundary_flag="--expect-development-live-uncommitted" ;;
+    *) fail "external-edge verification boundary is invalid" ;;
+  esac
   selected_count="$(awk -F= '$1 == "BUSINESS_FINLYNQ_EDGE_MODE" { count++ } END { print count + 0 }' \
     "$compose_environment")" \
     || fail "BUSINESS_FINLYNQ_EDGE_MODE definitions could not be counted"
@@ -271,37 +282,31 @@ verify_external_edge_if_selected() {
   selected_mode="$(awk -F= '$1 == "BUSINESS_FINLYNQ_EDGE_MODE" { sub(/^[^=]*=/, ""); print }' \
     "$compose_environment")" \
     || fail "BUSINESS_FINLYNQ_EDGE_MODE could not be read"
-  selected_mode="${selected_mode:-compose}"
-  [[ "$selected_mode" == compose || "$selected_mode" == external ]] \
-    || fail "BUSINESS_FINLYNQ_EDGE_MODE must be compose or external"
-  [[ "$selected_mode" == external ]] || return 0
+  selected_mode="${selected_mode:-external}"
+  [[ "$selected_mode" == external ]] \
+    || fail "shared-edge contract v1 requires BUSINESS_FINLYNQ_EDGE_MODE=external"
 
-  # The installed verifier can describe an older ingress topology. Stage the
-  # verifier and its reviewed route fragment directly from the immutable,
-  # CI-signalled candidate object instead. Root owns the private staging tree,
-  # and each file must round-trip to the exact Git blob before it is executed.
+  # The installed verifier can describe an older ingress topology. Stage only
+  # the read-only verifier from the immutable, CI-signalled candidate object.
+  # Shared-edge route files remain exclusively owned by the central repository.
   (
-    local staging_root verifier_path route_path relative_path target_path
+    local staging_root verifier_path relative_path target_path
     local expected_oid observed_oid
     staging_root="$(mktemp -d \
       "$state_directory/.candidate-edge-verifier.${verifier_revision}.XXXXXX")" \
       || fail "candidate external-edge verifier staging could not be created"
     verifier_path="$staging_root/deploy/edge/verify-external-edge.sh"
-    route_path="$staging_root/deploy/edge/Caddyfile.business-external"
     cleanup_candidate_verifier_staging() {
-      rm -f -- "$verifier_path" "$route_path"
+      rm -f -- "$verifier_path"
       rmdir -- "$staging_root/deploy/edge" "$staging_root/deploy" "$staging_root" \
         2>/dev/null || true
     }
     trap cleanup_candidate_verifier_staging EXIT
     install -d -o root -g root -m 0700 -- "$staging_root/deploy/edge" \
       || fail "candidate external-edge verifier staging hierarchy could not be prepared"
-    for relative_path in \
-      deploy/edge/verify-external-edge.sh \
-      deploy/edge/Caddyfile.business-external; do
+    for relative_path in deploy/edge/verify-external-edge.sh; do
       case "$relative_path" in
         deploy/edge/verify-external-edge.sh) target_path="$verifier_path" ;;
-        deploy/edge/Caddyfile.business-external) target_path="$route_path" ;;
         *) fail "unexpected candidate external-edge verifier source" ;;
       esac
       expected_oid="$(git_as_deploy rev-parse \
@@ -315,14 +320,12 @@ verify_external_edge_if_selected() {
         && -s "$target_path" ]] \
         || fail "candidate external-edge verifier staging differs from its Git blob: $relative_path"
     done
-    chown root:root -- "$verifier_path" "$route_path" \
+    chown root:root -- "$verifier_path" \
       || fail "candidate external-edge verifier staging ownership could not be set"
     chmod 0500 "$verifier_path" \
       || fail "candidate external-edge verifier staging mode could not be set"
-    chmod 0400 "$route_path" \
-      || fail "candidate external-edge route staging mode could not be set"
     bash "$verifier_path" --scope development --warmup-host development \
-      --allow-development-router-maintenance
+      "$verifier_boundary_flag"
   )
 }
 
@@ -782,8 +785,6 @@ assert_fresh_development_resources() {
   local -a protected_data_volumes=(
     business_finlynq_development_pgdata
     business_finlynq_development_pgdata_clamav
-    business_finlynq_development_caddy_data
-    business_finlynq_development_caddy_config
   )
   local -a protected_internal_networks=(
     business_finlynq_development_private
@@ -823,27 +824,18 @@ assert_fresh_development_resources() {
     || fail "the installer-attested development edge network is unavailable"
   edge_mode="$(read_environment_value BUSINESS_FINLYNQ_EDGE_MODE)" \
     || fail "the development edge mode could not be read for fresh installation"
-  [[ "$edge_mode" == compose || "$edge_mode" == external ]] \
-    || fail "BUSINESS_FINLYNQ_EDGE_MODE must be compose or external"
+  [[ "$edge_mode" == external ]] \
+    || fail "shared-edge contract v1 requires BUSINESS_FINLYNQ_EDGE_MODE=external"
   edge_inspection="$(docker network inspect business_finlynq_development_edge)" \
     || fail "the development edge network could not be inspected"
-  jq -e --arg mode "$edge_mode" '
+  jq -e '
     length == 1 and .[0].Name == "business_finlynq_development_edge" and
     .[0].Driver == "bridge" and .[0].Scope == "local" and
     .[0].Attachable == false and .[0].Ingress == false and
     (.[0].Options == null or .[0].Options == {}) and
-    (if $mode == "external" then
-      .[0].Internal == true and .[0].Labels == {
-        "com.business-finlynq.edge-owner": "external",
-        "com.business-finlynq.environment": "development"
-      }
-    else
-      .[0].Internal == false and .[0].Labels == {
-        "com.business-finlynq.environment": "development"
-      }
-    end)
+    .[0].Internal == true
   ' <<<"$edge_inspection" >/dev/null \
-    || fail "the development edge network no longer matches its installer contract"
+    || fail "the central development ingress network no longer matches contract v1"
 }
 
 release_router_runtime_is_accepted() {
@@ -1110,7 +1102,12 @@ verify_compose_boundary() {
 
 document_provider_configuration_matches() {
   local container="$1" rendered="$2" provider setting expected_record actual_record source target \
-    mounts expected_digest actual_digest provider_record
+    mounts expected_digest actual_digest provider_record oidc_contract_expected="${3:-true}"
+  local -a oidc_secret_settings=()
+  [[ "$oidc_contract_expected" == true || "$oidc_contract_expected" == false ]] || return 1
+  if [[ "$oidc_contract_expected" == true ]]; then
+    oidc_secret_settings=(AUTH_OIDC_CLIENT_SECRET_FILE AUTH_OIDC_IDENTITY_MAP_FILE)
+  fi
   mounts="$(docker inspect --format '{{json .Mounts}}' "$container")" || return 1
   for provider in GOOGLE MICROSOFT; do
     for setting in "DOCUMENT_${provider}_CLIENT_ID" "DOCUMENT_${provider}_CLIENT_SECRET_FILE"; do
@@ -1170,6 +1167,53 @@ document_provider_configuration_matches() {
       <<<"$mounts" >/dev/null || return 1
     # Detect secret rotation, including atomic replacement of a bind-mounted
     # file at the same path. Values and digests never enter deployment logs.
+    expected_digest="$(sha256sum -- "$source")" || return 1
+    expected_digest="${expected_digest%% *}"
+    actual_digest="$(docker exec "$container" node -e \
+      'process.stdout.write(require("node:crypto").createHash("sha256").update(require("node:fs").readFileSync(process.argv[1])).digest("hex"))' \
+      "$target" 2>/dev/null)" || return 1
+    [[ "$actual_digest" == "$expected_digest" ]] || return 1
+  done
+
+  # OIDC uses the same immutable, read-only secret boundary as document
+  # providers. Verify both mounted files even while the feature gate is off so
+  # an atomic host-side rotation cannot leave the running app on a stale inode.
+  for setting in "${oidc_secret_settings[@]}"; do
+    expected_record="$(jq -ce --arg setting "$setting" '
+      .services.app.environment as $environment |
+      if ($environment | has($setting)) then
+        {present: true, value: ($environment[$setting] | tostring)}
+      else
+        {present: false, value: ""}
+      end
+    ' <<<"$rendered")" || return 1
+    actual_record="$(docker inspect --format '{{json .Config.Env}}' "$container" \
+      | jq -ce --arg prefix "$setting=" '
+        [.[] | select(startswith($prefix)) | ltrimstr($prefix)] as $values |
+        if ($values | length) == 1 then
+          {present: true, value: $values[0]}
+        elif ($values | length) == 0 then
+          {present: false, value: ""}
+        else
+          error("duplicate container environment setting")
+        end
+      ')" || return 1
+    [[ "$actual_record" == "$expected_record" ]] || return 1
+    jq -e '.present == true and .value != ""' <<<"$expected_record" >/dev/null \
+      || continue
+    target="$(jq -er '.value' <<<"$expected_record")" || return 1
+    source="$(jq -er --arg target "$target" '
+      . as $config |
+      [.services.app.secrets[] |
+        select((.target // .source) == $target or
+          (.target // .source) == ($target | split("/") | last)) |
+        $config.secrets[.source].file] |
+      if length == 1 then .[0] else error("secret mount source is not unique") end
+    ' <<<"$rendered")" || return 1
+    [[ -f "$source" && ! -L "$source" ]] || return 1
+    jq -e --arg source "$source" --arg target "$target" \
+      '[.[] | select(.Source == $source and .Destination == $target and .RW == false)] | length == 1' \
+      <<<"$mounts" >/dev/null || return 1
     expected_digest="$(sha256sum -- "$source")" || return 1
     expected_digest="${expected_digest%% *}"
     actual_digest="$(docker exec "$container" node -e \
@@ -1342,10 +1386,35 @@ restore_legacy_development_app_alias() {
 release_is_accepted() {
   local expected_revision="$1" topology app_container app_environment actual expected detailed_health \
     public_health rendered hostname require_public setting app_container_output app_revision router_container_output \
-    app_network_contract public_policy="${2:-full}"
-  local -a app_containers router_containers public_health_headers=()
+    app_network_contract oidc_contract_expected oidc_contract_status public_policy="${2:-full}"
+  local -a app_containers router_containers public_health_headers=() required_environment_settings=(
+    DEMO_LOGIN_ENABLED DEMO_WRITES_ENABLED ACCOUNT_LOGIN_ENABLED
+    ACCOUNT_SIGNUP_ENABLED AUTH_EMAIL_DELIVERY_ENABLED AUTH_EMAIL_PROVIDER AUTH_EMAIL_FROM
+    AUTH_EMAIL_REPLY_TO SIGNUP_TURNSTILE_ENABLED SIGNUP_TURNSTILE_SITE_KEY
+    BUSINESS_WRITES_ENABLED BANK_FEEDS_ENABLED YAHOO_FX_ENABLED DOCUMENT_INBOX_MAX_DEPTH
+    DOCUMENT_INBOX_MAX_PROVIDER_CALLS
+  )
   validate_revision "$expected_revision"
   [[ "$public_policy" == full || "$public_policy" == private ]] || return 1
+  oidc_contract_expected=false
+  if revision_uses_oidc_runtime_contract "$expected_revision"; then
+    oidc_contract_expected=true
+    required_environment_settings+=(
+      AUTH_OIDC_ENABLED AUTH_OIDC_ISSUER AUTH_OIDC_AUTHORIZATION_ENDPOINT
+      AUTH_OIDC_TOKEN_ENDPOINT AUTH_OIDC_JWKS_URI AUTH_OIDC_CLIENT_ID
+      AUTH_OIDC_ALLOWED_TENANTS AUTH_OIDC_MAXIMUM_TOKEN_LIFETIME_SECONDS
+      AUTH_OIDC_TOKEN_TIMEOUT_MILLISECONDS AUTH_OIDC_JWKS_TIMEOUT_MILLISECONDS
+    )
+  else
+    oidc_contract_status="$?"
+    [[ "$oidc_contract_status" == 1 ]] || return 1
+  fi
+  if revision_uses_oidc_signup_runtime_contract "$expected_revision"; then
+    required_environment_settings+=(AUTH_OIDC_SIGNUP_ENABLED)
+  else
+    oidc_contract_status="$?"
+    [[ "$oidc_contract_status" == 1 ]] || return 1
+  fi
   app_container_output="$(docker ps --no-trunc --quiet \
     --filter label=com.docker.compose.project="$project" \
     --filter label=com.docker.compose.service=app)" || return 1
@@ -1401,14 +1470,11 @@ release_is_accepted() {
       business_finlynq_development_edge development-app \
       "$app_container" || return 1
   fi
-  document_provider_configuration_matches "$app_container" "$rendered" || return 1
+  document_provider_configuration_matches \
+    "$app_container" "$rendered" "$oidc_contract_expected" || return 1
   app_environment="$(docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' \
     "$app_container")" || return 1
-  for setting in DEMO_LOGIN_ENABLED DEMO_WRITES_ENABLED ACCOUNT_LOGIN_ENABLED \
-    ACCOUNT_SIGNUP_ENABLED AUTH_EMAIL_DELIVERY_ENABLED AUTH_EMAIL_PROVIDER AUTH_EMAIL_FROM \
-    AUTH_EMAIL_REPLY_TO SIGNUP_TURNSTILE_ENABLED SIGNUP_TURNSTILE_SITE_KEY \
-    BUSINESS_WRITES_ENABLED BANK_FEEDS_ENABLED YAHOO_FX_ENABLED DOCUMENT_INBOX_MAX_DEPTH \
-    DOCUMENT_INBOX_MAX_PROVIDER_CALLS; do
+  for setting in "${required_environment_settings[@]}"; do
     expected="$(jq -er --arg setting "$setting" '
       .services.app.environment as $environment |
       if ($environment | has($setting)) then ($environment[$setting] | tostring)
@@ -1625,15 +1691,21 @@ restore_accepted_revision() {
     recovery_router_maintenance=true
   fi
   start_revision_runtime "$recovery_revision" || return 1
-  ( release_is_accepted "$recovery_revision" ) || return 1
   if [[ "$recovery_topology" == router ]]; then
     [[ "$recovery_router_maintenance" == true ]] || return 1
+    # The stable router is intentionally serving maintenance until the
+    # recovered app has passed its private checks. A full acceptance probe at
+    # this point would necessarily receive the router's fail-closed 503 and
+    # turn every otherwise-successful router recovery into a hard failure.
+    ( release_is_accepted "$recovery_revision" private ) || return 1
     development_router_live_uncommitted="true"
     reload_release_router_live active || return 1
     release_acceptance_token=""
     ( release_is_accepted "$recovery_revision" ) || return 1
     persist_release_router_mode active || return 1
     development_router_live_uncommitted="false"
+  else
+    ( release_is_accepted "$recovery_revision" ) || return 1
   fi
 }
 
@@ -1824,7 +1896,7 @@ elif [[ "$source_revision" != "$accepted_revision" ]]; then
       release_is_accepted "$source_revision" \
         || fail "interrupted development finalization did not pass active-routing acceptance"
       if [[ "$interrupted_require_public" == true ]]; then
-        verify_external_edge_if_selected "$source_revision"
+        verify_external_edge_if_selected "$source_revision" live-uncommitted
       fi
       commit_release_router_acceptance "$source_revision" "$accepted_revision" \
         || fail "interrupted development finalization could not commit active routing"
@@ -1918,7 +1990,7 @@ if [[ "$source_revision" == "$candidate_revision" ]]; then
     fi
     if [[ "$require_public_acceptance" == true ]]; then
       run_public_acceptance || fail "same-revision development public acceptance failed twice"
-      verify_external_edge_if_selected "$candidate_revision"
+      verify_external_edge_if_selected "$candidate_revision" live-uncommitted
     fi
     release_is_accepted "$candidate_revision" \
       || fail "same-revision development finalization did not pass active-routing acceptance"
@@ -2082,7 +2154,16 @@ document_app_container="$(compose ps --quiet app)" \
   || fail "the development app container could not be identified"
 document_rendered="$(compose config --format json)" \
   || fail "the development Compose configuration could not be rendered after apply"
-if ! document_provider_configuration_matches "$document_app_container" "$document_rendered"; then
+document_oidc_contract_expected=false
+if revision_uses_oidc_runtime_contract "$candidate_revision"; then
+  document_oidc_contract_expected=true
+else
+  document_oidc_contract_status="$?"
+  [[ "$document_oidc_contract_status" == 1 ]] \
+    || fail "the candidate OIDC runtime contract could not be classified"
+fi
+if ! document_provider_configuration_matches \
+  "$document_app_container" "$document_rendered" "$document_oidc_contract_expected"; then
   compose up --detach --wait --no-deps --no-build --force-recreate app
 fi
 
@@ -2117,7 +2198,7 @@ if [[ "$candidate_topology" == router ]]; then
 fi
 if [[ "$require_public_acceptance" == true ]]; then
   deployment_stage=external-edge-verification
-  verify_external_edge_if_selected "$candidate_revision"
+  verify_external_edge_if_selected "$candidate_revision" live-uncommitted
 fi
 deployment_stage=final-verification
 release_is_accepted "$candidate_revision" \

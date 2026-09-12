@@ -34,7 +34,7 @@ The host-side release and monitoring scripts require `jq`. Production release mo
 
 The stable v2 router owns loopback port `3100` and the production edge alias; the app has only the private `release-app:3000` alias. A dedicated bridge with inter-container communication and IP masquerading disabled exists only to make Docker's host-loopback publication functional without granting normal outbound Internet access. Its dedicated state volume contains a durable `active` or `maintenance` sentinel, and an absent, malformed, or unsafe sentinel fails closed to maintenance on restart. Maintenance is persisted before its Caddy reload. Active routing is reloaded while durable state deliberately remains `maintenance`; the runner first writes a protected `terminal-evidence-pending` finalization marker, synchronizes terminal evidence, upgrades that marker to `active-commit-authorized` with the evidence SHA-256 digest, atomically and synchronously commits the `active` sentinel, and then clears the marker. Routine application releases reuse the attested running router and never force-recreate it. The one-time transition from the legacy app-owned port is the exception: the runner attests and stops the exact legacy app, disconnects its stopped public-edge alias before creating the router in maintenance, and reconnects that exact alias only when a pre-mutation recovery restores the old app. Steady-state checks include stopped endpoints, so an abandoned alias cannot later restart into ambiguous Docker DNS.
 
-Before stopping an app, the runner proves maintenance while that app is still healthy and waits for established router-to-app connections to drain. `/api/live` remains `200`; public `/api/health` and all public application routes return non-cacheable `503` with bounded retry advice. Candidate health and browser acceptance use a new random 256-bit preview token for that release only. It is carried as a standard `Authorization: Bearer` credential so Caddy redacts it by default; external-edge verification rejects both source and loaded configurations that enable credential logging. The token is confined to the runner's bounded probes and acceptance container, stripped before the app and from cross-origin browser requests. Never persist, reuse, disclose, or use it for interactive maintenance access.
+Before stopping an app, the runner proves maintenance while that app is still healthy and waits for established router-to-app connections to drain. `/api/live` remains `200`; public `/api/health` and all public application routes return non-cacheable `503` with bounded retry advice. Candidate health and browser acceptance use a new random 256-bit preview token for that release only. It is carried as a standard `Authorization: Bearer` credential; the central edge owns and validates credential-redacted logging under contract v1. The token is confined to the runner's bounded probes and acceptance container, stripped before the app and from cross-origin browser requests. Never persist, reuse, disclose, or use it for interactive maintenance access.
 
 The public maintenance interval begins when maintenance is confirmed and ends when the final app and optional worker identities, internal readiness, reviewed gates, and browser checks pass and the existing router is atomically reloaded live-active. Final public readiness and, when configured, the production-scoped external-edge contract are verified immediately. Scheduler installation, resume, accounting evidence, and the installed monitor then run with the accepted application visible but durable router state still fail-closed; any failure drives the router back to maintenance and contains the candidate. Terminal evidence is sealed and hashed into the authorized finalization marker before the durable state becomes `active`. The stable listener is never restarted. An eligible online backup runs before maintenance; otherwise only the quiesced backup, migration, role/schema reconciliation, bootstrap, and acceptance extend the maintenance interval.
 
@@ -141,26 +141,25 @@ The pair verifier checks the complete runner artifact format, internal identitie
 
 Use `deploy/production/install-initial-production.sh` only for a fresh production host. Run every phase as root from the clean, pre-cloned `/home/deploy/business-finlynq` checkout at the exact full reviewed and attested SHA on `main`. The host must be an explicitly supported Ubuntu 24.04 or 26.04 system with synchronized time, Docker Compose 2.39.0 or newer with explicit provenance and SBOM build controls, `jq`, root-owned `/usr/bin/gh` 2.100.0 or newer at mode `0755`, and the required `deploy` account and secret group. The installer verifies the same candidate-bound keyless production signal before its first production-state mutation. Node, npm, Playwright, and browser libraries are not host prerequisites; the immutable acceptance image runs the rehearsal pair verifier.
 
-The bootstrap is deliberately split so the shared EPM-owned edge and development public acceptance can be established before the first production database is created:
+The bootstrap is deliberately split so the centrally owned shared edge and development public acceptance can be established before the first production database is created:
 
 ```bash
 revision="<full-reviewed-production-sha>"
 
-# Phase 1: creates and attests only business_finlynq_edge.
+# Phase 1: verifies the pre-existing central business_finlynq_edge dependency.
 sudo bash deploy/production/install-initial-production.sh \
   --revision "$revision" \
   --prepare-edge-network-only
 
 # From the exact development checkout/revision, first establish its internally
-# accepted backend and external-owner ingress network. The timer stays off.
+# accepted backend on the existing central ingress network. The timer stays off.
 sudo bash deploy/development/install-development.sh \
   --external-edge --skip-public-acceptance
 sudo /usr/local/sbin/business-finlynq-deploy-development
 
-# Apply the separately reviewed root-owned shared-edge handoff now. It must
-# promote the Business route as root:root 0444, attach the edge owner to the
-# exact five-network set, recreate it, and write the protected contract source.
-# The production route may return 502/503 until the production app joins.
+# The central shared-edge operator performs the separately approved cutover.
+# Business does not install a route, attach networks, or recreate Caddy. The
+# production route may return 502/503 until the production app joins.
 
 # Phase 2: installs durable contained configuration but starts no service.
 sudo bash deploy/production/install-initial-production.sh \
@@ -168,11 +167,11 @@ sudo bash deploy/production/install-initial-production.sh \
   --prepare-configuration-only \
   --backup-age-recipient-file /root/business-finlynq-backup-age-recipient.txt \
   --external-edge-contract-file \
-    /var/lib/business-finlynq-ovh-edge-handoff/active/edge-contract.env
+    /root/finlynq-shared-edge-contract-v1.env
 
 # From the exact development checkout/revision, recreate the existing dev
-# configuration with external edge plus strict public acceptance. This changes
-# only the edge/public-acceptance setting; all other reviewed development gates
+# configuration with strict public acceptance. This changes only the
+# public-acceptance setting; all other reviewed development gates
 # retain their existing development values.
 sudo bash deploy/development/install-development.sh \
   --external-edge --require-public-acceptance
@@ -213,7 +212,7 @@ The fixed signal release must remain mutable; GitHub immutable releases are inco
 8. Install and verify the backup and systemd scheduler assets, resume that scheduler, and run fresh accounting-evidence and installed production-monitor checks. A failure here re-enters maintenance and re-pauses scheduling before candidate containment.
 9. Synchronize terminal completion and checksummed evidence, bind its digest into the authorized finalization marker, persist the router's durable `active` sentinel, clear the marker, and retain the evidence links, backup checksum, and immutable image IDs. A write-capable final gate posture may be activated only after tenant isolation, posting authorization, idempotency, audit insertion, period controls, and browser acceptance pass. Link the separate external change/witness record for named operator ownership or approvals rather than representing it as runner-generated evidence.
 
-The release runner supplies `PLAYWRIGHT_BASE_URL`, `PLAYWRIGHT_MANAGED_SERVER=true`, the ephemeral release-preview token, `E2E_EXPECT_ACCOUNT_LOGIN_ENABLED`, and `E2E_EXPECT_ACCOUNT_SIGNUP_ENABLED` to the acceptance container from the snapshotted, reviewed Compose environment. Playwright adds the token only to same-origin candidate requests and removes it from cross-origin requests; the router removes it before the app. The managed-server marker prevents Playwright from trying to start a local application inside the secretless acceptance image; normal CI browser runs omit it and start the build they just reviewed. The release runner starts the container only by its captured immutable image ID, gives it no deployment secret or host bind mount, bounds it to 30 minutes, retains its timestamped output in `70-browser-acceptance.log`, and stops/removes it on success, failure, signal, or timeout. Do not replace that gate with a host `npm run test:e2e`; doing so would lose the attested image, private-preview boundary, and containment controls.
+The release runner supplies `PLAYWRIGHT_BASE_URL`, `PLAYWRIGHT_MANAGED_SERVER=true`, the ephemeral release-preview token, `E2E_EXPECT_ACCOUNT_LOGIN_ENABLED`, `E2E_EXPECT_ACCOUNT_SIGNUP_ENABLED`, `E2E_EXPECT_AUTH_OIDC_ENABLED`, and `E2E_EXPECT_AUTH_OIDC_SIGNUP_ENABLED` to the acceptance container from the snapshotted, reviewed Compose environment. The browser gate evaluates password signup and Microsoft signup independently, so either reviewed path can remain available without silently enabling the other. Playwright adds the token only to same-origin candidate requests and removes it from cross-origin requests; the router removes it before the app. The managed-server marker prevents Playwright from trying to start a local application inside the secretless acceptance image; normal CI browser runs omit it and start the build they just reviewed. The release runner starts the container only by its captured immutable image ID, gives it no deployment secret or host bind mount, bounds it to 30 minutes, retains its timestamped output in `70-browser-acceptance.log`, and stops/removes it on success, failure, signal, or timeout. Do not replace that gate with a host `npm run test:e2e`; doing so would lose the attested image, private-preview boundary, and containment controls.
 
 The browser test requires the previewed `/api/health` response to retain the minimal ready contract and requires Cloudflare's widget API to render its response control on the candidate signup page. Uncredentialed public health must remain `503` until the final active reload. After activation, the host monitor checks the detailed flag posture and email-worker readiness over loopback and the release verifies minimal public readiness. Managed challenges may solve without exposing a visible iframe, and Cloudflare does not guarantee that iframe as a public integration contract.
 

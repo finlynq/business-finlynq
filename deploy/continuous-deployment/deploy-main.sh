@@ -1290,7 +1290,7 @@ git_as_deploy merge-base --is-ancestor "$source_revision" "$candidate_revision" 
 
 if [[ "$source_revision" == "$candidate_revision" ]]; then
   if release_is_accepted; then
-    bash "$repository/deploy/edge/reconcile-shared-edge.sh"
+    bash "$repository/deploy/edge/verify-external-edge.sh" --scope production
     printf 'Production already runs accepted main revision %s.\n' "$candidate_revision"
     exit 0
   fi
@@ -1299,7 +1299,7 @@ if [[ "$source_revision" == "$candidate_revision" ]]; then
       || fail "accepted live release durable active finalization failed"
     release_is_accepted \
       || fail "accepted live release did not pass strict verification after durable active finalization"
-    bash "$repository/deploy/edge/reconcile-shared-edge.sh"
+    bash "$repository/deploy/edge/verify-external-edge.sh" --scope production
     printf 'Production durable active state finalized for accepted main revision %s.\n' \
       "$candidate_revision"
     exit 0
@@ -1800,7 +1800,7 @@ bash "$repository/deploy/release/run-release.sh" \
   --host-lock-fd 8
 
 release_is_accepted || fail "the release runner returned without an accepted live revision"
-bash "$repository/deploy/edge/reconcile-shared-edge.sh"
+bash "$repository/deploy/edge/verify-external-edge.sh" --scope production
 release_child_containment_armed="false"
 mutated="false"
 trap - EXIT HUP INT TERM

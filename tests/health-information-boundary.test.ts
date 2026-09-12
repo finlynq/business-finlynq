@@ -8,6 +8,7 @@ const mocks = vi.hoisted(() => ({
   emailDeliveryReadiness: vi.fn(),
   assertAccountAuthenticationConfigured: vi.fn(),
   assertSignupChallengeConfigured: vi.fn(),
+  loadOidcConfiguration: vi.fn(),
   loadIdentitySecret: vi.fn(),
   loadOrganizationRootKek: vi.fn(),
 }));
@@ -22,6 +23,9 @@ vi.mock("@/modules/identity/email-provider", () => ({
 vi.mock("@/modules/identity/signup-challenge", () => ({
   assertSignupChallengeConfigured: mocks.assertSignupChallengeConfigured,
 }));
+vi.mock("@/modules/identity/oidc", () => ({
+  loadOidcConfiguration: mocks.loadOidcConfiguration,
+}));
 vi.mock("@/security/identity-secret", () => ({ loadIdentitySecret: mocks.loadIdentitySecret }));
 vi.mock("@/security/root-secret", () => ({ loadOrganizationRootKek: mocks.loadOrganizationRootKek }));
 
@@ -31,6 +35,8 @@ import { journalTypeSeedDefinitions } from "@/modules/ledger/journal-type-regist
 
 const controlledEnvironment = [
   "ACCOUNT_LOGIN_ENABLED",
+  "AUTH_OIDC_ENABLED",
+  "AUTH_OIDC_SIGNUP_ENABLED",
   "ACCOUNT_SIGNUP_ENABLED",
   "BANK_FEEDS_ENABLED",
   "BUSINESS_FINLYNQ_IMAGE_REVISION",
@@ -43,6 +49,8 @@ beforeEach(() => {
   vi.clearAllMocks();
   Object.assign(process.env, {
     ACCOUNT_LOGIN_ENABLED: "false",
+    AUTH_OIDC_ENABLED: "false",
+    AUTH_OIDC_SIGNUP_ENABLED: "false",
     ACCOUNT_SIGNUP_ENABLED: "false",
     BANK_FEEDS_ENABLED: "false",
     BUSINESS_FINLYNQ_IMAGE_REVISION: "a".repeat(40),
@@ -102,10 +110,35 @@ describe("health information boundary", () => {
         identityKey: "ready",
         accountAuthentication: "disabled",
         accountSignup: "disabled",
+        oidcAuthentication: "disabled",
+        oidcSignup: "disabled",
         emailWorker: "disabled",
         bankFeeds: "disabled",
       },
       revision: "a".repeat(40),
+    });
+  });
+
+  it("validates OIDC configuration before reporting federated authentication ready", async () => {
+    process.env.ACCOUNT_LOGIN_ENABLED = "true";
+    process.env.AUTH_OIDC_ENABLED = "true";
+    process.env.AUTH_OIDC_SIGNUP_ENABLED = "true";
+    const response = await health(new NextRequest("http://127.0.0.1:3100/api/health", {
+      headers: { "x-business-finlynq-internal-health": "1" },
+    }));
+
+    expect(response.status).toBe(200);
+    expect(mocks.loadOidcConfiguration).toHaveBeenCalledOnce();
+    expect(mocks.assertAccountAuthenticationConfigured).toHaveBeenCalledOnce();
+    expect(mocks.emailDeliveryReadiness).toHaveBeenCalledOnce();
+    await expect(response.json()).resolves.toMatchObject({
+      status: "ready",
+      checks: {
+        accountAuthentication: "ready",
+        oidcAuthentication: "ready",
+        oidcSignup: "ready",
+        emailWorker: "ready",
+      },
     });
   });
 

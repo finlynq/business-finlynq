@@ -35,6 +35,8 @@ const backupReceiverReceiptPublicKey = "business_finlynq_backup_receiver_receipt
 const rootKekSecret = "business_finlynq_root_kek";
 const containedInitialSecretNames = [
   ...documentSecrets,
+  "business_finlynq_oidc_client_secret",
+  "business_finlynq_oidc_identity_map",
   providerSecret,
   turnstileSecret,
   "business_finlynq_rclone_config",
@@ -416,8 +418,12 @@ if (releaseAcceptance.environment?.PLAYWRIGHT_BASE_URL
   || releaseAcceptance.environment?.E2E_EXPECT_ACCOUNT_LOGIN_ENABLED
     !== (process.env.ACCOUNT_LOGIN_ENABLED ?? "false")
   || releaseAcceptance.environment?.E2E_EXPECT_ACCOUNT_SIGNUP_ENABLED
-    !== (process.env.ACCOUNT_SIGNUP_ENABLED ?? "false")) {
-  fail("release browser acceptance does not inherit the reviewed origin and account gates");
+    !== (process.env.ACCOUNT_SIGNUP_ENABLED ?? "false")
+  || releaseAcceptance.environment?.E2E_EXPECT_AUTH_OIDC_ENABLED
+    !== (process.env.AUTH_OIDC_ENABLED ?? "false")
+  || releaseAcceptance.environment?.E2E_EXPECT_AUTH_OIDC_SIGNUP_ENABLED
+    !== (process.env.AUTH_OIDC_SIGNUP_ENABLED ?? "false")) {
+  fail("release browser acceptance does not inherit the reviewed origin and authentication gates");
 }
 for (const requiredTmpfs of ["/tmp", "/app/test-results", "/app/playwright-report"]) {
   if (!acceptanceTmpfsTargets.includes(requiredTmpfs)) {
@@ -434,6 +440,8 @@ for (const [gate, expected] of [
   ["DEMO_LOGIN_ENABLED", "true"],
   ["DEMO_WRITES_ENABLED", "true"],
   ["ACCOUNT_LOGIN_ENABLED", "false"],
+  ["AUTH_OIDC_ENABLED", "false"],
+  ["AUTH_OIDC_SIGNUP_ENABLED", "false"],
   ["ACCOUNT_SIGNUP_ENABLED", "false"],
   ["BUSINESS_WRITES_ENABLED", "false"],
   ["BANK_FEEDS_ENABLED", "false"],
@@ -840,7 +848,7 @@ if (rollbackApp.environment?.BUSINESS_FINLYNQ_DB_PASSWORD_FILE !== "/run/secrets
 if (rollbackApp.environment?.BUSINESS_FINLYNQ_IMAGE_REVISION !== "f8485ca86fef5b5fb4a38be9cb4cf3bea5ac2107") {
   fail("legacy rollback override is not pinned to the reviewed prior revision");
 }
-for (const disabledFlag of ["DEMO_LOGIN_ENABLED", "DEMO_WRITES_ENABLED", "ACCOUNT_LOGIN_ENABLED", "ACCOUNT_SIGNUP_ENABLED", "SIGNUP_TURNSTILE_ENABLED", "AUTH_EMAIL_DELIVERY_ENABLED", "BUSINESS_WRITES_ENABLED", "BANK_FEEDS_ENABLED", "YAHOO_FX_ENABLED"]) {
+for (const disabledFlag of ["DEMO_LOGIN_ENABLED", "DEMO_WRITES_ENABLED", "ACCOUNT_LOGIN_ENABLED", "AUTH_OIDC_ENABLED", "AUTH_OIDC_SIGNUP_ENABLED", "ACCOUNT_SIGNUP_ENABLED", "SIGNUP_TURNSTILE_ENABLED", "AUTH_EMAIL_DELIVERY_ENABLED", "BUSINESS_WRITES_ENABLED", "BANK_FEEDS_ENABLED", "YAHOO_FX_ENABLED"]) {
   if (rollbackApp.environment?.[disabledFlag] !== "false") fail(`legacy rollback override does not force ${disabledFlag} off`);
 }
 if ((rollbackApp.entrypoint ?? []).join(" ") !== "/bin/sh /usr/local/bin/business-finlynq-legacy-db-password") {
@@ -881,7 +889,7 @@ if (!secretSources(rehearsalApp).includes(appDatabaseSecret)) fail("restore rehe
 if (secretSources(rehearsalApp).includes(providerSecret) || secretSources(rehearsalApp).includes(turnstileSecret) || secretSources(rehearsalApp).includes(workerDatabaseSecret)) {
   fail("restore rehearsal receives an unrelated provider, challenge, or worker credential");
 }
-for (const disabledFlag of ["DEMO_LOGIN_ENABLED", "DEMO_WRITES_ENABLED", "ACCOUNT_LOGIN_ENABLED", "ACCOUNT_SIGNUP_ENABLED", "SIGNUP_TURNSTILE_ENABLED", "AUTH_EMAIL_DELIVERY_ENABLED", "BUSINESS_WRITES_ENABLED", "BANK_FEEDS_ENABLED", "YAHOO_FX_ENABLED"]) {
+for (const disabledFlag of ["DEMO_LOGIN_ENABLED", "DEMO_WRITES_ENABLED", "ACCOUNT_LOGIN_ENABLED", "AUTH_OIDC_ENABLED", "AUTH_OIDC_SIGNUP_ENABLED", "ACCOUNT_SIGNUP_ENABLED", "SIGNUP_TURNSTILE_ENABLED", "AUTH_EMAIL_DELIVERY_ENABLED", "BUSINESS_WRITES_ENABLED", "BANK_FEEDS_ENABLED", "YAHOO_FX_ENABLED"]) {
   if (rehearsalApp.environment?.[disabledFlag] !== "false") fail(`restore rehearsal does not force ${disabledFlag} off`);
 }
 if ((rehearsalVerify.secrets ?? []).length > 0) fail("legacy restore verifier receives a secret");
@@ -937,8 +945,6 @@ const initialResourceEnvironment = {
   ...process.env,
   BUSINESS_FINLYNQ_EDGE_MODE: "external",
   BUSINESS_FINLYNQ_PGDATA_VOLUME: "business_finlynq_pgdata",
-  BUSINESS_FINLYNQ_CADDY_DATA_VOLUME: "business_finlynq_caddy_data",
-  BUSINESS_FINLYNQ_CADDY_CONFIG_VOLUME: "business_finlynq_caddy_config",
   BUSINESS_FINLYNQ_PRIVATE_NETWORK: "business_finlynq_private",
   BUSINESS_FINLYNQ_EGRESS_NETWORK: "business_finlynq_egress",
   BUSINESS_FINLYNQ_EDGE_NETWORK: "business_finlynq_edge",
@@ -951,7 +957,6 @@ function renderInitialExternal(profiles) {
       "compose",
       "--project-name", "business-finlynq",
       "-f", "docker-compose.yml",
-      "-f", "deploy/edge/docker-compose.external.yml",
       ...profiles.flatMap((profile) => ["--profile", profile]),
       "config",
       "--format", "json",
@@ -999,8 +1004,6 @@ const developmentRendered = JSON.parse(execFileSync("docker", [
     BUSINESS_FINLYNQ_APP_PORT: "3200",
     BUSINESS_FINLYNQ_APP_NETWORK_ALIAS: "development-app",
     BUSINESS_FINLYNQ_PGDATA_VOLUME: "business_finlynq_development_pgdata",
-    BUSINESS_FINLYNQ_CADDY_DATA_VOLUME: "business_finlynq_development_caddy_data",
-    BUSINESS_FINLYNQ_CADDY_CONFIG_VOLUME: "business_finlynq_development_caddy_config",
     BUSINESS_FINLYNQ_PRIVATE_NETWORK: "business_finlynq_development_private",
     BUSINESS_FINLYNQ_EGRESS_NETWORK: "business_finlynq_development_egress",
     BUSINESS_FINLYNQ_EDGE_NETWORK: "business_finlynq_development_edge",

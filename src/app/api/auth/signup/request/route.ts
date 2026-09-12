@@ -1,5 +1,4 @@
 import { NextRequest, NextResponse } from "next/server";
-import { z } from "zod";
 import { readAuthMutationJson } from "@/app/api/_shared/auth-mutation-route";
 import { logRouteFailure } from "@/app/api/_shared/route-failure-log";
 import { requestIdFor } from "@/observability/request-correlation";
@@ -16,36 +15,12 @@ import {
   assertSignupChallengeConfigured,
   verifySignupChallenge,
 } from "@/modules/identity/signup-challenge";
-import { isSignupRegion } from "@/modules/identity/signup-policy";
 import { requestOwnerSignup } from "@/modules/identity/signup-service";
-import { supportedCurrencies } from "@/kernel/money";
+import { ownerSignupDetailsSchema } from "@/modules/identity/signup-validation";
 import { emailLookupHash, identityLookupHash, normalizeEmail } from "@/security/identity-secret";
 
 const headers = { "Cache-Control": "private, no-store", "X-Robots-Tag": "noindex" };
 const genericMessage = "If this email can start an account, a verification link will be sent shortly.";
-const schema = z.object({
-  email: z.email().max(254),
-  displayName: z.string().trim().min(2).max(120),
-  organizationName: z.string().trim().min(2).max(200),
-  entityCode: z.string().trim().toUpperCase().regex(/^[A-Z0-9][A-Z0-9_-]{0,15}$/).refine((value) => value !== "0000"),
-  entityName: z.string().trim().min(2).max(200),
-  countryCode: z.string().trim().toUpperCase().regex(/^[A-Z]{2}$/),
-  regionCode: z.string().trim().toUpperCase().regex(/^[A-Z0-9-]{2,10}$/),
-  functionalCurrency: z.string().trim().toUpperCase().refine(
-    (value) => supportedCurrencies.includes(value),
-    "Choose a supported functional currency",
-  ),
-  accountingProfile: z.enum(["CAN_ASPE", "US_GAAP_NONPUBLIC"]),
-  fiscalYear: z.number().int().min(2000).max(2200),
-  manualPostingMode: z.enum(["REVIEW_REQUIRED", "AUTO_POST"]),
-  termsAccepted: z.literal(true),
-  challengeToken: z.string().max(2048).default(""),
-}).superRefine((value, context) => {
-  if (!isSignupRegion(value.countryCode, value.regionCode)) {
-    context.addIssue({ code: "custom", path: ["regionCode"], message: "Choose a valid state or province" });
-  }
-});
-
 async function post(request: NextRequest) {
   const startedAt = Date.now();
   const requestId = requestIdFor(request);
@@ -72,7 +47,7 @@ async function post(request: NextRequest) {
     }
     const body = await readAuthMutationJson(request);
     if (!body.ok) return body.response;
-    const parsed = schema.safeParse(body.value);
+    const parsed = ownerSignupDetailsSchema.safeParse(body.value);
     if (!parsed.success) {
       return NextResponse.json(
         { error: "Review the account details, accept the terms, and try again." },

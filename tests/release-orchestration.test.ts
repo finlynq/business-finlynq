@@ -254,6 +254,8 @@ function writeAcceptedRehearsal(directory: string, revision: string, runId: stri
     identityKey: "ready",
     accountAuthentication: "disabled",
     accountSignup: "disabled",
+    oidcAuthentication: "disabled",
+    oidcSignup: "disabled",
     emailWorker: "disabled",
     bankFeeds: "disabled",
   };
@@ -326,9 +328,11 @@ describe("commit-addressed release orchestration", () => {
     expect(compose).not.toContain("BUSINESS_FINLYNQ_APP_BIND_ADDRESS");
 
     const rehearsal = source("deploy/release/docker-compose.rehearsal.yml");
-    for (const suffix of ["pgdata", "caddy-data", "caddy-config", "private", "egress", "edge", "restore-drill"]) {
+    for (const suffix of ["pgdata", "private", "egress", "edge", "restore-drill"]) {
       expect(rehearsal).toContain(`\${RELEASE_REHEARSAL_PROJECT:?set RELEASE_REHEARSAL_PROJECT}-${suffix}`);
     }
+    expect(rehearsal).not.toContain("caddy-data");
+    expect(rehearsal).not.toContain("caddy-config");
     expect(compose).toContain("${RELEASE_REHEARSAL_PROJECT:-${BUSINESS_FINLYNQ_PRIVATE_NETWORK:-business_finlynq_private}}-release-router-state-v2");
     expect(compose).toContain("${RELEASE_REHEARSAL_PROJECT:-${BUSINESS_FINLYNQ_PRIVATE_NETWORK:-business_finlynq_private}}-frontend");
 

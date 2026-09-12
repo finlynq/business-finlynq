@@ -4,6 +4,8 @@ import { safeFxRateUnavailableDetails } from "@/modules/fx/error-transport";
 export type RouteFailureOperation =
   | "account-login"
   | "account-signup-acceptance"
+  | "account-oidc-signup-acceptance"
+  | "account-oidc-signup-request"
   | "account-signup-request"
   | "banking-mutation"
   | "demo-login"
@@ -15,6 +17,7 @@ export type RouteFailureOperation =
   | "mfa-step-up"
   | "metrics-readiness"
   | "mcp-settings"
+  | "oidc-login"
   | "optional-mfa-activation"
   | "organization-administration"
   | "password-reset-confirmation"

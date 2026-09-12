@@ -71,10 +71,6 @@ epm.finlynq.com {
   }
 
   handle {
-    basic_auth {
-      import /etc/caddy/epm-basic-auth
-    }
-
     request_body {
       max_size 32MB
     }
@@ -109,6 +105,7 @@ epm.finlynq.com {
     X-Content-Type-Options "nosniff"
     X-Frame-Options "DENY"
     Referrer-Policy "no-referrer"
+    Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=()"
     -Server
   }
 
