@@ -179,6 +179,24 @@ cat "$trace"
     },
   );
 
+const epmOidcHeaderFixture = (source: string, headers: string) =>
+  spawnSync(
+    bashExecutable ?? "/bin/bash",
+    [
+      "-c",
+      `
+set -Eeuo pipefail
+${extractShellFunction(source, "header_value_is_exact")}
+header_value_is_exact "$FIXTURE_HEADERS" location
+header_value_is_exact "$FIXTURE_HEADERS" permissions-policy
+`,
+    ],
+    {
+      encoding: "utf8",
+      env: { ...process.env, FIXTURE_HEADERS: headers },
+    },
+  );
+
 describe("externally managed edge contract", () => {
   it("makes the inherited edge profile incapable of owning a listener", () => {
     expect(overlay).toContain("profiles: !override [external-edge-disabled]");
@@ -288,6 +306,52 @@ describe("externally managed edge contract", () => {
     expect(verifier).toContain('--resolve "$callback_hostname:443:$address"');
     expect(verifier.match(/curl --disable --noproxy '\*'/gu)).toHaveLength(9);
   });
+
+  it.skipIf(bashExecutable === null)(
+    "parses exact EPM OIDC headers with standard HTTP CRLF framing",
+    () => {
+      const headers = [
+        "HTTP/2 302",
+        "location: /auth/login",
+        "permissions-policy: camera=(), microphone=(), geolocation=(), payment=()",
+        "",
+      ].join("\r\n");
+      for (const source of [verifier, reconciler]) {
+        expect(source).toContain(
+          "^location:[[:space:]]*/auth/login[[:space:]]*$",
+        );
+        expect(source).toContain(
+          "^permissions-policy:[[:space:]]*camera=\\(\\), microphone=\\(\\), geolocation=\\(\\), payment=\\(\\)[[:space:]]*$",
+        );
+        expect(source).not.toContain("\\r?$");
+        const result = epmOidcHeaderFixture(source, headers);
+        expect(result.status, result.stderr).toBe(0);
+      }
+    },
+  );
+
+  it.skipIf(bashExecutable === null)(
+    "rejects duplicate or altered EPM OIDC response headers",
+    () => {
+      const duplicateLocation = [
+        "HTTP/2 302",
+        "location: /auth/login",
+        "location: /auth/login",
+        "permissions-policy: camera=(), microphone=(), geolocation=(), payment=()",
+        "",
+      ].join("\r\n");
+      const alteredPolicy = [
+        "HTTP/2 302",
+        "location: /auth/login",
+        "permissions-policy: camera=*, microphone=(), geolocation=(), payment=()",
+        "",
+      ].join("\r\n");
+      for (const source of [verifier, reconciler]) {
+        expect(epmOidcHeaderFixture(source, duplicateLocation).status).not.toBe(0);
+        expect(epmOidcHeaderFixture(source, alteredPolicy).status).not.toBe(0);
+      }
+    },
+  );
 
   it("attests the release router as the exact hardened public-alias owner", () => {
     expect(verifier).toContain('container_for_service "$project" release_router');
