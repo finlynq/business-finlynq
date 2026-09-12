@@ -9,10 +9,6 @@ services:
 volumes:
   business_finlynq_pgdata:
     name: business_finlynq_ops_test_pgdata
-  business_finlynq_caddy_data:
-    name: business_finlynq_ops_test_caddy_data
-  business_finlynq_caddy_config:
-    name: business_finlynq_ops_test_caddy_config
 
 networks:
   business_finlynq_private:

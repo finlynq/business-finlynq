@@ -72,7 +72,7 @@ DOCUMENT_INBOX_MAX_DEPTH=8
 DOCUMENT_INBOX_MAX_PROVIDER_CALLS=10
 ```
 
-Before connecting a real account, verify the live reverse proxy excludes `/api/document-storage/callback/*` from access logs. The supplied Caddy files include `log_skip`; the shared edge is managed separately from the dev app deployment.
+Before connecting a real account, have the central shared-edge operator verify that `/api/document-storage/callback/*` is excluded from access logs. The development application deployment does not own or install that route policy.
 
 The updated source deployer compares both document-provider client IDs, container secret-file variables, host mount paths/modes, and secret content against the running app. A same-revision mismatch proceeds with deployment; a stale bind mount after secret rotation triggers recreation of only the dev app. Secret values and digests are never printed or persisted as deployment metadata. CI signals and live acceptance still apply.
 

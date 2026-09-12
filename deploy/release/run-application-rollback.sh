@@ -31,7 +31,7 @@ candidate_staging_root=""
 candidate_source_root=""
 candidate_tree_id=""
 candidate_tree_manifest_sha256=""
-edge_mode="compose"
+edge_mode="external"
 rollback_maintenance_confirmed="false"
 rollback_acceptance_token=""
 rollback_router_container=""
@@ -172,8 +172,8 @@ if [[ "$edge_mode_count" == 1 ]]; then
   edge_mode="$(awk -F= '$1 == "BUSINESS_FINLYNQ_EDGE_MODE" { sub(/^[^=]*=/, ""); print }' \
     "$canonical_environment_file")"
 fi
-[[ "$edge_mode" == compose || "$edge_mode" == external ]] \
-  || fail "BUSINESS_FINLYNQ_EDGE_MODE must be compose or external"
+[[ "$edge_mode" == external ]] \
+  || fail "shared-edge contract v1 requires BUSINESS_FINLYNQ_EDGE_MODE=external"
 environment_mode="$(stat -c '%a' -- "$environment_file")"
 environment_owner="$(stat -c '%u' -- "$environment_file")"
 [[ "$environment_mode" =~ ^[0-7]{3,4}$ ]] || fail "Compose environment mode is invalid"
@@ -375,13 +375,9 @@ install -m 0600 -- "$canonical_environment_file" "$environment_snapshot_file"
 environment_file="$environment_snapshot_file"
 
 base_compose() {
-  local -a compose_files=(-f "$candidate_source_root/docker-compose.yml")
-  if [[ "$edge_mode" == external ]]; then
-    compose_files+=(-f "$candidate_source_root/deploy/edge/docker-compose.external.yml")
-  fi
   env -i "PATH=$PATH" docker compose --project-name business-finlynq \
     --project-directory "$candidate_source_root" --env-file "$environment_file" \
-    "${compose_files[@]}" "$@"
+    -f "$candidate_source_root/docker-compose.yml" "$@"
 }
 rendered_current_compose="$(base_compose config --format json)"
 deployed_revision="$(jq -r '.services.app.environment.BUSINESS_FINLYNQ_IMAGE_REVISION // empty' <<<"$rendered_current_compose")"
@@ -753,9 +749,6 @@ rollback_compose() {
   local -a compose_files=(
     -f "$candidate_source_root/docker-compose.yml"
   )
-  if [[ "$edge_mode" == external ]]; then
-    compose_files+=(-f "$candidate_source_root/deploy/edge/docker-compose.external.yml")
-  fi
   compose_files+=(-f "$candidate_source_root/deploy/release/docker-compose.application-rollback.yml")
   local -a compatibility_environment=()
   if [[ "$legacy_rollback_adapter_required" == true ]]; then

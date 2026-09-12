@@ -56,15 +56,15 @@ describe("fresh production bootstrap installer", () => {
     expect(installer).toContain("provisioned-run mode accepts no new input files");
   });
 
-  it("supports the target OS and creates only the exact externally owned ingress network", () => {
+  it("supports the target OS and only inspects the exact central ingress network", () => {
     expect(installer).toContain('env -i PATH="$clean_path" docker "$@"');
     expect(installer).toContain('os_release_link="$(readlink -- /etc/os-release)"');
     expect(installer).toContain('"$os_release_link" == ../usr/lib/os-release');
     expect(installer).toContain('readonly os_release_target="/usr/lib/os-release"');
     expect(installer).toContain('(8#$os_release_mode & 8#022) == 0');
     expect(installer).toContain('"$os_version" == 26.04');
-    expect(installer).toContain("com.business-finlynq.environment=production");
-    expect(installer).toContain("com.business-finlynq.edge-owner=external");
+    expect(installer).not.toContain("docker network create");
+    expect(installer).toContain("the central shared-edge owner must create");
     expect(installer).toContain(".Driver == \"bridge\"");
     expect(installer).toContain(".Internal == true");
     expect(installer).toContain(".Attachable == false");
@@ -200,7 +200,7 @@ describe("fresh production bootstrap installer", () => {
       'external_edge_verifier_root="/usr/local/libexec/business-finlynq"',
     );
     expect(installer).toContain('"$external_edge_verifier_target"');
-    expect(installer).toContain('"$external_edge_verifier_route_target"');
+    expect(installer).not.toContain("external_edge_verifier_route_target");
     expect(installer).toContain("external-edge verifier differs from the exact Git revision");
   });
 
@@ -208,15 +208,12 @@ describe("fresh production bootstrap installer", () => {
     const protectedRoot = "/usr/local/libexec/business-finlynq";
     const installedDirectory = `${protectedRoot}/deploy/edge`;
     expect(posix.resolve(installedDirectory, "../..")).toBe(protectedRoot);
-    expect(posix.join(protectedRoot, "deploy/edge/Caddyfile.business-external")).toBe(
-      `${installedDirectory}/Caddyfile.business-external`,
-    );
     expect(installer).toContain(
       'external_edge_verifier_directory="$external_edge_verifier_root/deploy/edge"',
     );
-    expect(installer).toContain(
-      'external_edge_verifier_route_target="$external_edge_verifier_directory/Caddyfile.business-external"',
-    );
+    expect(installer).not.toContain("Caddyfile.business-external");
+    expect(installer).toContain("BUSINESS_FINLYNQ_EXTERNAL_EDGE_CONTRACT");
+    expect(installer).toContain("finlynq-shared-edge");
   });
 
   it("journals secrets before mutation and safely resumes an interrupted configuration", () => {
@@ -265,7 +262,7 @@ describe("fresh production bootstrap installer", () => {
     expect(installer).toContain("MONITOR_REQUIRE_OFFSITE=false");
   });
 
-  it("renders both the active profile set and the explicitly inert edge service", () => {
+  it("renders the active profile set without an application edge service", () => {
     expect(installer).toContain('(.services | has("edge") | not)');
     expect(installer).toContain(
       'release_router_reference="business-finlynq-release-router:v2"',
@@ -305,10 +302,8 @@ describe("fresh production bootstrap installer", () => {
     expect(installer).toContain('.target == "/state"');
     expect(installer).toContain('($project + "-release-router-state-v2")');
     expect(installer).toContain('[.volumes[].name, .networks[].name]');
-    expect(installer).toContain("--profile external-edge-disabled config --format json");
-    expect(installer).toContain('.services.edge.entrypoint == ["/bin/false"]');
-    expect(installer).toContain('.services.edge.network_mode == "none"');
-    expect(installer).toContain("external-edge overlay does not leave the local listener inert");
+    expect(installer).not.toContain("--profile external-edge-disabled config --format json");
+    expect(installer).not.toContain("deploy/edge/docker-compose.external.yml");
   });
 
   it("runs two retryable isolated rehearsals and verifies them without host Node", () => {
@@ -318,8 +313,8 @@ describe("fresh production bootstrap installer", () => {
     expect(rehearsals).not.toContain("command -v node");
     expect(rehearsals).toContain(".verifier.imageId == $imageId");
     expect(rehearsals).toContain(".verifier.sourceSha256 == $sourceSha256");
-    expect(rehearsalCompose).toContain("${RELEASE_REHEARSAL_PROJECT:?set RELEASE_REHEARSAL_PROJECT}-epm-edge");
-    expect(rehearsalCompose).toContain("${RELEASE_REHEARSAL_PROJECT:?set RELEASE_REHEARSAL_PROJECT}-consult-edge");
+    expect(rehearsalCompose).not.toContain("epm-edge");
+    expect(rehearsalCompose).not.toContain("consult-edge");
   });
 
   it("allows only an exact pre-resource failure to authorize a new pristine attempt", () => {

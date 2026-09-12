@@ -8,7 +8,7 @@ Target hostname: `business.finlynq.com`.
 - Application directory on the current target: `/home/deploy/business-finlynq`; deploy only a reviewed commit and keep the checkout non-writable to service processes.
 - Data directory: `/var/lib/business-finlynq`; uploads are never served directly.
 - Loopback ingress: the stable release router owns `127.0.0.1:3100`; the replaceable app is reachable only as `release-app:3000` on its private frontend network. Caddy/Nginx terminates TLS for the exact host.
-- Trusted request-IP boundary: set `TRUSTED_PROXY_HOPS=1` for either reviewed Caddy arrangement. Leave it unset or `0` when Next.js is reached directly.
+- Trusted request-IP boundary: set `TRUSTED_PROXY_HOPS=1` behind shared-edge contract v1. Leave it unset or `0` when Next.js is reached directly.
 - PostgreSQL database: `business_finlynq` with a database owner used only by bootstrap/migrations, a non-owner/non-`BYPASSRLS` app role, a separate function-only/non-`BYPASSRLS` authentication-email worker role, and a separately provisioned read-only `BYPASSRLS` backup role. `BYPASSRLS` is limited to the backup role because a complete cross-tenant logical dump cannot be produced through tenant RLS.
 - Host-only secure cookie named `__Host-business_finlynq_session`; do not use a `.finlynq.com` domain cookie.
 - Root wrapping key mounted as a read-only Docker secret file; it is never placed in the application environment.
@@ -19,7 +19,7 @@ The separately versioned `business-finlynq-release-router:v2` image owns both th
 
 The router persists an `active` or `maintenance` sentinel in its dedicated state volume. Missing, malformed, or unsafe state starts in maintenance. Entry to maintenance is persisted before Caddy reloads through its private Unix admin socket. Activation uses the reverse ordering deliberately: Caddy reloads the accepted active configuration while the durable sentinel remains `maintenance`; only after public, edge, scheduler, monitor, and terminal-evidence checks pass does the runner atomically and synchronously commit `active` as its last acceptance step. A restart during unfinished acceptance therefore fails closed. Continuous deployment can finish the narrow crash window after terminal evidence only when the exact accepted app/router identities, detailed revision health, and live active route all still match; it never reloads or promotes deliberate live maintenance. Public `/api/live` stays available in either state. Maintenance returns deterministic, non-cacheable `503` responses with `Retry-After: 5` for public readiness and application routes. If maintenance cannot be proven during failure handling, the scoped router is stopped rather than allowing unverified application traffic.
 
-For an ordinary release, the runner first pauses and drains scheduled work, then switches to maintenance while the old app is still healthy. It stops the authentication worker, waits for in-flight router-to-app connections to drain, stops the app, and proves both database sessions are gone. The candidate is reachable during acceptance only through an ephemeral 256-bit bearer credential supplied to bounded release probes and the contained browser test. The router removes the authorization header before proxying to the app, the browser removes it from cross-origin requests, and the edge keeps Caddy's default credential redaction enabled. It is not an operator or customer access mechanism.
+For an ordinary release, the runner first pauses and drains scheduled work, then switches to maintenance while the old app is still healthy. It stops the authentication worker, waits for in-flight router-to-app connections to drain, stops the app, and proves both database sessions are gone. The candidate is reachable during acceptance only through an ephemeral 256-bit bearer credential supplied to bounded release probes and the contained browser test. The router removes the authorization header before proxying to the app, the browser removes it from cross-origin requests, and the central edge keeps credential redaction enabled. It is not an operator or customer access mechanism.
 
 After all candidate and final-gate checks pass, an atomic reload returns the existing listener to active routing; the router container is not restarted. When the authentication worker is absent and the database has no active client transaction, online-unsafe relation, or prepared-transaction state, the runner attempts the encrypted backup before maintenance and reuses it only if the database container, system identifier, timeline, database name, eligibility, and WAL insert LSN are unchanged after every write surface and client session stops. Otherwise it creates one quiesced backup with a five-minute ceiling. Each verifier is bound to the exact manifest emitted by that backup, so a newer unrelated artifact cannot satisfy the release. This removes the proxy restart gap and normally moves the longest backup work outside the public maintenance interval, but migration, grant reconciliation, bootstrap, app startup, and acceptance still occur in maintenance. True near-zero application downtime would additionally require expand/contract schema migrations and simultaneous old/new compatible application versions with blue-green switching.
 
@@ -42,39 +42,39 @@ For a fresh install, seed and verify the fixed shared demo before accepting traf
 
 ## Initial container deployment
 
-The included Compose stack binds the stable release router, not the application container, to loopback port `3100`. It supports two edge arrangements while keeping the database, credentials, networks, and lifecycle isolated from personal Finlynq.
+The included Compose stack binds the stable release router, not the application container, to loopback port `3100`. Public ingress always follows shared-edge contract v1; Business Finlynq does not contain a public edge service.
 
 ### Shared host reverse proxy
 
-When an existing host Caddy or Nginx owns ports `80` and `443`, leave the `edge` profile disabled and run Business Finlynq as a distinct Compose project. Do not bootstrap it with a generic `docker compose build` or `up app`: that bypasses the router's canonical build-project attestation and a new router state volume deliberately starts in maintenance. Use the [scripted release flow](../operations/release-runbook.md#scripted-release-contract) for an existing accepted installation. The supplied [fresh contained production bootstrap](../operations/release-runbook.md#fresh-contained-production-bootstrap) currently provisions the externally managed edge arrangement described below; retaining a host-owned proxy for a new production installation requires an equivalently reviewed initial-mode wrapper rather than an improvised Compose start. The reviewed paths build and attest the stable router, privately accept the app, and perform the explicit active reload.
+The former repository-owned host-proxy examples remain rollback input only and
+are not supported by current deployment paths. New or changed public routes
+must be submitted to `/home/ubuntu/finlynq-shared-edge`. Do not install or
+reload an application-repository Caddyfile. Keep the loopback diagnostic port
+private and set `TRUSTED_PROXY_HOPS=1` for the one central trusted hop.
 
-Install [deploy/Caddyfile.example](../../deploy/Caddyfile.example) into the host proxy, validate it, and reload only that proxy. The example forwards to `127.0.0.1:3100` and unconditionally removes the internal-health detail marker from public requests.
+### Dedicated shared edge
 
-Set `TRUSTED_PROXY_HOPS=1` in the application deployment environment. The host Caddy is the only trusted hop and its default `reverse_proxy` handling replaces untrusted client-supplied forwarding values before sending `X-Forwarded-For` upstream. Do not expose `127.0.0.1:3100` beyond the local host.
+The separate `/home/ubuntu/finlynq-shared-edge` repository is the sole owner of
+the public Caddy process, TCP `80`/`443`, UDP `443`, route files, certificates,
+security headers, logs, and edge deployment. Its contract-v1 runtime is Compose
+project `finlynq-shared-edge`, service `edge`, container
+`finlynq-shared-edge-edge-1`, with labels
+`com.finlynq.edge-owner=finlynq-shared-edge` and
+`com.finlynq.edge-contract=v1`.
 
-### Dedicated multi-deployment server with containerized Caddy
+Business Compose joins existing external networks only. Production must expose
+`production-app:3000` on `business_finlynq_edge`; development must expose
+`development-app:3000` on `business_finlynq_development_edge`. Application
+installers fail if those networks are absent and never create or remove them.
+Set `BUSINESS_FINLYNQ_EDGE_MODE=external` and `TRUSTED_PROXY_HOPS=1`.
 
-On the production server, exactly one Caddy container in the `business-finlynq` Compose project owns public ports `80` and `443`. It joins only the explicitly named external edge networks for Business Finlynq production, Business Finlynq development, EPM Finlynq, and Consult Finlynq; every sibling project retains its own containers, private networks, volumes, and lifecycle.
-
-Create all four external networks through their owning installation procedures and keep every referenced backend healthy. The EPM console owns its Microsoft Entra OIDC session flow; the shared proxy must not add Basic Auth or mount an EPM password include. Then reconcile the shared edge from the canonical production checkout:
-
-```bash
-sudo bash /home/deploy/business-finlynq/deploy/edge/reconcile-shared-edge.sh
-```
-
-The reconciler holds the cross-deployment host lock, validates the reviewed Caddyfile and absence of the retired EPM Basic-Auth mount in a disposable container, verifies every sibling backend before touching the listener, and runs a no-build/no-dependency Compose convergence for `edge` only. It deliberately does not use `down`, delete networks or volumes, restart sibling services, or force-recreate an unchanged edge. Production continuous deployment runs the same reconciliation after release acceptance and on no-op checks, so reviewed route or mount drift is repaired without coupling the sibling deployments.
-
-The `edge` service uses [deploy/Caddyfile.container](../../deploy/Caddyfile.container), reaches each application only over its external edge network, and obtains and renews TLS certificates automatically. It publishes TCP `80`/`443` and UDP `443`; make sure the host firewall allows those ports and no host service or second container is listening on them. Set the four hostname variables in `/etc/business-finlynq/compose.env` and point their DNS records to the server before reconciliation. Do not install the host-proxy example in this arrangement.
-
-This arrangement also has exactly one trusted hop. Set `TRUSTED_PROXY_HOPS=1`; each application container must remain reachable only from its own edge network and any reviewed loopback diagnostic mapping. The containerized Caddy also removes the internal-health detail marker from every Business Finlynq request.
-
-### Externally managed container edge
-
-When the EPM Compose project already owns the only public Caddy listener, set `BUSINESS_FINLYNQ_EDGE_MODE=external` and include `deploy/edge/docker-compose.external.yml` in every Business Compose invocation. The override marks the application ingress network external and uses a profile override plus reset resources, `network_mode: none`, and `/bin/false` so even an accidental Business `--profile edge` cannot claim ports 80/443. `MONITOR_EXPECT_EDGE` remains `true`; set `MONITOR_EDGE_MODE=external` and identify the same EPM project, service, and production ingress network in the protected operations environment.
-
-The EPM owner must create `business_finlynq_edge` and `business_finlynq_development_edge` as local, internal bridge networks with label `com.business-finlynq.edge-owner=external`, and attach Caddy through an additive Compose overlay. Promote [deploy/edge/Caddyfile.business-external](../../deploy/edge/Caddyfile.business-external) to a separate root-owned mode-`0444` file outside both repositories, record its reviewed SHA-256 in `BUSINESS_FINLYNQ_EXTERNAL_EDGE_ROUTE_SHA256`, mount it read-only at `/etc/caddy/business-finlynq-routes.caddy`, and import that exact path from EPM's root-owned Caddyfile. A Git checkout is not the live trust root for this mount. The protected Compose environment also pins the external Caddy image reference and runtime image ID, public listener IPv4 values, Caddy source/volumes, and loaded admin-configuration SHA-256. Never put password contents in these metadata fields.
-
-The accepted OVH network set is exactly `business_finlynq_edge`, `business_finlynq_development_edge`, `epm_finlynq_edge`, `epm_finlynq_edge_egress`, and `consult_finlynq_edge`. After development is accepted and before production exists, run `verify-external-edge.sh --scope preflight`; a temporary production 502 is required and proves the route is active without silently reaching another backend. After production starts, run the default/full scope for shared-edge changes and operator audits. Full verification checks owner labels, image and mount identity, exact host bindings and networks, loaded Caddy state, both Business backends and public security boundaries, TLS, the EPM application-owned OIDC redirect, and positive/negative access-log controls for all OAuth callbacks. The installed production monitor uses production scope: it retains the shared static image/config/listener safety checks but requires only the production ingress network, production route mount, and production backend. Unrelated development, EPM, or Consult health can no longer block a Business production release. It is not valid to disable the edge expectation.
+`deploy/edge/verify-external-edge.sh` checks the central identity, the relevant
+Business network attachment, Business runtime alias ownership, Business public
+health/security behavior, redirects, and TLS read-only. A failure is reported;
+Business deployment and rollback never reload, recreate, or repair Caddy. Route
+changes belong in the central repository. The repository-local legacy route,
+overlay, and old reconciler are rollback material only until the centrally
+approved rollback window closes; see `deploy/edge/README.md`.
 
 Public `/api/health` performs the complete readiness check but returns only status. Operators retrieve checks and revision directly from `http://127.0.0.1:3100/api/health` with `X-Business-Finlynq-Internal-Health: 1`; never send that marker through the public hostname and never authorize health details from `X-Forwarded-For` or `X-Real-IP`. Caddy's active `/api/health` upstream probe needs no marker because it consumes only the HTTP status.
 
@@ -112,7 +112,7 @@ The deployment is portable because Business Finlynq does not share a database, r
 
 On a host that enables the writable shared demo, install the Toronto nightly reconciliation timer only after the current migration and shared baseline bootstrap succeed. Follow [the shared demo maintenance runbook](../operations/demo-sandbox-maintenance.md); never bypass a failed or overdue reset state.
 
-The core named volumes are `business_finlynq_pgdata`, its derived ClamAV signature cache `business_finlynq_pgdata_clamav`, `business_finlynq_caddy_data`, `business_finlynq_caddy_config`, and `business_finlynq_private-release-router-state-v2`. PostgreSQL moves should use a logical backup/restore rather than copying `business_finlynq_pgdata` between hosts. Caddy certificate state and the ClamAV cache are reproducible. The router volume contains only its `active`/`maintenance` sentinel: do not copy an `active` sentinel to a destination that has not passed acceptance. Let a new destination volume start in maintenance and use the reviewed installer/release flow to activate it; if the volume is deliberately transferred, set and verify maintenance before starting the listener.
+The core named volumes are `business_finlynq_pgdata`, its derived ClamAV signature cache `business_finlynq_pgdata_clamav`, and `business_finlynq_private-release-router-state-v2`. PostgreSQL moves should use a logical backup/restore rather than copying `business_finlynq_pgdata` between hosts. The router volume contains only its `active`/`maintenance` sentinel: do not copy an `active` sentinel to a destination that has not passed acceptance. Let a new destination volume start in maintenance and use the reviewed installer/release flow to activate it; if the volume is deliberately transferred, set and verify maintenance before starting the listener.
 
 ## Required launch gates
 

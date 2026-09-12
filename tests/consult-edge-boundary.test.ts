@@ -5,16 +5,12 @@ const compose = readFileSync("docker-compose.yml", "utf8");
 const caddy = readFileSync("deploy/Caddyfile.container", "utf8");
 
 describe("consult-finlynq shared edge", () => {
-  it("attaches Caddy to the external consult network", () => {
-    expect(compose).toMatch(
-      /edge:[\s\S]*?networks:[\s\S]*?- consult_finlynq_edge/u,
-    );
-    expect(compose).toMatch(
-      /consult_finlynq_edge:\s*\n\s*name: consult_finlynq_edge\s*\n\s*external: true/u,
-    );
+  it("does not own Caddy or the external Consult network", () => {
+    expect(compose).not.toMatch(/^  edge:\s*$/mu);
+    expect(compose).not.toContain("consult_finlynq_edge");
   });
 
-  it("routes the consultation hostname to its unique application alias", () => {
+  it("retains the legacy consultation route as rollback input", () => {
     expect(caddy).toContain(
       "CONSULT_FINLYNQ_HOSTNAME:consult.finlynq.com",
     );

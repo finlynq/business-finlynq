@@ -83,7 +83,7 @@ scheduler_boundary_bootstrap_required="false"
 scheduler_boundary_bootstrap_source_revision=""
 scheduler_boundary_bootstrap_receipt=""
 scheduler_boundary_bootstrap_receipt_sha256=""
-edge_mode="compose"
+edge_mode="external"
 public_base_url=""
 app_port=""
 declare -a detached_mutator_services=()
@@ -335,8 +335,8 @@ if [[ "$edge_mode_count" == 1 ]]; then
   edge_mode="$(awk -F= '$1 == "BUSINESS_FINLYNQ_EDGE_MODE" { sub(/^[^=]*=/, ""); print }' \
     "$canonical_environment_file")"
 fi
-[[ "$edge_mode" == compose || "$edge_mode" == external ]] \
-  || fail "BUSINESS_FINLYNQ_EDGE_MODE must be compose or external"
+[[ "$edge_mode" == external ]] \
+  || fail "shared-edge contract v1 requires BUSINESS_FINLYNQ_EDGE_MODE=external"
 if [[ "$mode" != "rehearsal" ]]; then
   operations_environment_file="$(validate_secret_environment_file "$operations_environment_file" "operations environment")"
   reject_repository_path "$operations_environment_file" "operations environment"
@@ -608,9 +608,6 @@ run_compose() {
   if [[ "$mode" == "rehearsal" ]]; then
     controlled_environment+=("RELEASE_REHEARSAL_PROJECT=$compose_project")
     compose_files+=(-f "$candidate_source_root/deploy/release/docker-compose.rehearsal.yml")
-  fi
-  if [[ "$mode" != "rehearsal" && "$edge_mode" == "external" ]]; then
-    compose_files+=(-f "$candidate_source_root/deploy/edge/docker-compose.external.yml")
   fi
   if [[ "$release_images_pinned" == "true" ]]; then
     controlled_environment+=(
@@ -2445,8 +2442,6 @@ if [[ "$mode" != "rehearsal" ]]; then
   if [[ "$mode" == "initial" ]]; then
     for initial_resource_contract in \
       "BUSINESS_FINLYNQ_PGDATA_VOLUME:business_finlynq_pgdata" \
-      "BUSINESS_FINLYNQ_CADDY_DATA_VOLUME:business_finlynq_caddy_data" \
-      "BUSINESS_FINLYNQ_CADDY_CONFIG_VOLUME:business_finlynq_caddy_config" \
       "BUSINESS_FINLYNQ_PRIVATE_NETWORK:business_finlynq_private" \
       "BUSINESS_FINLYNQ_EGRESS_NETWORK:business_finlynq_egress" \
       "BUSINESS_FINLYNQ_EDGE_NETWORK:business_finlynq_edge" \
@@ -2483,15 +2478,11 @@ if [[ "$mode" != "rehearsal" ]]; then
   MONITOR_MAX_DISK_PERCENT="$(read_operations_value MONITOR_MAX_DISK_PERCENT)"
   MONITOR_EXPECT_EDGE="$(read_operations_value MONITOR_EXPECT_EDGE)"
   MONITOR_EDGE_MODE="$(read_operations_value MONITOR_EDGE_MODE)"
-  MONITOR_EDGE_MODE="${MONITOR_EDGE_MODE:-compose}"
-  MONITOR_EXTERNAL_EDGE_PROJECT=""
-  MONITOR_EXTERNAL_EDGE_SERVICE=""
-  MONITOR_EXTERNAL_EDGE_NETWORK=""
-  if [[ "$MONITOR_EDGE_MODE" == external ]]; then
-    MONITOR_EXTERNAL_EDGE_PROJECT="$(read_operations_value MONITOR_EXTERNAL_EDGE_PROJECT)"
-    MONITOR_EXTERNAL_EDGE_SERVICE="$(read_operations_value MONITOR_EXTERNAL_EDGE_SERVICE)"
-    MONITOR_EXTERNAL_EDGE_NETWORK="$(read_operations_value MONITOR_EXTERNAL_EDGE_NETWORK)"
-  fi
+  [[ "$MONITOR_EDGE_MODE" == external ]] \
+    || fail "production monitoring must follow shared-edge contract v1"
+  MONITOR_EXTERNAL_EDGE_PROJECT="$(read_operations_value MONITOR_EXTERNAL_EDGE_PROJECT)"
+  MONITOR_EXTERNAL_EDGE_SERVICE="$(read_operations_value MONITOR_EXTERNAL_EDGE_SERVICE)"
+  MONITOR_EXTERNAL_EDGE_NETWORK="$(read_operations_value MONITOR_EXTERNAL_EDGE_NETWORK)"
   MONITOR_EXPECT_AUTH_EMAIL_WORKER="$(read_operations_value MONITOR_EXPECT_AUTH_EMAIL_WORKER)"
   MONITOR_EXPECT_OUTBOX_PUBLISHER="$(read_operations_value MONITOR_EXPECT_OUTBOX_PUBLISHER)"
   MONITOR_REQUIRE_OFFSITE="$(read_operations_value MONITOR_REQUIRE_OFFSITE)"
@@ -2536,8 +2527,8 @@ if [[ "$mode" != "rehearsal" ]]; then
     || release_quiesced_backup_timeout_seconds=300
   [[ "$MONITOR_BASE_URL" =~ ^https:// ]] || fail "production monitor base URL must use HTTPS"
   [[ "$MONITOR_EXPECT_EDGE" == "true" ]] || fail "the production release requires the reviewed edge boundary"
-  [[ "$MONITOR_EDGE_MODE" == compose || "$MONITOR_EDGE_MODE" == external ]] \
-    || fail "MONITOR_EDGE_MODE must be compose or external"
+  [[ "$MONITOR_EDGE_MODE" == external ]] \
+    || fail "MONITOR_EDGE_MODE must follow shared-edge contract v1"
   [[ "$MONITOR_EDGE_MODE" == "$edge_mode" ]] \
     || fail "monitor and Compose edge modes differ"
   if [[ "$edge_mode" == external ]]; then
@@ -2656,7 +2647,7 @@ else
     [[ "$resource_name" == "$compose_project"-* ]] \
       || fail "rehearsal resource can escape its isolated project: $resource_name"
     case "$resource_name" in
-      business_finlynq_pgdata|business_finlynq_caddy_data|business_finlynq_caddy_config|business_finlynq_private|business_finlynq_egress|business_finlynq_edge|business_finlynq_development_edge|business_finlynq_restore_drill)
+      business_finlynq_pgdata|business_finlynq_private|business_finlynq_egress|business_finlynq_edge|business_finlynq_development_edge|business_finlynq_restore_drill)
         fail "rehearsal resolved a production resource name"
         ;;
     esac
@@ -2899,8 +2890,6 @@ verify_initial_state_contract() {
   local -a forbidden_volumes=(
     business_finlynq_pgdata
     business_finlynq_pgdata_clamav
-    business_finlynq_caddy_data
-    business_finlynq_caddy_config
     business_finlynq_private-release-router-state-v2
   )
   local -a forbidden_networks=(

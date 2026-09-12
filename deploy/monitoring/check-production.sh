@@ -13,8 +13,8 @@ MONITOR_BACKUP_VERIFY_TIMEOUT_SECONDS="${MONITOR_BACKUP_VERIFY_TIMEOUT_SECONDS:-
 MONITOR_MIN_TLS_DAYS="${MONITOR_MIN_TLS_DAYS:-21}"
 MONITOR_MAX_DISK_PERCENT="${MONITOR_MAX_DISK_PERCENT:-85}"
 MONITOR_EXPECT_EDGE="${MONITOR_EXPECT_EDGE:-true}"
-MONITOR_EDGE_MODE="${MONITOR_EDGE_MODE:-compose}"
-MONITOR_EXTERNAL_EDGE_PROJECT="${MONITOR_EXTERNAL_EDGE_PROJECT:-}"
+MONITOR_EDGE_MODE="${MONITOR_EDGE_MODE:-external}"
+MONITOR_EXTERNAL_EDGE_PROJECT="${MONITOR_EXTERNAL_EDGE_PROJECT:-finlynq-shared-edge}"
 MONITOR_EXTERNAL_EDGE_SERVICE="${MONITOR_EXTERNAL_EDGE_SERVICE:-edge}"
 MONITOR_EXTERNAL_EDGE_NETWORK="${MONITOR_EXTERNAL_EDGE_NETWORK:-business_finlynq_edge}"
 MONITOR_EXPECT_AUTH_EMAIL_WORKER="${MONITOR_EXPECT_AUTH_EMAIL_WORKER:-false}"
@@ -37,6 +37,32 @@ readonly production_release_lock_directory="/home/deploy/.local/state/business-f
 readonly production_release_lock="$production_release_lock_directory/production-release-rollback.lock"
 readonly active_finalization_max_age_seconds=1800
 monitor_router_mode="active"
+
+response_header_value() {
+  local headers="$1" header_name="$2"
+  awk -v wanted_name="$header_name" '
+    BEGIN { cr = sprintf("%c", 13) }
+    {
+      line = $0
+      if (substr(line, length(line), 1) == cr) {
+        line = substr(line, 1, length(line) - 1)
+      }
+      separator = index(line, ":")
+      if (separator == 0) next
+      name = substr(line, 1, separator - 1)
+      if (tolower(name) != tolower(wanted_name)) next
+      value = substr(line, separator + 1)
+      sub(/^[ \t]*/, "", value)
+      sub(/[ \t]*$/, "", value)
+      count++
+      selected = value
+    }
+    END {
+      if (count != 1) exit 1
+      print selected
+    }
+  ' "$headers"
+}
 
 if [[ "${1:-}" == "--allow-transitional-router-maintenance" ]]; then
   [[ "$#" == 1 ]] || {
@@ -196,14 +222,14 @@ for numeric_value in \
   }
 done
 [[ "$MONITOR_EXPECT_EDGE" == "true" || "$MONITOR_EXPECT_EDGE" == "false" ]] || exit 2
-[[ "$MONITOR_EDGE_MODE" == "compose" || "$MONITOR_EDGE_MODE" == "external" ]] || {
-  printf '%s\n' "MONITOR_EDGE_MODE must be compose or external" >&2
+[[ "$MONITOR_EDGE_MODE" == "external" ]] || {
+  printf '%s\n' "MONITOR_EDGE_MODE must follow shared-edge contract v1" >&2
   exit 2
 }
 if [[ "$MONITOR_EDGE_MODE" == external ]]; then
   [[ "$MONITOR_EXPECT_EDGE" == true \
-    && "$MONITOR_EXTERNAL_EDGE_PROJECT" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ \
-    && "$MONITOR_EXTERNAL_EDGE_SERVICE" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ \
+    && "$MONITOR_EXTERNAL_EDGE_PROJECT" == finlynq-shared-edge \
+    && "$MONITOR_EXTERNAL_EDGE_SERVICE" == edge \
     && "$MONITOR_EXTERNAL_EDGE_NETWORK" == business_finlynq_edge ]] || {
       printf '%s\n' "external edge monitoring settings are incomplete or unsafe" >&2
       exit 2
@@ -436,8 +462,9 @@ fi
 if ! grep -Eiq '^cache-control:.*no-store' "$response_headers"; then
   record_failure "public readiness response is missing no-store caching"
 fi
-if ! grep -Eiq '^x-request-id:[[:space:]]*[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}[[:space:]\r]*$' "$response_headers" \
-  || grep -Eiq "^x-request-id:[[:space:]]*$spoofed_request_id[[:space:]\r]*$" "$response_headers"; then
+public_request_id="$(response_header_value "$response_headers" x-request-id || true)"
+if [[ ! "$public_request_id" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$ \
+  || "$public_request_id" == "$spoofed_request_id" ]]; then
   record_failure "public edge did not replace the readiness request ID"
 fi
 
@@ -454,8 +481,9 @@ public_metrics_status="$(curl \
 if [[ "$public_metrics_status" != "404" ]] || ! grep -Fxq 'Not found.' "$response_body"; then
   record_failure "public edge exposed the internal metrics surface (HTTP $public_metrics_status)"
 fi
-if ! grep -Eiq '^x-request-id:[[:space:]]*[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}[[:space:]\r]*$' "$response_headers" \
-  || grep -Eiq "^x-request-id:[[:space:]]*$spoofed_request_id[[:space:]\r]*$" "$response_headers"; then
+public_request_id="$(response_header_value "$response_headers" x-request-id || true)"
+if [[ ! "$public_request_id" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$ \
+  || "$public_request_id" == "$spoofed_request_id" ]]; then
   record_failure "public edge did not replace the metrics request ID"
 fi
 
@@ -523,9 +551,6 @@ if ! openssl s_client \
 fi
 
 expected_services=(database release_router app)
-if [[ "$MONITOR_EXPECT_EDGE" == "true" && "$MONITOR_EDGE_MODE" == compose ]]; then
-  expected_services+=(edge)
-fi
 if [[ "$MONITOR_EXPECT_AUTH_EMAIL_WORKER" == "true" ]]; then
   expected_services+=(auth_email_worker)
 fi
@@ -533,7 +558,7 @@ app_container_id=""
 database_container_id=""
 release_router_container_id=""
 for service_name in "${expected_services[@]}"; do
-  container_id="$(docker compose --profile edge --profile auth-email ps --quiet "$service_name" 2>/dev/null || true)"
+  container_id="$(docker compose --profile auth-email ps --quiet "$service_name" 2>/dev/null || true)"
   if [[ -z "$container_id" ]]; then
     record_failure "container is missing: $service_name"
     continue
@@ -685,6 +710,12 @@ if [[ "$MONITOR_EXPECT_EDGE" == true && "$MONITOR_EDGE_MODE" == external ]]; the
       "$external_edge_container" 2>/dev/null || true)"
     [[ "$external_edge_state" == healthy ]] \
       || record_failure "external edge container is not healthy ($external_edge_state)"
+    docker inspect --format '{{json .Config.Labels}}' "$external_edge_container" \
+      2>/dev/null | jq -e '
+        .["com.finlynq.edge-owner"] == "finlynq-shared-edge" and
+        .["com.finlynq.edge-contract"] == "v1"
+      ' >/dev/null \
+      || record_failure "external edge does not expose contract-v1 ownership labels"
     docker inspect --format '{{json .NetworkSettings.Networks}}' "$external_edge_container" \
       2>/dev/null \
       | jq -e --arg network "$MONITOR_EXTERNAL_EDGE_NETWORK" 'has($network)' >/dev/null \

@@ -114,12 +114,8 @@ fi
   );
 
   it("validates inactive initial resources through a combined all-profile render", () => {
-    expect(runner).toContain(
-      '"BUSINESS_FINLYNQ_CADDY_DATA_VOLUME:business_finlynq_caddy_data"',
-    );
-    expect(runner).toContain(
-      '"BUSINESS_FINLYNQ_CADDY_CONFIG_VOLUME:business_finlynq_caddy_config"',
-    );
+    expect(runner).not.toContain("BUSINESS_FINLYNQ_CADDY_DATA_VOLUME");
+    expect(runner).not.toContain("BUSINESS_FINLYNQ_CADDY_CONFIG_VOLUME");
     expect(runner).toContain(
       '"BUSINESS_FINLYNQ_RESTORE_DRILL_NETWORK:business_finlynq_restore_drill"',
     );

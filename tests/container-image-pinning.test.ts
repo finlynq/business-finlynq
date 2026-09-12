@@ -16,7 +16,7 @@ describe("external container supply-chain pins", () => {
     }
   });
 
-  it("pins the PostgreSQL base and production Caddy service while using the immutable database target", () => {
+  it("pins the PostgreSQL base and leaves Caddy outside active application Compose", () => {
     const compose = readFileSync("docker-compose.yml", "utf8").replaceAll("\r\n", "\n");
     const dockerfile = readFileSync("Dockerfile", "utf8");
 
@@ -29,7 +29,8 @@ describe("external container supply-chain pins", () => {
     expect(dockerfile).toContain("COPY --chmod=0555 deploy/postgres/database-entrypoint.sh /usr/local/bin/business-finlynq-database-entrypoint");
     expect(dockerfile).toContain('ENTRYPOINT ["business-finlynq-database-entrypoint"]');
     expect(compose).toContain("/run/business-finlynq-init:size=64k,mode=0700,uid=70,gid=70,noexec,nosuid,nodev");
-    expect(compose).toMatch(new RegExp(`image: caddy:2\\.10\\.2-alpine@${digestPattern}`));
+    expect(compose).not.toMatch(/^  edge:\s*$/mu);
+    expect(compose).not.toMatch(new RegExp(`image: caddy:2\\.10\\.2-alpine@${digestPattern}`));
   });
 
   it("hands the database initializer its password only through a PostgreSQL-owned tmpfs file", () => {

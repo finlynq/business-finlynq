@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 
 const compose = readFileSync(join(process.cwd(), "docker-compose.yml"), "utf8");
 const serviceStart = compose.indexOf("  grant_platform_administrator:");
-const serviceEnd = compose.indexOf("\n  edge:", serviceStart);
+const serviceEnd = compose.indexOf("\n  provision_backup:\n", serviceStart);
 const service = compose.slice(serviceStart, serviceEnd);
 
 describe("platform administrator provisioning container", () => {
