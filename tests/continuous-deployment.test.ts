@@ -233,9 +233,13 @@ describe("continuous deployment safety boundary", () => {
     );
     expect(deployMain).toContain('candidate_revision="$remote_main_revision"');
     expect(deployMain).toContain('if [[ "$release_forward_repair_pending" == true ]]');
-    expect(deployMain).toContain('candidate_revision="$release_transition_candidate_revision"');
     expect(deployMain).toContain(
       '"$release_transition_candidate_revision" "$remote_main_revision"',
+    );
+    expect(deployMain).toContain('release_forward_repair_superseded="true"');
+    expect(deployMain).toContain("supersede_loaded_release_transition_journal() (");
+    expect(deployMain).toContain(
+      '.candidateRevision = $newCandidateRevision',
     );
     expect(deployMain).toContain(
       'git_as_deploy merge-base --is-ancestor "$source_revision" "$candidate_revision"',
@@ -302,12 +306,20 @@ describe("continuous deployment safety boundary", () => {
       'prepare_revision_file "$compose_environment"',
     );
     const mutationArmed = deployMain.indexOf('mutated="true"');
+    const journalSuperseded = deployMain.lastIndexOf(
+      "supersede_loaded_release_transition_journal \\",
+    );
+    const releaseChild = deployMain.indexOf(
+      'bash "$repository/deploy/release/run-release.sh"',
+    );
     expect(trustedWorkflows).toBeGreaterThan(fetchedMain);
     expect(signalVerified).toBeGreaterThan(trustedWorkflows);
     expect(signalVerified).toBeLessThan(receiverUpdated);
     expect(receiverUpdated).toBeLessThan(candidateEnvironmentPrepared);
     expect(candidateEnvironmentPrepared).toBeLessThan(mutationArmed);
     expect(signalVerified).toBeLessThan(mutationArmed);
+    expect(journalSuperseded).toBeGreaterThan(mutationArmed);
+    expect(journalSuperseded).toBeLessThan(releaseChild);
     expect(installProduction).toContain('readonly github_cli="/usr/bin/gh"');
     expect(installProduction).toContain("GitHub CLI 2.100.0 or newer is required");
     expect(installProduction).toContain("--bundle");
@@ -405,6 +417,41 @@ describe("continuous deployment safety boundary", () => {
     expect(deployService).toContain("KillSignal=SIGTERM");
   });
 
+  it("proves maintenance through request-marked public health probes", () => {
+    const preFetch = deployMain.slice(
+      deployMain.indexOf("ensure_stable_release_router_maintenance_before_fetch() ("),
+      deployMain.indexOf("\nnetwork_alias_has_no_owner() {"),
+    );
+    const parentContainment = deployMain.slice(
+      deployMain.indexOf("force_parent_release_router_maintenance() {"),
+      deployMain.indexOf("\nstop_parent_release_service() {"),
+    );
+
+    expect(preFetch).toContain(
+      "--header 'X-Request-Id: continuous-deployment-pre-fetch-maintenance'",
+    );
+    expect(parentContainment).toContain(
+      "--header 'X-Request-Id: continuous-deployment-parent-containment'",
+    );
+    for (const maintenanceProof of [preFetch, parentContainment]) {
+      const reload = maintenanceProof.indexOf("Caddyfile.maintenance");
+      const requestId = maintenanceProof.indexOf("--header 'X-Request-Id:", reload);
+      const health = maintenanceProof.indexOf(
+        "http://127.0.0.1:3100/api/health",
+        requestId,
+      );
+      const unavailable = maintenanceProof.indexOf(
+        '[[ "$status" == 503 ]]',
+        health,
+      );
+
+      expect(reload).toBeGreaterThan(-1);
+      expect(requestId).toBeGreaterThan(reload);
+      expect(health).toBeGreaterThan(requestId);
+      expect(unavailable).toBeGreaterThan(health);
+    }
+  });
+
   it("never blesses an interrupted same-revision production release from health alone", () => {
     const evidenceVerifier = deployMain.slice(
       deployMain.indexOf("evidence_inventory_is_valid() {"),
@@ -417,6 +464,7 @@ describe("continuous deployment safety boundary", () => {
     expect(evidenceVerifier).toContain("sha256sum --check --strict --quiet SHA256SUMS");
     expect(evidenceVerifier).toContain("90-release-complete.json");
     expect(evidenceVerifier).toContain('.mode == "release"');
+    expect(evidenceVerifier).toContain('.mode == "initial"');
     expect(evidenceVerifier).toContain('.status == "accepted"');
     expect(evidenceVerifier).toContain('.candidateAppImageId == $appImage');
     expect(evidenceVerifier).toContain('.releaseRouterImageId == $routerImage');
@@ -452,6 +500,13 @@ describe("continuous deployment safety boundary", () => {
     expect(evidenceVerifier).toContain(
       '.previousAppImageId | type == "string" and test("^sha256:[a-f0-9]{64}$")',
     );
+    expect(evidenceVerifier).toContain('.previousAppImageId == null');
+    expect(evidenceVerifier).toContain(
+      '.containedInitial == true and .localEncryptedBackupVerified == true',
+    );
+    expect(evidenceVerifier).toContain(
+      '.offsiteBackupDeferred == true and .schedulerActivationDeferred == true',
+    );
     expect(evidenceVerifier).toContain(
       '.releaseRouterConfigSha256 | type == "string" and test("^[a-f0-9]{64}$")',
     );
@@ -481,12 +536,20 @@ describe("continuous deployment safety boundary", () => {
     );
   });
 
-  it("recovers journaled same-revision reruns after a host interruption", () => {
-    expect(deployMain).toContain(".candidateRevision == $candidateRevision");
+  it("recovers journaled reruns and safely supersedes them with attested descendants", () => {
+    expect(deployMain).toContain(
+      '(.candidateRevision | type == "string" and test("^[a-f0-9]{40}$"))',
+    );
+    expect(deployMain).toContain(
+      '"$release_transition_candidate_revision" "$expected_candidate_revision"',
+    );
     expect(deployMain).not.toContain(".sourceRevision != .candidateRevision");
     expect(releaseRunner).toContain(".candidateRevision == $candidateRevision");
     expect(releaseRunner).not.toContain(".sourceRevision != $candidateRevision");
     expect(deployMain).toContain('if [[ "$source_revision" == "$candidate_revision" ]]');
+    expect(deployMain).toContain(
+      'superseded forward repair requires the exact source application anchor',
+    );
   });
 
   it("finalizes only an evidenced live-active release left durably in maintenance", () => {

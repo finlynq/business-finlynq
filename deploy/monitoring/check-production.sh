@@ -30,6 +30,8 @@ readonly accounting_metrics_file="${ACCOUNTING_EVIDENCE_METRICS_FILE:-/var/lib/b
 readonly release_router_reference="business-finlynq-release-router:v2"
 readonly release_router_revision="release-router-v2"
 readonly release_router_contract="v2"
+readonly central_edge_container_name="finlynq-shared-edge-edge-1"
+readonly central_edge_public_ipv4="51.161.113.222"
 readonly release_router_state_volume="business_finlynq_private-release-router-state-v2"
 readonly release_recovery_state_directory="/var/lib/business-finlynq/release-recovery"
 readonly active_finalization_marker="/var/lib/business-finlynq/release-recovery/active-finalization.json"
@@ -697,7 +699,8 @@ if [[ "$MONITOR_EXPECT_EDGE" == true && "$MONITOR_EDGE_MODE" == external ]]; the
   [[ -z "$business_edge_container" ]] \
     || record_failure "Compose-owned edge is running while external edge mode is selected"
   mapfile -t external_edge_containers < <(
-    docker ps --filter "label=com.docker.compose.project=$MONITOR_EXTERNAL_EDGE_PROJECT" \
+    docker ps --no-trunc \
+      --filter "label=com.docker.compose.project=$MONITOR_EXTERNAL_EDGE_PROJECT" \
       --filter "label=com.docker.compose.service=$MONITOR_EXTERNAL_EDGE_SERVICE" \
       --format '{{.ID}}' 2>/dev/null || true
   )
@@ -705,29 +708,45 @@ if [[ "$MONITOR_EXPECT_EDGE" == true && "$MONITOR_EDGE_MODE" == external ]]; the
     record_failure "exactly one running external edge container is required"
   else
     external_edge_container="${external_edge_containers[0]}"
-    external_edge_state="$(docker inspect \
-      --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' \
-      "$external_edge_container" 2>/dev/null || true)"
-    [[ "$external_edge_state" == healthy ]] \
-      || record_failure "external edge container is not healthy ($external_edge_state)"
-    docker inspect --format '{{json .Config.Labels}}' "$external_edge_container" \
-      2>/dev/null | jq -e '
-        .["com.finlynq.edge-owner"] == "finlynq-shared-edge" and
-        .["com.finlynq.edge-contract"] == "v1"
-      ' >/dev/null \
-      || record_failure "external edge does not expose contract-v1 ownership labels"
-    docker inspect --format '{{json .NetworkSettings.Networks}}' "$external_edge_container" \
-      2>/dev/null \
-      | jq -e --arg network "$MONITOR_EXTERNAL_EDGE_NETWORK" 'has($network)' >/dev/null \
-      || record_failure "external edge is detached from the production ingress network"
+    external_edge_inspection="$(docker inspect "$external_edge_container" 2>/dev/null || true)"
+    if ! jq -e --arg id "$external_edge_container" \
+      --arg name "/$central_edge_container_name" \
+      --arg project "$MONITOR_EXTERNAL_EDGE_PROJECT" \
+      --arg service "$MONITOR_EXTERNAL_EDGE_SERVICE" \
+      --arg network "$MONITOR_EXTERNAL_EDGE_NETWORK" \
+      --arg publicIpv4 "$central_edge_public_ipv4" '
+        length == 1 and .[0].Id == $id and .[0].Name == $name and
+        .[0].Config.Labels["com.docker.compose.project"] == $project and
+        .[0].Config.Labels["com.docker.compose.service"] == $service and
+        .[0].Config.Labels["com.finlynq.edge-owner"] == "finlynq-shared-edge" and
+        .[0].Config.Labels["com.finlynq.edge-contract"] == "v1" and
+        .[0].State.Running == true and .[0].State.Health.Status == "healthy" and
+        (.[0].NetworkSettings.Networks | has($network)) and
+        ([.[0].HostConfig.PortBindings | to_entries[] as $entry |
+          $entry.value[] | "\(.HostIp)|\(.HostPort)|\($entry.key)"] | sort) ==
+        ([($publicIpv4 + "|80|80/tcp"), ($publicIpv4 + "|443|443/tcp"),
+          ($publicIpv4 + "|443|443/udp")] | sort)
+      ' <<<"$external_edge_inspection" >/dev/null 2>&1; then
+      record_failure "external edge runtime identity, health, bindings, or network differs from contract v1"
+    fi
   fi
-  external_verifier_arguments=(--scope production)
-  if [[ "$monitor_router_mode" == active-or-maintenance ]]; then
-    external_verifier_arguments+=(--allow-production-router-maintenance)
-  fi
-  if ! bash /home/deploy/business-finlynq/deploy/edge/verify-external-edge.sh \
-    "${external_verifier_arguments[@]}" >/dev/null; then
-    record_failure "production external edge ownership and routing attestation failed"
+  # The root-managed systemd monitor additionally runs the protected
+  # environment-file verifier. The deploy-owned cron fallback cannot read
+  # those root-only files, so it relies on the exact runtime attestation above
+  # plus the same public HTTP/TLS checks performed by this monitor.
+  if [[ "$(id -u)" == 0 ]]; then
+    external_verifier_arguments=(--scope production)
+    if [[ "$monitor_router_mode" == active-or-maintenance ]]; then
+      external_verifier_arguments+=(
+        --warmup-host production
+        --expected-production-revision "$MONITOR_EXPECT_REVISION"
+        --expect-production-live-uncommitted
+      )
+    fi
+    if ! bash /home/deploy/business-finlynq/deploy/edge/verify-external-edge.sh \
+      "${external_verifier_arguments[@]}" >/dev/null; then
+      record_failure "production external edge ownership and routing attestation failed"
+    fi
   fi
 fi
 
