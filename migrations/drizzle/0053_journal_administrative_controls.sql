@@ -12,6 +12,65 @@ WHERE role.active AND role.key IN ('OWNER', 'ORGANIZATION_ADMIN')
 ON CONFLICT DO NOTHING;
 --> statement-breakpoint
 
+-- Keep the entitlement attached to every active reserved owner/admin role,
+-- regardless of whether it was created or reactivated by application code,
+-- self-service signup, an upgrade, or an operator-reviewed SQL workflow.
+CREATE OR REPLACE FUNCTION app.assign_journal_admin_template_permission()
+RETURNS trigger
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, public, pg_temp
+AS $$
+BEGIN
+  IF NEW.active AND NEW.key IN ('OWNER', 'ORGANIZATION_ADMIN') THEN
+    INSERT INTO public.role_permissions(organization_id, role_id, permission_key)
+    VALUES (NEW.organization_id, NEW.id, 'ledger.journal.administer')
+    ON CONFLICT DO NOTHING;
+  END IF;
+  RETURN NEW;
+END
+$$;
+REVOKE ALL ON FUNCTION app.assign_journal_admin_template_permission() FROM PUBLIC;
+DROP TRIGGER IF EXISTS assign_journal_admin_template_permission ON roles;
+CREATE CONSTRAINT TRIGGER assign_journal_admin_template_permission
+  AFTER INSERT OR UPDATE OF organization_id, key, active ON roles
+  DEFERRABLE INITIALLY DEFERRED
+  FOR EACH ROW EXECUTE FUNCTION app.assign_journal_admin_template_permission();
+--> statement-breakpoint
+
+CREATE OR REPLACE FUNCTION app.guard_journal_admin_template_permission()
+RETURNS trigger
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, public, pg_temp
+AS $$
+DECLARE selected_organization_id uuid;
+DECLARE selected_role_id uuid;
+DECLARE selected_permission_key text;
+BEGIN
+  selected_organization_id := OLD.organization_id;
+  selected_role_id := OLD.role_id;
+  selected_permission_key := OLD.permission_key;
+  IF selected_permission_key = 'ledger.journal.administer' AND EXISTS (
+    SELECT 1 FROM public.roles role
+    WHERE role.organization_id = selected_organization_id
+      AND role.id = selected_role_id
+      AND role.active
+      AND role.key IN ('OWNER', 'ORGANIZATION_ADMIN')
+  ) THEN
+    RAISE EXCEPTION 'Active owner and organization administrator roles must retain ledger.journal.administer'
+      USING ERRCODE = '55000';
+  END IF;
+  RETURN CASE WHEN TG_OP = 'DELETE' THEN OLD ELSE NEW END;
+END
+$$;
+REVOKE ALL ON FUNCTION app.guard_journal_admin_template_permission() FROM PUBLIC;
+DROP TRIGGER IF EXISTS guard_journal_admin_template_permission ON role_permissions;
+CREATE TRIGGER guard_journal_admin_template_permission
+  BEFORE DELETE OR UPDATE OF organization_id, role_id, permission_key ON role_permissions
+  FOR EACH ROW EXECUTE FUNCTION app.guard_journal_admin_template_permission();
+--> statement-breakpoint
+
 INSERT INTO audit_outbox_pair_contract(
   audit_action, outbox_topic, aggregate_type, contract_version
 ) VALUES
@@ -287,6 +346,14 @@ BEGIN
     convert_to(selected_action || chr(31) || selected_journal_id::text || chr(31) || selected_reason, 'UTF8'),
     'sha256'
   ), 'hex');
+
+  -- Serialize every idempotency key before checking its durable result. A
+  -- concurrent retry waits, observes the committed control row, and returns
+  -- the same result instead of racing the journal-state transition.
+  PERFORM pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended(
+    selected_authorization.organization_id::text || chr(31) || selected_idempotency_key,
+    0
+  ));
 
   SELECT * INTO existing_control
   FROM journal_transaction_controls control

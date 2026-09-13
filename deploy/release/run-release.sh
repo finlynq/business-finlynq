@@ -2404,6 +2404,21 @@ for gate in DEMO_LOGIN_ENABLED DEMO_WRITES_ENABLED ACCOUNT_LOGIN_ENABLED AUTH_OI
   printf -v "release_$gate" '%s' "$gate_value"
 done
 
+oidc_mfa_amr_claim_provisioned="$(jq -r \
+  '.services.app.environment.AUTH_OIDC_MFA_AMR_CLAIM_PROVISIONED // empty' \
+  <<<"$rendered_compose")"
+oidc_mfa_auth_contexts="$(jq -r \
+  '.services.app.environment.AUTH_OIDC_MFA_AUTH_CONTEXTS // empty' \
+  <<<"$rendered_compose")"
+[[ "$oidc_mfa_amr_claim_provisioned" == "true" \
+  || "$oidc_mfa_amr_claim_provisioned" == "false" ]] \
+  || fail "AUTH_OIDC_MFA_AMR_CLAIM_PROVISIONED must be an explicit boolean"
+if [[ "$release_AUTH_OIDC_ENABLED" == "true" \
+  && "$oidc_mfa_amr_claim_provisioned" != "true" \
+  && -z "$oidc_mfa_auth_contexts" ]]; then
+  fail "OIDC MFA assurance requires a provisioned ID-token amr claim or reviewed AUTH_OIDC_MFA_AUTH_CONTEXTS"
+fi
+
 backup_directory="$(jq -r '.services.backup.volumes[] | select(.target == "/backups") | .source' <<<"$rendered_compose")"
 verify_backup_directory="$(jq -r '.services.verify_latest_backup.volumes[] | select(.target == "/backups") | .source' <<<"$rendered_compose")"
 scanner_image_reference="$(jq -r '.services.evidence_scanner.image // empty' <<<"$rendered_compose")"

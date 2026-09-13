@@ -7,6 +7,10 @@ import { transitionFiscalPeriod } from "@/modules/ledger/period-service";
 import { setLedgerPostingPolicy } from "@/modules/ledger/posting-policy-service";
 import { postJournal } from "@/modules/ledger/posting-service";
 import { deleteJournal, unpostJournal } from "@/modules/ledger/journal-administration-service";
+import {
+  loadTenantJournalDetail,
+  loadTenantJournalWorkspace,
+} from "@/modules/ledger/tenant-workspace";
 import { onboardOrganization } from "@/modules/onboarding/organization-service";
 import { createParty, searchPartiesByExactName } from "@/modules/parties/party-service";
 import { LocalRootKeyProvider, serializeWrappedKey } from "@/security/organization-encryption";
@@ -72,6 +76,92 @@ runDatabaseTests("PostgreSQL accounting controls", () => {
       await client.query("SELECT set_config('app.organization_id', $1, true)", [ids.orgA]);
       await client.query("SELECT set_config('app.actor_id', $1, true)", [ids.actor]);
       const result = await callback(client);
+      await client.query("COMMIT");
+      return result;
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  async function createAdministrativeJournal(
+    description: string,
+    options: Readonly<{ periodId?: string; post?: boolean }> = {},
+  ) {
+    const periodId = options.periodId ?? ids.controlPeriod;
+    const created = await createManualJournal({
+      context: {
+        organizationId: ids.orgA,
+        actorId: ids.actor,
+        requestId: randomUUID(),
+        authMethod: "password",
+        sourceSurface: "UI",
+      },
+      ledgerId: ids.ledger,
+      legalEntityId: ids.entity,
+      periodId,
+      accountingDate: periodId === ids.workflowPeriod ? "2026-10-15" : "2026-09-15",
+      purpose: "ROUTINE",
+      origin: "USER",
+      description,
+      idempotencyKey: `journal-admin-${randomUUID()}`,
+      lines: [
+        {
+          accountCombinationId: ids.debitCombination,
+          debitFunctional: "25.00", creditFunctional: "0",
+          transactionCurrency: "CAD", debitTransaction: "25.00", creditTransaction: "0",
+          fxRate: "1", fxRateSource: "functional-currency",
+          fxRateEffectiveAt: "2026-09-15T12:00:00.000Z",
+        },
+        {
+          accountCombinationId: ids.creditCombination,
+          debitFunctional: "0", creditFunctional: "25.00",
+          transactionCurrency: "CAD", debitTransaction: "0", creditTransaction: "25.00",
+          fxRate: "1", fxRateSource: "functional-currency",
+          fxRateEffectiveAt: "2026-09-15T12:00:00.000Z",
+        },
+      ],
+    });
+    if (options.post !== false) {
+      await postJournal({
+        context: {
+          organizationId: ids.orgA,
+          actorId: ids.actor,
+          requestId: randomUUID(),
+          authMethod: "password+mfa",
+          sourceSurface: "UI",
+        },
+        journalId: created.journalId,
+      });
+    }
+    return created;
+  }
+
+  async function invokeJournalControlAtDatabase(input: Readonly<{
+    actorId: string;
+    sessionId: string;
+    journalId: string;
+    action: "UNPOST" | "DELETE";
+    reason: string;
+    idempotencyKey: string;
+  }>) {
+    const client = await runtimePool.connect();
+    try {
+      await client.query("BEGIN");
+      await client.query("SELECT set_config('app.organization_id', $1, true)", [ids.orgA]);
+      await client.query("SELECT set_config('app.actor_id', $1, true)", [input.actorId]);
+      await client.query("SELECT set_config('app.session_id', $1, true)", [input.sessionId]);
+      await client.query("SELECT set_config('app.session_mode', 'real', true)");
+      await client.query("SELECT set_config('app.auth_method', 'password+mfa', true)");
+      await client.query("SELECT set_config('app.request_id', $1, true)", [randomUUID()]);
+      await client.query("SELECT set_config('app.source_surface', 'API', true)");
+      await client.query("SELECT set_config('app.reason', $1, true)", [input.reason]);
+      const result = await client.query(
+        "SELECT * FROM app.admin_control_journal_transaction($1,$2,$3,$4)",
+        [input.action, input.journalId, input.reason, input.idempotencyKey],
+      );
       await client.query("COMMIT");
       return result;
     } catch (error) {
@@ -218,7 +308,7 @@ runDatabaseTests("PostgreSQL accounting controls", () => {
            ($1, $2, 'ledger.journal.post'),
            ($1, $2, 'ledger.journal.post_adjustment'),
            ($1, $2, 'ledger.journal.reverse'),
-           ($1, $2, 'ledger.journal.administer'),
+           ($1, $2, 'mcp.ledger.read'),
            ($1, $2, 'ledger.journal.submit'),
            ($1, $2, 'ledger.journal.approve'),
            ($1, $2, 'ledger.posting_policy.manage'),
@@ -591,6 +681,38 @@ runDatabaseTests("PostgreSQL accounting controls", () => {
       status: "DRAFT", journal_number: null, controls: 2, audit_events: 2,
     });
 
+    await expect(adminPool.query(
+      "UPDATE journal_entries SET description = 'Mutated tombstone' WHERE id = $1",
+      [created.journalId],
+    )).rejects.toThrow(/tombstones are immutable/i);
+    await expect(adminPool.query(
+      "UPDATE journal_lines SET memo = 'Mutated tombstone line' WHERE journal_entry_id = $1",
+      [created.journalId],
+    )).rejects.toThrow(/lines are immutable/i);
+
+    const ownerPrincipal = {
+      sessionId: ids.validSession,
+      userId: ids.actor,
+      organizationId: ids.orgA,
+      membershipId: ids.membership,
+      organizationName: "Organization A",
+      roleLabel: "Owner",
+      displayName: "Accounting owner",
+      initials: "AO",
+      sessionMode: "real" as const,
+      authMethod: "PASSWORD" as const,
+      expiresAt: new Date(Date.now() + 60_000),
+      mfaVerifiedAt: new Date(),
+      stepUpExpiresAt: new Date(Date.now() + 60_000),
+      organizationWritesEnabled: true,
+    };
+    const normalRegister = await loadTenantJournalWorkspace(
+      ownerPrincipal,
+      "Owner administration integration journal",
+    );
+    expect(normalRegister.journals.some((journal) => journal.id === created.journalId)).toBe(false);
+    await expect(loadTenantJournalDetail(ownerPrincipal, created.journalId)).resolves.toBeNull();
+
     await expect(deleteJournal({
       context: {
         ...ownerContext,
@@ -602,7 +724,321 @@ runDatabaseTests("PostgreSQL accounting controls", () => {
       journalId: created.journalId,
       reason: "Ordinary member must not delete this draft",
       idempotencyKey: randomUUID(),
-    })).rejects.toThrow(/permission|required/i);
+    })).rejects.toThrow(/active owner or organization administrator/i);
+  });
+
+  it("maintains future and reactivated admin entitlements while denying permission-only custom roles", async () => {
+    const administratorUserId = randomUUID();
+    const administratorMembershipId = randomUUID();
+    const administratorSessionId = randomUUID();
+    await adminPool.query(
+      `INSERT INTO users(id, email_lookup_hash, email_ciphertext, password_hash)
+       VALUES($1,$2,'encrypted-administrator-email','password-hash')`,
+      [administratorUserId, `administrator-${administratorUserId}`],
+    );
+    await adminPool.query(
+      `INSERT INTO organization_memberships(id, organization_id, user_id)
+       VALUES($1,$2,$3)`,
+      [administratorMembershipId, ids.orgA, administratorUserId],
+    );
+    await adminPool.query(
+      `INSERT INTO auth_sessions(
+         id, token_hash, user_id, organization_id, membership_id,
+         auth_method, session_mode, user_agent_hash, idle_timeout_seconds,
+         idle_expires_at, expires_at, mfa_verified_at, step_up_expires_at
+       ) VALUES(
+         $1,$2,$3,$4,$5,'PASSWORD','REAL',repeat('a',64),7200,
+         now() + interval '2 hours',now() + interval '24 hours',now(),now() + interval '10 minutes'
+       )`,
+      [
+        administratorSessionId,
+        `administrator-session-${administratorSessionId}`,
+        administratorUserId,
+        ids.orgA,
+        administratorMembershipId,
+      ],
+    );
+    const provisionedRoles = await adminPool.query<{ id: string; key: string }>(
+      `INSERT INTO roles(id, organization_id, key, display_name, system_template, active)
+       VALUES
+         (gen_random_uuid(),$1,'ORGANIZATION_ADMIN','Organization administrator',true,false),
+         (gen_random_uuid(),$1,'CUSTOM_JOURNAL_ADMIN','Custom journal administrator',false,true)
+       ON CONFLICT (organization_id, key) DO UPDATE SET
+         display_name=EXCLUDED.display_name,
+         system_template=EXCLUDED.system_template,
+         active=EXCLUDED.active
+       RETURNING id,key`,
+      [ids.orgA],
+    );
+    const administratorRoleId = provisionedRoles.rows.find(
+      (role) => role.key === "ORGANIZATION_ADMIN",
+    )?.id;
+    const customRoleId = provisionedRoles.rows.find(
+      (role) => role.key === "CUSTOM_JOURNAL_ADMIN",
+    )?.id;
+    expect(administratorRoleId).toBeDefined();
+    expect(customRoleId).toBeDefined();
+    await adminPool.query(
+      `DELETE FROM role_permissions
+       WHERE organization_id=$1 AND role_id=$2 AND permission_key='ledger.journal.administer'`,
+      [ids.orgA, administratorRoleId],
+    );
+    await adminPool.query(
+      `INSERT INTO membership_roles(organization_id, membership_id, role_id, assigned_by)
+       VALUES($1,$2,$3,$4)`,
+      [ids.orgA, administratorMembershipId, customRoleId!, ids.actor],
+    );
+    await adminPool.query(
+      `INSERT INTO role_permissions(organization_id, role_id, permission_key)
+       VALUES($1,$2,'ledger.journal.administer')`,
+      [ids.orgA, customRoleId!],
+    );
+
+    const inactiveEntitlement = await adminPool.query<{ count: number }>(
+      `SELECT count(*)::int AS count FROM role_permissions
+       WHERE organization_id=$1 AND role_id=$2 AND permission_key='ledger.journal.administer'`,
+      [ids.orgA, administratorRoleId!],
+    );
+    expect(inactiveEntitlement.rows[0]?.count).toBe(0);
+    await adminPool.query("UPDATE roles SET active=true WHERE id=$1", [administratorRoleId!]);
+    const reactivatedEntitlement = await adminPool.query<{ count: number }>(
+      `SELECT count(*)::int AS count FROM role_permissions
+       WHERE organization_id=$1 AND role_id=$2 AND permission_key='ledger.journal.administer'`,
+      [ids.orgA, administratorRoleId!],
+    );
+    expect(reactivatedEntitlement.rows[0]?.count).toBe(1);
+    await expect(adminPool.query(
+      `DELETE FROM role_permissions
+       WHERE organization_id=$1 AND role_id=$2 AND permission_key='ledger.journal.administer'`,
+      [ids.orgA, administratorRoleId!],
+    )).rejects.toThrow(/must retain ledger\.journal\.administer/i);
+
+    const customTarget = await createAdministrativeJournal(
+      "Permission-only custom role denial journal",
+      { post: false },
+    );
+    await expect(invokeJournalControlAtDatabase({
+      actorId: administratorUserId,
+      sessionId: administratorSessionId,
+      journalId: customTarget.journalId,
+      action: "DELETE",
+      reason: "Custom permission must not bypass the exact role boundary",
+      idempotencyKey: randomUUID(),
+    })).rejects.toMatchObject({ code: "42501" });
+
+    const staleTarget = await createAdministrativeJournal(
+      "Stale step-up denial journal",
+      { post: false },
+    );
+    await expect(deleteJournal({
+      context: {
+        organizationId: ids.orgA,
+        actorId: ids.actor,
+        sessionId: ids.staleSession,
+        sessionMode: "real",
+        requestId: randomUUID(),
+        authMethod: "password+mfa",
+        sourceSurface: "API",
+        reason: "Stale step-up must fail at the database boundary",
+      },
+      journalId: staleTarget.journalId,
+      reason: "Stale step-up must fail at the database boundary",
+      idempotencyKey: randomUUID(),
+    })).rejects.toThrow(/authorization changed/i);
+
+    await adminPool.query(
+      `UPDATE membership_roles SET role_id=$3,assigned_by=$4,assigned_at=now()
+       WHERE organization_id=$1 AND membership_id=$2`,
+      [ids.orgA, administratorMembershipId, administratorRoleId!, ids.actor],
+    );
+    const administratorTarget = await createAdministrativeJournal(
+      "Organization administrator success journal",
+      { post: false },
+    );
+    await expect(deleteJournal({
+      context: {
+        organizationId: ids.orgA,
+        actorId: administratorUserId,
+        sessionId: administratorSessionId,
+        sessionMode: "real",
+        requestId: randomUUID(),
+        authMethod: "password+mfa",
+        sourceSurface: "API",
+        reason: "Organization administrator removes reviewed duplicate draft",
+      },
+      journalId: administratorTarget.journalId,
+      reason: "Organization administrator removes reviewed duplicate draft",
+      idempotencyKey: randomUUID(),
+    })).resolves.toMatchObject({ status: "DELETED", idempotentReplay: false });
+
+    for (const [journalId, reason] of [
+      [customTarget.journalId, "Administrator tombstones the custom-role boundary fixture"],
+      [staleTarget.journalId, "Administrator tombstones the stale-step-up boundary fixture"],
+    ] as const) {
+      await expect(deleteJournal({
+        context: {
+          organizationId: ids.orgA,
+          actorId: administratorUserId,
+          sessionId: administratorSessionId,
+          sessionMode: "real",
+          requestId: randomUUID(),
+          authMethod: "password+mfa",
+          sourceSurface: "API",
+          reason,
+        },
+        journalId,
+        reason,
+        idempotencyKey: randomUUID(),
+      })).resolves.toMatchObject({ status: "DELETED" });
+    }
+  });
+
+  it("serializes concurrent journal-administration replays", async () => {
+    const journal = await createAdministrativeJournal("Concurrent unpost replay journal");
+    const idempotencyKey = randomUUID();
+    const reason = "Concurrent retries must return one durable journal result";
+    const results = await Promise.all(["a", "b"].map((suffix) => unpostJournal({
+      context: {
+        organizationId: ids.orgA,
+        actorId: ids.actor,
+        sessionId: ids.validSession,
+        sessionMode: "real",
+        requestId: `concurrent-journal-admin-${suffix}-${randomUUID()}`,
+        authMethod: "password+mfa",
+        sourceSurface: "API",
+        reason,
+      },
+      journalId: journal.journalId,
+      reason,
+      idempotencyKey,
+    })));
+    expect(results.map((result) => result.idempotentReplay).sort()).toEqual([false, true]);
+    expect(new Set(results.map((result) => result.journalId))).toEqual(new Set([journal.journalId]));
+    await expect(deleteJournal({
+      context: {
+        organizationId: ids.orgA,
+        actorId: ids.actor,
+        sessionId: ids.validSession,
+        sessionMode: "real",
+        requestId: randomUUID(),
+        authMethod: "password+mfa",
+        sourceSurface: "API",
+        reason: "Tombstone the completed concurrent replay fixture",
+      },
+      journalId: journal.journalId,
+      reason: "Tombstone the completed concurrent replay fixture",
+      idempotencyKey: randomUUID(),
+    })).resolves.toMatchObject({ status: "DELETED" });
+  });
+
+  it("blocks closed-period unposting and every material journal dependency", async () => {
+    async function fixtureMutation(statement: string, parameters: readonly unknown[]) {
+      const client = await adminPool.connect();
+      try {
+        await client.query("BEGIN");
+        await client.query("SET LOCAL session_replication_role = replica");
+        await client.query(statement, [...parameters]);
+        await client.query("COMMIT");
+      } catch (error) {
+        await client.query("ROLLBACK");
+        throw error;
+      } finally {
+        client.release();
+      }
+    }
+    const ownerContext = (reason: string) => ({
+      organizationId: ids.orgA,
+      actorId: ids.actor,
+      sessionId: ids.validSession,
+      sessionMode: "real" as const,
+      requestId: randomUUID(),
+      authMethod: "password+mfa",
+      sourceSurface: "API" as const,
+      reason,
+    });
+
+    const closedPeriodJournal = await createAdministrativeJournal("Closed period unpost blocker");
+    await fixtureMutation(
+      "UPDATE fiscal_periods SET state='HARD_CLOSED' WHERE id=$1",
+      [ids.controlPeriod],
+    );
+    try {
+      const reason = "A hard-closed period must block administrative unposting";
+      await expect(unpostJournal({
+        context: ownerContext(reason),
+        journalId: closedPeriodJournal.journalId,
+        reason,
+        idempotencyKey: randomUUID(),
+      })).rejects.toThrow(/period is open/i);
+    } finally {
+      await fixtureMutation(
+        "UPDATE fiscal_periods SET state='OPEN' WHERE id=$1",
+        [ids.controlPeriod],
+      );
+    }
+
+    const blockers = [
+      {
+        name: "source document",
+        expected: /source-free manual/i,
+        install: (journalId: string) => fixtureMutation(
+          "UPDATE journal_entries SET source_document_id=$2 WHERE id=$1",
+          [journalId, randomUUID()],
+        ),
+      },
+      {
+        name: "journal relation",
+        expected: /dependency/i,
+        install: (journalId: string) => fixtureMutation(
+          `INSERT INTO journal_entry_relations(
+             organization_id, from_journal_id, to_journal_id, kind, reason
+           ) VALUES($1,$2,$3,'REVERSAL_OF','Synthetic dependency fixture')`,
+          [ids.orgA, journalId, ids.postedJournal],
+        ),
+      },
+      {
+        name: "bank reconciliation",
+        expected: /dependency/i,
+        install: (journalId: string) => fixtureMutation(
+          `INSERT INTO bank_match_allocations(
+             organization_id, reconciliation_session_id, observation_version_id,
+             journal_line_id, match_kind, allocated_amount, idempotency_key,
+             command_hash, created_by
+           ) SELECT $1,$2,$3,line.id,'MANUAL',1,$4,$5,$6
+             FROM journal_lines line WHERE line.journal_entry_id=$7 LIMIT 1`,
+          [
+            ids.orgA,
+            randomUUID(),
+            randomUUID(),
+            `journal-admin-bank-${randomUUID()}`,
+            "b".repeat(64),
+            ids.actor,
+            journalId,
+          ],
+        ),
+      },
+      ...(["party_account_id", "subledger_event_id", "tax_snapshot_id"] as const).map((column) => ({
+        name: column,
+        expected: /dependency/i,
+        install: (journalId: string) => fixtureMutation(
+          `UPDATE journal_lines SET ${column}=$2
+           WHERE id=(SELECT id FROM journal_lines WHERE journal_entry_id=$1 ORDER BY line_number LIMIT 1)`,
+          [journalId, randomUUID()],
+        ),
+      })),
+    ];
+
+    for (const blocker of blockers) {
+      const journal = await createAdministrativeJournal(`Blocked by ${blocker.name}`);
+      await blocker.install(journal.journalId);
+      const reason = `The ${blocker.name} fixture must prevent administrative unposting`;
+      await expect(unpostJournal({
+        context: ownerContext(reason),
+        journalId: journal.journalId,
+        reason,
+        idempotencyKey: randomUUID(),
+      }), blocker.name).rejects.toThrow(blocker.expected);
+    }
   });
 
   it("posts FX converted at the database's functional minor-unit rule", async () => {
@@ -617,7 +1053,7 @@ runDatabaseTests("PostgreSQL accounting controls", () => {
       journalId: ids.fxJournal,
     });
 
-    expect(result).toMatchObject({ journalNumber: 3, status: "POSTED" });
+    expect(result).toMatchObject({ journalNumber: 11, status: "POSTED" });
   });
 
   it("rejects direct posted inserts and posted-line reparenting", async () => {

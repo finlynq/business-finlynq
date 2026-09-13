@@ -64,6 +64,7 @@ export type OidcConfiguration = Readonly<{
   redirectUri: string;
   allowedTenants: ReadonlySet<string>;
   identityMap: ReadonlyMap<string, IdentityMapEntry>;
+  mfaAmrClaimProvisioned: boolean;
   trustedMfaAuthenticationContexts: ReadonlySet<string>;
   maximumTokenLifetimeSeconds: number;
   tokenTimeoutMilliseconds: number;
@@ -313,6 +314,15 @@ export function loadOidcConfiguration(
   if (trustedMfaAuthenticationContexts.size > 25) {
     throw new Error("AUTH_OIDC_MFA_AUTH_CONTEXTS permits at most 25 entries");
   }
+  const mfaAmrClaimProvisioned = exactBoolean(
+    environment.AUTH_OIDC_MFA_AMR_CLAIM_PROVISIONED,
+    "AUTH_OIDC_MFA_AMR_CLAIM_PROVISIONED",
+  );
+  if (!mfaAmrClaimProvisioned && trustedMfaAuthenticationContexts.size === 0) {
+    throw new Error(
+      "OIDC MFA assurance requires the optional ID-token amr claim to be provisioned or at least one reviewed acrs context",
+    );
+  }
   const identityEntries = loadIdentityMap(environment, readTextFile);
   const identityMap = new Map<string, IdentityMapEntry>();
   for (const entry of identityEntries) {
@@ -326,6 +336,7 @@ export function loadOidcConfiguration(
   const configurationHash = createHash("sha256")
     .update([
       issuer, authorizationEndpoint, tokenEndpoint, jwksUri, clientId, redirectUri,
+      mfaAmrClaimProvisioned ? "amr:mfa" : "amr:disabled",
       [...trustedMfaAuthenticationContexts].sort().join(","),
     ].join("\0"), "utf8")
     .digest("hex");
@@ -339,6 +350,7 @@ export function loadOidcConfiguration(
     redirectUri,
     allowedTenants,
     identityMap,
+    mfaAmrClaimProvisioned,
     trustedMfaAuthenticationContexts,
     maximumTokenLifetimeSeconds: boundedInteger(
       environment.AUTH_OIDC_MAXIMUM_TOKEN_LIFETIME_SECONDS,

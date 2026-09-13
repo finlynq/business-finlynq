@@ -95,14 +95,16 @@ mode `0440`. Point the host Compose environment at those files:
 AUTH_OIDC_CLIENT_ID=<environment-specific-client-id>
 AUTH_OIDC_CLIENT_SECRET_FILE=<environment-secret-directory>/oidc-client-secret
 AUTH_OIDC_IDENTITY_MAP_FILE=<environment-secret-directory>/oidc-identity-map.json
+AUTH_OIDC_MFA_AMR_CLAIM_PROVISIONED=true
 AUTH_OIDC_MFA_AUTH_CONTEXTS=
 AUTH_OIDC_ENABLED=true
 AUTH_OIDC_SIGNUP_ENABLED=false
 ```
 
 `ACCOUNT_LOGIN_ENABLED`, authentication email delivery, and its worker must
-also be ready. The internal health response reports `oidcAuthentication` as
-`ready` only after it has parsed the provider, client secret, and identity map.
+also be ready. The internal health response reports `oidcAuthentication` and
+`oidcMfaAssurance` as `ready` only after it has parsed the provider, client
+secret, identity map, and an explicit MFA-assurance claim contract.
 Enable `AUTH_OIDC_SIGNUP_ENABLED=true` independently only after the database
 migration, verification-email worker, and complete Microsoft signup acceptance
 have passed in that environment. The detailed health response then reports
@@ -130,6 +132,19 @@ presence alone is not assurance. See Microsoft's
 [optional-claims configuration](https://learn.microsoft.com/en-us/entra/identity-platform/optional-claims),
 and [authentication-context guidance](https://learn.microsoft.com/en-us/entra/identity-platform/developer-guide-conditional-access-authentication-context).
 
+For the preferred `amr` path, open the environment-specific Entra app
+registration, select **Token configuration**, add the optional `amr` claim to
+the **ID token**, and confirm the application manifest contains an `idToken`
+optional-claim entry whose name is exactly `amr`. Only after that reviewed
+change is present set `AUTH_OIDC_MFA_AMR_CLAIM_PROVISIONED=true`. This setting
+is an operational attestation, not a request for Entra to add the claim.
+
+If the tenant cannot emit `amr`, keep the attestation `false` and populate
+`AUTH_OIDC_MFA_AUTH_CONTEXTS` with one or more reviewed `acrs` identifiers.
+Readiness fails closed when OIDC is enabled but neither path is configured, or
+when the attestation is not an exact boolean. Generic `acr` values are never a
+configuration or runtime fallback.
+
 FinLynQ never infers MFA from `pwd`, an arbitrary `acr`, an unreviewed context,
 or a malformed/missing claim. Those sessions remain valid ordinary SSO
 sessions, but protected actions continue to require local TOTP. Trusted Entra
@@ -141,22 +156,31 @@ password, demo, or later OIDC session.
 
 Validate development before promotion:
 
-1. Open EPM and complete Microsoft sign-in.
-2. In the same browser, open the Business Finlynq login page and select
+1. Verify the environment's app-registration manifest contains the optional
+   ID-token `amr` claim and the Compose environment attests it with
+   `AUTH_OIDC_MFA_AMR_CLAIM_PROVISIONED=true`; or record the reviewed Conditional
+   Access policies for every configured `AUTH_OIDC_MFA_AUTH_CONTEXTS` value.
+   Confirm internal readiness reports `oidcMfaAssurance` as `ready`.
+2. Decode a development ID token only in an approved secure troubleshooting
+   workflow and confirm the intended `amr: ["mfa"]` or allow-listed `acrs`
+   evidence is actually present. Do not paste or retain tokens in tickets,
+   logs, shell history, or deployment artifacts.
+3. Open EPM and complete Microsoft sign-in.
+4. In the same browser, open the Business Finlynq login page and select
    **Continue with Microsoft**.
-3. Confirm Entra does not request credentials again and Business Finlynq opens
+5. Confirm Entra does not request credentials again and Business Finlynq opens
    the mapped real workspace.
-4. With Microsoft signup disabled, confirm an unassigned identity is rejected.
-5. Enable Microsoft signup, use a new Entra identity, verify a separate contact
+6. With Microsoft signup disabled, confirm an unassigned identity is rejected.
+7. Enable Microsoft signup, use a new Entra identity, verify a separate contact
    email, and sign in without a Business password. Confirm a token with trusted
    MFA activates without redundant TOTP, while a token without evidence still
    requires authenticator enrollment.
-6. Repeat with the optional Business password enabled and verify both sign-in
+8. Repeat with the optional Business password enabled and verify both sign-in
    methods independently. Confirm that editing the verification URL cannot
    switch the signup to a different activation method.
-7. Confirm a demo session is replaced and sign-out revokes only the Business
+9. Confirm a demo session is replaced and sign-out revokes only the Business
    Finlynq session.
-8. Confirm password login, public demo access, local MFA step-up, session
+10. Confirm password login, public demo access, local MFA step-up, session
    revocation, and internal readiness continue to work.
 
 Promote only the exact development revision that passed these checks. Production

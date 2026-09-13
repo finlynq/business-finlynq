@@ -13,6 +13,12 @@ describe("journal administrative control migration", () => {
     expect(migration).toContain("organization_admin_authorize('ledger.journal.administer', true)");
     expect(migration).toContain("role.key IN ('OWNER', 'ORGANIZATION_ADMIN')");
     expect(migration).toContain("selected_authorization.is_demo");
+    expect(migration).toMatch(
+      /CREATE CONSTRAINT TRIGGER assign_journal_admin_template_permission\s+AFTER INSERT OR UPDATE OF organization_id, key, active ON roles\s+DEFERRABLE INITIALLY DEFERRED/,
+    );
+    expect(migration).toContain("NEW.active AND NEW.key IN ('OWNER', 'ORGANIZATION_ADMIN')");
+    expect(migration).toContain("guard_journal_admin_template_permission");
+    expect(migration).toContain("must retain ledger.journal.administer");
   });
 
   it("blocks unsafe states and accounting dependencies before unposting or deletion", () => {
@@ -29,6 +35,8 @@ describe("journal administrative control migration", () => {
     expect(migration).toContain("journal_transaction_controls_append_only");
     expect(migration).toContain("control.outcome = 'DELETED'");
     expect(migration).toContain("existing_control.command_hash IS DISTINCT FROM selected_command_hash");
+    expect(migration).toContain("pg_advisory_xact_lock");
+    expect(migration).toContain("hashtextextended");
     expect(migration).toContain("idempotent_replay boolean");
     expect(migration).not.toMatch(/DELETE FROM journal_entries/i);
     expect(migration).toContain("GRANT SELECT ON journal_transaction_controls TO business_finlynq_app");

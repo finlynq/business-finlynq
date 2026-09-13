@@ -24,6 +24,7 @@ import {
   unpostJournal,
 } from "@/modules/ledger/journal-administration-service";
 import { PERMISSIONS } from "@/modules/identity/permissions";
+import { AuthorizationDeniedError } from "@/modules/identity/authorization-error";
 
 const context = {
   organizationId: "10000000-0000-4000-8000-000000000001",
@@ -119,7 +120,7 @@ describe("journal owner/admin controls", () => {
       journalId,
       reason: context.reason,
       idempotencyKey,
-    })).rejects.toThrow(/permission denied/);
+    })).rejects.toThrow(/active owner or organization administrator/);
     expect(mocks.query).not.toHaveBeenCalled();
   });
 
@@ -130,7 +131,42 @@ describe("journal owner/admin controls", () => {
       journalId,
       reason: context.reason,
       idempotencyKey,
-    })).rejects.toThrow(/owner or administrator/);
+    })).rejects.toThrow(/active owner or organization administrator/);
     expect(mocks.query).not.toHaveBeenCalled();
+  });
+
+  it("types a final database authorization race separately from journal state conflicts", async () => {
+    mocks.query.mockRejectedValueOnce(Object.assign(
+      new Error("authorization changed"),
+      { code: "42501" },
+    ));
+    await expect(deleteJournal({
+      context,
+      journalId,
+      reason: context.reason,
+      idempotencyKey,
+    })).rejects.toBeInstanceOf(AuthorizationDeniedError);
+
+    mocks.query.mockRejectedValueOnce(Object.assign(
+      new Error("Organization administration requires fresh MFA step-up"),
+      { code: "28000" },
+    ));
+    await expect(deleteJournal({
+      context,
+      journalId,
+      reason: context.reason,
+      idempotencyKey,
+    })).rejects.toBeInstanceOf(AuthorizationDeniedError);
+
+    mocks.query.mockRejectedValueOnce(Object.assign(
+      new Error("journal state changed"),
+      { code: "55000" },
+    ));
+    await expect(deleteJournal({
+      context,
+      journalId,
+      reason: context.reason,
+      idempotencyKey,
+    })).rejects.not.toBeInstanceOf(AuthorizationDeniedError);
   });
 });
