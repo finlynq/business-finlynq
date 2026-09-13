@@ -4186,11 +4186,14 @@ run_installed_monitor() {
     # The scheduled monitor intentionally remains strict. During final release
     # acceptance only, invoke the reviewed implementation directly so it can
     # attest the live candidate while the restart sentinel is still
-    # maintenance; its freshly replaced metric is verified below unchanged.
+    # maintenance. Keep root authority for the protected edge verifier while
+    # matching the installed systemd unit's deploy primary group so its
+    # freshly replaced metric has the same root:deploy ownership contract.
     (
       cd -- "$repository_root"
-      bash "$repository_root/deploy/monitoring/check-production.sh" \
-        --allow-transitional-router-maintenance
+      runuser -u root -g deploy -- \
+        bash "$repository_root/deploy/monitoring/check-production.sh" \
+          --allow-transitional-router-maintenance
     )
   elif [[ "$scheduler_mode" == "systemd" ]]; then
     run_fresh_systemd_oneshot business-finlynq-monitor.service \
