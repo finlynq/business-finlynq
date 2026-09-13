@@ -12,6 +12,13 @@ services and these stable interfaces:
 network, Business runtime, and Business public-route checks. The compatibility
 `reconcile-shared-edge.sh` name also performs verification only.
 
+The production release runner has one explicit forward-repair boundary. It
+binds verification to the root-owned recovery journal's exact SHA-256 digest,
+requires the durable router state and public route to remain in maintenance,
+and accepts at most one stopped, hardened app anchor matching the journaled
+source or immutable candidate. Normal verification still requires one running,
+healthy app. This boundary never changes or reloads the central edge.
+
 The files below are retained unchanged as rollback input for the old edge until
 the centrally approved rollback window closes. They are not referenced by
 current application deployment or rollback paths:
