@@ -5,6 +5,7 @@ set +x
 umask 077
 
 readonly repository="/home/deploy/business-finlynq-stage"
+readonly legacy_development_repository="/home/deploy/business-finlynq-development"
 readonly expected_origin="https://github.com/finlynq/business-finlynq.git"
 readonly installed_deployer="/usr/local/sbin/business-finlynq-deploy-development"
 readonly compose_environment="/etc/business-finlynq-development/compose.env"
@@ -1102,7 +1103,8 @@ verify_compose_boundary() {
 
 document_provider_configuration_matches() {
   local container="$1" rendered="$2" provider setting expected_record actual_record source target \
-    mounts expected_digest actual_digest provider_record oidc_contract_expected="${3:-true}"
+    mounts expected_digest actual_digest provider_record provider_client_id \
+    expected_disabled_source legacy_disabled_source oidc_contract_expected="${3:-true}"
   local -a oidc_secret_settings=()
   [[ "$oidc_contract_expected" == true || "$oidc_contract_expected" == false ]] || return 1
   if [[ "$oidc_contract_expected" == true ]]; then
@@ -1162,9 +1164,27 @@ document_provider_configuration_matches() {
       if length == 1 then .[0] else error("secret mount source is not unique") end
     ' <<<"$rendered")" || return 1
     [[ -f "$source" && ! -L "$source" ]] || return 1
-    jq -e --arg source "$source" --arg target "$target" \
-      '[.[] | select(.Source == $source and .Destination == $target and .RW == false)] | length == 1' \
-      <<<"$mounts" >/dev/null || return 1
+    provider_client_id="$(jq -er --arg id "DOCUMENT_${provider}_CLIENT_ID" \
+      '.services.app.environment[$id] | tostring' <<<"$rendered")" || return 1
+    expected_disabled_source="$repository/deploy/backup/not-configured"
+    legacy_disabled_source="$legacy_development_repository/deploy/backup/not-configured"
+    if [[ -z "$provider_client_id" && "$source" == "$expected_disabled_source" ]]; then
+      # The stage checkout replaced the former development checkout without
+      # changing this inert placeholder. Permit the accepted container's exact
+      # legacy bind only while the provider is disabled and the mounted bytes
+      # still match the reviewed placeholder below. Real provider credentials,
+      # enabled providers, arbitrary source paths, and writable binds remain
+      # subject to the exact-source contract.
+      jq -e --arg source "$source" --arg legacySource "$legacy_disabled_source" \
+        --arg target "$target" '
+        [.[] | select((.Source == $source or .Source == $legacySource) and
+          .Destination == $target and .RW == false)] | length == 1
+      ' <<<"$mounts" >/dev/null || return 1
+    else
+      jq -e --arg source "$source" --arg target "$target" \
+        '[.[] | select(.Source == $source and .Destination == $target and .RW == false)] | length == 1' \
+        <<<"$mounts" >/dev/null || return 1
+    fi
     # Detect secret rotation, including atomic replacement of a bind-mounted
     # file at the same path. Values and digests never enter deployment logs.
     expected_digest="$(sha256sum -- "$source")" || return 1
