@@ -1,5 +1,5 @@
 {
-  "id": "4f9191d9-7611-47df-8424-a4c7c602d34e",
+  "id": "8166ec7c-6c50-4e1b-ab30-96b773704045",
   "prevId": "653551f1-5558-4cca-a7fb-5fd7d7ee3953",
   "version": "7",
   "dialect": "postgresql",
@@ -9188,12 +9188,12 @@
           "name": "journal_transaction_controls_reason_check",
           "value": "length(\"journal_transaction_controls\".\"reason\") BETWEEN 10 AND 500 AND \"journal_transaction_controls\".\"reason\" !~ '[[:cntrl:]]'"
         },
-        "journal_transaction_controls_request_check": {
-          "name": "journal_transaction_controls_request_check",
+        "journal_transaction_controls_request_id_check": {
+          "name": "journal_transaction_controls_request_id_check",
           "value": "length(\"journal_transaction_controls\".\"request_id\") BETWEEN 1 AND 200 AND \"journal_transaction_controls\".\"request_id\" !~ '[[:cntrl:]]'"
         },
-        "journal_transaction_controls_idempotency_check": {
-          "name": "journal_transaction_controls_idempotency_check",
+        "journal_transaction_controls_idempotency_key_check": {
+          "name": "journal_transaction_controls_idempotency_key_check",
           "value": "\"journal_transaction_controls\".\"idempotency_key\" ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'"
         },
         "journal_transaction_controls_command_hash_check": {

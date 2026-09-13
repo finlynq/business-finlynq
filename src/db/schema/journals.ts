@@ -277,8 +277,8 @@ export const journalTransactionControls = pgTable(
     check("journal_transaction_controls_action_check", sql`${table.action} IN ('UNPOST', 'DELETE')`),
     check("journal_transaction_controls_outcome_check", sql`${table.outcome} IN ('UNPOSTED', 'DELETED')`),
     check("journal_transaction_controls_reason_check", sql`length(${table.reason}) BETWEEN 10 AND 500 AND ${table.reason} !~ '[[:cntrl:]]'`),
-    check("journal_transaction_controls_request_check", sql`length(${table.requestId}) BETWEEN 1 AND 200 AND ${table.requestId} !~ '[[:cntrl:]]'`),
-    check("journal_transaction_controls_idempotency_check", sql`${table.idempotencyKey} ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'`),
+    check("journal_transaction_controls_request_id_check", sql`length(${table.requestId}) BETWEEN 1 AND 200 AND ${table.requestId} !~ '[[:cntrl:]]'`),
+    check("journal_transaction_controls_idempotency_key_check", sql`${table.idempotencyKey} ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'`),
     check("journal_transaction_controls_command_hash_check", sql`${table.commandHash} ~ '^[0-9a-f]{64}$'`),
   ],
 );

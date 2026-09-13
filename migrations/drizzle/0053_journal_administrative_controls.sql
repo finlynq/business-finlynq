@@ -32,10 +32,10 @@ CREATE TABLE journal_transaction_controls (
   ),
   actor_id uuid NOT NULL,
   session_id uuid NOT NULL,
-  request_id text NOT NULL CONSTRAINT journal_transaction_controls_request_check CHECK (
+  request_id text NOT NULL CONSTRAINT journal_transaction_controls_request_id_check CHECK (
     length(request_id) BETWEEN 1 AND 200 AND request_id !~ '[[:cntrl:]]'
   ),
-  idempotency_key text NOT NULL CONSTRAINT journal_transaction_controls_idempotency_check CHECK (
+  idempotency_key text NOT NULL CONSTRAINT journal_transaction_controls_idempotency_key_check CHECK (
     idempotency_key ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
   ),
   command_hash text NOT NULL CONSTRAINT journal_transaction_controls_command_hash_check CHECK (command_hash ~ '^[0-9a-f]{64}$'),
