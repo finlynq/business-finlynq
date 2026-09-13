@@ -4189,7 +4189,7 @@ run_installed_monitor() {
     # maintenance; its freshly replaced metric is verified below unchanged.
     (
       cd -- "$repository_root"
-      runuser -u deploy -- bash "$repository_root/deploy/monitoring/check-production.sh" \
+      bash "$repository_root/deploy/monitoring/check-production.sh" \
         --allow-transitional-router-maintenance
     )
   elif [[ "$scheduler_mode" == "systemd" ]]; then

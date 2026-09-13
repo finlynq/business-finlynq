@@ -164,6 +164,19 @@ describe("shared-edge contract v1 ownership", () => {
     expect(verifier).not.toContain("epm-finlynq-edge-1");
     expect(verifier).not.toContain('com.business-finlynq.edge-owner');
     expect(verifier).not.toContain("expected_full_edge_networks");
+    expect(productionMonitor).toContain(
+      'readonly central_edge_container_name="finlynq-shared-edge-edge-1"',
+    );
+    expect(productionMonitor).toContain('readonly central_edge_public_ipv4="51.161.113.222"');
+    expect(productionMonitor).toContain('docker ps --no-trunc');
+    expect(productionMonitor).toContain('.[0].Id == $id and .[0].Name == $name');
+    expect(productionMonitor).toContain('.[0].HostConfig.PortBindings');
+    expect(productionMonitor).toContain('if [[ "$(id -u)" == 0 ]]');
+    expect(productionMonitor).toContain('verify-external-edge.sh');
+    expect(productionMonitor).toContain('--expect-production-live-uncommitted');
+    expect(productionMonitor).not.toContain(
+      'external_verifier_arguments+=(--allow-production-router-maintenance)',
+    );
   });
 
   it("keeps verification read-only and free of route, mount, config, and log ownership", () => {

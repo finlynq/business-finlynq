@@ -841,7 +841,10 @@ describe("commit-addressed release orchestration", () => {
     expect(monitorAcceptance).toBeLessThan(boundaryRecord);
     expect(release).not.toContain("run_logged 82-production-monitor.log bash deploy/monitoring/check-production.sh");
     expect(release).toContain(
-      'cd -- "$repository_root"\n      runuser -u deploy -- bash "$repository_root/deploy/monitoring/check-production.sh"',
+      'cd -- "$repository_root"\n      bash "$repository_root/deploy/monitoring/check-production.sh"',
+    );
+    expect(release).not.toContain(
+      'runuser -u deploy -- bash "$repository_root/deploy/monitoring/check-production.sh"',
     );
     expect(release).toContain(
       "migrate|verify_database_contract|bootstrap_demo) logical_image=migrator",
