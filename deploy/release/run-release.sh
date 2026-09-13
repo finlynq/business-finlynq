@@ -4186,11 +4186,14 @@ run_installed_monitor() {
     # The scheduled monitor intentionally remains strict. During final release
     # acceptance only, invoke the reviewed implementation directly so it can
     # attest the live candidate while the restart sentinel is still
-    # maintenance; its freshly replaced metric is verified below unchanged.
+    # maintenance. Keep root authority for the protected edge verifier while
+    # matching the installed systemd unit's deploy primary group so its
+    # freshly replaced metric has the same root:deploy ownership contract.
     (
       cd -- "$repository_root"
-      runuser -u deploy -- bash "$repository_root/deploy/monitoring/check-production.sh" \
-        --allow-transitional-router-maintenance
+      runuser -u root -g deploy -- \
+        bash "$repository_root/deploy/monitoring/check-production.sh" \
+          --allow-transitional-router-maintenance
     )
   elif [[ "$scheduler_mode" == "systemd" ]]; then
     run_fresh_systemd_oneshot business-finlynq-monitor.service \
@@ -5558,6 +5561,24 @@ final_container="$(compose ps --quiet app)"
   || fail "final app image ID differs from the immutable accepted candidate"
 [[ "$(docker inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$final_container")" == "$revision" ]] \
   || fail "final app OCI revision differs from the accepted release"
+stage="final-container-health"
+final_container_state=""
+for _ in {1..60}; do
+  final_container_state="$(docker inspect --format \
+    '{{.State.Running}}|{{if .State.Health}}{{.State.Health.Status}}{{end}}' \
+    "$final_container" 2>/dev/null)" || fail "final app container state became unavailable"
+  [[ "$final_container_state" == true\|healthy ]] && break
+  sleep 2
+done
+[[ "$final_container_state" == true\|healthy ]] \
+  || fail "final app container did not become Docker-healthy"
+jq -n --arg containerId "$final_container" --arg imageId "${image_ids[app]}" \
+  --arg revision "$revision" \
+  '{schemaVersion: 1, product: "business-finlynq", containerId: $containerId,
+    imageId: $imageId, revision: $revision, runtimeStatus: "running",
+    dockerHealth: "healthy"}' \
+  >"$evidence_directory/73-final-container-health.json"
+chmod 0600 -- "$evidence_directory/73-final-container-health.json"
 verify_unique_network_alias_owner \
   "$router_frontend_network_name" release-app "$final_container" \
   "final private application"
@@ -5619,7 +5640,7 @@ if [[ "$mode" != rehearsal && "$edge_mode" == external ]]; then
   run_logged 77-external-edge-contract.log \
     bash "$candidate_source_root/deploy/edge/verify-external-edge.sh" \
       --scope production --warmup-host production \
-      --allow-production-router-maintenance \
+      --expect-production-live-uncommitted \
       --expected-production-revision "$revision"
   write_checkpoint 77-external-edge-contract.json external-edge-accepted
 fi

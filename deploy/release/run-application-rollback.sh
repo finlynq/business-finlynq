@@ -1493,6 +1493,13 @@ for _ in {1..60}; do
     fi
   fi
   if [[ "$rollback_readiness_valid" == true ]]; then
+    rollback_container_state="$(docker inspect --format \
+      '{{.State.Running}}|{{if .State.Health}}{{.State.Health.Status}}{{end}}' \
+      "$rollback_container" 2>/dev/null || true)"
+    if [[ "$rollback_container_state" != true\|healthy ]]; then
+      sleep 2
+      continue
+    fi
     verify_candidate_release_router active-or-maintenance "$rollback_container"
     verify_rollback_maintenance \
       || fail "public traffic escaped maintenance before rollback acceptance completed"
@@ -1534,7 +1541,7 @@ for _ in {1..60}; do
     if [[ "$edge_mode" == external ]]; then
       external_edge_rollback_arguments=(
         --scope production --warmup-host production
-        --allow-production-router-maintenance
+        --expect-production-live-uncommitted
         --expected-production-revision "$previous_revision"
       )
       if [[ "$legacy_rollback_adapter_required" == true ]]; then

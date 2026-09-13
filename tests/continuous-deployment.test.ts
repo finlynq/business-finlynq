@@ -25,6 +25,11 @@ const deployService = read(
 const reconcileSharedEdge = read("deploy", "edge", "reconcile-shared-edge.sh");
 const deployDevelopment = read("deploy", "development", "deploy-development.sh");
 const installDevelopment = read("deploy", "development", "install-development.sh");
+const verifyDevelopmentFinalized = read(
+  "deploy",
+  "development",
+  "verify-development-finalized.sh",
+);
 const playwrightConfig = read("playwright.config.ts");
 const compose = read("docker-compose.yml");
 const allowRevisions = read(
@@ -39,6 +44,98 @@ const receiverInstaller = read(
 );
 
 describe("continuous deployment safety boundary", () => {
+  it("installs a root-owned read-only staging finalization verifier", () => {
+    expect(installDevelopment).toContain(
+      'readonly finalization_verifier_target="/usr/local/sbin/business-finlynq-verify-development-finalized"',
+    );
+    expect(installDevelopment).toContain(
+      'readonly external_edge_verifier_target="$installed_verifier_directory/verify-external-edge.sh"',
+    );
+    expect(installDevelopment).toContain(
+      'install -o root -g root -m 0550 \\\n  -- "$script_directory/verify-development-finalized.sh" "$finalization_verifier_target"',
+    );
+    expect(installDevelopment).toContain(
+      'install -o root -g root -m 0550 \\\n  -- "$script_directory/../edge/verify-external-edge.sh" "$external_edge_verifier_target"',
+    );
+    expect(installDevelopment).toContain(
+      "/usr/local/sbin/business-finlynq-verify-development-finalized",
+    );
+
+    expect(verifyDevelopmentFinalized).toContain(
+      'readonly external_edge_verifier="/usr/local/libexec/business-finlynq/verify-external-edge.sh"',
+    );
+    expect(verifyDevelopmentFinalized).toContain(
+      'readonly repository="/home/deploy/business-finlynq-stage"',
+    );
+    expect(verifyDevelopmentFinalized).toContain(
+      '(( $# == 0 )) || fail "this command accepts no arguments"',
+    );
+    expect(verifyDevelopmentFinalized.startsWith("#!/usr/bin/bash\n")).toBe(true);
+    expect(verifyDevelopmentFinalized).toContain(
+      '[[ "$(readlink -f -- "$0")" == "$finalization_verifier" ]]',
+    );
+    expect(verifyDevelopmentFinalized).toContain(
+      'safe_regular_file "$external_edge_verifier" root:root:550',
+    );
+    expect(verifyDevelopmentFinalized).toContain(
+      'safe_regular_file "$host_deployment_lock" root:deploy:660',
+    );
+    expect(verifyDevelopmentFinalized).toContain(
+      'flock --exclusive --nonblock "$deployment_lock_fd"',
+    );
+    expect(verifyDevelopmentFinalized.match(/verify_opened_deployment_lock/g)).toHaveLength(3);
+    expect(verifyDevelopmentFinalized).toContain(
+      '[[ "$path_identity" == "$descriptor_identity" ]]',
+    );
+    expect(verifyDevelopmentFinalized).toContain(
+      '"$path_contract" == "0:$deploy_gid:660:1"',
+    );
+    expect(verifyDevelopmentFinalized).toContain(
+      '"$finalization_verifier" deploy/development/verify-development-finalized.sh',
+    );
+    expect(verifyDevelopmentFinalized).toContain(
+      '"$external_edge_verifier" deploy/edge/verify-external-edge.sh',
+    );
+    expect(verifyDevelopmentFinalized).toContain(
+      '[[ "$compose_revision" == "$accepted_revision" ]]',
+    );
+    expect(verifyDevelopmentFinalized).toContain(
+      "for failure_state in deployment-failed deployment-hard-failed quarantined-candidate",
+    );
+    expect(verifyDevelopmentFinalized).toContain(
+      '[[ "$router_mode" == active ]]',
+    );
+    expect(verifyDevelopmentFinalized).toContain(
+      'verify_runtime_revision "$app_container" app business-finlynq-app true',
+    );
+    expect(verifyDevelopmentFinalized).toContain(
+      '"$worker_container" auth_email_worker business-finlynq-auth-worker false',
+    );
+    expect(verifyDevelopmentFinalized).toContain(
+      'tagged_image_id="$(docker image inspect --format \'{{.Id}}\' "$image")"',
+    );
+    expect(verifyDevelopmentFinalized).toContain(
+      'container_image_id="$(docker inspect --format \'{{.Image}}\' "$container")"',
+    );
+    expect(verifyDevelopmentFinalized).not.toContain('bash "/home/deploy/');
+    expect(verifyDevelopmentFinalized).not.toContain('source "/home/deploy/');
+    expect(verifyDevelopmentFinalized).toContain(
+      "GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null",
+    );
+    for (const forbidden of [
+      "docker compose",
+      "docker restart",
+      "docker rm",
+      "systemctl start",
+      "systemctl stop",
+      "systemctl restart",
+      "sudo ",
+      "eval ",
+    ]) {
+      expect(verifyDevelopmentFinalized).not.toContain(forbidden);
+    }
+  });
+
   it("runs branch pushes deliberately and cancels only stale pull-request checks", () => {
     expect(qualityGateWorkflow).toContain([
       "on:",
@@ -136,9 +233,13 @@ describe("continuous deployment safety boundary", () => {
     );
     expect(deployMain).toContain('candidate_revision="$remote_main_revision"');
     expect(deployMain).toContain('if [[ "$release_forward_repair_pending" == true ]]');
-    expect(deployMain).toContain('candidate_revision="$release_transition_candidate_revision"');
     expect(deployMain).toContain(
       '"$release_transition_candidate_revision" "$remote_main_revision"',
+    );
+    expect(deployMain).toContain('release_forward_repair_superseded="true"');
+    expect(deployMain).toContain("supersede_loaded_release_transition_journal() (");
+    expect(deployMain).toContain(
+      '.candidateRevision = $newCandidateRevision',
     );
     expect(deployMain).toContain(
       'git_as_deploy merge-base --is-ancestor "$source_revision" "$candidate_revision"',
@@ -205,12 +306,20 @@ describe("continuous deployment safety boundary", () => {
       'prepare_revision_file "$compose_environment"',
     );
     const mutationArmed = deployMain.indexOf('mutated="true"');
+    const journalSuperseded = deployMain.lastIndexOf(
+      "supersede_loaded_release_transition_journal \\",
+    );
+    const releaseChild = deployMain.indexOf(
+      'bash "$repository/deploy/release/run-release.sh"',
+    );
     expect(trustedWorkflows).toBeGreaterThan(fetchedMain);
     expect(signalVerified).toBeGreaterThan(trustedWorkflows);
     expect(signalVerified).toBeLessThan(receiverUpdated);
     expect(receiverUpdated).toBeLessThan(candidateEnvironmentPrepared);
     expect(candidateEnvironmentPrepared).toBeLessThan(mutationArmed);
     expect(signalVerified).toBeLessThan(mutationArmed);
+    expect(journalSuperseded).toBeGreaterThan(mutationArmed);
+    expect(journalSuperseded).toBeLessThan(releaseChild);
     expect(installProduction).toContain('readonly github_cli="/usr/bin/gh"');
     expect(installProduction).toContain("GitHub CLI 2.100.0 or newer is required");
     expect(installProduction).toContain("--bundle");
@@ -308,6 +417,41 @@ describe("continuous deployment safety boundary", () => {
     expect(deployService).toContain("KillSignal=SIGTERM");
   });
 
+  it("proves maintenance through request-marked public health probes", () => {
+    const preFetch = deployMain.slice(
+      deployMain.indexOf("ensure_stable_release_router_maintenance_before_fetch() ("),
+      deployMain.indexOf("\nnetwork_alias_has_no_owner() {"),
+    );
+    const parentContainment = deployMain.slice(
+      deployMain.indexOf("force_parent_release_router_maintenance() {"),
+      deployMain.indexOf("\nstop_parent_release_service() {"),
+    );
+
+    expect(preFetch).toContain(
+      "--header 'X-Request-Id: continuous-deployment-pre-fetch-maintenance'",
+    );
+    expect(parentContainment).toContain(
+      "--header 'X-Request-Id: continuous-deployment-parent-containment'",
+    );
+    for (const maintenanceProof of [preFetch, parentContainment]) {
+      const reload = maintenanceProof.indexOf("Caddyfile.maintenance");
+      const requestId = maintenanceProof.indexOf("--header 'X-Request-Id:", reload);
+      const health = maintenanceProof.indexOf(
+        "http://127.0.0.1:3100/api/health",
+        requestId,
+      );
+      const unavailable = maintenanceProof.indexOf(
+        '[[ "$status" == 503 ]]',
+        health,
+      );
+
+      expect(reload).toBeGreaterThan(-1);
+      expect(requestId).toBeGreaterThan(reload);
+      expect(health).toBeGreaterThan(requestId);
+      expect(unavailable).toBeGreaterThan(health);
+    }
+  });
+
   it("never blesses an interrupted same-revision production release from health alone", () => {
     const evidenceVerifier = deployMain.slice(
       deployMain.indexOf("evidence_inventory_is_valid() {"),
@@ -320,6 +464,7 @@ describe("continuous deployment safety boundary", () => {
     expect(evidenceVerifier).toContain("sha256sum --check --strict --quiet SHA256SUMS");
     expect(evidenceVerifier).toContain("90-release-complete.json");
     expect(evidenceVerifier).toContain('.mode == "release"');
+    expect(evidenceVerifier).toContain('.mode == "initial"');
     expect(evidenceVerifier).toContain('.status == "accepted"');
     expect(evidenceVerifier).toContain('.candidateAppImageId == $appImage');
     expect(evidenceVerifier).toContain('.releaseRouterImageId == $routerImage');
@@ -355,6 +500,13 @@ describe("continuous deployment safety boundary", () => {
     expect(evidenceVerifier).toContain(
       '.previousAppImageId | type == "string" and test("^sha256:[a-f0-9]{64}$")',
     );
+    expect(evidenceVerifier).toContain('.previousAppImageId == null');
+    expect(evidenceVerifier).toContain(
+      '.containedInitial == true and .localEncryptedBackupVerified == true',
+    );
+    expect(evidenceVerifier).toContain(
+      '.offsiteBackupDeferred == true and .schedulerActivationDeferred == true',
+    );
     expect(evidenceVerifier).toContain(
       '.releaseRouterConfigSha256 | type == "string" and test("^[a-f0-9]{64}$")',
     );
@@ -384,12 +536,20 @@ describe("continuous deployment safety boundary", () => {
     );
   });
 
-  it("recovers journaled same-revision reruns after a host interruption", () => {
-    expect(deployMain).toContain(".candidateRevision == $candidateRevision");
+  it("recovers journaled reruns and safely supersedes them with attested descendants", () => {
+    expect(deployMain).toContain(
+      '(.candidateRevision | type == "string" and test("^[a-f0-9]{40}$"))',
+    );
+    expect(deployMain).toContain(
+      '"$release_transition_candidate_revision" "$expected_candidate_revision"',
+    );
     expect(deployMain).not.toContain(".sourceRevision != .candidateRevision");
     expect(releaseRunner).toContain(".candidateRevision == $candidateRevision");
     expect(releaseRunner).not.toContain(".sourceRevision != $candidateRevision");
     expect(deployMain).toContain('if [[ "$source_revision" == "$candidate_revision" ]]');
+    expect(deployMain).toContain(
+      'superseded forward repair requires the exact source application anchor',
+    );
   });
 
   it("finalizes only an evidenced live-active release left durably in maintenance", () => {

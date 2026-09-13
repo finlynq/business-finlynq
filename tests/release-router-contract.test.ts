@@ -356,7 +356,7 @@ describe("stable fail-closed release router", () => {
       "\nwait_for_router_upstream_drain() {",
     );
     expect(durableActivation).toContain("persist_release_router_mode active");
-    expect(release).toContain("--allow-production-router-maintenance");
+    expect(release).toContain("--expect-production-live-uncommitted");
     expect(release).toContain("--allow-transitional-router-maintenance");
 
     const rollbackFlow = rollback.slice(
@@ -520,7 +520,7 @@ describe("stable fail-closed release router", () => {
       'bash "$candidate_source_root/deploy/edge/verify-external-edge.sh"',
     );
     expect(rollback).toContain("--scope production --warmup-host production");
-    expect(rollback).toContain("--allow-production-router-maintenance");
+    expect(rollback).toContain("--expect-production-live-uncommitted");
     expect(rollback).toContain('--expected-production-revision "$previous_revision"');
   });
 

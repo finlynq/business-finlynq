@@ -100,6 +100,38 @@ resolve_development_public_contract "$DURABLE_MODE"
     },
   );
 
+const resolveProductionPublicContract = (
+  durableMode: "active" | "maintenance",
+  allowMaintenance: boolean,
+  allowForwardRepair: boolean,
+  expectLiveUncommitted: boolean,
+) =>
+  spawnSync(
+    bashExecutable ?? "/bin/bash",
+    [
+      "-c",
+      `
+set -Eeuo pipefail
+fail() { printf '%s\n' "$*" >&2; exit 1; }
+${extractShellFunction(verifier, "resolve_production_public_contract")}
+allow_production_router_maintenance="$ALLOW_MAINTENANCE"
+allow_first_router_forward_repair="$ALLOW_FORWARD_REPAIR"
+expect_production_live_uncommitted="$EXPECT_LIVE_UNCOMMITTED"
+resolve_production_public_contract "$DURABLE_MODE"
+`,
+    ],
+    {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        ALLOW_MAINTENANCE: String(allowMaintenance),
+        ALLOW_FORWARD_REPAIR: String(allowForwardRepair),
+        EXPECT_LIVE_UNCOMMITTED: String(expectLiveUncommitted),
+        DURABLE_MODE: durableMode,
+      },
+    },
+  );
+
 describe("shared-edge contract v1 ownership", () => {
   it("removes public Caddy, public ports, and shared Caddy volumes from application Compose", () => {
     expect(compose).not.toMatch(/^  edge:\s*$/mu);
@@ -135,6 +167,19 @@ describe("shared-edge contract v1 ownership", () => {
     expect(verifier).not.toContain("epm-finlynq-edge-1");
     expect(verifier).not.toContain('com.business-finlynq.edge-owner');
     expect(verifier).not.toContain("expected_full_edge_networks");
+    expect(productionMonitor).toContain(
+      'readonly central_edge_container_name="finlynq-shared-edge-edge-1"',
+    );
+    expect(productionMonitor).toContain('readonly central_edge_public_ipv4="51.161.113.222"');
+    expect(productionMonitor).toContain('docker ps --no-trunc');
+    expect(productionMonitor).toContain('.[0].Id == $id and .[0].Name == $name');
+    expect(productionMonitor).toContain('.[0].HostConfig.PortBindings');
+    expect(productionMonitor).toContain('if [[ "$(id -u)" == 0 ]]');
+    expect(productionMonitor).toContain('verify-external-edge.sh');
+    expect(productionMonitor).toContain('--expect-production-live-uncommitted');
+    expect(productionMonitor).not.toContain(
+      'external_verifier_arguments+=(--allow-production-router-maintenance)',
+    );
   });
 
   it("keeps verification read-only and free of route, mount, config, and log ownership", () => {
@@ -168,6 +213,78 @@ describe("shared-edge contract v1 ownership", () => {
     expect(productionInstaller).not.toContain("business-finlynq-routes.caddy");
     expect(productionInstaller).not.toContain("BUSINESS_FINLYNQ_CADDY_DATA_VOLUME");
     expect(productionInstaller).not.toContain("BUSINESS_FINLYNQ_CADDY_CONFIG_VOLUME");
+  });
+
+  it("maps only the explicit production deployment boundary to its live route", () => {
+    const maintenance = resolveProductionPublicContract("maintenance", true, false, false);
+    expect(maintenance.status, maintenance.stderr).toBe(0);
+    expect(maintenance.stdout).toBe("maintenance");
+
+    const forwardRepair = resolveProductionPublicContract("maintenance", false, true, false);
+    expect(forwardRepair.status, forwardRepair.stderr).toBe(0);
+    expect(forwardRepair.stdout).toBe("maintenance");
+
+    const forwardRepairWithoutMaintenance = resolveProductionPublicContract(
+      "active",
+      false,
+      true,
+      false,
+    );
+    expect(forwardRepairWithoutMaintenance.status).not.toBe(0);
+    expect(forwardRepairWithoutMaintenance.stderr).toContain(
+      "forward-repair verification requires durable maintenance mode",
+    );
+
+    const transition = resolveProductionPublicContract("maintenance", false, false, true);
+    expect(transition.status, transition.stderr).toBe(0);
+    expect(transition.stdout).toBe("active");
+
+    const alreadyCommitted = resolveProductionPublicContract("active", false, false, true);
+    expect(alreadyCommitted.status).not.toBe(0);
+    expect(alreadyCommitted.stderr).toContain("requires durable maintenance mode");
+
+    const ambiguous = resolveProductionPublicContract("maintenance", true, false, true);
+    expect(ambiguous.status).not.toBe(0);
+    expect(ambiguous.stderr).toContain("flags are ambiguous");
+
+    expect(release.match(/--expect-production-live-uncommitted/gu)).toHaveLength(1);
+    expect(rollback.match(/--expect-production-live-uncommitted/gu)).toHaveLength(1);
+    expect(verifier).toContain(
+      'production_public_contract="$(resolve_production_public_contract "$production_mode")"',
+    );
+  });
+
+  it("binds forward-repair edge verification to the exact protected journal and stopped anchor", () => {
+    expect(verifier).toContain(
+      'readonly first_router_recovery_journal="$release_recovery_state_directory/first-router-pre-cutover.json"',
+    );
+    expect(verifier).toContain(
+      '"$(stat -c \'%u:%g:%a:%h\' -- "$first_router_recovery_journal")"',
+    );
+    expect(verifier).toContain(
+      'actual_digest="$(sha256sum -- "$first_router_recovery_journal")"',
+    );
+    expect(verifier).toContain(
+      'actual_digest" == "$first_router_forward_repair_journal_sha256',
+    );
+    expect(verifier).toContain('.phase == "forward-repair-required"');
+    expect(verifier).toContain('.databaseMutationStarted == true');
+    expect(verifier).toContain('.candidateRevision == $candidateRevision');
+    expect(verifier).toContain('docker ps --all --quiet --no-trunc');
+    expect(verifier).toContain('.[0].State.Running == false');
+    expect(verifier).toContain('readonly production_private_app_alias="release-app"');
+    expect(verifier).toContain(
+      '"${FIRST_ROUTER_FORWARD_REPAIR_ACK:-}"',
+    );
+    expect(verifier).toContain(
+      '"forward-repair:$expected_production_revision:$first_router_forward_repair_journal_sha256"',
+    );
+    expect(release).toContain(
+      'export FIRST_ROUTER_FORWARD_REPAIR_ACK="forward-repair:$journal_candidate_revision:$first_router_recovery_journal_sha256"',
+    );
+    expect(release).toContain(
+      '--allow-first-router-forward-repair "$first_router_recovery_journal_sha256"',
+    );
   });
 
   it("keeps durable development maintenance mapped to the public 503 contract", () => {
