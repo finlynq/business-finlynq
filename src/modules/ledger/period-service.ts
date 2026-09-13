@@ -91,7 +91,13 @@ export async function transitionFiscalPeriod(
         `SELECT count(*)::int AS count
          FROM journal_entries
          WHERE organization_id = $1 AND period_id = $2
-           AND status IN ('DRAFT', 'SUBMITTED', 'APPROVED')`,
+           AND status IN ('DRAFT', 'SUBMITTED', 'APPROVED')
+           AND NOT EXISTS (
+             SELECT 1 FROM journal_transaction_controls control
+             WHERE control.organization_id = journal_entries.organization_id
+               AND control.journal_entry_id = journal_entries.id
+               AND control.outcome = 'DELETED'
+           )`,
         [unparsedCommand.context.organizationId, command.periodId],
       );
       if ((pending.rows[0]?.count ?? 0) > 0) {

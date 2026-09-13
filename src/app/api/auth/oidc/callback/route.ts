@@ -157,6 +157,7 @@ async function get(request: NextRequest) {
       userAgentHash,
       requestId,
       credentialHash: principal.credentialHash,
+      mfaAssurance: principal.mfaAssurance,
       replacedDemoSessionTokenHash,
     });
     if (!sessionId) throw new OidcAuthenticationError("identity_unassigned");

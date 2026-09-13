@@ -2,6 +2,7 @@ import Link from "next/link";
 import { McpSettings } from "@/app/_components/mcp-settings.client";
 import { DemoNotice, PageHeader } from "@/app/_components/ui";
 import { mfaStatusForSession } from "@/modules/identity/auth-store";
+import { hasRecentStepUp } from "@/modules/identity/session";
 import { listUserMcpConnections } from "@/modules/mcp/connection-policy";
 import { mcpResourceUrl } from "@/modules/mcp/protocol";
 import { listPendingMcpApprovals } from "@/modules/mcp/settings-store";
@@ -34,7 +35,9 @@ export default async function McpSettingsPage() {
         initialConnections={connections}
         initialApprovals={approvals}
         enabled={realUser}
-        mfaEnrollmentState={!authenticator
+        mfaEnrollmentState={principal.authMethod === "OIDC" && hasRecentStepUp(principal)
+          ? "ENABLED"
+          : !authenticator
           ? "UNAVAILABLE"
           : authenticator.mfa_required && authenticator.active_factor
             ? "ENABLED"

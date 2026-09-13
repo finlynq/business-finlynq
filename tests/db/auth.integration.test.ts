@@ -602,8 +602,8 @@ runRuntimeRoleTests("PostgreSQL runtime authentication boundary", () => {
     await expect(runtimePool.query("SELECT * FROM app.auth_consume_recovery_approval_limits($1,$2)", [issued.rows[0].session_id, randomUUID()])).resolves.toBeTruthy();
     await expect(runtimePool.query("SELECT * FROM app.auth_consume_mfa_enrollment_limits($1)", ["m".repeat(64)])).resolves.toBeTruthy();
     expect((await runtimePool.query(
-      "SELECT app.auth_issue_oidc_user_session($1,$2,$3,$4,$5,$6,$7,$8) AS session_id",
-      [randomUUID(), randomUUID(), randomUUID(), "d".repeat(64), "a".repeat(64), "b".repeat(64), randomUUID(), "c".repeat(64)],
+      "SELECT app.auth_issue_oidc_user_session($1,$2,$3,$4,$5,$6,$7,$8,$9) AS session_id",
+      [randomUUID(), randomUUID(), randomUUID(), "d".repeat(64), "a".repeat(64), "b".repeat(64), randomUUID(), "c".repeat(64), "NONE"],
     )).rows[0].session_id).toBeNull();
     const resolved = await runtimePool.query("SELECT * FROM app.auth_resolve_session_v3($1, $2)", [tokenHash, "a".repeat(64)]);
     expect(resolved.rows[0]).toMatchObject({

@@ -249,6 +249,7 @@ BEGIN
     'accounting_hierarchies', 'accounting_hierarchy_nodes',
     'journal_type_definitions',
     'source_documents', 'document_evidence_assets', 'journal_entries', 'journal_approvals',
+    'journal_transaction_controls',
     'journal_lines', 'journal_entry_relations', 'parties',
     'party_addresses', 'party_accounts', 'subledger_events', 'open_items',
     'document_settlement_allocations', 'open_item_void_events',
@@ -342,7 +343,7 @@ BEGIN
     'app.auth_lookup_login_v2(text)',
     'app.auth_lookup_login_v3(text)',
     'app.auth_issue_demo_session(text,text,text,text,text,text)',
-    'app.auth_issue_oidc_user_session(uuid,uuid,uuid,text,text,text,text,text)',
+    'app.auth_issue_oidc_user_session(uuid,uuid,uuid,text,text,text,text,text,text)',
     'app.auth_demo_session_lease_valid(uuid)',
     'app.auth_mark_demo_step_up(uuid,text)',
     'app.shared_demo_operations_state()',
@@ -376,7 +377,7 @@ BEGIN
     'app.auth_configure_organization_signup_oidc(uuid,uuid,text,text,text,text)',
     'app.auth_accept_local_organization_signup(text,text,uuid,text,text,text)',
     'app.auth_resolve_oidc_identity(text,text,text)',
-    'app.auth_accept_oidc_organization_signup(text,text,boolean,uuid,text,text,text,text,text,text)',
+    'app.auth_accept_oidc_organization_signup(text,text,boolean,uuid,text,text,text,text,text,text,text)',
     'app.auth_mfa_setup_challenge(text)',
     'app.auth_finish_mfa_enrollment(text,uuid,bigint,text)',
     'app.auth_skip_mfa_enrollment(text,text)',
@@ -405,7 +406,8 @@ BEGIN
     'app.organization_assign_member_role(uuid,uuid,integer)',
     'app.organization_set_member_active(uuid,integer,boolean)',
     'app.organization_revoke_member_sessions(uuid)',
-    'app.organization_revoke_member_sessions_and_trust(uuid)'
+    'app.organization_revoke_member_sessions_and_trust(uuid)',
+    'app.admin_control_journal_transaction(text,uuid,text,text)'
   ] LOOP
     IF to_regprocedure(selected_signature) IS NOT NULL THEN
       EXECUTE format('GRANT EXECUTE ON FUNCTION %s TO business_finlynq_app', selected_signature);

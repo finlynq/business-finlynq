@@ -32,11 +32,12 @@ const loginAttemptSchema = z.object({
 }).strict();
 
 const signupProofSchema = z.object({
-  version: z.literal(1),
+  version: z.literal(2),
   issuer: z.string().url().max(2_048),
   externalTenantId: z.string().regex(PORTABLE_IDENTIFIER),
   externalPrincipalId: z.string().regex(PORTABLE_IDENTIFIER),
   credentialHash: z.string().regex(/^[0-9a-f]{64}$/),
+  mfaAssurance: z.enum(["NONE", "AMR_MFA", "AUTH_CONTEXT"]),
   issuedAt: z.number().int().nonnegative(),
   configurationHash: z.string().regex(/^[0-9a-f]{64}$/),
 }).strict();
@@ -63,6 +64,7 @@ export type OidcConfiguration = Readonly<{
   redirectUri: string;
   allowedTenants: ReadonlySet<string>;
   identityMap: ReadonlyMap<string, IdentityMapEntry>;
+  trustedMfaAuthenticationContexts: ReadonlySet<string>;
   maximumTokenLifetimeSeconds: number;
   tokenTimeoutMilliseconds: number;
   jwksTimeoutMilliseconds: number;
@@ -80,6 +82,7 @@ export type VerifiedOidcPrincipal = Readonly<{
   externalTenantId: string;
   externalPrincipalId: string;
   credentialHash: string;
+  mfaAssurance: OidcMfaAssurance;
   mappedIdentity: OidcMappedIdentity | null;
 }>;
 
@@ -88,7 +91,10 @@ export type OidcSignupProof = Readonly<{
   externalTenantId: string;
   externalPrincipalId: string;
   credentialHash: string;
+  mfaAssurance: OidcMfaAssurance;
 }>;
+
+export type OidcMfaAssurance = "NONE" | "AMR_MFA" | "AUTH_CONTEXT";
 
 export type OidcIntent = "login" | "signup" | "signup-accept";
 
@@ -297,6 +303,16 @@ export function loadOidcConfiguration(
   ).split(",").map((value) => identifier(value.trim(), "AUTH_OIDC_ALLOWED_TENANTS"));
   if (allowedTenantValues.length > 100) throw new Error("AUTH_OIDC_ALLOWED_TENANTS permits at most 100 entries");
   const allowedTenants = new Set(allowedTenantValues);
+  const trustedMfaAuthenticationContexts = new Set(
+    (environment.AUTH_OIDC_MFA_AUTH_CONTEXTS ?? "")
+      .split(",")
+      .map((value) => value.trim())
+      .filter(Boolean)
+      .map((value) => identifier(value, "AUTH_OIDC_MFA_AUTH_CONTEXTS")),
+  );
+  if (trustedMfaAuthenticationContexts.size > 25) {
+    throw new Error("AUTH_OIDC_MFA_AUTH_CONTEXTS permits at most 25 entries");
+  }
   const identityEntries = loadIdentityMap(environment, readTextFile);
   const identityMap = new Map<string, IdentityMapEntry>();
   for (const entry of identityEntries) {
@@ -308,7 +324,10 @@ export function loadOidcConfiguration(
   }
   const redirectUri = new URL("/api/auth/oidc/callback", configuredAppOrigin(environment)).toString();
   const configurationHash = createHash("sha256")
-    .update([issuer, authorizationEndpoint, tokenEndpoint, jwksUri, clientId, redirectUri].join("\0"), "utf8")
+    .update([
+      issuer, authorizationEndpoint, tokenEndpoint, jwksUri, clientId, redirectUri,
+      [...trustedMfaAuthenticationContexts].sort().join(","),
+    ].join("\0"), "utf8")
     .digest("hex");
   return Object.freeze({
     issuer,
@@ -320,6 +339,7 @@ export function loadOidcConfiguration(
     redirectUri,
     allowedTenants,
     identityMap,
+    trustedMfaAuthenticationContexts,
     maximumTokenLifetimeSeconds: boundedInteger(
       environment.AUTH_OIDC_MAXIMUM_TOKEN_LIFETIME_SECONDS,
       "AUTH_OIDC_MAXIMUM_TOKEN_LIFETIME_SECONDS",
@@ -343,6 +363,27 @@ export function loadOidcConfiguration(
     ),
     configurationHash,
   });
+}
+
+function oidcMfaAssurance(
+  payload: JWTPayload,
+  trustedAuthenticationContexts: ReadonlySet<string>,
+): OidcMfaAssurance {
+  // Microsoft documents `mfa` as evidence that the identity provider completed
+  // multi-factor authentication. Never infer MFA from a password method, a
+  // generic acr value, or merely from the presence of either claim.
+  if (Array.isArray(payload.amr) && payload.amr.every((value) => typeof value === "string") &&
+      payload.amr.includes("mfa")) {
+    return "AMR_MFA";
+  }
+  // `acrs` is only accepted against an operator-reviewed allow-list. Entra may
+  // emit a context ID even when no Conditional Access policy is attached, so
+  // an arbitrary context must never satisfy this boundary.
+  if (Array.isArray(payload.acrs) && payload.acrs.every((value) => typeof value === "string") &&
+      payload.acrs.some((value) => trustedAuthenticationContexts.has(value))) {
+    return "AUTH_CONTEXT";
+  }
+  return "NONE";
 }
 
 function opaqueToken(random: (size: number) => Buffer = randomBytes): string {
@@ -559,6 +600,7 @@ export async function verifyOidcPrincipal(
     externalTenantId,
     externalPrincipalId,
     credentialHash,
+    mfaAssurance: oidcMfaAssurance(payload, configuration.trustedMfaAuthenticationContexts),
     mappedIdentity: mapped
       ? Object.freeze({
           userId: mapped.userId,
@@ -591,11 +633,12 @@ export function createOidcSignupProof(
   now = Date.now(),
 ): string {
   return encryptAuthPayload(JSON.stringify({
-    version: 1,
+    version: 2,
     issuer: principal.issuer,
     externalTenantId: principal.externalTenantId,
     externalPrincipalId: principal.externalPrincipalId,
     credentialHash: principal.credentialHash,
+    mfaAssurance: principal.mfaAssurance,
     issuedAt: now,
     configurationHash: configuration.configurationHash,
   }), "oidc-signup", "oidc-signup");
@@ -628,6 +671,7 @@ export function consumeOidcSignupProof(
     externalTenantId: parsed.externalTenantId,
     externalPrincipalId: parsed.externalPrincipalId,
     credentialHash: parsed.credentialHash,
+    mfaAssurance: parsed.mfaAssurance,
   });
 }
 

@@ -1,5 +1,7 @@
 import {
+  check,
   date,
+  index,
   integer,
   jsonb,
   numeric,
@@ -10,6 +12,7 @@ import {
   uniqueIndex,
   uuid,
 } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
 import { organizations } from "./identity";
 import {
   accountCombinations,
@@ -235,5 +238,47 @@ export const journalEntryRelations = pgTable(
   },
   (table) => [
     uniqueIndex("journal_entry_relations_unique").on(table.fromJournalId, table.toJournalId, table.kind),
+  ],
+);
+
+/**
+ * Append-only administrative control log. A DELETE outcome is the user-visible
+ * tombstone; the journal and its lines remain intact for audit and evidence.
+ */
+export const journalTransactionControls = pgTable(
+  "journal_transaction_controls",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    organizationId: uuid("organization_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "restrict" }),
+    journalEntryId: uuid("journal_entry_id")
+      .notNull()
+      .references(() => journalEntries.id, { onDelete: "restrict" }),
+    action: text("action").notNull(),
+    previousStatus: journalStatus("previous_status").notNull(),
+    previousJournalNumber: integer("previous_journal_number"),
+    outcome: text("outcome").notNull(),
+    reason: text("reason").notNull(),
+    actorId: uuid("actor_id").notNull(),
+    sessionId: uuid("session_id").notNull(),
+    requestId: text("request_id").notNull(),
+    idempotencyKey: text("idempotency_key").notNull(),
+    commandHash: text("command_hash").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("journal_transaction_controls_org_idempotency_unique")
+      .on(table.organizationId, table.idempotencyKey),
+    uniqueIndex("journal_transaction_controls_org_id_unique")
+      .on(table.organizationId, table.id),
+    index("journal_transaction_controls_journal_created_idx")
+      .on(table.organizationId, table.journalEntryId, table.createdAt),
+    check("journal_transaction_controls_action_check", sql`${table.action} IN ('UNPOST', 'DELETE')`),
+    check("journal_transaction_controls_outcome_check", sql`${table.outcome} IN ('UNPOSTED', 'DELETED')`),
+    check("journal_transaction_controls_reason_check", sql`length(${table.reason}) BETWEEN 10 AND 500 AND ${table.reason} !~ '[[:cntrl:]]'`),
+    check("journal_transaction_controls_request_check", sql`length(${table.requestId}) BETWEEN 1 AND 200 AND ${table.requestId} !~ '[[:cntrl:]]'`),
+    check("journal_transaction_controls_idempotency_check", sql`${table.idempotencyKey} ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'`),
+    check("journal_transaction_controls_command_hash_check", sql`${table.commandHash} ~ '^[0-9a-f]{64}$'`),
   ],
 );

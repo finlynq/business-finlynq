@@ -29,6 +29,7 @@ describe("runtime role reconciliation contract", () => {
     expect(script).not.toContain("'platform_administrator_grants'");
     expect(script).not.toContain("'platform_administrator_grant_events'");
     for (const table of [
+      "journal_transaction_controls",
       "bank_connections", "bank_connection_credential_events", "bank_external_accounts", "bank_sync_runs",
       "bank_observations", "bank_observation_versions", "bank_balance_anchors",
       "bank_statement_imports", "bank_statement_import_rows",
@@ -50,7 +51,9 @@ describe("runtime role reconciliation contract", () => {
     expect(script).toContain("app.auth_configure_organization_signup_oidc(uuid,uuid,text,text,text,text)");
     expect(script).toContain("app.auth_accept_local_organization_signup(text,text,uuid,text,text,text)");
     expect(script).toContain("app.auth_resolve_oidc_identity(text,text,text)");
-    expect(script).toContain("app.auth_accept_oidc_organization_signup(text,text,boolean,uuid,text,text,text,text,text,text)");
+    expect(script).toContain("app.auth_issue_oidc_user_session(uuid,uuid,uuid,text,text,text,text,text,text)");
+    expect(script).toContain("app.auth_accept_oidc_organization_signup(text,text,boolean,uuid,text,text,text,text,text,text,text)");
+    expect(script).toContain("app.admin_control_journal_transaction(text,uuid,text,text)");
     for (const signature of [
       "app.auth_skip_mfa_enrollment(text,text)",
       "app.auth_issue_password_user_session(uuid,uuid,uuid,text,text,text,text)",

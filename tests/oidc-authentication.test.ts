@@ -64,6 +64,7 @@ describe("Business OIDC configuration and browser-bound authorization", () => {
     const configuration = loadOidcConfiguration(environment());
     expect(configuration.redirectUri).toBe("https://business.example.test/api/auth/oidc/callback");
     expect(configuration.identityMap.size).toBe(1);
+    expect(configuration.trustedMfaAuthenticationContexts.size).toBe(0);
     expect(() => loadOidcConfiguration(environment({
       AUTH_OIDC_TOKEN_ENDPOINT: "https://other.example.test/token",
     }))).toThrow(/share one trusted origin/);
@@ -183,6 +184,54 @@ describe("OIDC code exchange and identity verification", () => {
       externalPrincipalId: principalId,
       credentialHash: expect.stringMatching(/^[0-9a-f]{64}$/),
     });
+    await expect(verifyOidcPrincipal(configuration, token, nonce, keyResolver)).resolves.toMatchObject({
+      mfaAssurance: "NONE",
+    });
+
+    const mfaToken = await new SignJWT({
+      tid: tenantId, oid: principalId, nonce, amr: ["pwd", "mfa"],
+    })
+      .setProtectedHeader({ alg: "RS256", kid: "test-key", typ: "JWT" })
+      .setIssuer(issuer)
+      .setAudience(configuration.clientId)
+      .setIssuedAt(now)
+      .setExpirationTime(now + 3_600)
+      .sign(privateKey);
+    await expect(verifyOidcPrincipal(configuration, mfaToken, nonce, keyResolver)).resolves.toMatchObject({
+      mfaAssurance: "AMR_MFA",
+    });
+
+    const contextConfiguration = loadOidcConfiguration(environment({
+      AUTH_OIDC_MFA_AUTH_CONTEXTS: "c1",
+    }));
+    const contextToken = await new SignJWT({
+      tid: tenantId, oid: principalId, nonce, amr: ["pwd"], acrs: ["c1"],
+    })
+      .setProtectedHeader({ alg: "RS256", kid: "test-key", typ: "JWT" })
+      .setIssuer(issuer)
+      .setAudience(configuration.clientId)
+      .setIssuedAt(now)
+      .setExpirationTime(now + 3_600)
+      .sign(privateKey);
+    await expect(verifyOidcPrincipal(
+      contextConfiguration, contextToken, nonce, keyResolver,
+    )).resolves.toMatchObject({ mfaAssurance: "AUTH_CONTEXT" });
+    await expect(verifyOidcPrincipal(
+      configuration, contextToken, nonce, keyResolver,
+    )).resolves.toMatchObject({ mfaAssurance: "NONE" });
+
+    const untrustedClaimsToken = await new SignJWT({
+      tid: tenantId, oid: principalId, nonce, amr: ["pwd"], acr: "1", acrs: ["unreviewed"],
+    })
+      .setProtectedHeader({ alg: "RS256", kid: "test-key", typ: "JWT" })
+      .setIssuer(issuer)
+      .setAudience(configuration.clientId)
+      .setIssuedAt(now)
+      .setExpirationTime(now + 3_600)
+      .sign(privateKey);
+    await expect(verifyOidcPrincipal(
+      contextConfiguration, untrustedClaimsToken, nonce, keyResolver,
+    )).resolves.toMatchObject({ mfaAssurance: "NONE" });
     await expect(verifyOidcIdToken(
       configuration,
       token,
@@ -235,6 +284,7 @@ describe("OIDC code exchange and identity verification", () => {
       externalTenantId: tenantId,
       externalPrincipalId: principalId,
       credentialHash: unassigned.credentialHash,
+      mfaAssurance: "NONE",
     });
     expect(() => consumeOidcSignupProof(
       proof,

@@ -77,7 +77,8 @@ With Microsoft signup enabled, a new user:
 3. verifies the contact email from a one-use link;
 4. re-confirms the same immutable Microsoft principal;
 5. optionally creates an independent Business Finlynq password; and
-6. enrolls a TOTP authenticator before the owner account becomes active.
+6. becomes active immediately when the fresh, signed Microsoft token reports
+   trusted MFA assurance; otherwise enrolls a TOTP authenticator first.
 
 If the optional password is omitted, the account has no usable Business
 password and signs in through Microsoft. If it is supplied, Microsoft and
@@ -94,6 +95,7 @@ mode `0440`. Point the host Compose environment at those files:
 AUTH_OIDC_CLIENT_ID=<environment-specific-client-id>
 AUTH_OIDC_CLIENT_SECRET_FILE=<environment-secret-directory>/oidc-client-secret
 AUTH_OIDC_IDENTITY_MAP_FILE=<environment-secret-directory>/oidc-identity-map.json
+AUTH_OIDC_MFA_AUTH_CONTEXTS=
 AUTH_OIDC_ENABLED=true
 AUTH_OIDC_SIGNUP_ENABLED=false
 ```
@@ -107,6 +109,34 @@ have passed in that environment. The detailed health response then reports
 `oidcSignup` as `ready`. This gate does not enable local email/password signup;
 `ACCOUNT_SIGNUP_ENABLED` remains separate.
 
+## Microsoft MFA assurance policy
+
+FinLynQ treats Microsoft MFA as satisfying its session MFA and privileged
+step-up boundary only after all normal OIDC checks succeed: authorization code
+plus PKCE, one-use state and nonce, trusted RS256 signature/JWKS, exact issuer,
+Business client audience, allowed tenant, and bounded token lifetime. It then
+accepts one of these two claim shapes:
+
+- the ID token `amr` array contains the exact value `mfa`; or
+- the ID token `acrs` array contains an authentication-context ID listed in
+  `AUTH_OIDC_MFA_AUTH_CONTEXTS`.
+
+The authentication-context allow-list is empty by default. Add an ID only after
+an administrator has reviewed the corresponding Conditional Access policy and
+confirmed that it requires MFA. Microsoft notes that an authentication-context
+claim can be issued when no Conditional Access policy is attached, so claim
+presence alone is not assurance. See Microsoft's
+[optional claims reference](https://learn.microsoft.com/en-us/entra/identity-platform/optional-claims-reference),
+[optional-claims configuration](https://learn.microsoft.com/en-us/entra/identity-platform/optional-claims),
+and [authentication-context guidance](https://learn.microsoft.com/en-us/entra/identity-platform/developer-guide-conditional-access-authentication-context).
+
+FinLynQ never infers MFA from `pwd`, an arbitrary `acr`, an unreviewed context,
+or a malformed/missing claim. Those sessions remain valid ordinary SSO
+sessions, but protected actions continue to require local TOTP. Trusted Entra
+assurance lasts only for the active, revocable FinLynQ session (24-hour absolute
+maximum and normal idle/session revocation checks); it is not copied to a
+password, demo, or later OIDC session.
+
 ## Acceptance and promotion
 
 Validate development before promotion:
@@ -118,8 +148,9 @@ Validate development before promotion:
    the mapped real workspace.
 4. With Microsoft signup disabled, confirm an unassigned identity is rejected.
 5. Enable Microsoft signup, use a new Entra identity, verify a separate contact
-   email, enroll the owner authenticator, and sign in without a Business
-   password.
+   email, and sign in without a Business password. Confirm a token with trusted
+   MFA activates without redundant TOTP, while a token without evidence still
+   requires authenticator enrollment.
 6. Repeat with the optional Business password enabled and verify both sign-in
    methods independently. Confirm that editing the verification URL cannot
    switch the signup to a different activation method.

@@ -24,7 +24,7 @@ type MutationRateAction = Parameters<typeof consumeLedgerMutationRateLimit>[1];
 type MutationResult = Readonly<{ idempotentReplay: boolean }>;
 type MutationRejection = Readonly<{
   error: string;
-  status: 400 | 403;
+  status: 400 | 403 | 428;
 }>;
 
 type MutationRouteOptions<TBody, TResult extends MutationResult, TParams> = Readonly<{

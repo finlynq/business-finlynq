@@ -74,6 +74,7 @@ beforeEach(() => {
     externalTenantId: "external-tenant",
     externalPrincipalId: "external-principal",
     credentialHash: "c".repeat(64),
+    mfaAssurance: "AMR_MFA",
   });
 });
 
@@ -281,6 +282,7 @@ describe("public owner signup routes", () => {
         externalTenantId: "external-tenant",
         externalPrincipalId: "external-principal",
         credentialHash: "c".repeat(64),
+        mfaAssurance: "AMR_MFA",
       },
     }));
     expect(mocks.clearOidcSignupCookie).toHaveBeenCalledOnce();
@@ -329,5 +331,21 @@ describe("public owner signup routes", () => {
     expect(mocks.acceptOidcSignup).toHaveBeenCalledWith(expect.objectContaining({
       password: "an independent long password",
     }));
+  });
+
+  it("activates directly when the fresh Microsoft proof satisfied MFA", async () => {
+    mocks.acceptOidcSignup.mockResolvedValue({
+      status: "federated-accepted",
+      organizationName: "Example Books",
+    });
+    const response = await acceptOidcSignup(request("/api/auth/signup/oidc-accept", {
+      token: "t".repeat(48),
+    }));
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      mfaSatisfiedByMicrosoft: true,
+      organizationName: "Example Books",
+    });
   });
 });

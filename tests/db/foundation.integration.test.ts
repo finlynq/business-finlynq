@@ -6,6 +6,7 @@ import { createManualJournal, reversePostedJournal } from "@/modules/ledger/jour
 import { transitionFiscalPeriod } from "@/modules/ledger/period-service";
 import { setLedgerPostingPolicy } from "@/modules/ledger/posting-policy-service";
 import { postJournal } from "@/modules/ledger/posting-service";
+import { deleteJournal, unpostJournal } from "@/modules/ledger/journal-administration-service";
 import { onboardOrganization } from "@/modules/onboarding/organization-service";
 import { createParty, searchPartiesByExactName } from "@/modules/parties/party-service";
 import { LocalRootKeyProvider, serializeWrappedKey } from "@/security/organization-encryption";
@@ -206,7 +207,7 @@ runDatabaseTests("PostgreSQL accounting controls", () => {
       await admin.query(
         `INSERT INTO roles (id, organization_id, key, display_name)
          VALUES
-           ($1, $2, 'ACCOUNTING_TEST', 'Accounting test role'),
+           ($1, $2, 'OWNER', 'Accounting owner test role'),
            ($3, $2, 'MAKER_TEST', 'Maker test role')`,
         [ids.postingRole, ids.orgA, ids.makerRole],
       );
@@ -217,6 +218,7 @@ runDatabaseTests("PostgreSQL accounting controls", () => {
            ($1, $2, 'ledger.journal.post'),
            ($1, $2, 'ledger.journal.post_adjustment'),
            ($1, $2, 'ledger.journal.reverse'),
+           ($1, $2, 'ledger.journal.administer'),
            ($1, $2, 'ledger.journal.submit'),
            ($1, $2, 'ledger.journal.approve'),
            ($1, $2, 'ledger.posting_policy.manage'),
@@ -485,6 +487,124 @@ runDatabaseTests("PostgreSQL accounting controls", () => {
     expect(metrics.rows[0]?.outbox_unmatched_audit_count).toBe("0");
   });
 
+  it("lets only a fresh-MFA owner unpost and tombstone with immutable replayable audit", async () => {
+    const baseJournal = {
+      ledgerId: ids.ledger,
+      legalEntityId: ids.entity,
+      periodId: ids.controlPeriod,
+      accountingDate: "2026-09-15",
+      purpose: "ROUTINE" as const,
+      origin: "USER" as const,
+      description: "Owner administration integration journal",
+      idempotencyKey: `admin-create-${randomUUID()}`,
+      lines: [
+        {
+          accountCombinationId: ids.debitCombination,
+          debitFunctional: "25.00", creditFunctional: "0",
+          transactionCurrency: "CAD", debitTransaction: "25.00", creditTransaction: "0",
+          fxRate: "1", fxRateSource: "functional-currency",
+          fxRateEffectiveAt: "2026-09-15T12:00:00.000Z",
+        },
+        {
+          accountCombinationId: ids.creditCombination,
+          debitFunctional: "0", creditFunctional: "25.00",
+          transactionCurrency: "CAD", debitTransaction: "0", creditTransaction: "25.00",
+          fxRate: "1", fxRateSource: "functional-currency",
+          fxRateEffectiveAt: "2026-09-15T12:00:00.000Z",
+        },
+      ],
+    };
+    const created = await createManualJournal({
+      context: {
+        organizationId: ids.orgA, actorId: ids.actor, requestId: randomUUID(),
+        authMethod: "password", sourceSurface: "UI",
+      },
+      ...baseJournal,
+    });
+    await postJournal({
+      context: {
+        organizationId: ids.orgA, actorId: ids.actor, requestId: randomUUID(),
+        authMethod: "password+mfa", sourceSurface: "UI",
+      },
+      journalId: created.journalId,
+    });
+
+    const ownerContext = {
+      organizationId: ids.orgA,
+      actorId: ids.actor,
+      sessionId: ids.validSession,
+      sessionMode: "real" as const,
+      requestId: randomUUID(),
+      authMethod: "password+mfa",
+      sourceSurface: "API" as const,
+      reason: "Remove a duplicate owner test posting",
+    };
+    await expect(deleteJournal({
+      context: ownerContext,
+      journalId: created.journalId,
+      reason: ownerContext.reason,
+      idempotencyKey: randomUUID(),
+    })).rejects.toThrow(/unposted before deletion/i);
+
+    const unpostKey = randomUUID();
+    await expect(unpostJournal({
+      context: ownerContext,
+      journalId: created.journalId,
+      reason: ownerContext.reason,
+      idempotencyKey: unpostKey,
+    })).resolves.toMatchObject({ status: "DRAFT", idempotentReplay: false });
+    await expect(unpostJournal({
+      context: { ...ownerContext, requestId: randomUUID() },
+      journalId: created.journalId,
+      reason: ownerContext.reason,
+      idempotencyKey: unpostKey,
+    })).resolves.toMatchObject({ status: "DRAFT", idempotentReplay: true });
+
+    const deleteResult = await deleteJournal({
+      context: {
+        ...ownerContext,
+        requestId: randomUUID(),
+        reason: "Remove the reviewed duplicate draft from normal views",
+      },
+      journalId: created.journalId,
+      reason: "Remove the reviewed duplicate draft from normal views",
+      idempotencyKey: randomUUID(),
+    });
+    expect(deleteResult).toMatchObject({ status: "DELETED", idempotentReplay: false });
+
+    const evidence = await asTenant((client) => client.query<{
+      status: string;
+      journal_number: number | null;
+      controls: number;
+      audit_events: number;
+    }>(
+      `SELECT entry.status::text,entry.journal_number,
+         (SELECT count(*)::int FROM journal_transaction_controls control
+          WHERE control.journal_entry_id=entry.id) AS controls,
+         (SELECT count(*)::int FROM audit_events event
+          WHERE event.entity_id=entry.id::text
+            AND event.action IN ('journal.unpost','journal.delete')) AS audit_events
+       FROM journal_entries entry WHERE entry.id=$1`,
+      [created.journalId],
+    ));
+    expect(evidence.rows[0]).toEqual({
+      status: "DRAFT", journal_number: null, controls: 2, audit_events: 2,
+    });
+
+    await expect(deleteJournal({
+      context: {
+        ...ownerContext,
+        actorId: ids.makerActor,
+        sessionId: ids.wrongActorSession,
+        requestId: randomUUID(),
+        reason: "Ordinary member must not delete this draft",
+      },
+      journalId: created.journalId,
+      reason: "Ordinary member must not delete this draft",
+      idempotencyKey: randomUUID(),
+    })).rejects.toThrow(/permission|required/i);
+  });
+
   it("posts FX converted at the database's functional minor-unit rule", async () => {
     const result = await postJournal({
       context: {
@@ -497,7 +617,7 @@ runDatabaseTests("PostgreSQL accounting controls", () => {
       journalId: ids.fxJournal,
     });
 
-    expect(result).toMatchObject({ journalNumber: 2, status: "POSTED" });
+    expect(result).toMatchObject({ journalNumber: 3, status: "POSTED" });
   });
 
   it("rejects direct posted inserts and posted-line reparenting", async () => {
