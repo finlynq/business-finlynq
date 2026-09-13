@@ -44,6 +44,8 @@ function fixture() {
     writeFileSync(join(directory, "env.json"), JSON.stringify(Object.entries(running).map(([k, v]) => `${k}=${v}`)));
     writeFileSync(join(directory, "mounts.json"), JSON.stringify(mounts));
     const script = `set -eu
+repository="$FIXTURE/stage"
+legacy_development_repository="$FIXTURE/legacy"
 docker() {
   if [ "$1" = inspect ]; then
     if [ "$3" = '{{json .Mounts}}' ]; then cat "$FIXTURE/mounts.json"; else cat "$FIXTURE/env.json"; fi
@@ -97,6 +99,32 @@ describe("development document-provider configuration drift", () => {
     const f = fixture(); f.mounts[0].Source += "-old"; expect(f.run().status).toBe(1);
     f.mounts[0].Source = f.config.secrets.google.file; f.mounts[0].RW = true; expect(f.run().status).toBe(1);
     f.mounts.splice(0, 1); expect(f.run().status).toBe(1);
+  });
+  it.skipIf(process.platform === "win32")("accepts only the disabled placeholder from the retired checkout during stage migration", () => {
+    const f = fixture();
+    const expectedDirectory = join(f.directory, "stage", "deploy", "backup");
+    const legacyDirectory = join(f.directory, "legacy", "deploy", "backup");
+    const expectedPlaceholder = join(expectedDirectory, "not-configured");
+    const legacyPlaceholder = join(legacyDirectory, "not-configured");
+    mkdirSync(expectedDirectory, { recursive: true });
+    mkdirSync(legacyDirectory, { recursive: true });
+    writeFileSync(expectedPlaceholder, "disabled-provider-placeholder\n", { mode: 0o600 });
+    writeFileSync(legacyPlaceholder, "disabled-provider-placeholder\n", { mode: 0o600 });
+    writeFileSync(join(f.runtime, "google"), "disabled-provider-placeholder\n", { mode: 0o600 });
+    f.environment.DOCUMENT_GOOGLE_CLIENT_ID = "";
+    f.running.DOCUMENT_GOOGLE_CLIENT_ID = "";
+    f.config.secrets.google.file = expectedPlaceholder;
+    f.mounts[0].Source = legacyPlaceholder;
+    expect(f.run().status).toBe(0);
+
+    f.running.DOCUMENT_GOOGLE_CLIENT_ID = "enabled-client";
+    f.environment.DOCUMENT_GOOGLE_CLIENT_ID = "enabled-client";
+    expect(f.run().status).toBe(1);
+
+    f.running.DOCUMENT_GOOGLE_CLIENT_ID = "";
+    f.environment.DOCUMENT_GOOGLE_CLIENT_ID = "";
+    writeFileSync(join(f.runtime, "google"), "stale-placeholder\n", { mode: 0o600 });
+    expect(f.run().status).toBe(1);
   });
   it.skipIf(process.platform === "win32")("detects same-path secret replacement until the app sees the new contents", () => {
     const f = fixture(); writeFileSync(f.config.secrets.microsoft.file, "rotated-synthetic-value\n");
