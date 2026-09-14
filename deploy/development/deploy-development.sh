@@ -266,6 +266,70 @@ revision_uses_oidc_signup_runtime_contract() {
   grep -Eq '^[[:space:]]+AUTH_OIDC_SIGNUP_ENABLED:' <<<"$compose_source"
 }
 
+revision_uses_oidc_mfa_assurance_contract() {
+  local revision="$1" compose_source
+  validate_revision "$revision"
+  compose_source="$(git_as_deploy show "$revision:docker-compose.yml")" || return 2
+  grep -Eq '^[[:space:]]+AUTH_OIDC_MFA_AMR_CLAIM_PROVISIONED:' <<<"$compose_source" \
+    && grep -Eq '^[[:space:]]+AUTH_OIDC_MFA_AUTH_CONTEXTS:' <<<"$compose_source"
+}
+
+validate_oidc_mfa_configuration_for_revision() {
+  local revision="$1" contract_status oidc_enabled amr_provisioned auth_contexts \
+    amr_count contexts_count context_count
+  validate_revision "$revision"
+  if revision_uses_oidc_mfa_assurance_contract "$revision"; then
+    :
+  else
+    contract_status="$?"
+    [[ "$contract_status" == 1 ]] || fail "the candidate OIDC MFA runtime contract could not be classified"
+    return 0
+  fi
+  oidc_enabled="$(read_environment_value AUTH_OIDC_ENABLED)" \
+    || fail "AUTH_OIDC_ENABLED could not be read"
+  [[ "$oidc_enabled" == true || "$oidc_enabled" == false ]] \
+    || fail "AUTH_OIDC_ENABLED must be true or false"
+  [[ "$oidc_enabled" == true ]] || return 0
+
+  amr_count="$(awk -F= '$1 == "AUTH_OIDC_MFA_AMR_CLAIM_PROVISIONED" { count++ } END { print count + 0 }' \
+    "$compose_environment")" \
+    || fail "AUTH_OIDC_MFA_AMR_CLAIM_PROVISIONED definitions could not be counted"
+  contexts_count="$(awk -F= '$1 == "AUTH_OIDC_MFA_AUTH_CONTEXTS" { count++ } END { print count + 0 }' \
+    "$compose_environment")" \
+    || fail "AUTH_OIDC_MFA_AUTH_CONTEXTS definitions could not be counted"
+  [[ "$amr_count" == 1 && "$contexts_count" == 1 ]] \
+    || fail "enabled OIDC requires one explicit MFA claim attestation and authentication-context setting before deployment"
+  amr_provisioned="$(read_environment_value AUTH_OIDC_MFA_AMR_CLAIM_PROVISIONED)" \
+    || fail "AUTH_OIDC_MFA_AMR_CLAIM_PROVISIONED could not be read"
+  auth_contexts="$(read_environment_value AUTH_OIDC_MFA_AUTH_CONTEXTS)" \
+    || fail "AUTH_OIDC_MFA_AUTH_CONTEXTS could not be read"
+  [[ "$amr_provisioned" == true || "$amr_provisioned" == false ]] \
+    || fail "AUTH_OIDC_MFA_AMR_CLAIM_PROVISIONED must be true or false"
+  context_count="$(awk -v contexts="$auth_contexts" '
+    BEGIN {
+      part_count = split(contexts, parts, ",")
+      for (index = 1; index <= part_count; index++) {
+        value = parts[index]
+        sub(/^[[:space:]]+/, "", value)
+        sub(/[[:space:]]+$/, "", value)
+        if (value == "") continue
+        if (length(value) > 256 || value !~ /^[A-Za-z0-9][A-Za-z0-9_.:@\/-]*$/) exit 42
+        if (!(value in seen)) {
+          seen[value] = 1
+          count++
+        }
+      }
+      if (count > 25) exit 42
+      print count + 0
+    }
+  ' </dev/null)" \
+    || fail "AUTH_OIDC_MFA_AUTH_CONTEXTS must contain at most 25 bounded portable identifiers"
+  [[ "$context_count" =~ ^(0|[1-9][0-9]*)$ ]] \
+    || fail "AUTH_OIDC_MFA_AUTH_CONTEXTS could not be validated"
+  [[ "$amr_provisioned" == true || "$context_count" != 0 ]] \
+    || fail "enabled OIDC requires reviewed MFA assurance before deployment"
+}
+
 verify_external_edge_if_selected() {
   local verifier_revision="$1" verification_boundary="${2:-normal}"
   local selected_mode selected_count verifier_boundary_flag
@@ -1422,8 +1486,7 @@ release_is_accepted() {
     required_environment_settings+=(
       AUTH_OIDC_ENABLED AUTH_OIDC_ISSUER AUTH_OIDC_AUTHORIZATION_ENDPOINT
       AUTH_OIDC_TOKEN_ENDPOINT AUTH_OIDC_JWKS_URI AUTH_OIDC_CLIENT_ID
-      AUTH_OIDC_ALLOWED_TENANTS AUTH_OIDC_MFA_AMR_CLAIM_PROVISIONED
-      AUTH_OIDC_MFA_AUTH_CONTEXTS AUTH_OIDC_MAXIMUM_TOKEN_LIFETIME_SECONDS
+      AUTH_OIDC_ALLOWED_TENANTS AUTH_OIDC_MAXIMUM_TOKEN_LIFETIME_SECONDS
       AUTH_OIDC_TOKEN_TIMEOUT_MILLISECONDS AUTH_OIDC_JWKS_TIMEOUT_MILLISECONDS
     )
   else
@@ -1432,6 +1495,14 @@ release_is_accepted() {
   fi
   if revision_uses_oidc_signup_runtime_contract "$expected_revision"; then
     required_environment_settings+=(AUTH_OIDC_SIGNUP_ENABLED)
+  else
+    oidc_contract_status="$?"
+    [[ "$oidc_contract_status" == 1 ]] || return 1
+  fi
+  if revision_uses_oidc_mfa_assurance_contract "$expected_revision"; then
+    required_environment_settings+=(
+      AUTH_OIDC_MFA_AMR_CLAIM_PROVISIONED AUTH_OIDC_MFA_AUTH_CONTEXTS
+    )
   else
     oidc_contract_status="$?"
     [[ "$oidc_contract_status" == 1 ]] || return 1
@@ -1994,6 +2065,12 @@ if [[ -e "$quarantine_file" || -L "$quarantine_file" ]]; then
   printf 'Removed artifacts for quarantined revision %s before evaluating newer revision %s.\n' \
     "$quarantined_candidate" "$candidate_revision"
 fi
+
+# Refuse an unconfigured MFA-assurance boundary before checkout, maintenance,
+# image selection, or any database mutation. The application repeats this
+# validation at runtime; this early check preserves the accepted release when
+# an existing environment has not yet recorded the new operator attestation.
+validate_oidc_mfa_configuration_for_revision "$candidate_revision"
 
 if [[ "$source_revision" == "$candidate_revision" ]]; then
   same_revision_topology="$(revision_release_topology "$candidate_revision")" \
