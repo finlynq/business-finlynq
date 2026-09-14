@@ -6,7 +6,7 @@ import { identityLookupHash } from "@/security/identity-secret";
 
 export async function consumeLedgerMutationRateLimit(
   principal: SessionPrincipal,
-  action: "create" | "post" | "reverse" | "period" | "party",
+  action: "create" | "post" | "reverse" | "unpost" | "delete" | "period" | "party",
 ): Promise<Readonly<{ allowed: boolean; retryAfterSeconds: number }>> {
   const sessionKey = identityLookupHash(
     `ledger-mutation-session|${principal.organizationId}|${principal.sessionId}|${action}`,
@@ -15,7 +15,9 @@ export async function consumeLedgerMutationRateLimit(
     `ledger-mutation-actor|${principal.organizationId}|${principal.userId}|${action}`,
   );
   const perMinuteLimit = action === "create" ? 30 : action === "period" ? 10 : 20;
-  const perDayLimit = action === "reverse" ? 100 : action === "period" ? 50 : action === "party" ? 200 : 300;
+  const perDayLimit = action === "reverse" || action === "unpost" || action === "delete"
+    ? 100
+    : action === "period" ? 50 : action === "party" ? 200 : 300;
   const [perSession, perActor] = await Promise.all([
     consumeRateLimit(`ledger-${action}-session-minute`, sessionKey, perMinuteLimit, 60),
     consumeRateLimit(`ledger-${action}-actor-day`, actorKey, perDayLimit, 86_400),

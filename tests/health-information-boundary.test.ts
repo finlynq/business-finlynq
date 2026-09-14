@@ -111,6 +111,7 @@ describe("health information boundary", () => {
         accountAuthentication: "disabled",
         accountSignup: "disabled",
         oidcAuthentication: "disabled",
+        oidcMfaAssurance: "disabled",
         oidcSignup: "disabled",
         emailWorker: "disabled",
         bankFeeds: "disabled",
@@ -136,6 +137,7 @@ describe("health information boundary", () => {
       checks: {
         accountAuthentication: "ready",
         oidcAuthentication: "ready",
+        oidcMfaAssurance: "ready",
         oidcSignup: "ready",
         emailWorker: "ready",
       },

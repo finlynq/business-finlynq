@@ -122,6 +122,10 @@ export type OwnerSignupAcceptance =
   | Readonly<{ status: "invalid" }>
   | Readonly<{ status: "rate-limited"; retryAfterSeconds: number }>
   | Readonly<{
+      status: "federated-accepted";
+      organizationName: string;
+    }>
+  | Readonly<{
       status: "accepted";
       setupToken: string;
       secret: string;
@@ -129,11 +133,16 @@ export type OwnerSignupAcceptance =
       organizationName: string;
     }>;
 
+type LocalOwnerSignupAcceptance = Exclude<
+  OwnerSignupAcceptance,
+  Readonly<{ status: "federated-accepted"; organizationName: string }>
+>;
+
 export async function acceptOwnerSignup(input: Readonly<{
   token: string;
   password: string;
   requestId: string;
-}>): Promise<OwnerSignupAcceptance> {
+}>): Promise<LocalOwnerSignupAcceptance> {
   const tokenHash = hashOpaqueToken(input.token);
   const limits = await consumeSignupAcceptLimits(tokenHash);
   if (!limits.eligible) return { status: "invalid" };
@@ -196,6 +205,12 @@ export async function acceptOidcOwnerSignup(input: Readonly<{
     oidcIdentity: input.oidcIdentity,
   });
   if (!result) return { status: "invalid" };
+  if (result.factor_id === null) {
+    return {
+      status: "federated-accepted",
+      organizationName: result.organization_name,
+    };
+  }
   const email = decryptIdentityField(result.email_ciphertext, "email", result.user_id);
   return {
     status: "accepted",

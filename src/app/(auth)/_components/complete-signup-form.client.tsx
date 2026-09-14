@@ -75,7 +75,17 @@ export function CompleteSignupForm({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ token: signupToken, ...(password ? { password } : {}) }),
       });
-      const result = await response.json() as Partial<Enrollment> & { error?: string };
+      const result = await response.json() as Partial<Enrollment> & {
+        error?: string;
+        mfaSatisfiedByMicrosoft?: boolean;
+      };
+      if (response.ok && authentication === "microsoft" && result.mfaSatisfiedByMicrosoft && result.organizationName) {
+        window.sessionStorage.removeItem("business-finlynq.microsoft-signup-token");
+        setSignupToken("");
+        setCompletionMode("MICROSOFT");
+        setComplete(true);
+        return;
+      }
       if (!response.ok || !result.setupToken || !result.secret || !result.enrollmentUri || !result.qrCodeDataUrl || !result.organizationName) {
         throw new Error(result.error || "Account activation failed.");
       }
@@ -143,7 +153,7 @@ export function CompleteSignupForm({
       <div className={styles.successAlert} role="status">{completionMode === "MFA"
         ? "Your business, owner account, and authenticator are active."
         : completionMode === "MICROSOFT"
-          ? "Your business, Microsoft sign-in, and owner authenticator are active."
+          ? "Your business and Microsoft owner account are active. Microsoft MFA satisfies protected FinLynQ actions for this session."
         : "Your business and password-only owner account are active. You can add an authenticator later from Account & security."}</div>
       <Link className={styles.submitButton} href="/login">Continue to sign in</Link>
     </div>
@@ -190,7 +200,7 @@ export function CompleteSignupForm({
         <label><span>Create Business Finlynq password</span><input name="password" type="password" autoComplete="new-password" required minLength={14} maxLength={128} /><small>Use at least 14 characters and do not reuse your Microsoft password.</small></label>
         <label><span>Confirm password</span><input name="confirmation" type="password" autoComplete="new-password" required minLength={14} maxLength={128} /></label>
       </>}
-      <button className={styles.submitButton} type="submit" disabled={busy || !signupToken}>{busy ? "Creating secure business…" : authentication === "microsoft" ? "Verify email and set up authenticator" : "Create business and choose security"}</button>
+      <button className={styles.submitButton} type="submit" disabled={busy || !signupToken}>{busy ? "Creating secure business…" : authentication === "microsoft" ? "Verify email and activate business" : "Create business and choose security"}</button>
     </form>
   );
 }

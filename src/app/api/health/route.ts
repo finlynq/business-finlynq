@@ -32,6 +32,7 @@ async function get(request: NextRequest) {
     const accountSignup = process.env.ACCOUNT_SIGNUP_ENABLED === "true" ? "ready" : "disabled";
     const oidcAuthentication = process.env.AUTH_OIDC_ENABLED === "true" ? "ready" : "disabled";
     const oidcSignup = process.env.AUTH_OIDC_SIGNUP_ENABLED === "true" ? "ready" : "disabled";
+    const oidcMfaAssurance = oidcAuthentication;
     const bankFeeds = process.env.BANK_FEEDS_ENABLED === "true" ? "ready" : "disabled";
     if (accountSignup === "ready" && accountAuthentication !== "ready") {
       throw new Error("Self-service signup requires real-account authentication");
@@ -64,6 +65,7 @@ async function get(request: NextRequest) {
         accountAuthentication,
         accountSignup,
         oidcAuthentication,
+        oidcMfaAssurance,
         oidcSignup,
         emailWorker,
         bankFeeds,

@@ -776,6 +776,8 @@ describe("continuous deployment safety boundary", () => {
     expect(installDevelopment).toContain("ACCOUNT_LOGIN_ENABLED=false");
     expect(installDevelopment).toContain("AUTH_OIDC_ENABLED=false");
     expect(installDevelopment).toContain("AUTH_OIDC_SIGNUP_ENABLED=false");
+    expect(installDevelopment).toContain("AUTH_OIDC_MFA_AMR_CLAIM_PROVISIONED=false");
+    expect(installDevelopment).toContain("AUTH_OIDC_MFA_AUTH_CONTEXTS=");
     expect(installDevelopment).toContain("ACCOUNT_SIGNUP_ENABLED=false");
     expect(installDevelopment).toContain("AUTH_EMAIL_DELIVERY_ENABLED=false");
     expect(installDevelopment).toContain("SIGNUP_TURNSTILE_ENABLED=false");
@@ -816,6 +818,8 @@ describe("continuous deployment safety boundary", () => {
     expect(deployDevelopment).toContain(
       'for setting in "${required_environment_settings[@]}"',
     );
+    expect(deployDevelopment).toContain("AUTH_OIDC_MFA_AMR_CLAIM_PROVISIONED");
+    expect(deployDevelopment).toContain("AUTH_OIDC_MFA_AUTH_CONTEXTS");
   });
 
   it("enables every development feature only with isolated provider secrets", () => {

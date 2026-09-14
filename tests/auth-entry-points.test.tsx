@@ -99,7 +99,7 @@ describe("public account entry points", () => {
     process.env.ACCOUNT_LOGIN_ENABLED = "false";
     process.env.ACCOUNT_SIGNUP_ENABLED = "false";
 
-    const markup = renderToStaticMarkup(await SignupPage());
+    const markup = renderToStaticMarkup(await SignupPage({}));
 
     expect(markup).toContain("Secure account signup is being enabled");
     expect(markup).toContain("This page will not create or retain an account request yet.");

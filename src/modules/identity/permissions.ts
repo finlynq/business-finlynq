@@ -5,6 +5,7 @@ export const PERMISSIONS = {
   postJournal: "ledger.journal.post",
   postAdjustment: "ledger.journal.post_adjustment",
   reverseJournal: "ledger.journal.reverse",
+  administerJournal: "ledger.journal.administer",
   managePostingPolicy: "ledger.posting_policy.manage",
   manageSegments: "ledger.segments.manage",
   createPeriod: "ledger.period.create",
@@ -45,6 +46,7 @@ export type Permission = (typeof PERMISSIONS)[keyof typeof PERMISSIONS];
 export const ROLE_TEMPLATES: Readonly<Record<string, readonly Permission[]>> = {
   OWNER: Object.values(PERMISSIONS),
   ORGANIZATION_ADMIN: [
+    PERMISSIONS.administerJournal,
     PERMISSIONS.readOrganizationSettings,
     PERMISSIONS.manageOrganizationSettings,
     PERMISSIONS.readOrganizationMembers,

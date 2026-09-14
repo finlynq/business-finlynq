@@ -1110,7 +1110,13 @@ export async function loadAccountingOverview(
            count(*) FILTER (WHERE status IN ('DRAFT','SUBMITTED','APPROVED'))::int AS unposted
          FROM journal_entries
          WHERE organization_id = $1
-           AND ($2::uuid IS NULL OR legal_entity_id = $2::uuid)`,
+           AND ($2::uuid IS NULL OR legal_entity_id = $2::uuid)
+           AND NOT EXISTS (
+             SELECT 1 FROM journal_transaction_controls control
+             WHERE control.organization_id = journal_entries.organization_id
+               AND control.journal_entry_id = journal_entries.id
+               AND control.outcome = 'DELETED'
+           )`,
         [principal.organizationId, selectedEntityId],
       ) : { rows: [{ posted: 0, unposted: 0 }] };
     const taxCounts = canReadTax ? await client.query<{ total: number; manual_review: number }>(
