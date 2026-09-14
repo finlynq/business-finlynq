@@ -101,13 +101,13 @@ run("PostgreSQL Microsoft owner signup", () => {
     const factorId = randomUUID();
     const setupHash = randomUUID().replaceAll("-", "").repeat(2);
     expect((await pool.query(
-      "SELECT * FROM app.auth_accept_oidc_organization_signup($1,$2,false,$3,$4,$5,$6,$7,$8,$9)",
+      "SELECT * FROM app.auth_accept_oidc_organization_signup($1,$2,false,$3,$4,$5,$6,$7,$8,$9,'NONE')",
       [selected.tokenHash, passwordHash, factorId, `authv1:${"f".repeat(80)}`,
         setupHash, randomUUID(), "https://issuer.example.test/tenant/v2.0",
         "external-tenant", "different-principal"],
     )).rowCount).toBe(0);
     const accepted = await pool.query(
-      "SELECT * FROM app.auth_accept_oidc_organization_signup($1,$2,false,$3,$4,$5,$6,$7,$8,$9)",
+      "SELECT * FROM app.auth_accept_oidc_organization_signup($1,$2,false,$3,$4,$5,$6,$7,$8,$9,'NONE')",
       [selected.tokenHash, passwordHash, factorId, `authv1:${"f".repeat(80)}`,
         setupHash, randomUUID(), "https://issuer.example.test/tenant/v2.0",
         "external-tenant", principalId],
@@ -145,7 +145,7 @@ run("PostgreSQL Microsoft owner signup", () => {
     expect((await beginOidcSignup(pool, selected, principalId)).rows[0]?.queued).toBe(true);
     const passwordHash = `scrypt-v1$32768$8$1$${"d".repeat(24)}$${"p".repeat(88)}`;
     expect((await pool.query(
-      "SELECT * FROM app.auth_accept_oidc_organization_signup($1,$2,true,$3,$4,$5,$6,$7,$8,$9)",
+      "SELECT * FROM app.auth_accept_oidc_organization_signup($1,$2,true,$3,$4,$5,$6,$7,$8,$9,'NONE')",
       [selected.tokenHash, passwordHash, randomUUID(), `authv1:${"f".repeat(80)}`,
         randomUUID().replaceAll("-", "").repeat(2), randomUUID(),
         "https://issuer.example.test/tenant/v2.0", "external-tenant", principalId],
@@ -154,6 +154,43 @@ run("PostgreSQL Microsoft owner signup", () => {
       "SELECT password_hash,password_changed_at IS NOT NULL AS changed FROM users WHERE id=$1",
       [selected.userId],
     )).rows[0]).toEqual({ password_hash: passwordHash, changed: true });
+  });
+
+  it("activates directly and revokes the redundant local factor when Entra MFA is assured", async () => {
+    const selected = fixture();
+    const principalId = `principal-${randomUUID()}`;
+    expect((await beginOidcSignup(pool, selected, principalId)).rows[0]?.queued).toBe(true);
+    const factorId = randomUUID();
+    const setupHash = randomUUID().replaceAll("-", "").repeat(2);
+    const accepted = await pool.query(
+      "SELECT * FROM app.auth_accept_oidc_organization_signup($1,$2,false,$3,$4,$5,$6,$7,$8,$9,'AMR_MFA')",
+      [selected.tokenHash, `scrypt-v1$32768$8$1$${"s".repeat(24)}$${"h".repeat(88)}`,
+        factorId, `authv1:${"f".repeat(80)}`, setupHash, randomUUID(),
+        "https://issuer.example.test/tenant/v2.0", "external-tenant", principalId],
+    );
+    expect(accepted.rows[0]).toMatchObject({
+      user_id: selected.userId,
+      organization_name: "OIDC Integration Books",
+      factor_id: null,
+    });
+    expect((await pool.query(
+      `SELECT selected_user.active,selected_user.mfa_required,membership.active AS membership_active,
+         signup.status,factor.status AS factor_status,token.consumed_at IS NOT NULL AS setup_consumed
+       FROM users selected_user
+       JOIN organization_memberships membership ON membership.user_id=selected_user.id
+       JOIN auth_organization_signups signup ON signup.user_id=selected_user.id
+       JOIN auth_mfa_factors factor ON factor.id=$2
+       JOIN auth_one_time_tokens token ON token.token_hash=$3
+       WHERE selected_user.id=$1`,
+      [selected.userId, factorId, setupHash],
+    )).rows[0]).toMatchObject({
+      active: true,
+      mfa_required: false,
+      membership_active: true,
+      status: "ACTIVE",
+      factor_status: "REVOKED",
+      setup_consumed: true,
+    });
   });
 });
 

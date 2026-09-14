@@ -219,6 +219,8 @@ if [[ ! -e "$compose_environment" ]]; then
     printf 'AUTH_OIDC_JWKS_URI=\n'
     printf 'AUTH_OIDC_CLIENT_ID=\n'
     printf 'AUTH_OIDC_ALLOWED_TENANTS=\n'
+    printf 'AUTH_OIDC_MFA_AMR_CLAIM_PROVISIONED=false\n'
+    printf 'AUTH_OIDC_MFA_AUTH_CONTEXTS=\n'
     printf 'AUTH_OIDC_MAXIMUM_TOKEN_LIFETIME_SECONDS=7200\n'
     printf 'AUTH_OIDC_TOKEN_TIMEOUT_MILLISECONDS=10000\n'
     printf 'AUTH_OIDC_JWKS_TIMEOUT_MILLISECONDS=5000\n'

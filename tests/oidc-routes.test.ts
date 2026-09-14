@@ -99,6 +99,7 @@ beforeEach(() => {
     externalTenantId: "external-tenant",
     externalPrincipalId: "external-principal",
     credentialHash: "c".repeat(64),
+    mfaAssurance: "AMR_MFA",
     mappedIdentity: {
       userId: "10000000-0000-4000-8000-000000000001",
       organizationId: "10000000-0000-4000-8000-000000000002",
@@ -147,6 +148,7 @@ describe("OIDC routes", () => {
       "verifier",
     );
     expect(mocks.issueOidcUserSession).toHaveBeenCalledWith(expect.objectContaining({
+      mfaAssurance: "AMR_MFA",
       tokenHash: "new-oidc-session-hash",
       credentialHash: "c".repeat(64),
       replacedDemoSessionTokenHash: "hashed:demo-session",

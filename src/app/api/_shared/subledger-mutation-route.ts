@@ -12,6 +12,7 @@ import {
 } from "@/modules/identity/session";
 import { consumeLedgerMutationRateLimit } from "@/modules/ledger/mutation-rate-limit";
 import { MutationBodyError, readBoundedJson } from "@/modules/ledger/request-body";
+import { isAuthorizationDeniedError } from "@/modules/identity/authorization-error";
 import { mutationContext, principalCanWrite } from "@/modules/workspace/write-policy";
 import { observeRoute } from "@/observability/request-observability";
 
@@ -24,7 +25,7 @@ type MutationRateAction = Parameters<typeof consumeLedgerMutationRateLimit>[1];
 type MutationResult = Readonly<{ idempotentReplay: boolean }>;
 type MutationRejection = Readonly<{
   error: string;
-  status: 400 | 403;
+  status: 400 | 403 | 428;
 }>;
 
 type MutationRouteOptions<TBody, TResult extends MutationResult, TParams> = Readonly<{
@@ -36,6 +37,7 @@ type MutationRouteOptions<TBody, TResult extends MutationResult, TParams> = Read
   successStatus?: 200 | 201;
   sameOriginMessage?: string;
   unauthorizedMessage?: string;
+  forbiddenMessage?: string;
   rateLimitMessage?: string;
   invalidMessage: string;
   failureMessage: string;
@@ -179,6 +181,13 @@ export function createMutationRoute<TBody, TResult extends MutationResult, TPara
       } catch (error) {
         const expiredSession = demoSessionLeaseLostResponse(error);
         if (expiredSession) return expiredSession;
+        if (isAuthorizationDeniedError(error)) {
+          return jsonError(
+            options.forbiddenMessage ?? options.unauthorizedMessage ??
+              "The authenticated principal is not authorized for this operation.",
+            403,
+          );
+        }
         const fxFailure = safeFxRateUnavailableDetails(error);
         const subledgerFailure = safeSubledgerValidationDetails(error);
         const { message: subledgerMessage, ...subledgerDetails } = subledgerFailure ?? {

@@ -51,6 +51,7 @@ function environment(overrides: Record<string, string | undefined> = {}) {
     AUTH_OIDC_CLIENT_ID: "business-client-id",
     AUTH_OIDC_CLIENT_SECRET: "test-client-secret-with-entropy",
     AUTH_OIDC_ALLOWED_TENANTS: tenantId,
+    AUTH_OIDC_MFA_AMR_CLAIM_PROVISIONED: "true",
     AUTH_OIDC_IDENTITY_MAP: identityMap,
     APP_ORIGIN: "https://business.example.test",
     ...overrides,
@@ -64,12 +65,30 @@ describe("Business OIDC configuration and browser-bound authorization", () => {
     const configuration = loadOidcConfiguration(environment());
     expect(configuration.redirectUri).toBe("https://business.example.test/api/auth/oidc/callback");
     expect(configuration.identityMap.size).toBe(1);
+    expect(configuration.mfaAmrClaimProvisioned).toBe(true);
+    expect(configuration.trustedMfaAuthenticationContexts.size).toBe(0);
     expect(() => loadOidcConfiguration(environment({
       AUTH_OIDC_TOKEN_ENDPOINT: "https://other.example.test/token",
     }))).toThrow(/share one trusted origin/);
     expect(() => loadOidcConfiguration(environment({ NODE_ENV: "production" }))).toThrow(
       /AUTH_OIDC_CLIENT_SECRET_FILE/,
     );
+  });
+
+  it("fails readiness configuration unless an explicit MFA claim path is provisioned", () => {
+    expect(() => loadOidcConfiguration(environment({
+      AUTH_OIDC_MFA_AMR_CLAIM_PROVISIONED: undefined,
+    }))).toThrow(/optional ID-token amr claim.*reviewed acrs context/i);
+    expect(() => loadOidcConfiguration(environment({
+      AUTH_OIDC_MFA_AMR_CLAIM_PROVISIONED: "yes",
+    }))).toThrow(/must be exactly true or false/i);
+
+    const contextOnly = loadOidcConfiguration(environment({
+      AUTH_OIDC_MFA_AMR_CLAIM_PROVISIONED: "false",
+      AUTH_OIDC_MFA_AUTH_CONTEXTS: "reviewed-context",
+    }));
+    expect(contextOnly.mfaAmrClaimProvisioned).toBe(false);
+    expect([...contextOnly.trustedMfaAuthenticationContexts]).toEqual(["reviewed-context"]);
   });
 
   it("rejects duplicate source and target mappings", () => {
@@ -183,6 +202,55 @@ describe("OIDC code exchange and identity verification", () => {
       externalPrincipalId: principalId,
       credentialHash: expect.stringMatching(/^[0-9a-f]{64}$/),
     });
+    await expect(verifyOidcPrincipal(configuration, token, nonce, keyResolver)).resolves.toMatchObject({
+      mfaAssurance: "NONE",
+    });
+
+    const mfaToken = await new SignJWT({
+      tid: tenantId, oid: principalId, nonce, amr: ["pwd", "mfa"],
+    })
+      .setProtectedHeader({ alg: "RS256", kid: "test-key", typ: "JWT" })
+      .setIssuer(issuer)
+      .setAudience(configuration.clientId)
+      .setIssuedAt(now)
+      .setExpirationTime(now + 3_600)
+      .sign(privateKey);
+    await expect(verifyOidcPrincipal(configuration, mfaToken, nonce, keyResolver)).resolves.toMatchObject({
+      mfaAssurance: "AMR_MFA",
+    });
+
+    const contextConfiguration = loadOidcConfiguration(environment({
+      AUTH_OIDC_MFA_AMR_CLAIM_PROVISIONED: "false",
+      AUTH_OIDC_MFA_AUTH_CONTEXTS: "c1",
+    }));
+    const contextToken = await new SignJWT({
+      tid: tenantId, oid: principalId, nonce, amr: ["pwd"], acrs: ["c1"],
+    })
+      .setProtectedHeader({ alg: "RS256", kid: "test-key", typ: "JWT" })
+      .setIssuer(issuer)
+      .setAudience(configuration.clientId)
+      .setIssuedAt(now)
+      .setExpirationTime(now + 3_600)
+      .sign(privateKey);
+    await expect(verifyOidcPrincipal(
+      contextConfiguration, contextToken, nonce, keyResolver,
+    )).resolves.toMatchObject({ mfaAssurance: "AUTH_CONTEXT" });
+    await expect(verifyOidcPrincipal(
+      configuration, contextToken, nonce, keyResolver,
+    )).resolves.toMatchObject({ mfaAssurance: "NONE" });
+
+    const untrustedClaimsToken = await new SignJWT({
+      tid: tenantId, oid: principalId, nonce, amr: ["pwd"], acr: "1", acrs: ["unreviewed"],
+    })
+      .setProtectedHeader({ alg: "RS256", kid: "test-key", typ: "JWT" })
+      .setIssuer(issuer)
+      .setAudience(configuration.clientId)
+      .setIssuedAt(now)
+      .setExpirationTime(now + 3_600)
+      .sign(privateKey);
+    await expect(verifyOidcPrincipal(
+      contextConfiguration, untrustedClaimsToken, nonce, keyResolver,
+    )).resolves.toMatchObject({ mfaAssurance: "NONE" });
     await expect(verifyOidcIdToken(
       configuration,
       token,
@@ -235,6 +303,7 @@ describe("OIDC code exchange and identity verification", () => {
       externalTenantId: tenantId,
       externalPrincipalId: principalId,
       credentialHash: unassigned.credentialHash,
+      mfaAssurance: "NONE",
     });
     expect(() => consumeOidcSignupProof(
       proof,

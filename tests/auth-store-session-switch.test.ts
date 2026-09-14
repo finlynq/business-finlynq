@@ -107,15 +107,17 @@ describe("MFA session issuance", () => {
       userAgentHash: "empty-user-agent-hash",
       requestId: "oidc-session-request",
       credentialHash: "c".repeat(64),
+      mfaAssurance: "NONE",
       replacedDemoSessionTokenHash: "old-demo-token-hash",
     });
 
     const [statement, values] = mocks.queryDatabase.mock.calls[0] as [string, unknown[]];
-    expect(statement).toContain("app.auth_issue_oidc_user_session($1,$2,$3,$4,$5,$6,$7,$8)");
-    expect(statement).toContain("app.auth_revoke_session($9,$7)");
-    expect(values).toHaveLength(9);
+    expect(statement).toContain("app.auth_issue_oidc_user_session($1,$2,$3,$4,$5,$6,$7,$8,$9)");
+    expect(statement).toContain("app.auth_revoke_session($10,$7)");
+    expect(values).toHaveLength(10);
     expect(values[7]).toBe("c".repeat(64));
-    expect(values[8]).toBe("old-demo-token-hash");
+    expect(values[8]).toBe("NONE");
+    expect(values[9]).toBe("old-demo-token-hash");
   });
 
   it("passes a fresh bearer hash into atomic later-enrollment completion", async () => {

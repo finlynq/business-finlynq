@@ -10,6 +10,7 @@ export type OidcSignupIdentity = Readonly<{
   externalTenantId: string;
   externalPrincipalId: string;
   credentialHash: string;
+  mfaAssurance: "NONE" | "AMR_MFA" | "AUTH_CONTEXT";
 }>;
 
 export type BeginOrganizationSignup = Readonly<{
@@ -108,15 +109,15 @@ export async function acceptOidcOrganizationSignup(input: Readonly<{
   user_id: string;
   email_ciphertext: string;
   organization_name: string;
-  factor_id: string;
+  factor_id: string | null;
 }> | null> {
   const result = await queryDatabase<{
     user_id: string;
     email_ciphertext: string;
     organization_name: string;
-    factor_id: string;
+    factor_id: string | null;
   }>(
-    "SELECT * FROM app.auth_accept_oidc_organization_signup($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)",
+    "SELECT * FROM app.auth_accept_oidc_organization_signup($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)",
     [
       input.tokenHash,
       input.passwordHash,
@@ -128,6 +129,7 @@ export async function acceptOidcOrganizationSignup(input: Readonly<{
       input.oidcIdentity.issuer,
       input.oidcIdentity.externalTenantId,
       input.oidcIdentity.externalPrincipalId,
+      input.oidcIdentity.mfaAssurance,
     ],
   );
   return result.rows[0] ?? null;

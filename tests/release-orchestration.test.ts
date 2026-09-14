@@ -497,6 +497,17 @@ describe("commit-addressed release orchestration", () => {
     expect(release).toContain("onlineBackupIneligibilityReasons");
   });
 
+  it("fails deployment before migration when OIDC has no reviewed MFA claim path", () => {
+    const release = source("deploy/release/run-release.sh");
+    expect(release).toContain("AUTH_OIDC_MFA_AMR_CLAIM_PROVISIONED must be an explicit boolean");
+    expect(release).toContain(
+      "OIDC MFA assurance requires a provisioned ID-token amr claim or reviewed AUTH_OIDC_MFA_AUTH_CONTEXTS",
+    );
+    expect(release.indexOf("oidc_mfa_amr_claim_provisioned=")).toBeLessThan(
+      release.indexOf('stage="pre-traffic-migration-and-contract-verification"'),
+    );
+  });
+
   it("makes repeated release image exports deterministic for one reviewed commit", () => {
     const release = source("deploy/release/run-release.sh");
     const timestamp = release.indexOf(
