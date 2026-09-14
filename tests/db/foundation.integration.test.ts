@@ -985,6 +985,10 @@ runDatabaseTests("PostgreSQL accounting controls", () => {
           "UPDATE journal_entries SET source_document_id=$2 WHERE id=$1",
           [journalId, randomUUID()],
         ),
+        cleanup: (journalId: string) => fixtureMutation(
+          "UPDATE journal_entries SET source_document_id=NULL WHERE id=$1",
+          [journalId],
+        ),
       },
       {
         name: "journal relation",
@@ -994,6 +998,10 @@ runDatabaseTests("PostgreSQL accounting controls", () => {
              organization_id, from_journal_id, to_journal_id, kind, reason
            ) VALUES($1,$2,$3,'REVERSAL_OF','Synthetic dependency fixture')`,
           [ids.orgA, journalId, ids.postedJournal],
+        ),
+        cleanup: (journalId: string) => fixtureMutation(
+          "DELETE FROM journal_entry_relations WHERE organization_id=$1 AND from_journal_id=$2",
+          [ids.orgA, journalId],
         ),
       },
       {
@@ -1016,6 +1024,14 @@ runDatabaseTests("PostgreSQL accounting controls", () => {
             journalId,
           ],
         ),
+        cleanup: (journalId: string) => fixtureMutation(
+          `DELETE FROM bank_match_allocations allocation
+           USING journal_lines line
+           WHERE line.organization_id=allocation.organization_id
+             AND line.id=allocation.journal_line_id
+             AND line.journal_entry_id=$1`,
+          [journalId],
+        ),
       },
       ...(["party_account_id", "subledger_event_id", "tax_snapshot_id"] as const).map((column) => ({
         name: column,
@@ -1024,6 +1040,10 @@ runDatabaseTests("PostgreSQL accounting controls", () => {
           `UPDATE journal_lines SET ${column}=$2
            WHERE id=(SELECT id FROM journal_lines WHERE journal_entry_id=$1 ORDER BY line_number LIMIT 1)`,
           [journalId, randomUUID()],
+        ),
+        cleanup: (journalId: string) => fixtureMutation(
+          `UPDATE journal_lines SET ${column}=NULL WHERE journal_entry_id=$1`,
+          [journalId],
         ),
       })),
     ];
@@ -1038,6 +1058,20 @@ runDatabaseTests("PostgreSQL accounting controls", () => {
         reason,
         idempotencyKey: randomUUID(),
       }), blocker.name).rejects.toThrow(blocker.expected);
+      await blocker.cleanup(journal.journalId);
+      const cleanupReason = `Remove the synthetic ${blocker.name} blocker after verification`;
+      await expect(unpostJournal({
+        context: ownerContext(cleanupReason),
+        journalId: journal.journalId,
+        reason: cleanupReason,
+        idempotencyKey: randomUUID(),
+      })).resolves.toMatchObject({ status: "DRAFT" });
+      await expect(deleteJournal({
+        context: ownerContext(cleanupReason),
+        journalId: journal.journalId,
+        reason: cleanupReason,
+        idempotencyKey: randomUUID(),
+      })).resolves.toMatchObject({ status: "DELETED" });
     }
   });
 
