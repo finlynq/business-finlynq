@@ -822,6 +822,38 @@ describe("continuous deployment safety boundary", () => {
     expect(deployDevelopment).toContain("AUTH_OIDC_MFA_AUTH_CONTEXTS");
   });
 
+  it("keeps pre-MFA revisions recoverable and refuses an unconfigured MFA boundary before mutation", () => {
+    expect(deployDevelopment).toContain("revision_uses_oidc_mfa_assurance_contract() {");
+    expect(deployDevelopment).toContain(
+      'revision_uses_oidc_mfa_assurance_contract "$expected_revision"',
+    );
+    expect(deployDevelopment).toContain(
+      'validate_oidc_mfa_configuration_for_revision "$candidate_revision"',
+    );
+    expect(deployDevelopment).toContain(
+      "enabled OIDC requires reviewed MFA assurance before deployment",
+    );
+    const oidcRuntimeSettings = deployDevelopment.slice(
+      deployDevelopment.indexOf('if revision_uses_oidc_runtime_contract "$expected_revision"'),
+      deployDevelopment.indexOf('if revision_uses_oidc_signup_runtime_contract "$expected_revision"'),
+    );
+    const mfaSettings = deployDevelopment.slice(
+      deployDevelopment.indexOf('if revision_uses_oidc_mfa_assurance_contract "$expected_revision"'),
+      deployDevelopment.indexOf('app_container_output="$(docker ps',
+        deployDevelopment.indexOf('if revision_uses_oidc_mfa_assurance_contract "$expected_revision"')),
+    );
+    expect(oidcRuntimeSettings).not.toContain("AUTH_OIDC_MFA_AMR_CLAIM_PROVISIONED");
+    expect(oidcRuntimeSettings).not.toContain("AUTH_OIDC_MFA_AUTH_CONTEXTS");
+    expect(mfaSettings).toContain("AUTH_OIDC_MFA_AMR_CLAIM_PROVISIONED");
+    expect(mfaSettings).toContain("AUTH_OIDC_MFA_AUTH_CONTEXTS");
+    const preflight = deployDevelopment.indexOf(
+      'validate_oidc_mfa_configuration_for_revision "$candidate_revision"',
+    );
+    const mutation = deployDevelopment.indexOf("mutated=true", preflight);
+    expect(preflight).toBeGreaterThan(0);
+    expect(mutation).toBeGreaterThan(preflight);
+  });
+
   it("enables every development feature only with isolated provider secrets", () => {
     expect(installDevelopment).toContain("--enable-all-features");
     expect(installDevelopment).toContain("resend-api-key turnstile-secret-key");
