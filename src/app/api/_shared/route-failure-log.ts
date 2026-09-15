@@ -38,6 +38,7 @@ export type ObservedRouteOperation = RouteFailureOperation
   | "document-storage-callback";
 
 type RouteErrorType = "Error" | "RangeError" | "SyntaxError" | "TypeError" | "Unknown";
+type OidcSignupProofErrorCode = "OIDC_SIGNUP_PROOF_EXPIRED" | "OIDC_SIGNUP_PROOF_INVALID";
 const requestIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const allowedMethods = new Set(["DELETE", "GET", "HEAD", "OPTIONS", "PATCH", "POST", "PUT"]);
 
@@ -47,6 +48,19 @@ function routeErrorType(error: unknown): RouteErrorType {
   if (error instanceof SyntaxError) return "SyntaxError";
   if (error instanceof Error) return "Error";
   return "Unknown";
+}
+
+function oidcSignupProofErrorCode(
+  operation: RouteFailureOperation,
+  error: unknown,
+): OidcSignupProofErrorCode | null {
+  if (operation !== "account-oidc-signup-request" || !error || typeof error !== "object") {
+    return null;
+  }
+  const code = (error as { code?: unknown }).code;
+  if (code === "signup_proof_expired") return "OIDC_SIGNUP_PROOF_EXPIRED";
+  if (code === "signup_proof_invalid") return "OIDC_SIGNUP_PROOF_INVALID";
+  return null;
 }
 
 /**
@@ -61,6 +75,7 @@ export function logRouteFailure(
 ): void {
   recordRouteFailure();
   const fxFailure = safeFxRateUnavailableDetails(error);
+  const oidcProofFailure = oidcSignupProofErrorCode(operation, error);
   console.error(JSON.stringify({
     event: "route.failure",
     operation,
@@ -70,6 +85,7 @@ export function logRouteFailure(
     ...(fxFailure?.providerFailureCode
       ? { providerFailureCode: fxFailure.providerFailureCode }
       : {}),
+    ...(oidcProofFailure ? { errorCode: oidcProofFailure } : {}),
   }));
 }
 
