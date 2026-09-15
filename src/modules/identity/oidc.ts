@@ -448,6 +448,7 @@ export function createOidcAuthorization(
   location.searchParams.set("client_id", configuration.clientId);
   location.searchParams.set("redirect_uri", configuration.redirectUri);
   location.searchParams.set("scope", "openid profile email");
+  location.searchParams.set("prompt", "select_account");
   location.searchParams.set("state", state);
   location.searchParams.set("nonce", nonce);
   location.searchParams.set("code_challenge", digest(verifier));
