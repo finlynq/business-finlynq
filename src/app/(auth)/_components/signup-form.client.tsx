@@ -40,6 +40,7 @@ export function SignupForm({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
+  const [microsoftProofUnavailable, setMicrosoftProofUnavailable] = useState(false);
   const challengeContainer = useRef<HTMLDivElement>(null);
   const widgetId = useRef<string | null>(null);
 
@@ -83,6 +84,7 @@ export function SignupForm({
         authentication === "microsoft" ? "/api/auth/signup/oidc-request" : "/api/auth/signup/request",
         {
           method: "POST",
+          credentials: "same-origin",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             email: form.get("email"),
@@ -105,6 +107,9 @@ export function SignupForm({
       if (response.status === 429) {
         throw new Error(signupRateLimitMessage(response.headers.get("Retry-After")));
       }
+      if (authentication === "microsoft" && response.status === 503) {
+        setMicrosoftProofUnavailable(true);
+      }
       if (!response.ok || !result.message) throw new Error(result.error || "Account signup failed.");
       setMessage(result.message);
     } catch (caught) {
@@ -122,6 +127,20 @@ export function SignupForm({
         ? "Open the one-use link in the email to verify your contact address. Microsoft-only signup does not require a Business Finlynq password; owner accounts finish by enrolling an authenticator."
         : "Open the one-use link in the email to create your password. You can scan an authenticator QR code for stronger security or continue with password-only sign-in."}</p>
       <Link className={styles.submitButton} href="/login">Continue to sign in</Link>
+    </div>
+  );
+
+  if (authentication === "microsoft" && microsoftProofUnavailable) return (
+    <div className={styles.successStack}>
+      {error && <div className={styles.alert} role="alert">{error}</div>}
+      <p>The one-time Microsoft verification can no longer be used. Restart Microsoft signup before entering the business details again.</p>
+      <Link
+        className={styles.submitButton}
+        href="/api/auth/oidc/start?intent=signup"
+        prefetch={false}
+      >
+        Start Microsoft signup again
+      </Link>
     </div>
   );
 
