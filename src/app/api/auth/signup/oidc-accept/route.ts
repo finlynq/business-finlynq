@@ -89,6 +89,12 @@ async function post(request: NextRequest) {
       await settleSensitiveResponse(startedAt, { minimumMs: 300 });
       return jsonWithClearedProof({ error: invalidMessage }, { status: 400, headers });
     }
+    if (accepted.status === "federated-accepted") {
+      return jsonWithClearedProof({
+        mfaSatisfiedByMicrosoft: true,
+        organizationName: accepted.organizationName,
+      }, { headers });
+    }
     const qrCodeDataUrl = await authenticatorQrCodeDataUrl(accepted.enrollmentUri);
     return jsonWithClearedProof({
       setupToken: accepted.setupToken,

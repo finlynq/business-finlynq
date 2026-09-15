@@ -10,7 +10,10 @@ import {
   transactionAuthMethod,
   type SessionPrincipal,
 } from "@/modules/identity/session";
-import { actorHasActivePermission } from "@/modules/identity/authorization";
+import {
+  actorHasActiveOrganizationRole,
+  actorHasActivePermission,
+} from "@/modules/identity/authorization";
 import { PERMISSIONS } from "@/modules/identity/permissions";
 import {
   createBlindIndex,
@@ -69,6 +72,8 @@ export type TenantJournalDto = Readonly<{
   }>[];
   canPost: boolean;
   canReverse: boolean;
+  canUnpost: boolean;
+  canDelete: boolean;
 }>;
 
 export type TenantJournalDetailDto = Readonly<{
@@ -127,6 +132,8 @@ export type TenantJournalWorkspaceDto = Readonly<{
   canDraft: boolean;
   canPost: boolean;
   canReverse: boolean;
+  canAdminister: boolean;
+  requiresMfaStepUp: boolean;
   reversalPeriods: readonly TenantJournalReversalPeriodDto[];
   journals: readonly TenantJournalDto[];
   pagination: RegisterPagination;
@@ -450,6 +457,12 @@ export async function loadTenantJournalWorkspace(
          LIMIT 1
        ) reversed_by ON true
        WHERE entry.organization_id = $1
+         AND NOT EXISTS (
+           SELECT 1 FROM journal_transaction_controls control
+           WHERE control.organization_id = entry.organization_id
+             AND control.journal_entry_id = entry.id
+             AND control.outcome = 'DELETED'
+         )
          AND ($4::uuid IS NULL OR entry.legal_entity_id = $4::uuid)
          AND ($2 = '' OR entry.description ILIKE $3 ESCAPE '\\'
               OR entry.journal_type_key ILIKE $3 ESCAPE '\\'
@@ -571,6 +584,16 @@ export async function loadTenantJournalWorkspace(
       actorId: principal.userId,
       permission: PERMISSIONS.postAdjustment,
     });
+    const canAdminister = principal.sessionMode === "real" && writable &&
+      await actorHasActivePermission(client, {
+        organizationId: principal.organizationId,
+        actorId: principal.userId,
+        permission: PERMISSIONS.administerJournal,
+      }) && await actorHasActiveOrganizationRole(client, {
+        organizationId: principal.organizationId,
+        actorId: principal.userId,
+        roleKeys: ["OWNER", "ORGANIZATION_ADMIN"],
+      });
     const today = principal.sessionMode === "demo"
       ? demoAccountingDate()
       : new Date().toISOString().slice(0, 10);
@@ -619,6 +642,8 @@ export async function loadTenantJournalWorkspace(
       canDraft,
       canPost,
       canReverse: canPost && canReverse,
+      canAdminister,
+      requiresMfaStepUp: canAdminister && !hasRecentStepUp(principal),
       reversalPeriods,
       pagination: journalPage.pagination,
       journals: journalPage.rows.map((row) => {
@@ -660,6 +685,13 @@ export async function loadTenantJournalWorkspace(
           canReverse: canPost && canReverse && row.owner_module === "ledger" &&
             row.journal_type_key === "ledger.manual" && row.status === "POSTED" &&
             row.reversed_by_number === null && reversalPeriods.some((period) => period.ledgerId === row.ledger_id),
+          canUnpost: canAdminister && row.owner_module === "ledger" &&
+            row.journal_type_key === "ledger.manual" && row.status === "POSTED" &&
+            row.reversal_of_number === null && row.reversed_by_number === null,
+          canDelete: canAdminister && row.owner_module === "ledger" &&
+            row.journal_type_key === "ledger.manual" &&
+            new Set(["DRAFT", "SUBMITTED", "APPROVED"]).has(row.status) &&
+            row.reversal_of_number === null && row.reversed_by_number === null,
         };
       }),
     };
@@ -733,6 +765,12 @@ export async function loadTenantJournalDetail(
          ON source.organization_id = entry.organization_id
         AND source.id = entry.source_document_id
        WHERE entry.organization_id = $1 AND entry.id = $2
+         AND NOT EXISTS (
+           SELECT 1 FROM journal_transaction_controls control
+           WHERE control.organization_id = entry.organization_id
+             AND control.journal_entry_id = entry.id
+             AND control.outcome = 'DELETED'
+         )
        LIMIT 1`,
       [principal.organizationId, journalId],
     );
@@ -1274,7 +1312,13 @@ export async function loadPeriodControlWorkspace(
           FROM journal_entries entry
           WHERE entry.organization_id = period.organization_id
             AND entry.period_id = period.id
-            AND entry.status IN ('DRAFT', 'SUBMITTED', 'APPROVED')) AS unposted_journal_count
+            AND entry.status IN ('DRAFT', 'SUBMITTED', 'APPROVED')
+            AND NOT EXISTS (
+              SELECT 1 FROM journal_transaction_controls control
+              WHERE control.organization_id = entry.organization_id
+                AND control.journal_entry_id = entry.id
+                AND control.outcome = 'DELETED'
+            )) AS unposted_journal_count
        FROM fiscal_periods period
        JOIN ledgers ledger
          ON ledger.organization_id = period.organization_id

@@ -226,7 +226,7 @@ describe("remote MCP advertised tool catalog", () => {
   it("forces dynamic MCP responses and prevents shared or protocol-crossing catalog caches", async () => {
     expect(dynamic).toBe("force-dynamic");
 
-    const response = await handleMcpRequest(new Request("https://dev.business.finlynq.com/mcp", {
+    const response = await handleMcpRequest(new Request("https://stage.business.finlynq.com/mcp", {
       headers: { authorization: "Bearer catalog-contract-token" },
     }));
     expect(response.headers.get("cache-control")).toBe("private, no-store");

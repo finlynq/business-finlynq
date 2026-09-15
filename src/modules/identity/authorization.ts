@@ -54,3 +54,43 @@ export async function assertActorHasActivePermission(
     throw new Error("Posting permission is required for an active organization member");
   }
 }
+
+export async function actorHasActiveOrganizationRole(
+  client: PoolClient,
+  request: Readonly<{
+    organizationId: string;
+    actorId: string;
+    roleKeys: readonly string[];
+  }>,
+): Promise<boolean> {
+  if (request.roleKeys.length === 0) return false;
+  const result = await client.query<PermissionLookup>(
+    `SELECT true AS allowed
+     FROM organization_memberships membership
+     JOIN organizations organization ON organization.id = membership.organization_id
+     JOIN membership_roles membership_role
+       ON membership_role.organization_id = membership.organization_id
+      AND membership_role.membership_id = membership.id
+     JOIN roles role
+       ON role.organization_id = membership_role.organization_id
+      AND role.id = membership_role.role_id
+     WHERE membership.organization_id = $1
+       AND membership.user_id = $2
+       AND membership.active
+       AND organization.active
+       AND role.active
+       AND role.key = ANY($3::text[])
+     LIMIT 1`,
+    [request.organizationId, request.actorId, request.roleKeys],
+  );
+  return result.rows[0]?.allowed === true;
+}
+
+export async function assertActorHasActiveOrganizationRole(
+  client: PoolClient,
+  request: Parameters<typeof actorHasActiveOrganizationRole>[1],
+): Promise<void> {
+  if (!(await actorHasActiveOrganizationRole(client, request))) {
+    throw new Error("An active organization owner or administrator role is required");
+  }
+}

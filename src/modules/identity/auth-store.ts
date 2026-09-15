@@ -283,22 +283,23 @@ export async function issuePasswordUserSession(input: {
 export async function issueOidcUserSession(input: {
   userId: string; organizationId: string; membershipId: string;
   tokenHash: string; ipHash: string; userAgentHash: string; requestId: string;
-  credentialHash: string; replacedDemoSessionTokenHash?: string | null;
+  credentialHash: string; mfaAssurance: "NONE" | "AMR_MFA" | "AUTH_CONTEXT";
+  replacedDemoSessionTokenHash?: string | null;
 }): Promise<string | null> {
   const result = await queryDatabase<{ session_id: string | null }>(
     `WITH issued AS MATERIALIZED (
-       SELECT app.auth_issue_oidc_user_session($1,$2,$3,$4,$5,$6,$7,$8) AS session_id
+       SELECT app.auth_issue_oidc_user_session($1,$2,$3,$4,$5,$6,$7,$8,$9) AS session_id
      ), demo_replacement AS MATERIALIZED (
-       SELECT app.auth_revoke_session($9,$7) AS revoked
+       SELECT app.auth_revoke_session($10,$7) AS revoked
        FROM issued
        WHERE issued.session_id IS NOT NULL
-         AND $9::text IS NOT NULL
+         AND $10::text IS NOT NULL
      )
      SELECT issued.session_id
      FROM issued
      LEFT JOIN demo_replacement ON true`,
     [input.userId, input.organizationId, input.membershipId, input.tokenHash,
-      input.ipHash, input.userAgentHash, input.requestId, input.credentialHash,
+      input.ipHash, input.userAgentHash, input.requestId, input.credentialHash, input.mfaAssurance,
       input.replacedDemoSessionTokenHash ?? null],
   );
   return result.rows[0]?.session_id ?? null;

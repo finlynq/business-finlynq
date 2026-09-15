@@ -4,7 +4,8 @@ set +x
 
 umask 077
 
-readonly repository="/home/deploy/business-finlynq-development"
+readonly repository="/home/deploy/business-finlynq-stage"
+readonly legacy_development_repository="/home/deploy/business-finlynq-development"
 readonly expected_origin="https://github.com/finlynq/business-finlynq.git"
 readonly installed_deployer="/usr/local/sbin/business-finlynq-deploy-development"
 readonly compose_environment="/etc/business-finlynq-development/compose.env"
@@ -263,6 +264,70 @@ revision_uses_oidc_signup_runtime_contract() {
   validate_revision "$revision"
   compose_source="$(git_as_deploy show "$revision:docker-compose.yml")" || return 2
   grep -Eq '^[[:space:]]+AUTH_OIDC_SIGNUP_ENABLED:' <<<"$compose_source"
+}
+
+revision_uses_oidc_mfa_assurance_contract() {
+  local revision="$1" compose_source
+  validate_revision "$revision"
+  compose_source="$(git_as_deploy show "$revision:docker-compose.yml")" || return 2
+  grep -Eq '^[[:space:]]+AUTH_OIDC_MFA_AMR_CLAIM_PROVISIONED:' <<<"$compose_source" \
+    && grep -Eq '^[[:space:]]+AUTH_OIDC_MFA_AUTH_CONTEXTS:' <<<"$compose_source"
+}
+
+validate_oidc_mfa_configuration_for_revision() {
+  local revision="$1" contract_status oidc_enabled amr_provisioned auth_contexts \
+    amr_count contexts_count context_count
+  validate_revision "$revision"
+  if revision_uses_oidc_mfa_assurance_contract "$revision"; then
+    :
+  else
+    contract_status="$?"
+    [[ "$contract_status" == 1 ]] || fail "the candidate OIDC MFA runtime contract could not be classified"
+    return 0
+  fi
+  oidc_enabled="$(read_environment_value AUTH_OIDC_ENABLED)" \
+    || fail "AUTH_OIDC_ENABLED could not be read"
+  [[ "$oidc_enabled" == true || "$oidc_enabled" == false ]] \
+    || fail "AUTH_OIDC_ENABLED must be true or false"
+  [[ "$oidc_enabled" == true ]] || return 0
+
+  amr_count="$(awk -F= '$1 == "AUTH_OIDC_MFA_AMR_CLAIM_PROVISIONED" { count++ } END { print count + 0 }' \
+    "$compose_environment")" \
+    || fail "AUTH_OIDC_MFA_AMR_CLAIM_PROVISIONED definitions could not be counted"
+  contexts_count="$(awk -F= '$1 == "AUTH_OIDC_MFA_AUTH_CONTEXTS" { count++ } END { print count + 0 }' \
+    "$compose_environment")" \
+    || fail "AUTH_OIDC_MFA_AUTH_CONTEXTS definitions could not be counted"
+  [[ "$amr_count" == 1 && "$contexts_count" == 1 ]] \
+    || fail "enabled OIDC requires one explicit MFA claim attestation and authentication-context setting before deployment"
+  amr_provisioned="$(read_environment_value AUTH_OIDC_MFA_AMR_CLAIM_PROVISIONED)" \
+    || fail "AUTH_OIDC_MFA_AMR_CLAIM_PROVISIONED could not be read"
+  auth_contexts="$(read_environment_value AUTH_OIDC_MFA_AUTH_CONTEXTS)" \
+    || fail "AUTH_OIDC_MFA_AUTH_CONTEXTS could not be read"
+  [[ "$amr_provisioned" == true || "$amr_provisioned" == false ]] \
+    || fail "AUTH_OIDC_MFA_AMR_CLAIM_PROVISIONED must be true or false"
+  context_count="$(awk -v contexts="$auth_contexts" '
+    BEGIN {
+      part_count = split(contexts, parts, ",")
+      for (part_index = 1; part_index <= part_count; part_index++) {
+        value = parts[part_index]
+        sub(/^[[:space:]]+/, "", value)
+        sub(/[[:space:]]+$/, "", value)
+        if (value == "") continue
+        if (length(value) > 256 || value !~ /^[A-Za-z0-9][A-Za-z0-9_.:@\/-]*$/) exit 42
+        if (!(value in seen)) {
+          seen[value] = 1
+          count++
+        }
+      }
+      if (count > 25) exit 42
+      print count + 0
+    }
+  ' </dev/null)" \
+    || fail "AUTH_OIDC_MFA_AUTH_CONTEXTS must contain at most 25 bounded portable identifiers"
+  [[ "$context_count" =~ ^(0|[1-9][0-9]*)$ ]] \
+    || fail "AUTH_OIDC_MFA_AUTH_CONTEXTS could not be validated"
+  [[ "$amr_provisioned" == true || "$context_count" != 0 ]] \
+    || fail "enabled OIDC requires reviewed MFA assurance before deployment"
 }
 
 verify_external_edge_if_selected() {
@@ -562,7 +627,7 @@ wait_for_public_readiness() {
   local -a readiness_headers=()
   hostname="$(read_environment_value BUSINESS_FINLYNQ_HOSTNAME)" \
     || fail "BUSINESS_FINLYNQ_HOSTNAME could not be read"
-  [[ "$hostname" == dev.business.finlynq.com ]] \
+  [[ "$hostname" == stage.business.finlynq.com ]] \
     || fail "public acceptance requires the exact development hostname"
   if [[ -n "$release_acceptance_token" ]]; then
     [[ "$release_acceptance_token" =~ ^[a-f0-9]{64}$ ]] \
@@ -981,8 +1046,8 @@ repository_root="$(git_as_deploy rev-parse --show-toplevel)" \
   || fail "the canonical development repository root changed"
 repository_branch="$(git_as_deploy symbolic-ref --short HEAD)" \
   || fail "the development checkout branch could not be read"
-[[ "$repository_branch" == dev ]] \
-  || fail "the development checkout is not on dev"
+[[ "$repository_branch" == stage ]] \
+  || fail "the staging checkout is not on stage"
 repository_origin="$(git_as_deploy remote get-url origin)" \
   || fail "the development origin could not be read"
 [[ "$repository_origin" == "$expected_origin" ]] \
@@ -993,19 +1058,19 @@ repository_status="$(git_as_deploy status --porcelain=v1 --untracked-files=all)"
   || fail "the development checkout is not clean"
 
 git_as_deploy fetch --prune --force --no-tags origin \
-  '+refs/heads/dev:refs/remotes/origin/dev' \
-  '+refs/tags/deploy-development-*:refs/tags/deploy-development-*'
+  '+refs/heads/stage:refs/remotes/origin/stage' \
+  '+refs/tags/deploy-stage-*:refs/tags/deploy-stage-*'
 
 source_revision="$(git_as_deploy rev-parse HEAD)" \
   || fail "the deployed development revision could not be read"
-candidate_revision="$(git_as_deploy rev-parse refs/remotes/origin/dev)" \
+candidate_revision="$(git_as_deploy rev-parse refs/remotes/origin/stage)" \
   || fail "the fetched development revision could not be read"
 validate_revision "$source_revision"
 validate_revision "$candidate_revision"
 git_as_deploy merge-base --is-ancestor "$source_revision" "$candidate_revision" \
-  || fail "origin/dev is not a fast-forward descendant of the deployed revision"
+  || fail "origin/stage is not a fast-forward descendant of the deployed revision"
 
-signal_tag="deploy-development-$candidate_revision"
+signal_tag="deploy-stage-$candidate_revision"
 signal_revision="$(git_as_deploy rev-parse "refs/tags/$signal_tag^{commit}" 2>/dev/null)" \
   || fail "the immutable development deployment signal is unavailable"
 [[ "$signal_revision" == "$candidate_revision" ]] \
@@ -1028,7 +1093,7 @@ verify_compose_boundary() {
     || fail "development Compose configuration could not be rendered"
   app_origin="$(jq -er '.services.app.environment.APP_ORIGIN' <<<"$rendered")" \
     || fail "development APP_ORIGIN could not be read from Compose"
-  [[ "$app_origin" == https://dev.business.finlynq.com ]] \
+  [[ "$app_origin" == https://stage.business.finlynq.com ]] \
     || fail "development APP_ORIGIN must use the exact HTTPS development hostname"
   if [[ "$topology" == router ]]; then
     expected_resources+=(
@@ -1102,7 +1167,8 @@ verify_compose_boundary() {
 
 document_provider_configuration_matches() {
   local container="$1" rendered="$2" provider setting expected_record actual_record source target \
-    mounts expected_digest actual_digest provider_record oidc_contract_expected="${3:-true}"
+    mounts expected_digest actual_digest provider_record provider_client_id \
+    expected_disabled_source legacy_disabled_source oidc_contract_expected="${3:-true}"
   local -a oidc_secret_settings=()
   [[ "$oidc_contract_expected" == true || "$oidc_contract_expected" == false ]] || return 1
   if [[ "$oidc_contract_expected" == true ]]; then
@@ -1162,9 +1228,27 @@ document_provider_configuration_matches() {
       if length == 1 then .[0] else error("secret mount source is not unique") end
     ' <<<"$rendered")" || return 1
     [[ -f "$source" && ! -L "$source" ]] || return 1
-    jq -e --arg source "$source" --arg target "$target" \
-      '[.[] | select(.Source == $source and .Destination == $target and .RW == false)] | length == 1' \
-      <<<"$mounts" >/dev/null || return 1
+    provider_client_id="$(jq -er --arg id "DOCUMENT_${provider}_CLIENT_ID" \
+      '.services.app.environment[$id] | tostring' <<<"$rendered")" || return 1
+    expected_disabled_source="$repository/deploy/backup/not-configured"
+    legacy_disabled_source="$legacy_development_repository/deploy/backup/not-configured"
+    if [[ -z "$provider_client_id" && "$source" == "$expected_disabled_source" ]]; then
+      # The stage checkout replaced the former development checkout without
+      # changing this inert placeholder. Permit the accepted container's exact
+      # legacy bind only while the provider is disabled and the mounted bytes
+      # still match the reviewed placeholder below. Real provider credentials,
+      # enabled providers, arbitrary source paths, and writable binds remain
+      # subject to the exact-source contract.
+      jq -e --arg source "$source" --arg legacySource "$legacy_disabled_source" \
+        --arg target "$target" '
+        [.[] | select((.Source == $source or .Source == $legacySource) and
+          .Destination == $target and .RW == false)] | length == 1
+      ' <<<"$mounts" >/dev/null || return 1
+    else
+      jq -e --arg source "$source" --arg target "$target" \
+        '[.[] | select(.Source == $source and .Destination == $target and .RW == false)] | length == 1' \
+        <<<"$mounts" >/dev/null || return 1
+    fi
     # Detect secret rotation, including atomic replacement of a bind-mounted
     # file at the same path. Values and digests never enter deployment logs.
     expected_digest="$(sha256sum -- "$source")" || return 1
@@ -1415,6 +1499,14 @@ release_is_accepted() {
     oidc_contract_status="$?"
     [[ "$oidc_contract_status" == 1 ]] || return 1
   fi
+  if revision_uses_oidc_mfa_assurance_contract "$expected_revision"; then
+    required_environment_settings+=(
+      AUTH_OIDC_MFA_AMR_CLAIM_PROVISIONED AUTH_OIDC_MFA_AUTH_CONTEXTS
+    )
+  else
+    oidc_contract_status="$?"
+    [[ "$oidc_contract_status" == 1 ]] || return 1
+  fi
   app_container_output="$(docker ps --no-trunc --quiet \
     --filter label=com.docker.compose.project="$project" \
     --filter label=com.docker.compose.service=app)" || return 1
@@ -1496,7 +1588,7 @@ release_is_accepted() {
   [[ "$require_public" == true || "$require_public" == false ]] || return 1
   if [[ "$require_public" == true && "$public_policy" == full ]]; then
     hostname="$(read_environment_value BUSINESS_FINLYNQ_HOSTNAME)" || return 1
-    [[ "$hostname" == dev.business.finlynq.com ]] || return 1
+    [[ "$hostname" == stage.business.finlynq.com ]] || return 1
     if [[ -n "$release_acceptance_token" ]]; then
       [[ "$release_acceptance_token" =~ ^[a-f0-9]{64}$ ]] || return 1
       public_health_headers=(
@@ -1973,6 +2065,12 @@ if [[ -e "$quarantine_file" || -L "$quarantine_file" ]]; then
   printf 'Removed artifacts for quarantined revision %s before evaluating newer revision %s.\n' \
     "$quarantined_candidate" "$candidate_revision"
 fi
+
+# Refuse an unconfigured MFA-assurance boundary before checkout, maintenance,
+# image selection, or any database mutation. The application repeats this
+# validation at runtime; this early check preserves the accepted release when
+# an existing environment has not yet recorded the new operator attestation.
+validate_oidc_mfa_configuration_for_revision "$candidate_revision"
 
 if [[ "$source_revision" == "$candidate_revision" ]]; then
   same_revision_topology="$(revision_release_topology "$candidate_revision")" \

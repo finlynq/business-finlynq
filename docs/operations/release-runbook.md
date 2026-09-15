@@ -151,7 +151,7 @@ sudo bash deploy/production/install-initial-production.sh \
   --revision "$revision" \
   --prepare-edge-network-only
 
-# From the exact development checkout/revision, first establish its internally
+# From the exact staging checkout/revision, first establish its internally
 # accepted backend on the existing central ingress network. The timer stays off.
 sudo bash deploy/development/install-development.sh \
   --external-edge --skip-public-acceptance
@@ -169,7 +169,7 @@ sudo bash deploy/production/install-initial-production.sh \
   --external-edge-contract-file \
     /root/finlynq-shared-edge-contract-v1.env
 
-# From the exact development checkout/revision, recreate the existing dev
+# From the exact staging checkout/revision, recreate the existing staging
 # configuration with strict public acceptance. This changes only the
 # public-acceptance setting; all other reviewed development gates
 # retain their existing development values.
@@ -177,7 +177,7 @@ sudo bash deploy/development/install-development.sh \
   --external-edge --require-public-acceptance
 sudo /usr/local/sbin/business-finlynq-deploy-development
 
-# Phase 3: reattests dev/shared edge, runs two isolated rehearsals, and performs
+# Phase 3: reattests staging/shared edge, runs two isolated rehearsals, and performs
 # the contained initial production release.
 sudo bash deploy/production/install-initial-production.sh \
   --revision "$revision" \

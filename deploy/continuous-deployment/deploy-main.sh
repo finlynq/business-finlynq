@@ -28,7 +28,7 @@ readonly production_signal_cache_directory="/var/cache/business-finlynq/github-a
 readonly production_signal_workflow_path=".github/workflows/signal-production-deployment.yml"
 readonly production_signal_workflow_sha256="36326ed7f59c4aab5310d4ca58dd86ef0539d653bbf3723a74f53e83fa7df071"
 readonly quality_gate_workflow_path=".github/workflows/ci.yml"
-readonly quality_gate_workflow_sha256="e3883ee1d2b149429f91a4e6675ced704623f618dc1daba3a3b80e2212125813"
+readonly quality_gate_workflow_sha256="925ce85c0f24f11abcfdb33777a1670e09d01163d8b3c06f0357ac066bda32ef"
 readonly github_cli="/usr/bin/gh"
 readonly clean_path="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 

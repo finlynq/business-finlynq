@@ -25,6 +25,11 @@ const deployService = read(
 const reconcileSharedEdge = read("deploy", "edge", "reconcile-shared-edge.sh");
 const deployDevelopment = read("deploy", "development", "deploy-development.sh");
 const installDevelopment = read("deploy", "development", "install-development.sh");
+const verifyDevelopmentFinalized = read(
+  "deploy",
+  "development",
+  "verify-development-finalized.sh",
+);
 const playwrightConfig = read("playwright.config.ts");
 const compose = read("docker-compose.yml");
 const allowRevisions = read(
@@ -39,12 +44,105 @@ const receiverInstaller = read(
 );
 
 describe("continuous deployment safety boundary", () => {
+  it("installs a root-owned read-only staging finalization verifier", () => {
+    expect(installDevelopment).toContain(
+      'readonly finalization_verifier_target="/usr/local/sbin/business-finlynq-verify-development-finalized"',
+    );
+    expect(installDevelopment).toContain(
+      'readonly external_edge_verifier_target="$installed_verifier_directory/verify-external-edge.sh"',
+    );
+    expect(installDevelopment).toContain(
+      'install -o root -g root -m 0550 \\\n  -- "$script_directory/verify-development-finalized.sh" "$finalization_verifier_target"',
+    );
+    expect(installDevelopment).toContain(
+      'install -o root -g root -m 0550 \\\n  -- "$script_directory/../edge/verify-external-edge.sh" "$external_edge_verifier_target"',
+    );
+    expect(installDevelopment).toContain(
+      "/usr/local/sbin/business-finlynq-verify-development-finalized",
+    );
+
+    expect(verifyDevelopmentFinalized).toContain(
+      'readonly external_edge_verifier="/usr/local/libexec/business-finlynq/verify-external-edge.sh"',
+    );
+    expect(verifyDevelopmentFinalized).toContain(
+      'readonly repository="/home/deploy/business-finlynq-stage"',
+    );
+    expect(verifyDevelopmentFinalized).toContain(
+      '(( $# == 0 )) || fail "this command accepts no arguments"',
+    );
+    expect(verifyDevelopmentFinalized.startsWith("#!/usr/bin/bash\n")).toBe(true);
+    expect(verifyDevelopmentFinalized).toContain(
+      '[[ "$(readlink -f -- "$0")" == "$finalization_verifier" ]]',
+    );
+    expect(verifyDevelopmentFinalized).toContain(
+      'safe_regular_file "$external_edge_verifier" root:root:550',
+    );
+    expect(verifyDevelopmentFinalized).toContain(
+      'safe_regular_file "$host_deployment_lock" root:deploy:660',
+    );
+    expect(verifyDevelopmentFinalized).toContain(
+      'flock --exclusive --nonblock "$deployment_lock_fd"',
+    );
+    expect(verifyDevelopmentFinalized.match(/verify_opened_deployment_lock/g)).toHaveLength(3);
+    expect(verifyDevelopmentFinalized).toContain(
+      '[[ "$path_identity" == "$descriptor_identity" ]]',
+    );
+    expect(verifyDevelopmentFinalized).toContain(
+      '"$path_contract" == "0:$deploy_gid:660:1"',
+    );
+    expect(verifyDevelopmentFinalized).toContain(
+      '"$finalization_verifier" deploy/development/verify-development-finalized.sh',
+    );
+    expect(verifyDevelopmentFinalized).toContain(
+      '"$external_edge_verifier" deploy/edge/verify-external-edge.sh',
+    );
+    expect(verifyDevelopmentFinalized).toContain(
+      '[[ "$compose_revision" == "$accepted_revision" ]]',
+    );
+    expect(verifyDevelopmentFinalized).toContain(
+      "for failure_state in deployment-failed deployment-hard-failed quarantined-candidate",
+    );
+    expect(verifyDevelopmentFinalized).toContain(
+      '[[ "$router_mode" == active ]]',
+    );
+    expect(verifyDevelopmentFinalized).toContain(
+      'verify_runtime_revision "$app_container" app business-finlynq-app true',
+    );
+    expect(verifyDevelopmentFinalized).toContain(
+      '"$worker_container" auth_email_worker business-finlynq-auth-worker false',
+    );
+    expect(verifyDevelopmentFinalized).toContain(
+      'tagged_image_id="$(docker image inspect --format \'{{.Id}}\' "$image")"',
+    );
+    expect(verifyDevelopmentFinalized).toContain(
+      'container_image_id="$(docker inspect --format \'{{.Image}}\' "$container")"',
+    );
+    expect(verifyDevelopmentFinalized).not.toContain('bash "/home/deploy/');
+    expect(verifyDevelopmentFinalized).not.toContain('source "/home/deploy/');
+    expect(verifyDevelopmentFinalized).toContain(
+      "GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null",
+    );
+    for (const forbidden of [
+      "docker compose",
+      "docker restart",
+      "docker rm",
+      "systemctl start",
+      "systemctl stop",
+      "systemctl restart",
+      "sudo ",
+      "eval ",
+    ]) {
+      expect(verifyDevelopmentFinalized).not.toContain(forbidden);
+    }
+  });
+
   it("runs branch pushes deliberately and cancels only stale pull-request checks", () => {
     expect(qualityGateWorkflow).toContain([
       "on:",
       "  push:",
       "    branches:",
       "      - main",
+      "      - stage",
       "      - dev",
       "  pull_request:",
     ].join("\n"));
@@ -537,12 +635,12 @@ describe("continuous deployment safety boundary", () => {
     expect(exit).toBeGreaterThan(reconcile);
   });
 
-  it("signals dev only after its complete quality gate succeeds", () => {
-    expect(qualityGateWorkflow).toContain("signal-development:");
-    expect(qualityGateWorkflow).toContain("github.ref == 'refs/heads/dev'");
+  it("signals stage only after its complete quality gate succeeds", () => {
+    expect(qualityGateWorkflow).toContain("signal-staging:");
+    expect(qualityGateWorkflow).toContain("github.ref == 'refs/heads/stage'");
     expect(qualityGateWorkflow).toContain("needs: verify");
-    expect(qualityGateWorkflow).toContain('tag="deploy-development-$CANDIDATE_REVISION"');
-    expect(qualityGateWorkflow).toContain("'+refs/heads/dev:refs/remotes/origin/dev'");
+    expect(qualityGateWorkflow).toContain('tag="deploy-stage-$CANDIDATE_REVISION"');
+    expect(qualityGateWorkflow).toContain("'+refs/heads/stage:refs/remotes/origin/stage'");
   });
 
   it("requires network-wide unique router and app aliases in accepted runtimes", () => {
@@ -561,9 +659,9 @@ describe("continuous deployment safety boundary", () => {
     );
   });
 
-  it("deploys dev through a disjoint checkout, state tree, port, and resource namespace", () => {
+  it("deploys stage through a disjoint checkout, state tree, port, and resource namespace", () => {
     expect(deployDevelopment).toContain(
-      'readonly repository="/home/deploy/business-finlynq-development"',
+      'readonly repository="/home/deploy/business-finlynq-stage"',
     );
     expect(deployDevelopment).toContain(
       'readonly compose_environment="/etc/business-finlynq-development/compose.env"',
@@ -572,9 +670,9 @@ describe("continuous deployment safety boundary", () => {
       'readonly state_directory="/var/lib/business-finlynq-development"',
     );
     expect(deployDevelopment).toContain(
-      'candidate_revision="$(git_as_deploy rev-parse refs/remotes/origin/dev)"',
+      'candidate_revision="$(git_as_deploy rev-parse refs/remotes/origin/stage)"',
     );
-    expect(deployDevelopment).toContain('signal_tag="deploy-development-$candidate_revision"');
+    expect(deployDevelopment).toContain('signal_tag="deploy-stage-$candidate_revision"');
     expect(deployDevelopment).toContain(
       'readonly installed_deployer="/usr/local/sbin/business-finlynq-deploy-development"',
     );
@@ -678,6 +776,8 @@ describe("continuous deployment safety boundary", () => {
     expect(installDevelopment).toContain("ACCOUNT_LOGIN_ENABLED=false");
     expect(installDevelopment).toContain("AUTH_OIDC_ENABLED=false");
     expect(installDevelopment).toContain("AUTH_OIDC_SIGNUP_ENABLED=false");
+    expect(installDevelopment).toContain("AUTH_OIDC_MFA_AMR_CLAIM_PROVISIONED=false");
+    expect(installDevelopment).toContain("AUTH_OIDC_MFA_AUTH_CONTEXTS=");
     expect(installDevelopment).toContain("ACCOUNT_SIGNUP_ENABLED=false");
     expect(installDevelopment).toContain("AUTH_EMAIL_DELIVERY_ENABLED=false");
     expect(installDevelopment).toContain("SIGNUP_TURNSTILE_ENABLED=false");
@@ -686,6 +786,25 @@ describe("continuous deployment safety boundary", () => {
     expect(installDevelopment).toContain("YAHOO_FX_ENABLED=false");
     expect(installDevelopment).toContain("--enable-yahoo-fx-experimental");
     expect(installDevelopment).toContain("--disable-yahoo-fx");
+  });
+
+  it("migrates staging to its exact hostname only after explicit cutover acknowledgement", () => {
+    expect(installDevelopment).toContain("--migrate-stage-hostname");
+    expect(installDevelopment).toContain(
+      'legacy_hostname="dev.business.finlynq.com"',
+    );
+    expect(installDevelopment).toContain(
+      'stage_hostname="stage.business.finlynq.com"',
+    );
+    expect(installDevelopment).toContain(
+      '[[ "$migrate_stage_hostname" == true ]]',
+    );
+    expect(installDevelopment).toContain(
+      "the staging hostname configuration is neither the reviewed legacy nor target contract",
+    );
+    expect(deployDevelopment).toContain(
+      '[[ "$app_origin" == https://stage.business.finlynq.com ]]',
+    );
   });
 
   it("keeps pre-OIDC development revisions recoverable across the SSO release boundary", () => {
@@ -699,6 +818,44 @@ describe("continuous deployment safety boundary", () => {
     expect(deployDevelopment).toContain(
       'for setting in "${required_environment_settings[@]}"',
     );
+    expect(deployDevelopment).toContain("AUTH_OIDC_MFA_AMR_CLAIM_PROVISIONED");
+    expect(deployDevelopment).toContain("AUTH_OIDC_MFA_AUTH_CONTEXTS");
+  });
+
+  it("keeps pre-MFA revisions recoverable and refuses an unconfigured MFA boundary before mutation", () => {
+    expect(deployDevelopment).toContain("revision_uses_oidc_mfa_assurance_contract() {");
+    expect(deployDevelopment).toContain(
+      'revision_uses_oidc_mfa_assurance_contract "$expected_revision"',
+    );
+    expect(deployDevelopment).toContain(
+      'validate_oidc_mfa_configuration_for_revision "$candidate_revision"',
+    );
+    expect(deployDevelopment).toContain(
+      "enabled OIDC requires reviewed MFA assurance before deployment",
+    );
+    expect(deployDevelopment).toContain(
+      "for (part_index = 1; part_index <= part_count; part_index++)",
+    );
+    expect(deployDevelopment).not.toContain("for (index =");
+    const oidcRuntimeSettings = deployDevelopment.slice(
+      deployDevelopment.indexOf('if revision_uses_oidc_runtime_contract "$expected_revision"'),
+      deployDevelopment.indexOf('if revision_uses_oidc_signup_runtime_contract "$expected_revision"'),
+    );
+    const mfaSettings = deployDevelopment.slice(
+      deployDevelopment.indexOf('if revision_uses_oidc_mfa_assurance_contract "$expected_revision"'),
+      deployDevelopment.indexOf('app_container_output="$(docker ps',
+        deployDevelopment.indexOf('if revision_uses_oidc_mfa_assurance_contract "$expected_revision"')),
+    );
+    expect(oidcRuntimeSettings).not.toContain("AUTH_OIDC_MFA_AMR_CLAIM_PROVISIONED");
+    expect(oidcRuntimeSettings).not.toContain("AUTH_OIDC_MFA_AUTH_CONTEXTS");
+    expect(mfaSettings).toContain("AUTH_OIDC_MFA_AMR_CLAIM_PROVISIONED");
+    expect(mfaSettings).toContain("AUTH_OIDC_MFA_AUTH_CONTEXTS");
+    const preflight = deployDevelopment.indexOf(
+      'validate_oidc_mfa_configuration_for_revision "$candidate_revision"',
+    );
+    const mutation = deployDevelopment.indexOf("mutated=true", preflight);
+    expect(preflight).toBeGreaterThan(0);
+    expect(mutation).toBeGreaterThan(preflight);
   });
 
   it("enables every development feature only with isolated provider secrets", () => {

@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - main
+      - stage
       - dev
   pull_request:
 
@@ -383,22 +384,22 @@ jobs:
           ! docker container inspect finlynq-ci-evidence-scanner >/dev/null 2>&1
           ! docker volume inspect finlynq-ci-evidence-scanner-signatures >/dev/null 2>&1
 
-  signal-development:
-    if: github.event_name == 'push' && github.ref == 'refs/heads/dev'
+  signal-staging:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/stage'
     needs: verify
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
       contents: write
     concurrency:
-      group: development-deployment-signal
+      group: staging-deployment-signal
       cancel-in-progress: false
     steps:
       - uses: actions/checkout@v5
         with:
           fetch-depth: 0
           ref: ${{ github.sha }}
-      - name: Publish immutable development deployment signal
+      - name: Publish immutable staging deployment signal
         env:
           CANDIDATE_REVISION: ${{ github.sha }}
         run: |
@@ -406,10 +407,10 @@ jobs:
           [[ "$CANDIDATE_REVISION" =~ ^[a-f0-9]{40}$ && ! "$CANDIDATE_REVISION" =~ ^0+$ ]]
           test "$(git rev-parse HEAD)" = "$CANDIDATE_REVISION"
           git fetch --no-tags origin \
-            '+refs/heads/dev:refs/remotes/origin/dev'
-          test "$(git rev-parse refs/remotes/origin/dev)" = "$CANDIDATE_REVISION"
+            '+refs/heads/stage:refs/remotes/origin/stage'
+          test "$(git rev-parse refs/remotes/origin/stage)" = "$CANDIDATE_REVISION"
 
-          tag="deploy-development-$CANDIDATE_REVISION"
+          tag="deploy-stage-$CANDIDATE_REVISION"
           existing="$(git ls-remote --tags origin "refs/tags/$tag" | awk 'NR == 1 {print $1}')"
           if [[ -n "$existing" ]]; then
             test "$existing" = "$CANDIDATE_REVISION"

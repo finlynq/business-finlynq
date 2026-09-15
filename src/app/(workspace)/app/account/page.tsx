@@ -47,8 +47,11 @@ export default async function AccountPage() {
       ])
     : [null, []] as const;
   const authenticatorEnabled = Boolean(authenticator?.mfa_required && authenticator.active_factor);
+  const microsoftMfaSatisfied = principal.authMethod === "OIDC" && Boolean(principal.mfaVerifiedAt);
   const authenticatorStatus = principal.sessionMode === "demo"
     ? "DEMO LINK"
+    : microsoftMfaSatisfied
+      ? "MICROSOFT MFA"
     : authenticatorEnabled
       ? "ENABLED"
       : authenticator?.pending_enrollment
@@ -95,8 +98,12 @@ export default async function AccountPage() {
             <div><dt>Sign-in method</dt><dd>{principal.authMethod.replaceAll("_", " ")}</dd></div>
             <div><dt>Authenticator</dt><dd><StatusPill status={authenticatorStatus} /> {authenticatorEnabled
               ? "TOTP is enabled for sign-in and step-up."
+              : microsoftMfaSatisfied
+                ? "Entra reported verified MFA for this cryptographically validated Microsoft session; a second FinLynQ factor is not required."
               : principal.sessionMode === "real"
-                ? "Password-only sign-in; step-up operations remain unavailable until enrollment."
+                ? principal.authMethod === "OIDC"
+                  ? "This Microsoft session did not carry trusted MFA evidence. Protected actions require FinLynQ authenticator enrollment."
+                  : "Password-only sign-in; step-up operations remain unavailable until enrollment."
                 : "Not applicable to the shared demo identity."}</dd></div>
             <div><dt>Session MFA</dt><dd>{mfa.detail}</dd></div>
             <div><dt>Session expires</dt><dd><time dateTime={principal.expiresAt.toISOString()}>{formatSecurityTime(principal.expiresAt)} UTC</time></dd></div>
@@ -107,7 +114,7 @@ export default async function AccountPage() {
         </section>
       </div>
 
-      {principal.sessionMode === "real" && (
+      {principal.sessionMode === "real" && !microsoftMfaSatisfied && (
         <section id="mfa-enrollment" className="panel" aria-labelledby="account-authenticator-title">
           <div className="panel-heading">
             <div><p className="eyebrow">Optional protection</p><h2 id="account-authenticator-title">Authenticator enrollment</h2></div>
@@ -120,7 +127,7 @@ export default async function AccountPage() {
         </section>
       )}
 
-      {principal.sessionMode === "real" && (
+      {principal.sessionMode === "real" && !microsoftMfaSatisfied && (
         <section id="trusted-browsers" className="panel" aria-labelledby="trusted-browsers-title">
           <div className="panel-heading">
             <div><p className="eyebrow">Login MFA</p><h2 id="trusted-browsers-title">Trusted browsers</h2></div>
@@ -147,7 +154,7 @@ export default async function AccountPage() {
           <Link className="secondary-button" href="/privacy">Privacy policy</Link>
           <Link className="secondary-button" href="/terms">Terms of use</Link>
         </div>
-        <p className="panel-note">Password replacement, role changes, recovery approvals, and trusted-browser revocation use protected workflows. Authenticator enrollment is available above for password-only accounts.</p>
+        <p className="panel-note">Password replacement, role changes, recovery approvals, and trusted-browser revocation use protected workflows. FinLynQ authenticator enrollment remains available when the primary sign-in does not provide trusted MFA evidence.</p>
       </section>
     </div>
   );

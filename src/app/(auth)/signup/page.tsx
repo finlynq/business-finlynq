@@ -19,11 +19,12 @@ const microsoftErrors: Record<string, string> = {
 };
 
 export default async function SignupPage({
-  searchParams = Promise.resolve({}),
+  searchParams,
 }: {
   searchParams?: Promise<{ method?: string; microsoftError?: string }>;
-} = {}) {
-  const params = await searchParams;
+}) {
+  const params: { method?: string; microsoftError?: string } =
+    await (searchParams ?? Promise.resolve({}));
   const localEnabled = process.env.ACCOUNT_SIGNUP_ENABLED === "true" &&
     process.env.ACCOUNT_LOGIN_ENABLED === "true";
   const microsoftEnabled = oidcSignupEnabled();

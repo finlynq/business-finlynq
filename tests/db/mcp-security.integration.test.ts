@@ -79,6 +79,7 @@ runDatabaseTests("remote MCP PostgreSQL boundary", () => {
     await owner.query("DELETE FROM mcp_connections WHERE organization_id = $1", [ids.org]);
     await owner.query("DELETE FROM mcp_oauth_clients WHERE client_id = $1", [ids.clientId]);
     await owner.query("DELETE FROM membership_roles WHERE organization_id = $1", [ids.org]);
+    await owner.query("UPDATE roles SET active = false WHERE organization_id = $1", [ids.org]);
     await owner.query("DELETE FROM role_permissions WHERE organization_id = $1", [ids.org]);
     await owner.query("DELETE FROM roles WHERE organization_id = $1", [ids.org]);
     await owner.query("DELETE FROM organization_memberships WHERE organization_id = $1", [ids.org]);

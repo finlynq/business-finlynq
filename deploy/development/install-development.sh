@@ -9,7 +9,7 @@ script_directory="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)" || {
   exit 1
 }
 readonly script_directory
-readonly repository="/home/deploy/business-finlynq-development"
+readonly repository="/home/deploy/business-finlynq-stage"
 readonly expected_origin="https://github.com/finlynq/business-finlynq.git"
 readonly configuration_directory="/etc/business-finlynq-development"
 readonly secret_directory="$configuration_directory/secrets"
@@ -19,6 +19,9 @@ readonly shared_state_directory="/var/lib/business-finlynq"
 readonly host_deployment_lock="$shared_state_directory/deployment-host.lock"
 readonly development_edge_network="business_finlynq_development_edge"
 readonly deploy_target="/usr/local/sbin/business-finlynq-deploy-development"
+readonly finalization_verifier_target="/usr/local/sbin/business-finlynq-verify-development-finalized"
+readonly installed_verifier_directory="/usr/local/libexec/business-finlynq"
+readonly external_edge_verifier_target="$installed_verifier_directory/verify-external-edge.sh"
 readonly service_target="/etc/systemd/system/business-finlynq-development-deployment.service"
 readonly timer_target="/etc/systemd/system/business-finlynq-development-deployment.timer"
 readonly sudoers_target="/etc/sudoers.d/business-finlynq-development-deployment"
@@ -51,6 +54,7 @@ enable_all_features=false
 edge_mode="external"
 public_acceptance_mode=""
 yahoo_fx_mode=""
+migrate_stage_hostname=false
 auth_email_from=""
 auth_email_reply_to=""
 turnstile_site_key=""
@@ -84,6 +88,10 @@ while (( $# > 0 )); do
       yahoo_fx_mode="false"
       shift
       ;;
+    --migrate-stage-hostname)
+      migrate_stage_hostname=true
+      shift
+      ;;
     --auth-email-from)
       [[ "$#" -ge 2 ]] || fail "--auth-email-from requires a mailbox"
       auth_email_from="$2"
@@ -109,16 +117,20 @@ if [[ "$enable_all_features" != true ]] \
 fi
 
 [[ "$(id -u)" == 0 ]] || fail "run this installer as root"
-for command_name in awk chmod chown docker getent git id install mktemp mv openssl readlink rm runuser \
+for command_name in awk chmod chown docker flock getent git id install mktemp mv openssl readlink rm runuser \
   stat sync systemctl visudo wc; do
   command -v "$command_name" >/dev/null 2>&1 \
     || fail "required command is unavailable: $command_name"
 done
-for source_file in deploy-development.sh business-finlynq-development-deployment.service \
+for source_file in deploy-development.sh verify-development-finalized.sh \
+  business-finlynq-development-deployment.service \
   business-finlynq-development-deployment.timer; do
   [[ -f "$script_directory/$source_file" && ! -L "$script_directory/$source_file" ]] \
     || fail "installer source is unavailable: $source_file"
 done
+[[ -f "$script_directory/../edge/verify-external-edge.sh" \
+  && ! -L "$script_directory/../edge/verify-external-edge.sh" ]] \
+  || fail "installer source is unavailable: ../edge/verify-external-edge.sh"
 getent passwd deploy >/dev/null || fail "the deploy account is unavailable"
 getent group business-finlynq-secrets >/dev/null \
   || fail "the business-finlynq-secrets group is unavailable"
@@ -133,15 +145,15 @@ if [[ ! -e "$repository" ]]; then
     HOME=/home/deploy USER=deploy LOGNAME=deploy SHELL=/bin/bash \
     PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
     GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null \
-    git clone --branch dev --single-branch --no-tags "$expected_origin" "$repository"
+    git clone --branch stage --single-branch --no-tags "$expected_origin" "$repository"
 fi
 [[ -d "$repository/.git" && ! -L "$repository" \
   && "$(stat -c '%U:%G' -- "$repository")" == deploy:deploy ]] \
   || fail "the development checkout is unavailable or unsafe"
 development_origin="$(runuser -u deploy -- git -C "$repository" remote get-url origin)"
 development_branch="$(runuser -u deploy -- git -C "$repository" symbolic-ref --short HEAD)"
-[[ "$development_origin" == "$expected_origin" && "$development_branch" == dev ]] \
-  || fail "the development checkout is not the reviewed dev branch"
+[[ "$development_origin" == "$expected_origin" && "$development_branch" == stage ]] \
+  || fail "the staging checkout is not the reviewed stage branch"
 
 install -d -o root -g deploy -m 0750 -- "$configuration_directory"
 install -d -o root -g business-finlynq-secrets -m 0750 -- "$secret_directory"
@@ -183,9 +195,9 @@ if [[ ! -e "$compose_environment" ]]; then
     printf 'ORGANIZATION_ROOT_KEK_FILE=%s/organization-root-kek\n' "$secret_directory"
     printf 'IDENTITY_SECRET_FILE=%s/identity-secret\n' "$secret_directory"
     printf 'BUSINESS_FINLYNQ_SECRET_GID=%s\n' "$secret_gid"
-    printf 'BUSINESS_FINLYNQ_HOSTNAME=dev.business.finlynq.com\n'
-    printf 'BUSINESS_FINLYNQ_DEVELOPMENT_HOSTNAME=dev.business.finlynq.com\n'
-    printf 'BUSINESS_FINLYNQ_APP_ORIGIN=https://dev.business.finlynq.com\n'
+    printf 'BUSINESS_FINLYNQ_HOSTNAME=stage.business.finlynq.com\n'
+    printf 'BUSINESS_FINLYNQ_DEVELOPMENT_HOSTNAME=stage.business.finlynq.com\n'
+    printf 'BUSINESS_FINLYNQ_APP_ORIGIN=https://stage.business.finlynq.com\n'
     printf 'BUSINESS_FINLYNQ_APP_PORT=3200\n'
     printf 'BUSINESS_FINLYNQ_APP_NETWORK_ALIAS=development-app\n'
     printf 'BUSINESS_FINLYNQ_PGDATA_VOLUME=business_finlynq_development_pgdata\n'
@@ -207,6 +219,8 @@ if [[ ! -e "$compose_environment" ]]; then
     printf 'AUTH_OIDC_JWKS_URI=\n'
     printf 'AUTH_OIDC_CLIENT_ID=\n'
     printf 'AUTH_OIDC_ALLOWED_TENANTS=\n'
+    printf 'AUTH_OIDC_MFA_AMR_CLAIM_PROVISIONED=false\n'
+    printf 'AUTH_OIDC_MFA_AUTH_CONTEXTS=\n'
     printf 'AUTH_OIDC_MAXIMUM_TOKEN_LIFETIME_SECONDS=7200\n'
     printf 'AUTH_OIDC_TOKEN_TIMEOUT_MILLISECONDS=10000\n'
     printf 'AUTH_OIDC_JWKS_TIMEOUT_MILLISECONDS=5000\n'
@@ -256,6 +270,62 @@ for secret_file in organization-root-kek identity-secret app-db-password \
       == root:business-finlynq-secrets:440 ]] \
     || fail "a development secret is unavailable or unsafe: $secret_file"
 done
+
+legacy_hostname="dev.business.finlynq.com"
+stage_hostname="stage.business.finlynq.com"
+legacy_app_origin="https://$legacy_hostname"
+stage_app_origin="https://$stage_hostname"
+configured_hostname="$(awk -F= '$1 == "BUSINESS_FINLYNQ_HOSTNAME" { count++; sub(/^[^=]*=/, ""); value = $0 }
+  END { if (count != 1) exit 42; print value }' "$compose_environment")" \
+  || fail "BUSINESS_FINLYNQ_HOSTNAME must be defined exactly once"
+configured_development_hostname="$(awk -F= '$1 == "BUSINESS_FINLYNQ_DEVELOPMENT_HOSTNAME" { count++; sub(/^[^=]*=/, ""); value = $0 }
+  END { if (count != 1) exit 42; print value }' "$compose_environment")" \
+  || fail "BUSINESS_FINLYNQ_DEVELOPMENT_HOSTNAME must be defined exactly once"
+configured_app_origin="$(awk -F= '$1 == "BUSINESS_FINLYNQ_APP_ORIGIN" { count++; sub(/^[^=]*=/, ""); value = $0 }
+  END { if (count != 1) exit 42; print value }' "$compose_environment")" \
+  || fail "BUSINESS_FINLYNQ_APP_ORIGIN must be defined exactly once"
+
+if [[ "$configured_hostname" == "$legacy_hostname" \
+  && "$configured_development_hostname" == "$legacy_hostname" \
+  && "$configured_app_origin" == "$legacy_app_origin" ]]; then
+  [[ "$migrate_stage_hostname" == true ]] \
+    || fail "the legacy dev hostname remains; complete DNS, shared-edge, and OIDC preparation, then rerun with --migrate-stage-hostname"
+  hostname_environment_temporary="$(mktemp "$configuration_directory/.compose.env.stage-hostname.XXXXXX")"
+  awk -F= -v hostname="$stage_hostname" -v app_origin="$stage_app_origin" '
+    BEGIN {
+      values["BUSINESS_FINLYNQ_HOSTNAME"] = hostname
+      values["BUSINESS_FINLYNQ_DEVELOPMENT_HOSTNAME"] = hostname
+      values["BUSINESS_FINLYNQ_APP_ORIGIN"] = app_origin
+    }
+    {
+      key = $1
+      if (key in values) {
+        if (seen[key]++) exit 42
+        print key "=" values[key]
+        next
+      }
+      print
+    }
+    END {
+      if (seen["BUSINESS_FINLYNQ_HOSTNAME"] != 1 ||
+          seen["BUSINESS_FINLYNQ_DEVELOPMENT_HOSTNAME"] != 1 ||
+          seen["BUSINESS_FINLYNQ_APP_ORIGIN"] != 1) exit 42
+    }
+  ' "$compose_environment" >"$hostname_environment_temporary" \
+    || {
+      rm -f -- "$hostname_environment_temporary"
+      fail "could not migrate the staging hostname configuration"
+    }
+  chown root:deploy "$hostname_environment_temporary"
+  chmod 0600 "$hostname_environment_temporary"
+  mv -f -- "$hostname_environment_temporary" "$compose_environment"
+  sync -f -- "$compose_environment"
+  printf 'Staging hostname migrated to %s.\n' "$stage_hostname"
+elif [[ "$configured_hostname" != "$stage_hostname" \
+  || "$configured_development_hostname" != "$stage_hostname" \
+  || "$configured_app_origin" != "$stage_app_origin" ]]; then
+  fail "the staging hostname configuration is neither the reviewed legacy nor target contract"
+fi
 
 if [[ "$enable_all_features" == true ]]; then
   [[ -n "$auth_email_from" && "${#auth_email_from}" -le 320 \
@@ -411,6 +481,11 @@ network_internal="$(docker network inspect --format '{{.Internal}}' "$developmen
 
 install -d -o root -g root -m 0755 -- /usr/local/sbin
 install -o root -g root -m 0550 -- "$script_directory/deploy-development.sh" "$deploy_target"
+install -o root -g root -m 0550 \
+  -- "$script_directory/verify-development-finalized.sh" "$finalization_verifier_target"
+install -d -o root -g root -m 0755 -- "$installed_verifier_directory"
+install -o root -g root -m 0550 \
+  -- "$script_directory/../edge/verify-external-edge.sh" "$external_edge_verifier_target"
 install -o root -g root -m 0644 \
   -- "$script_directory/business-finlynq-development-deployment.service" "$service_target"
 install -o root -g root -m 0644 \
@@ -418,7 +493,7 @@ install -o root -g root -m 0644 \
 
 sudoers_temporary="$(mktemp /etc/sudoers.d/.business-finlynq-development.XXXXXX)"
 printf '%s\n' \
-  'deploy ALL=(root) NOPASSWD: /usr/bin/systemctl start business-finlynq-development-deployment.service, /usr/bin/systemctl status business-finlynq-development-deployment.service --no-pager, /usr/bin/journalctl -u business-finlynq-development-deployment.service --since today --no-pager' \
+  'deploy ALL=(root) NOPASSWD: /usr/bin/systemctl start business-finlynq-development-deployment.service, /usr/bin/systemctl status business-finlynq-development-deployment.service --no-pager, /usr/bin/journalctl -u business-finlynq-development-deployment.service --since today --no-pager, /usr/local/sbin/business-finlynq-verify-development-finalized' \
   >"$sudoers_temporary"
 chmod 0440 "$sudoers_temporary"
 visudo -cf "$sudoers_temporary" >/dev/null

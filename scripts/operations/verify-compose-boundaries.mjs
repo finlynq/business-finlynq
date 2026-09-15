@@ -999,8 +999,8 @@ const developmentRendered = JSON.parse(execFileSync("docker", [
   encoding: "utf8", maxBuffer: 16 * 1024 * 1024,
   env: {
     ...process.env,
-    BUSINESS_FINLYNQ_HOSTNAME: "dev.business.finlynq.com",
-    BUSINESS_FINLYNQ_APP_ORIGIN: "https://dev.business.finlynq.com",
+    BUSINESS_FINLYNQ_HOSTNAME: "stage.business.finlynq.com",
+    BUSINESS_FINLYNQ_APP_ORIGIN: "https://stage.business.finlynq.com",
     BUSINESS_FINLYNQ_APP_PORT: "3200",
     BUSINESS_FINLYNQ_APP_NETWORK_ALIAS: "development-app",
     BUSINESS_FINLYNQ_PGDATA_VOLUME: "business_finlynq_development_pgdata",
