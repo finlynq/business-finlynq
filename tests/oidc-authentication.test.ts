@@ -114,6 +114,7 @@ describe("Business OIDC configuration and browser-bound authorization", () => {
     const verifier = Buffer.alloc(32, 3).toString("base64url");
     expect(location.searchParams.get("response_type")).toBe("code");
     expect(location.searchParams.get("response_mode")).toBe("query");
+    expect(location.searchParams.get("prompt")).toBe("select_account");
     expect(location.searchParams.get("code_challenge_method")).toBe("S256");
     expect(location.searchParams.get("code_challenge")).toBe(
       createHash("sha256").update(verifier).digest("base64url"),
@@ -134,6 +135,7 @@ describe("Business OIDC configuration and browser-bound authorization", () => {
       "/app",
       { now: startedAt, random: (size) => Buffer.alloc(size, 7), intent: "signup" },
     );
+    expect(new URL(signupAuthorization.location).searchParams.get("prompt")).toBe("select_account");
     expect(consumeOidcLoginAttempt(
       signupAuthorization.loginCookie,
       new URL(signupAuthorization.location).searchParams.get("state"),
@@ -145,6 +147,7 @@ describe("Business OIDC configuration and browser-bound authorization", () => {
       "/app",
       { now: startedAt, random: (size) => Buffer.alloc(size, 8), intent: "signup-accept" },
     );
+    expect(new URL(signupAcceptanceAuthorization.location).searchParams.get("prompt")).toBe("select_account");
     expect(consumeOidcLoginAttempt(
       signupAcceptanceAuthorization.loginCookie,
       new URL(signupAcceptanceAuthorization.location).searchParams.get("state"),

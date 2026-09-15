@@ -3,7 +3,10 @@
 Business Finlynq uses the same Microsoft Entra External ID tenant and user flow
 as EPM, but it is a separate confidential OIDC client. A browser that already
 has an Entra session from either application can enter the other application
-without entering credentials again.
+without entering credentials again. Every Business Finlynq authorization request
+uses `prompt=select_account`, preserving those Entra sessions while requiring the
+browser to show an account chooser. This prevents a remembered but unassigned
+identity from being selected silently when another identity owns the workspace.
 
 Do not share application registrations, client IDs, client secrets, callback
 URIs, or application cookies between EPM and Business Finlynq. The common Entra
