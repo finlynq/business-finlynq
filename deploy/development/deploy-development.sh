@@ -308,8 +308,8 @@ validate_oidc_mfa_configuration_for_revision() {
   context_count="$(awk -v contexts="$auth_contexts" '
     BEGIN {
       part_count = split(contexts, parts, ",")
-      for (index = 1; index <= part_count; index++) {
-        value = parts[index]
+      for (part_index = 1; part_index <= part_count; part_index++) {
+        value = parts[part_index]
         sub(/^[[:space:]]+/, "", value)
         sub(/[[:space:]]+$/, "", value)
         if (value == "") continue
