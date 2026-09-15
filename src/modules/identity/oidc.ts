@@ -13,6 +13,7 @@ type OidcEnvironment = Readonly<Record<string, string | undefined>>;
 
 const LOGIN_TTL_SECONDS = 5 * 60;
 const SIGNUP_PROOF_TTL_SECONDS = 15 * 60;
+const SIGNUP_ACCEPT_NEXT = "/complete-signup?method=microsoft";
 const MAXIMUM_MAP_BYTES = 2 * 1024 * 1024;
 const PORTABLE_IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9_.:@/-]{0,255}$/;
 const OPAQUE_TOKEN = /^[A-Za-z0-9_-]{43}$/;
@@ -98,6 +99,10 @@ export type OidcSignupProof = Readonly<{
 export type OidcMfaAssurance = "NONE" | "AMR_MFA" | "AUTH_CONTEXT";
 
 export type OidcIntent = "login" | "signup" | "signup-accept";
+
+function safeOidcNext(intent: OidcIntent, next: string | null | undefined): string {
+  return intent === "signup-accept" ? SIGNUP_ACCEPT_NEXT : safeAppPath(next);
+}
 
 export class OidcAuthenticationError extends Error {
   constructor(public readonly code: string) {
@@ -423,6 +428,7 @@ export function createOidcAuthorization(
     intent?: OidcIntent;
   }> = {},
 ): { location: string; loginCookie: string } {
+  const intent = options.intent ?? "login";
   const state = opaqueToken(options.random);
   const nonce = opaqueToken(options.random);
   const verifier = opaqueToken(options.random);
@@ -431,8 +437,8 @@ export function createOidcAuthorization(
     state,
     nonce,
     verifier,
-    next: safeAppPath(next),
-    intent: options.intent ?? "login",
+    next: safeOidcNext(intent, next),
+    intent,
     issuedAt: options.now ?? Date.now(),
     configurationHash: configuration.configurationHash,
   }), "oidc-login", "oidc-login");
@@ -475,7 +481,7 @@ export function consumeOidcLoginAttempt(
   return Object.freeze({
     nonce: parsed.nonce,
     verifier: parsed.verifier,
-    next: safeAppPath(parsed.next),
+    next: safeOidcNext(parsed.intent, parsed.next),
     intent: parsed.intent,
   });
 }
