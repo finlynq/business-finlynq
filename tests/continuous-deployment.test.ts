@@ -833,6 +833,10 @@ describe("continuous deployment safety boundary", () => {
     expect(deployDevelopment).toContain(
       "enabled OIDC requires reviewed MFA assurance before deployment",
     );
+    expect(deployDevelopment).toContain(
+      "for (part_index = 1; part_index <= part_count; part_index++)",
+    );
+    expect(deployDevelopment).not.toContain("for (index =");
     const oidcRuntimeSettings = deployDevelopment.slice(
       deployDevelopment.indexOf('if revision_uses_oidc_runtime_contract "$expected_revision"'),
       deployDevelopment.indexOf('if revision_uses_oidc_signup_runtime_contract "$expected_revision"'),
