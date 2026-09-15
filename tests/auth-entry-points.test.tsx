@@ -3,8 +3,24 @@ import { join } from "node:path";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+const mocks = vi.hoisted(() => ({
+  cookieValue: "encrypted-signup-proof" as string | undefined,
+  consumeOidcSignupProof: vi.fn(),
+}));
+
 vi.mock("next/headers", () => ({
   headers: vi.fn(async () => new Headers({ "x-nonce": "test-request-nonce" })),
+  cookies: vi.fn(async () => ({
+    get: vi.fn(() => mocks.cookieValue ? { value: mocks.cookieValue } : undefined),
+  })),
+}));
+vi.mock("@/modules/identity/oidc", () => ({
+  consumeOidcSignupProof: mocks.consumeOidcSignupProof,
+  loadOidcConfiguration: vi.fn(() => ({ configurationHash: "c".repeat(64) })),
+  oidcSignupCookieName: vi.fn(() => "business_finlynq_oidc_signup"),
+  oidcSignupEnabled: () => process.env.ACCOUNT_LOGIN_ENABLED === "true" &&
+    process.env.AUTH_OIDC_ENABLED === "true" &&
+    process.env.AUTH_OIDC_SIGNUP_ENABLED === "true",
 }));
 import { LoginForm } from "@/app/(auth)/_components/login-form.client";
 import SignupPage from "@/app/(auth)/signup/page";
@@ -17,6 +33,8 @@ const previousOidcGate = process.env.AUTH_OIDC_ENABLED;
 const previousOidcSignupGate = process.env.AUTH_OIDC_SIGNUP_ENABLED;
 
 afterEach(() => {
+  mocks.cookieValue = "encrypted-signup-proof";
+  mocks.consumeOidcSignupProof.mockReset();
   if (previousLoginGate === undefined) delete process.env.ACCOUNT_LOGIN_ENABLED;
   else process.env.ACCOUNT_LOGIN_ENABLED = previousLoginGate;
   if (previousSignupGate === undefined) delete process.env.ACCOUNT_SIGNUP_ENABLED;
@@ -127,5 +145,22 @@ describe("public account entry points", () => {
     expect(verifiedMarkup).toContain("Microsoft identity verified");
     expect(verifiedMarkup).toContain("Contact email");
     expect(verifiedMarkup).not.toContain("challenges.cloudflare.com");
+  });
+
+  it("never presents a query string as proof of Microsoft verification", async () => {
+    process.env.ACCOUNT_LOGIN_ENABLED = "true";
+    process.env.ACCOUNT_SIGNUP_ENABLED = "false";
+    process.env.AUTH_OIDC_ENABLED = "true";
+    process.env.AUTH_OIDC_SIGNUP_ENABLED = "true";
+    mocks.cookieValue = undefined;
+
+    const markup = renderToStaticMarkup(await SignupPage({
+      searchParams: Promise.resolve({ method: "microsoft" }),
+    }));
+
+    expect(markup).not.toContain("Microsoft identity verified");
+    expect(markup).toContain("Microsoft verification did not reach this browser or has expired");
+    expect(markup).toContain("/api/auth/oidc/start?intent=signup");
+    expect(markup).not.toContain("Contact email");
   });
 });

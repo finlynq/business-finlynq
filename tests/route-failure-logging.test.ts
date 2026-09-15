@@ -78,6 +78,32 @@ describe("redacted application route failure logging", () => {
     }
   });
 
+  it("emits only an allow-listed code for a missing Microsoft signup proof", () => {
+    const error = Object.assign(new Error("cookie and identity details"), {
+      code: "signup_proof_invalid",
+      email: "user@example.com",
+    });
+    const logging = vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+    try {
+      logRouteFailure(
+        "account-oidc-signup-request",
+        "11111111-1111-4111-8111-111111111111",
+        error,
+      );
+      expect(JSON.parse(String(logging.mock.calls[0]?.[0]))).toEqual({
+        event: "route.failure",
+        operation: "account-oidc-signup-request",
+        requestId: "11111111-1111-4111-8111-111111111111",
+        errorType: "Error",
+        errorCode: "OIDC_SIGNUP_PROOF_INVALID",
+      });
+      expect(String(logging.mock.calls[0]?.[0])).not.toMatch(/cookie|identity details|user@example\.com/);
+    } finally {
+      logging.mockRestore();
+    }
+  });
+
   it("emits one bounded JSON access event without request content or arbitrary labels", () => {
     vi.stubEnv("BUSINESS_FINLYNQ_TEST_ACCESS_LOGS", "true");
     const logging = vi.spyOn(console, "info").mockImplementation(() => undefined);
