@@ -140,6 +140,20 @@ describe("Business OIDC configuration and browser-bound authorization", () => {
       configuration,
       startedAt,
     ).intent).toBe("signup");
+    const signupAcceptanceAuthorization = createOidcAuthorization(
+      configuration,
+      "/app",
+      { now: startedAt, random: (size) => Buffer.alloc(size, 8), intent: "signup-accept" },
+    );
+    expect(consumeOidcLoginAttempt(
+      signupAcceptanceAuthorization.loginCookie,
+      new URL(signupAcceptanceAuthorization.location).searchParams.get("state"),
+      configuration,
+      startedAt,
+    )).toMatchObject({
+      next: "/complete-signup?method=microsoft",
+      intent: "signup-accept",
+    });
     expect(() => consumeOidcLoginAttempt(
       authorization.loginCookie,
       Buffer.alloc(32, 9).toString("base64url"),
