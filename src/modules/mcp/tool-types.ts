@@ -195,6 +195,7 @@ export function registerMcpTools(
       let approvalId: string | undefined;
       let delegatedSessionId: string | undefined;
       let stepUpExpiresAt: string | undefined;
+      let persistentMfaAuthorization = false;
       try {
         execution = await beginMcpExecution(snapshot, definition.policy, args);
         if (definition.policy.access === "WRITE") {
@@ -210,13 +211,19 @@ export function registerMcpTools(
           approvalId = authorization.approvalId;
           delegatedSessionId = authorization.delegatedSessionId;
           stepUpExpiresAt = authorization.stepUpExpiresAt;
+          persistentMfaAuthorization = authorization.persistentMfaAuthorization === true;
         }
         const result = await definition.invoke(args, {
           principal: snapshot.principal,
           snapshot,
           requestId: execution.requestId,
           requestUrl,
-          sessionPrincipal: mcpSessionPrincipal(snapshot.principal, stepUpExpiresAt, delegatedSessionId),
+          sessionPrincipal: mcpSessionPrincipal(
+            snapshot.principal,
+            stepUpExpiresAt,
+            delegatedSessionId,
+            persistentMfaAuthorization,
+          ),
         });
         await finishMcpExecution(snapshot, execution, { status: "SUCCEEDED", approvalId, result });
         return definition.formatResult ? definition.formatResult(result) : successResult(result);
