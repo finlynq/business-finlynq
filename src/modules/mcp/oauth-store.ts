@@ -21,6 +21,9 @@ import {
 const ACCESS_TOKEN_SECONDS = 10 * 60;
 const REFRESH_TOKEN_SECONDS = 30 * 24 * 60 * 60;
 const AUTHORIZATION_CODE_SECONDS = 5 * 60;
+// SessionPrincipal models assurance with a Date. Direct MCP authorization has
+// no time limit, so use the largest practical PostgreSQL-safe timestamp.
+const PERSISTENT_MCP_MFA_EXPIRY = new Date("9999-12-31T23:59:59.999Z");
 
 export type McpOAuthClient = Readonly<{
   clientId: string;
@@ -489,8 +492,9 @@ export function mcpSessionPrincipal(
   principal: McpConnectionPrincipal,
   stepUpExpiresAt?: string,
   delegatedSessionId?: string,
+  persistentMfaAuthorization = false,
 ): SessionPrincipal {
-  const delegatedStepUpExpiry = stepUpExpiresAt ? new Date(stepUpExpiresAt) : null;
+  const capturedStepUpExpiry = stepUpExpiresAt ? new Date(stepUpExpiresAt) : null;
   return {
     sessionId: delegatedSessionId ?? principal.connectionId,
     userId: principal.userId,
@@ -503,8 +507,10 @@ export function mcpSessionPrincipal(
     sessionMode: "real",
     authMethod: "PASSWORD",
     expiresAt: principal.tokenExpiresAt,
-    mfaVerifiedAt: delegatedStepUpExpiry ? new Date(delegatedStepUpExpiry.getTime() - 10 * 60 * 1000) : null,
-    stepUpExpiresAt: delegatedStepUpExpiry,
+    mfaVerifiedAt: capturedStepUpExpiry ? new Date(capturedStepUpExpiry.getTime() - 10 * 60 * 1000) : null,
+    stepUpExpiresAt: capturedStepUpExpiry && persistentMfaAuthorization
+      ? PERSISTENT_MCP_MFA_EXPIRY
+      : capturedStepUpExpiry,
     organizationWritesEnabled: principal.organizationWritesEnabled,
   };
 }

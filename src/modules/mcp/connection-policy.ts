@@ -156,6 +156,20 @@ export function mcpToolRequiresStepUp(tool: McpToolPolicy): boolean {
   return mcpToolNameRequiresStepUp(tool.name);
 }
 
+/**
+ * Allow writes records the browser session and the MFA window that was live
+ * when the user enabled it. The timestamp remains immutable audit evidence;
+ * it is not a runtime expiry for the connection-level authorization.
+ */
+function hasPersistentDirectWriteMfaAuthorization(
+  snapshot: McpAuthorizationSnapshot,
+): snapshot is McpAuthorizationSnapshot & Readonly<{
+  directWriteSessionId: string;
+  directWriteStepUpExpiresAt: Date;
+}> {
+  return Boolean(snapshot.directWriteSessionId && snapshot.directWriteStepUpExpiresAt);
+}
+
 export function mcpToolAuthorizationMetadata(
   snapshot: McpAuthorizationSnapshot,
   tool: McpToolPolicy,
@@ -171,8 +185,7 @@ export function mcpToolAuthorizationMetadata(
         ? "NOT_REQUIRED"
         : mode === "CONFIRM_WRITES"
           ? "REQUIRED_AT_APPROVAL"
-          : snapshot.directWriteStepUpExpiresAt &&
-              snapshot.directWriteStepUpExpiresAt.getTime() > Date.now()
+          : hasPersistentDirectWriteMfaAuthorization(snapshot)
             ? "SATISFIED"
             : "STEP_UP_REQUIRED",
     } : {}),
@@ -213,11 +226,12 @@ export type McpWriteAuthorization = Readonly<{
   expiresAt?: string;
   delegatedSessionId?: string;
   stepUpExpiresAt?: string;
+  persistentMfaAuthorization?: boolean;
 }>;
 
 function directWriteStepUpError(): Error & Readonly<{ code: "MCP_STEP_UP_REQUIRED" }> {
   return Object.assign(
-    new Error("Refresh the direct-write permission with a recent MFA verification before retrying this high-assurance action"),
+    new Error("Enable the direct-write permission with an MFA verification before retrying this high-assurance action"),
     { code: "MCP_STEP_UP_REQUIRED" as const },
   );
 }
@@ -232,14 +246,14 @@ export async function authorizeMcpWrite(
   const requiresStepUp = mcpToolRequiresStepUp(tool);
   if (mode === "ALLOW_WRITES") {
     if (!requiresStepUp) return { allowed: true };
-    if (!snapshot.directWriteSessionId || !snapshot.directWriteStepUpExpiresAt ||
-        snapshot.directWriteStepUpExpiresAt.getTime() <= Date.now()) {
+    if (!hasPersistentDirectWriteMfaAuthorization(snapshot)) {
       throw directWriteStepUpError();
     }
     return {
       allowed: true,
       delegatedSessionId: snapshot.directWriteSessionId,
       stepUpExpiresAt: snapshot.directWriteStepUpExpiresAt.toISOString(),
+      persistentMfaAuthorization: true,
     };
   }
   if (mode !== "CONFIRM_WRITES") return { allowed: false };
