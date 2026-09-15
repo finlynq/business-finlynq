@@ -1,7 +1,12 @@
 import type { Metadata } from "next";
-import { headers } from "next/headers";
+import { cookies, headers } from "next/headers";
 import Link from "next/link";
-import { oidcSignupEnabled } from "@/modules/identity/oidc";
+import {
+  consumeOidcSignupProof,
+  loadOidcConfiguration,
+  oidcSignupCookieName,
+  oidcSignupEnabled,
+} from "@/modules/identity/oidc";
 import { loadSignupChallengePublicConfiguration } from "@/modules/identity/signup-challenge";
 import { SignupForm } from "../_components/signup-form.client";
 import { AuthShell } from "../_components/auth-shell";
@@ -33,7 +38,20 @@ export default async function SignupPage({
     try { challenge = loadSignupChallengePublicConfiguration(); } catch { challenge = null; }
   }
   const localReady = localEnabled && challenge !== null;
-  const microsoftVerified = microsoftEnabled && params.method === "microsoft";
+  const microsoftRequested = microsoftEnabled && params.method === "microsoft";
+  let microsoftVerified = false;
+  if (microsoftRequested) {
+    try {
+      const configuration = loadOidcConfiguration();
+      const encryptedProof = (await cookies()).get(oidcSignupCookieName())?.value;
+      if (!encryptedProof) throw new Error("Microsoft signup proof is unavailable");
+      consumeOidcSignupProof(encryptedProof, configuration);
+      microsoftVerified = true;
+    } catch {
+      microsoftVerified = false;
+    }
+  }
+  const microsoftProofUnavailable = microsoftRequested && !microsoftVerified;
   const ready = localReady || microsoftEnabled;
   const nonce = (await headers()).get("x-nonce") ?? undefined;
   return (
@@ -53,7 +71,13 @@ export default async function SignupPage({
           />
         : ready
           ? <>
-              {params.microsoftError && <div className={styles.alert} role="alert">{microsoftErrors[params.microsoftError] ?? microsoftErrors.rejected}</div>}
+              {(params.microsoftError || microsoftProofUnavailable) && (
+                <div className={styles.alert} role="alert">
+                  {microsoftProofUnavailable
+                    ? "Microsoft verification did not reach this browser or has expired. Start again in a full browser window."
+                    : microsoftErrors[params.microsoftError!] ?? microsoftErrors.rejected}
+                </div>
+              )}
               {microsoftEnabled && (
                 <Link className={styles.demoButton} href="/api/auth/oidc/start?intent=signup" prefetch={false}>
                   Sign up with Microsoft <span aria-hidden="true">→</span>
