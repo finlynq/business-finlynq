@@ -112,15 +112,17 @@ describe("MCP settings authorization persistence", () => {
   });
 
   it("captures the verified browser session when Allow writes is saved", async () => {
-    mocks.query.mockResolvedValueOnce({
-      rows: [{
-        id: connectionId,
-        daily_mode: "ALLOW_WRITES",
-        setup_mode: "ALLOW_WRITES",
-        tool_overrides: {},
-        version: 2,
-      }],
-    });
+    mocks.query
+      .mockResolvedValueOnce({ rows: [{ direct_write_session_id: null, direct_write_step_up_expires_at: null }] })
+      .mockResolvedValueOnce({
+        rows: [{
+          id: connectionId,
+          daily_mode: "ALLOW_WRITES",
+          setup_mode: "ALLOW_WRITES",
+          tool_overrides: {},
+          version: 2,
+        }],
+      });
 
     await expect(updateMcpConnectionSettings(principal, {
       connectionId,
@@ -143,6 +145,47 @@ describe("MCP settings authorization persistence", () => {
         "{}",
         principal.sessionId,
         principal.stepUpExpiresAt,
+        principal.organizationId,
+        principal.userId,
+        connectionId,
+        1,
+      ],
+    );
+  });
+
+  it("preserves Allow writes authorization without another MFA check", async () => {
+    const originalSessionId = "10000000-0000-4000-8000-000000000099";
+    const originalStepUpExpiry = new Date("2026-01-01T00:10:00Z");
+    mocks.hasRecentStepUp.mockReturnValue(false);
+    mocks.query
+      .mockResolvedValueOnce({ rows: [{
+        direct_write_session_id: originalSessionId,
+        direct_write_step_up_expires_at: originalStepUpExpiry,
+      }] })
+      .mockResolvedValueOnce({ rows: [{
+        id: connectionId,
+        daily_mode: "ALLOW_WRITES",
+        setup_mode: "ALLOW_WRITES",
+        tool_overrides: {},
+        version: 2,
+      }] });
+
+    await expect(updateMcpConnectionSettings(principal, {
+      connectionId,
+      expectedVersion: 1,
+      dailyMode: "ALLOW_WRITES",
+      setupMode: "ALLOW_WRITES",
+      toolOverrides: {},
+    })).resolves.toMatchObject({ version: 2 });
+
+    expect(mocks.query).toHaveBeenLastCalledWith(
+      expect.stringContaining("direct_write_session_id = $4"),
+      [
+        "ALLOW_WRITES",
+        "ALLOW_WRITES",
+        "{}",
+        originalSessionId,
+        originalStepUpExpiry,
         principal.organizationId,
         principal.userId,
         connectionId,

@@ -67,10 +67,32 @@ export async function updateMcpConnectionSettings(
   const elevatesAutonomy = input.dailyMode === "ALLOW_WRITES" ||
     input.setupMode === "CONFIRM_WRITES" || input.setupMode === "ALLOW_WRITES" ||
     Object.values(input.toolOverrides).some((mode) => mode === "ALLOW_WRITES");
-  if (elevatesAutonomy && !hasRecentStepUp(principal)) {
-    throw new Error("Recent MFA verification is required to enable autonomous daily writes or any setup writes");
-  }
   return withTenantTransaction(settingsContext(principal, "Update own MCP connection policy"), async (client) => {
+    const existing = await client.query<{
+      direct_write_session_id: string | null;
+      direct_write_step_up_expires_at: Date | null;
+    }>(
+      `SELECT direct_write_session_id, direct_write_step_up_expires_at
+       FROM mcp_connections
+       WHERE organization_id = $1 AND user_id = $2 AND id = $3
+         AND revoked_at IS NULL AND version = $4
+       FOR UPDATE`,
+      [principal.organizationId, principal.userId, input.connectionId, input.expectedVersion],
+    );
+    const current = existing.rows[0];
+    if (!current) throw new Error("The MCP connection changed or is no longer active; reload before retrying");
+    const hasPersistentDirectWriteAuthorization = Boolean(
+      current.direct_write_session_id && current.direct_write_step_up_expires_at,
+    );
+    if (elevatesAutonomy && !hasPersistentDirectWriteAuthorization && !hasRecentStepUp(principal)) {
+      throw new Error("Recent MFA verification is required to enable autonomous daily writes or any setup writes");
+    }
+    const directWriteSessionId = allowsDirectWrites
+      ? current.direct_write_session_id ?? principal.sessionId
+      : null;
+    const directWriteStepUpExpiresAt = allowsDirectWrites
+      ? current.direct_write_step_up_expires_at ?? principal.stepUpExpiresAt
+      : null;
     const result = await client.query<{
       id: string;
       daily_mode: string;
@@ -89,8 +111,8 @@ export async function updateMcpConnectionSettings(
         input.dailyMode,
         input.setupMode,
         JSON.stringify(input.toolOverrides),
-        allowsDirectWrites ? principal.sessionId : null,
-        allowsDirectWrites ? principal.stepUpExpiresAt : null,
+        directWriteSessionId,
+        directWriteStepUpExpiresAt,
         principal.organizationId,
         principal.userId,
         input.connectionId,
