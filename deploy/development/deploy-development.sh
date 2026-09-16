@@ -2076,27 +2076,43 @@ if [[ "$source_revision" == "$candidate_revision" ]]; then
   same_revision_topology="$(revision_release_topology "$candidate_revision")" \
     || fail "same-revision development topology could not be classified"
   if release_is_accepted "$candidate_revision" private; then
+    same_revision_router_requires_commit=false
+    same_revision_edge_boundary=normal
     require_public_acceptance="$(read_environment_value DEVELOPMENT_REQUIRE_PUBLIC_ACCEPTANCE)" \
       || fail "DEVELOPMENT_REQUIRE_PUBLIC_ACCEPTANCE could not be read"
     [[ "$require_public_acceptance" == true || "$require_public_acceptance" == false ]] \
       || fail "DEVELOPMENT_REQUIRE_PUBLIC_ACCEPTANCE must be true or false"
     if [[ "$same_revision_topology" == router ]]; then
-      development_router_live_uncommitted="true"
-      reload_release_router_live active \
-        || fail "same-revision development finalization could not restore active live routing"
-      release_acceptance_token=""
+      same_revision_router="$(running_release_router_container)" \
+        || fail "same-revision development release router could not be identified"
+      same_revision_router_mode="$(docker exec "$same_revision_router" sh -ec 'cat /state/mode')" \
+        || fail "same-revision development release-router mode could not be read"
+      case "$same_revision_router_mode" in
+        active)
+          release_acceptance_token=""
+          ;;
+        maintenance)
+          development_router_live_uncommitted="true"
+          same_revision_router_requires_commit=true
+          same_revision_edge_boundary=live-uncommitted
+          reload_release_router_live active \
+            || fail "same-revision development finalization could not restore active live routing"
+          release_acceptance_token=""
+          ;;
+        *) fail "same-revision development release-router mode is invalid" ;;
+      esac
     fi
     if [[ "$require_public_acceptance" == true ]]; then
       run_public_acceptance || fail "same-revision development public acceptance failed twice"
-      verify_external_edge_if_selected "$candidate_revision" live-uncommitted
+      verify_external_edge_if_selected "$candidate_revision" "$same_revision_edge_boundary"
     fi
     release_is_accepted "$candidate_revision" \
       || fail "same-revision development finalization did not pass active-routing acceptance"
-    if [[ "$same_revision_topology" == router ]]; then
+    if [[ "$same_revision_router_requires_commit" == true ]]; then
       commit_release_router_acceptance "$candidate_revision" "$accepted_revision" \
         || fail "same-revision development finalization could not commit active routing"
       development_router_live_uncommitted="false"
-    else
+    elif [[ "$same_revision_topology" != router ]]; then
       write_accepted_revision "$candidate_revision"
     fi
     printf 'Development already runs accepted dev revision %s.\n' "$candidate_revision"

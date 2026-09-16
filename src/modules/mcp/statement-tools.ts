@@ -16,7 +16,7 @@ export const STATEMENT_MCP_TOOLS = [
       permission: PERMISSIONS.readBanking,
     },
     title: "Preview a bank-statement file import",
-    description: "Validate a bounded extraction from a claimed PDF, CSV, TSV, TXT, XLS, or XLSX bank or credit-card statement. Each positive source amount must declare whether it increases or decreases the account's economic balance; sourceKind is descriptive and never determines the sign. Returns normalized economic signs, exact balance proof, stable row fingerprints, exclusions, and a previewHash. This stores nothing and never posts a journal. Review the result, then use complete_inbox_document with IMPORT_STATEMENT and the unchanged previewHash.",
+    description: "Validate a bounded extraction from a claimed PDF, CSV, TSV, TXT, XLS, or XLSX bank or credit-card file. Read every row page before extraction. Use STATEMENT_BALANCES with exact opening/closing balances to create a draft reconciliation, or TRANSACTION_EXPORT without balances to import observations only until balance evidence is available. Each positive source amount must declare whether it increases or decreases the account's economic balance; sourceKind is descriptive and never determines the sign. Returns normalized economic signs, stable row fingerprints, exclusions, and a previewHash. This stores nothing and never posts a journal. Review the result, then use complete_inbox_document with IMPORT_STATEMENT and the unchanged previewHash.",
     inputSchema: bankStatementExtractionSchema,
     invoke: (args) => previewBankStatementExtraction(args),
   }),

@@ -6,6 +6,7 @@ import {
   demoDateOffset,
   demoPeriodState,
 } from "@/modules/demo/accounting-clock";
+import { calculateAssetSchedule, finiteScheduleEnd } from "@/modules/assets/model";
 import { DEMO_BASELINE_DATE, DEMO_ORGANIZATION_ID, DEMO_USER_ID } from "@/modules/demo/constants";
 import { postJournalInTransaction } from "@/modules/ledger/posting-engine";
 import {
@@ -38,7 +39,10 @@ export { DEMO_ORGANIZATION_ID } from "@/modules/demo/constants";
 
 // Increment whenever the exact reconstructed shared-demo fixture changes.
 // Bootstrap refreshes an obsolete baseline before admitting new visitors.
-export const DEMO_BASELINE_VERSION = 7;
+export const DEMO_BASELINE_VERSION = 8;
+export const DEMO_TRANSACTION_COUNT = 250;
+const DEMO_GENERATED_JOURNAL_COUNT = DEMO_TRANSACTION_COUNT - 6;
+const DEMO_GENERATED_POSTED_COUNT = 220;
 const DEMO_CALENDAR = demoAccountingCalendar();
 const DEMO_FISCAL_YEAR = DEMO_CALENDAR.fiscalYear;
 const DEMO_CURRENT_PERIOD = DEMO_CALENDAR.periodNumber;
@@ -55,6 +59,10 @@ const BASE_ACCOUNTS = [
   ["1100", "Accounts receivable", "ASSET", "AR"],
   ["1400", "Prepaid expenses", "ASSET", "NONE"],
   ["1500", "Recoverable input tax", "ASSET", "NONE"],
+  ["1600", "Computer equipment", "ASSET", "NONE"],
+  ["1610", "Accumulated depreciation", "ASSET", "NONE"],
+  ["1700", "Intangible assets", "ASSET", "NONE"],
+  ["1710", "Accumulated amortization", "ASSET", "NONE"],
   ["2000", "Accounts payable", "LIABILITY", "AP"],
   ["2200", "Sales and use tax payable", "LIABILITY", "NONE"],
   ["2300", "Accrued liabilities", "LIABILITY", "NONE"],
@@ -62,6 +70,8 @@ const BASE_ACCOUNTS = [
   ["4100", "Service revenue", "REVENUE", "NONE"],
   ["4900", "Realized FX gain", "REVENUE", "NONE"],
   ["6100", "Operating expenses", "EXPENSE", "NONE"],
+  ["6180", "Depreciation and amortization expense", "EXPENSE", "NONE"],
+  ["6190", "Impairment and disposal expense", "EXPENSE", "NONE"],
   ["7100", "Realized FX loss", "EXPENSE", "NONE"],
   ["7190", "FX rounding", "EXPENSE", "NONE"],
 ] as const;
@@ -1166,6 +1176,8 @@ async function seedDraftJournal(
     debitAccount: string;
     creditAccount: string;
     amount: string;
+    periodNumber?: number;
+    accountingDate?: string;
   }>,
 ): Promise<string> {
   const setup = await client.query<{
@@ -1182,7 +1194,8 @@ async function seedDraftJournal(
      ) journal_type ON true
      WHERE period.organization_id = $1 AND period.ledger_id = $2
        AND period.fiscal_year = $3 AND period.period_number = $4`,
-    [identity.organizationId, input.foundation.ledgerId, DEMO_FISCAL_YEAR, DEMO_CURRENT_PERIOD],
+    [identity.organizationId, input.foundation.ledgerId, DEMO_FISCAL_YEAR,
+      input.periodNumber ?? DEMO_CURRENT_PERIOD],
   );
   const selected = setup.rows[0];
   const debitCombinationId = input.foundation.combinationIds.get(input.debitAccount);
@@ -1223,7 +1236,7 @@ async function seedDraftJournal(
         selected.journal_type_version,
         idempotencyKey,
         commandHash,
-        DEMO_CALENDAR.accountingDate,
+        input.accountingDate ?? DEMO_CALENDAR.accountingDate,
         input.foundation.currency,
         input.description,
         identity.userId,
@@ -1255,6 +1268,274 @@ async function seedDraftJournal(
     ],
   );
   return journalId;
+}
+
+async function setDemoSeedApplicationContext(
+  client: PoolClient,
+  identity: SeedIdentity,
+  scope: string,
+): Promise<void> {
+  await client.query("SELECT set_config('app.organization_id', $1, true)", [identity.organizationId]);
+  await client.query("SELECT set_config('app.actor_id', $1, true)", [identity.userId]);
+  await client.query("SELECT set_config('app.session_id', '', true)");
+  await client.query("SELECT set_config('app.session_mode', 'real', true)");
+  await client.query("SELECT set_config('app.request_id', $1, true)",
+    [`demo-baseline-v${DEMO_BASELINE_VERSION}:${scope}`]);
+  await client.query("SELECT set_config('app.auth_method', 'DEMO_BASELINE', true)");
+  await client.query("SELECT set_config('app.source_surface', 'WORKER', true)");
+  await client.query("SELECT set_config('app.reason', $1, true)",
+    [`Restore deterministic ${scope} demo evidence`]);
+  await client.query("SELECT set_config('app.demo_write_authorized', 'false', true)");
+}
+
+async function seedDemoAssetData(
+  client: PoolClient,
+  identity: SeedIdentity,
+  foundations: ReadonlyMap<string, SeededFoundation>,
+): Promise<void> {
+  const ca = foundations.get("CA01");
+  const us = foundations.get("US01");
+  if (!ca || !us) throw new Error("Demo asset foundations are incomplete");
+  await setDemoSeedApplicationContext(client, identity, "assets");
+
+  const categorySpecs = [{
+    key: "ca-equipment",
+    foundation: ca,
+    kind: "TANGIBLE",
+    code: "EQUIPMENT",
+    displayName: "Computer and office equipment",
+    costAccount: "1600",
+    contraAccount: "1610",
+    expenseAccount: "6180",
+  }, {
+    key: "us-software",
+    foundation: us,
+    kind: "INTANGIBLE",
+    code: "SOFTWARE",
+    displayName: "Software and indefinite-life rights",
+    costAccount: "1700",
+    contraAccount: "1710",
+    expenseAccount: "6180",
+  }, {
+    key: "ca-prepaids",
+    foundation: ca,
+    kind: "PREPAID",
+    code: "PREPAIDS",
+    displayName: "Operating prepayments",
+    costAccount: "1400",
+    contraAccount: null,
+    expenseAccount: "6100",
+  }] as const;
+  const categoryIds = new Map<string, string>();
+  for (const category of categorySpecs) {
+    const id = fixtureId(identity, `asset-category:${category.key}`);
+    const cost = category.foundation.combinationIds.get(category.costAccount);
+    const contra = category.contraAccount
+      ? category.foundation.combinationIds.get(category.contraAccount)
+      : null;
+    const expense = category.foundation.combinationIds.get(category.expenseAccount);
+    const impairment = category.foundation.combinationIds.get("6190");
+    if (!cost || (category.contraAccount && !contra) || !expense || !impairment) {
+      throw new Error(`Demo asset category ${category.code} has incomplete account mappings`);
+    }
+    await client.query(
+      `INSERT INTO asset_categories(
+         id, organization_id, legal_entity_id, ledger_id, kind, code,
+         display_name, cost_account_combination_id, contra_account_combination_id,
+         expense_account_combination_id, impairment_account_combination_id,
+         disposal_account_combination_id, created_by, created_at, updated_at
+       ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$11,$12,$13,$13)`,
+      [id, identity.organizationId, category.foundation.legalEntityId,
+        category.foundation.ledgerId, category.kind, category.code, category.displayName,
+        cost, contra, expense, impairment, identity.userId, BASELINE_TIMESTAMP],
+    );
+    categoryIds.set(category.key, id);
+  }
+
+  const tangibleStart = demoDateOffset(DEMO_CALENDAR.accountingDate, -120);
+  const intangibleStart = demoDateOffset(DEMO_CALENDAR.accountingDate, -75);
+  const prepaidStart = demoDateOffset(DEMO_CALENDAR.accountingDate, -10);
+  const prepaidEnd = demoDateOffset(DEMO_CALENDAR.accountingDate, 49);
+  const assetSpecs = [{
+    key: "ca-laptop-pool",
+    categoryKey: "ca-equipment",
+    foundation: ca,
+    kind: "TANGIBLE" as const,
+    number: "FA-CA-1001",
+    displayName: "Engineering laptop pool",
+    classification: "FINITE_LIFE" as const,
+    startOn: tangibleStart,
+    endOn: finiteScheduleEnd(tangibleStart, 36),
+    cost: "36000.00",
+    residualValue: "0",
+    usefulLifeMonths: 36,
+    status: "ACTIVE",
+    lifecycle: null,
+  }, {
+    key: "us-platform-software",
+    categoryKey: "us-software",
+    foundation: us,
+    kind: "INTANGIBLE" as const,
+    number: "IA-US-2001",
+    displayName: "Workflow platform software",
+    classification: "FINITE_LIFE" as const,
+    startOn: intangibleStart,
+    endOn: finiteScheduleEnd(intangibleStart, 24),
+    cost: "24000.00",
+    residualValue: "0",
+    usefulLifeMonths: 24,
+    status: "IMPAIRED",
+    lifecycle: "IMPAIRED",
+  }, {
+    key: "ca-insurance-prepaid",
+    categoryKey: "ca-prepaids",
+    foundation: ca,
+    kind: "PREPAID" as const,
+    number: "PP-CA-3001",
+    displayName: "Cyber insurance prepayment",
+    classification: "FINITE_LIFE" as const,
+    startOn: prepaidStart,
+    endOn: prepaidEnd,
+    cost: "6000.00",
+    residualValue: "0",
+    usefulLifeMonths: null,
+    status: "TERMINATED",
+    lifecycle: "TERMINATED",
+  }, {
+    key: "us-trade-name",
+    categoryKey: "us-software",
+    foundation: us,
+    kind: "INTANGIBLE" as const,
+    number: "IA-US-2002",
+    displayName: "Northstar acquired trade name",
+    classification: "INDEFINITE_LIFE" as const,
+    startOn: demoDateOffset(DEMO_CALENDAR.accountingDate, -30),
+    endOn: null,
+    cost: "15000.00",
+    residualValue: "0",
+    usefulLifeMonths: null,
+    status: "ACTIVE",
+    lifecycle: null,
+  }] as const;
+
+  for (const asset of assetSpecs) {
+    const categoryId = categoryIds.get(asset.categoryKey);
+    if (!categoryId) throw new Error(`Missing demo asset category ${asset.categoryKey}`);
+    const schedule = calculateAssetSchedule({
+      kind: asset.kind,
+      classification: asset.classification,
+      inServiceOn: asset.startOn,
+      scheduleEndOn: asset.endOn ?? undefined,
+      usefulLifeMonths: asset.usefulLifeMonths ?? undefined,
+      cost: asset.cost,
+      residualValue: asset.residualValue,
+      currency: asset.foundation.currency,
+    });
+    const id = fixtureId(identity, `asset-register:${asset.key}`);
+    const idempotencyKey = `demo-baseline-v${DEMO_BASELINE_VERSION}:${identity.organizationId}:asset:${asset.key}`;
+    const commandHash = createHash("sha256").update(idempotencyKey).digest("hex");
+    await client.query(
+      `INSERT INTO asset_register(
+         id, organization_id, category_id, legal_entity_id, ledger_id, kind,
+         asset_number, display_name, description, classification,
+         acquisition_date, in_service_on, schedule_end_on, cost, residual_value,
+         useful_life_months, recognition_frequency, location, custodian,
+         vendor_name, source_reference, status, idempotency_key, command_hash,
+         created_by, created_at, updated_at
+       ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$11,$12,$13,$14,$15,
+         'MONTHLY',$16,$17,$18,$19,$20,$21,$22,$23,$24,$24)`,
+      [id, identity.organizationId, categoryId, asset.foundation.legalEntityId,
+        asset.foundation.ledgerId, asset.kind, asset.number, asset.displayName,
+        "Synthetic nightly-reset asset record", asset.classification, asset.startOn,
+        asset.endOn, asset.cost, asset.residualValue,
+        asset.classification === "INDEFINITE_LIFE" ? null :
+          asset.usefulLifeMonths ?? schedule.length,
+        asset.kind === "TANGIBLE" ? "Toronto office" : "Remote operations",
+        asset.kind === "TANGIBLE" ? "IT Operations" : "Finance Operations",
+        "Northstar demo vendor", `DEMO-${asset.number}`, asset.status,
+        idempotencyKey, commandHash, identity.userId, BASELINE_TIMESTAMP],
+    );
+    for (const line of schedule) {
+      await client.query(
+        `INSERT INTO asset_schedule_entries(
+           id, organization_id, asset_id, sequence_number, period_start_on,
+           period_end_on, due_on, amount, status, idempotency_key, created_at
+         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+        [fixtureId(identity, `asset-schedule:${asset.key}:${line.sequenceNumber}`),
+          identity.organizationId, id, line.sequenceNumber, line.periodStartOn,
+          line.periodEndOn, line.dueOn, line.amount,
+          asset.status === "TERMINATED" ? "SKIPPED" : "DUE",
+          `${idempotencyKey}:schedule:${line.sequenceNumber}`, BASELINE_TIMESTAMP],
+      );
+    }
+    const lifecycleEvents = ["CREATED", "SCHEDULED", ...(asset.lifecycle ? [asset.lifecycle] : [])];
+    for (const [index, eventType] of lifecycleEvents.entries()) {
+      await client.query(
+        `INSERT INTO asset_lifecycle_events(
+           id, organization_id, asset_id, event_type, effective_on, amount,
+           details, created_by, created_at
+         ) VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb,$8,$9)`,
+        [fixtureId(identity, `asset-event:${asset.key}:${eventType}`),
+          identity.organizationId, id, eventType, asset.startOn,
+          eventType === "IMPAIRED" ? "1200.00" : eventType === "CREATED" ? asset.cost : null,
+          JSON.stringify({ synthetic: true, sequence: index + 1, scheduleEntryCount: schedule.length }),
+          identity.userId, BASELINE_TIMESTAMP],
+      );
+    }
+  }
+  await clearDemoSeedApplicationContext(client);
+}
+
+async function seedExpandedJournalActivity(
+  client: PoolClient,
+  identity: SeedIdentity,
+  foundations: ReadonlyMap<string, SeededFoundation>,
+): Promise<readonly SeededJournalToPost[]> {
+  const ca = foundations.get("CA01");
+  const us = foundations.get("US01");
+  if (!ca || !us) throw new Error("Demo journal foundations are incomplete");
+  const patterns = [
+    ["6100", "1000", "Operating expense payment"],
+    ["1000", "4100", "Customer receipt"],
+    ["1400", "1000", "Prepaid service purchase"],
+    ["1600", "1000", "Equipment purchase"],
+    ["6100", "2300", "Month-end operating accrual"],
+    ["2300", "1000", "Accrual settlement"],
+  ] as const;
+  const journalsToPost: SeededJournalToPost[] = [];
+  const openPeriodSpan = Math.max(1, Math.min(3, 13 - DEMO_CURRENT_PERIOD));
+  for (let index = 0; index < DEMO_GENERATED_JOURNAL_COUNT; index += 1) {
+    const foundation = index % 2 === 0 ? ca : us;
+    const entityCode = index % 2 === 0 ? "CA01" : "US01";
+    const [debitAccount, creditAccount, description] = patterns[index % patterns.length]!;
+    const shouldPost = index < DEMO_GENERATED_POSTED_COUNT;
+    const periodNumber = shouldPost
+      ? DEMO_CURRENT_PERIOD + (index % openPeriodSpan)
+      : 1 + (index % 12);
+    const accountingDate = monthDate(DEMO_FISCAL_YEAR, periodNumber - 1, 2 + (index % 24));
+    const fixtureKey = `activity-${String(index + 1).padStart(3, "0")}`;
+    const amount = (125 + (index % 37) * 7.25).toFixed(2);
+    const journalId = await seedDraftJournal(client, identity, {
+      fixtureKey,
+      entityCode,
+      foundation,
+      description: `${description} · ${entityCode} · ${fixtureKey}`,
+      debitAccount,
+      creditAccount,
+      amount,
+      periodNumber,
+      accountingDate,
+    });
+    if (shouldPost) {
+      journalsToPost.push({
+        fixtureKey,
+        journalId,
+        ownerModule: "ledger",
+        journalTypeKey: "ledger.manual",
+      });
+    }
+  }
+  return journalsToPost;
 }
 
 function encryptDemoBankField(input: Readonly<{
@@ -1624,6 +1905,8 @@ async function seedOrganizationBaseline(
     ownerModule: "ledger",
     journalTypeKey: "ledger.manual",
   });
+  await seedDemoAssetData(client, identity, foundations);
+  journalsToPost.push(...await seedExpandedJournalActivity(client, identity, foundations));
   return journalsToPost;
 }
 
@@ -1737,7 +2020,11 @@ async function verifySharedDemoBaseline(client: PoolClient, organizationId: stri
        (SELECT count(*) FROM bank_reconciliation_sessions WHERE organization_id = $1)::text AS bank_reconciliations,
        (SELECT count(*) FROM bank_reconciliation_voids WHERE organization_id = $1)::text AS bank_reconciliation_voids,
        (SELECT count(*) FROM bank_rules WHERE organization_id = $1)::text AS bank_rules,
-       (SELECT count(*) FROM bank_draft_proposals WHERE organization_id = $1)::text AS bank_proposals`,
+       (SELECT count(*) FROM bank_draft_proposals WHERE organization_id = $1)::text AS bank_proposals,
+       (SELECT count(*) FROM asset_categories WHERE organization_id = $1)::text AS asset_categories,
+       (SELECT count(*) FROM asset_register WHERE organization_id = $1)::text AS asset_records,
+       (SELECT count(*) FROM asset_schedule_entries WHERE organization_id = $1)::text AS asset_schedules,
+       (SELECT count(*) FROM asset_lifecycle_events WHERE organization_id = $1)::text AS asset_events`,
     [organizationId],
   );
   const counts = result.rows[0];
@@ -1748,21 +2035,21 @@ async function verifySharedDemoBaseline(client: PoolClient, organizationId: stri
     sealed_periods: String(sealedPeriodsPerLedger * 2),
     hard_closed_periods: String(hardClosedPeriodsPerLedger * 2),
     open_periods: String(openPeriodsPerLedger * 2),
-    accounts: "26",
-    combinations: "26",
+    accounts: "38",
+    combinations: "38",
     segments: "10",
     published_hierarchies: "2",
-    hierarchy_nodes: "50",
+    hierarchy_nodes: "62",
     parties: "4",
     addresses: "4",
     party_accounts: "4",
     currency_restricted_party_accounts: "0",
     registrations: "2",
     posting_policies: "2",
-    journals: "6",
-    posted_journals: "5",
-    draft_journals: "1",
-    lines: "16",
+    journals: String(DEMO_TRANSACTION_COUNT),
+    posted_journals: "225",
+    draft_journals: "25",
+    lines: "504",
     source_documents: "8",
     draft_sources: "4",
     posted_sources: "4",
@@ -1774,8 +2061,8 @@ async function verifySharedDemoBaseline(client: PoolClient, organizationId: stri
     allocations: "0",
     journal_relations: "0",
     number_sequences: "2",
-    audit_events: "9",
-    outbox_events: "5",
+    audit_events: "246",
+    outbox_events: "225",
     bank_connections: "1",
     bank_credential_events: "1",
     bank_accounts: "2",
@@ -1787,6 +2074,10 @@ async function verifySharedDemoBaseline(client: PoolClient, organizationId: stri
     bank_reconciliation_voids: "0",
     bank_rules: "1",
     bank_proposals: "1",
+    asset_categories: "3",
+    asset_records: "4",
+    asset_schedules: "63",
+    asset_events: "10",
   };
   if (!counts || Object.entries(expected).some(([key, value]) => counts[key] !== value)) {
     throw new Error(`Shared demo baseline verification failed for ${organizationId}`);
@@ -1841,7 +2132,22 @@ async function verifySharedDemoBaseline(client: PoolClient, organizationId: stri
        (SELECT count(*) FROM audit_events
           WHERE organization_id = $1 AND action = 'journal.posted')::text AS posting_audits,
        (SELECT count(*) FROM outbox_events
-          WHERE organization_id = $1 AND topic = 'ledger.journal-posted')::text AS posting_outbox_events`,
+          WHERE organization_id = $1 AND topic = 'ledger.journal-posted')::text AS posting_outbox_events,
+       (SELECT count(*) FROM asset_register asset
+          WHERE asset.organization_id = $1 AND (
+            (asset.classification = 'INDEFINITE_LIFE' AND EXISTS (
+              SELECT 1 FROM asset_schedule_entries schedule
+              WHERE schedule.organization_id = asset.organization_id
+                AND schedule.asset_id = asset.id
+            )) OR (asset.classification = 'FINITE_LIFE' AND NOT EXISTS (
+              SELECT 1 FROM asset_schedule_entries schedule
+              WHERE schedule.organization_id = asset.organization_id
+                AND schedule.asset_id = asset.id
+              GROUP BY schedule.asset_id
+              HAVING count(*) = asset.useful_life_months
+                AND sum(schedule.amount) = asset.cost - asset.residual_value
+            ))
+          ))::text AS asset_schedule_errors`,
     [organizationId, DEMO_CURRENT_PERIOD],
   );
   const integrityExpected: Readonly<Record<string, string>> = {
@@ -1851,8 +2157,9 @@ async function verifySharedDemoBaseline(client: PoolClient, organizationId: stri
     posted_journal_errors: "0",
     open_balance_errors: "0",
     cross_currency_items: "2",
-    posting_audits: "5",
-    posting_outbox_events: "5",
+    posting_audits: "225",
+    posting_outbox_events: "225",
+    asset_schedule_errors: "0",
   };
   const integrityResult = integrity.rows[0];
   if (
@@ -2120,8 +2427,8 @@ export async function resetSharedDemoOrganization(
         await client.query("SELECT app.reset_shared_demo_extensions($1, $2)", [DEMO_ORGANIZATION_ID, DEMO_USER_ID]);
         await seedTaxPackVersions(client);
         journalsToPost = await seedOrganizationBaseline(client, identity);
-        if (journalsToPost.length !== DEMO_ISSUED_DOCUMENTS.length + 1) {
-          throw new Error("Shared demo did not seed every issued fixture");
+        if (journalsToPost.length !== DEMO_ISSUED_DOCUMENTS.length + 1 + DEMO_GENERATED_POSTED_COUNT) {
+          throw new Error("Shared demo did not seed every posted fixture");
         }
         await client.query("COMMIT");
       } catch (error) {

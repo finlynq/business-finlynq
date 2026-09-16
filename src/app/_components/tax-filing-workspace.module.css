@@ -1,0 +1,25 @@
+.workspace { display:grid; gap:18px; }
+.scopeBar { display:grid; grid-template-columns:minmax(220px,1fr) minmax(260px,1.2fr) minmax(170px,.55fr); align-items:end; gap:14px; padding:16px 18px; border:1px solid var(--line); border-radius:11px; background:#f8fbfb; box-shadow:var(--shadow); }
+.scopeBar label>span,.scopeStatus>span { display:block; margin-bottom:7px; color:#53657a; font-size:10px; font-weight:850; letter-spacing:.06em; text-transform:uppercase; }
+.scopeStatus { min-height:44px; display:grid; align-content:center; padding:0 12px; border-left:3px solid #8ca6a1; }
+.scopeStatus>span { margin-bottom:3px; }
+.scopeStatus strong { font-size:12px; }
+.ready { color:#11604d; }
+.needsAttention { color:#8a530f; }
+.mappingList { display:grid; gap:12px; }
+.mappingField,.valueGroup { min-width:0; padding:15px; border:1px solid #dbe4ea; border-radius:9px; background:#f9fbfc; }
+.mappingField legend,.valueGroup legend { padding:0 6px; color:#334960; font-weight:850; }
+.mappingField>p,.valueGroup>p { margin:0 0 13px; color:var(--muted); font-size:12px; line-height:1.5; }
+.mappingField { display:grid; grid-template-columns:minmax(0,1.4fr) minmax(150px,.65fr); gap:13px; }
+.mappingField>p { grid-column:1 / -1; }
+.mappingField select[multiple] { min-height:96px; padding:5px; }
+.mappingField small,.fileField small { display:block; margin-top:6px; color:var(--muted); font-size:11px; font-weight:500; }
+.modeSwitch { display:grid; grid-template-columns:1fr 1fr; padding:4px; border:1px solid #c9d5de; border-radius:9px; background:#eef3f5; }
+.modeSwitch button { min-height:39px; padding:7px 10px; border:0; border-radius:6px; color:#53657a; background:transparent; font-weight:800; }
+.modeSwitch .activeMode { color:#fff; background:var(--accent); box-shadow:0 2px 7px rgba(20,83,76,.18); }
+.valueGroup { display:grid; gap:12px; }
+.valueGrid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:11px; }
+.valueGrid label>span { min-height:30px; display:flex!important; align-items:center; gap:7px; font-size:11px; line-height:1.25; }
+.valueGrid input { font-family:ui-monospace,monospace; }
+.fileField input { padding:8px; }
+@media (max-width:900px) { .scopeBar{grid-template-columns:1fr}.scopeStatus{border-left:0;border-top:3px solid #8ca6a1;padding:9px 0 0}.mappingField,.valueGrid{grid-template-columns:1fr} }

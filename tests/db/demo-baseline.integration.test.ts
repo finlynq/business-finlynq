@@ -115,6 +115,10 @@ runDatabaseTests("rich nightly demo baseline", () => {
       number_sequences: number;
       audit_events: number;
       outbox_events: number;
+      asset_categories: number;
+      asset_records: number;
+      asset_schedules: number;
+      asset_events: number;
     }>(
       `SELECT
          (SELECT count(*)::int FROM legal_entities WHERE organization_id = $1) AS entities,
@@ -142,15 +146,19 @@ runDatabaseTests("rich nightly demo baseline", () => {
          (SELECT count(*)::int FROM journal_entry_relations WHERE organization_id = $1) AS relations,
          (SELECT count(*)::int FROM ledger_number_sequences WHERE organization_id = $1) AS number_sequences,
          (SELECT count(*)::int FROM audit_events WHERE organization_id = $1) AS audit_events,
-         (SELECT count(*)::int FROM outbox_events WHERE organization_id = $1) AS outbox_events`,
+         (SELECT count(*)::int FROM outbox_events WHERE organization_id = $1) AS outbox_events,
+         (SELECT count(*)::int FROM asset_categories WHERE organization_id = $1) AS asset_categories,
+         (SELECT count(*)::int FROM asset_register WHERE organization_id = $1) AS asset_records,
+         (SELECT count(*)::int FROM asset_schedule_entries WHERE organization_id = $1) AS asset_schedules,
+         (SELECT count(*)::int FROM asset_lifecycle_events WHERE organization_id = $1) AS asset_events`,
       [organizationId],
     );
     expect(result.rows[0]).toEqual({
       entities: 2,
       ledgers: 2,
       periods: 24,
-      accounts: 26,
-      combinations: 26,
+      accounts: 38,
+      combinations: 38,
       segments: 10,
       parties: 4,
       addresses: 4,
@@ -162,14 +170,18 @@ runDatabaseTests("rich nightly demo baseline", () => {
       tax_snapshots: 4,
       subledger_events: 4,
       open_items: 4,
-      journals: 6,
-      lines: 16,
+      journals: 250,
+      lines: 504,
       allocations: 0,
       void_events: 0,
       relations: 0,
       number_sequences: 2,
-      audit_events: 9,
-      outbox_events: 5,
+      audit_events: 246,
+      outbox_events: 225,
+      asset_categories: 3,
+      asset_records: 4,
+      asset_schedules: 63,
+      asset_events: 10,
     });
 
     const lineage = await pool.query<{
@@ -345,7 +357,7 @@ runDatabaseTests("rich nightly demo baseline", () => {
     expect(journalPeriodIntegrity.rows[0]).toEqual({ invalid_journals: 0 });
   });
 
-  it("contains five posted journals, including four source-owned documents, with exact balances", async () => {
+  it("contains 250 balanced journals across draft and posted lifecycle states", async () => {
     const statuses = await pool.query<{
       journals: number;
       posted: number;
@@ -374,12 +386,12 @@ runDatabaseTests("rich nightly demo baseline", () => {
       [organizationId],
     );
     expect(statuses.rows[0]).toEqual({
-      journals: 6,
-      posted: 5,
-      drafts: 1,
+      journals: 250,
+      posted: 225,
+      drafts: 25,
       complete_posted: 4,
-      posting_audits: 5,
-      posting_outbox: 5,
+      posting_audits: 225,
+      posting_outbox: 225,
     });
 
     const balances = await pool.query<{
@@ -410,53 +422,15 @@ runDatabaseTests("rich nightly demo baseline", () => {
        ORDER BY entity.code, journal.journal_type_key`,
       [organizationId],
     );
-    expect(balances.rows).toEqual([
-      {
-        entity_code: "CA01",
-        journal_type_key: "payables.supplier-bill",
-        line_count: 3,
-        header_debit: "4542.60",
-        header_credit: "4542.60",
-        line_debit: "4542.60",
-        line_credit: "4542.60",
-      },
-      {
-        entity_code: "CA01",
-        journal_type_key: "receivables.sales-invoice",
-        line_count: 3,
-        header_debit: "11300.00",
-        header_credit: "11300.00",
-        line_debit: "11300.00",
-        line_credit: "11300.00",
-      },
-      {
-        entity_code: "US01",
-        journal_type_key: "ledger.manual",
-        line_count: 2,
-        header_debit: "2400.00",
-        header_credit: "2400.00",
-        line_debit: "2400.00",
-        line_credit: "2400.00",
-      },
-      {
-        entity_code: "US01",
-        journal_type_key: "payables.supplier-bill",
-        line_count: 3,
-        header_debit: "3272.28",
-        header_credit: "3272.28",
-        line_debit: "3272.28",
-        line_credit: "3272.28",
-      },
-      {
-        entity_code: "US01",
-        journal_type_key: "receivables.sales-invoice",
-        line_count: 3,
-        header_debit: "15477.00",
-        header_credit: "15477.00",
-        line_debit: "15477.00",
-        line_credit: "15477.00",
-      },
-    ]);
+    expect(balances.rows).toHaveLength(225);
+    expect(balances.rows.every((row) =>
+      row.line_count >= 2 &&
+      row.header_debit === row.header_credit &&
+      row.line_debit === row.line_credit &&
+      row.header_debit === row.line_debit,
+    )).toBe(true);
+    expect(balances.rows.filter((row) => row.entity_code === "CA01")).toHaveLength(112);
+    expect(balances.rows.filter((row) => row.entity_code === "US01")).toHaveLength(113);
   });
 
   it("exposes exact CAD and USD customer and supplier open balances", async () => {

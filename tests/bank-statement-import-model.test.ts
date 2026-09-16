@@ -144,4 +144,34 @@ describe("bank statement extraction preview", () => {
     expect(preview.excludedRowCount).toBe(1);
     expect(preview.transactionTotal).toBe("27.500000000");
   });
+
+  it("accepts a reviewed transaction export without inventing statement balances", () => {
+    const preview = previewBankStatementExtraction({
+      ...base,
+      importMode: "TRANSACTION_EXPORT",
+      openingBalance: undefined,
+      closingBalance: undefined,
+    });
+
+    expect(preview).toMatchObject({
+      importMode: "TRANSACTION_EXPORT",
+      openingBalance: null,
+      closingBalance: null,
+      statementMovement: null,
+      movementDifference: null,
+      readyToImport: true,
+    });
+    expect(preview.instruction).toContain("without inventing a balance or reconciliation");
+  });
+
+  it("keeps balances and import mode mutually consistent", () => {
+    expect(() => previewBankStatementExtraction({
+      ...base,
+      importMode: "TRANSACTION_EXPORT",
+    })).toThrow(/must omit opening and closing balances/);
+    expect(() => previewBankStatementExtraction({
+      ...base,
+      openingBalance: undefined,
+    })).toThrow(/require opening and closing balances/);
+  });
 });

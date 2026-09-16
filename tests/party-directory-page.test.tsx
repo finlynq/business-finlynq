@@ -54,6 +54,7 @@ describe("shared party directory page", () => {
       demoOnly: false,
       readiness: "READY",
       canManage: true,
+      canCorrect: true,
       parties: [{
         id: "30000000-0000-4000-8000-000000000001",
         partyNumber: "P-1001",
@@ -105,6 +106,7 @@ describe("shared party directory page", () => {
     expect(markup).toContain("US01 · USA Company · Any currency · control 2000");
     expect(markup).toContain("1 Shared Street · Toronto, ON M5V 2T6 · CA");
     expect(markup).toContain("Add customer / supplier accounting role");
+    expect(markup).toContain("Correct name or status");
     expect(markup).toContain("Party number or exact encrypted name");
   });
 });

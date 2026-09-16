@@ -114,7 +114,7 @@ export function JournalAdminAction({
           </label>
           <label className={styles.confirmation}>
             <input type="checkbox" checked={confirmed} onChange={(event) => setConfirmed(event.target.checked)} disabled={busy} />
-            <span>I understand this is an owner/admin accounting control and the action is permanently audited.</span>
+            <span>I understand this is an owner accounting control and the action is permanently audited.</span>
           </label>
           {message && <p className={`${styles.feedback} ${message.kind === "success" ? styles.success : styles.error}`} role={message.kind === "error" ? "alert" : "status"}>{message.text}</p>}
           <button type="submit" className={`primary-button compact-button ${styles.submit}`} disabled={busy || !confirmed}>

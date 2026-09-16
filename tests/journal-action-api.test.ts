@@ -220,7 +220,7 @@ describe("journal register mutation APIs", () => {
     expect(mocks.consumeLimit).not.toHaveBeenCalled();
   });
 
-  it("binds owner/admin controls, returns 403 for authorization, and preserves 409 for conflicts", async () => {
+  it("binds owner controls, returns 403 for authorization, and preserves 409 for conflicts", async () => {
     const assuredPrincipal: SessionPrincipal = {
       ...mocks.principal,
       organizationName: "Real tenant",
@@ -262,7 +262,7 @@ describe("journal register mutation APIs", () => {
     );
     expect(forbidden.status).toBe(403);
     await expect(forbidden.json()).resolves.toEqual({
-      error: "Only an active organization owner or administrator can delete a journal.",
+      error: "Only an active organization owner can delete a journal.",
     });
 
     const logging = vi.spyOn(console, "error").mockImplementation(() => undefined);

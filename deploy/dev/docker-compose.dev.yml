@@ -1,0 +1,29 @@
+networks:
+  business_finlynq_evidence:
+    ipam:
+      config:
+        - subnet: ${BUSINESS_FINLYNQ_EVIDENCE_SUBNET:?set BUSINESS_FINLYNQ_EVIDENCE_SUBNET}
+  business_finlynq_scanner_egress:
+    ipam:
+      config:
+        - subnet: ${BUSINESS_FINLYNQ_SCANNER_EGRESS_SUBNET:?set BUSINESS_FINLYNQ_SCANNER_EGRESS_SUBNET}
+  business_finlynq_private:
+    ipam:
+      config:
+        - subnet: ${BUSINESS_FINLYNQ_PRIVATE_SUBNET:?set BUSINESS_FINLYNQ_PRIVATE_SUBNET}
+  business_finlynq_egress:
+    ipam:
+      config:
+        - subnet: ${BUSINESS_FINLYNQ_EGRESS_SUBNET:?set BUSINESS_FINLYNQ_EGRESS_SUBNET}
+  business_finlynq_frontend:
+    ipam:
+      config:
+        - subnet: ${BUSINESS_FINLYNQ_FRONTEND_SUBNET:?set BUSINESS_FINLYNQ_FRONTEND_SUBNET}
+  business_finlynq_router_control:
+    ipam:
+      config:
+        - subnet: ${BUSINESS_FINLYNQ_ROUTER_CONTROL_SUBNET:?set BUSINESS_FINLYNQ_ROUTER_CONTROL_SUBNET}
+  business_finlynq_restore_drill:
+    ipam:
+      config:
+        - subnet: ${BUSINESS_FINLYNQ_RESTORE_DRILL_SUBNET:?set BUSINESS_FINLYNQ_RESTORE_DRILL_SUBNET}

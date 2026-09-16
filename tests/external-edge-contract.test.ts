@@ -317,7 +317,10 @@ describe("shared-edge contract v1 ownership", () => {
       developmentDeployer.match(
         /verify_external_edge_if_selected "\$[a-z_]+" live-uncommitted/gu,
       ),
-    ).toHaveLength(3);
+    ).toHaveLength(2);
+    expect(developmentDeployer).toContain(
+      'verify_external_edge_if_selected "$candidate_revision" "$same_revision_edge_boundary"',
+    );
     expect(developmentDeployer).toContain(
       'verify_external_edge_if_selected "$candidate_revision"\n  elif',
     );

@@ -105,9 +105,10 @@ function toolError(error: unknown): Readonly<{
   remediation?: string;
   lineNumber?: number;
   accountCombinationFailures?: readonly AccountCombinationFailure[];
+  details?: JSONValue;
 }> {
   const candidate = error && typeof error === "object"
-    ? error as { code?: unknown; message?: unknown; retryAfterSeconds?: unknown }
+    ? error as { code?: unknown; message?: unknown; retryAfterSeconds?: unknown; safeDetails?: unknown }
     : null;
   if (isRetryableOperationError(error)) {
     const suppliedRetry = typeof candidate?.retryAfterSeconds === "number"
@@ -142,6 +143,9 @@ function toolError(error: unknown): Readonly<{
   return {
     code: subledgerFailure?.code ?? code,
     message: rawMessage.replace(/[\r\n]+/g, " ").slice(0, 700),
+    ...(candidate?.safeDetails && typeof candidate.safeDetails === "object"
+      ? { details: toJsonValue(candidate.safeDetails) }
+      : {}),
     ...(fxFailure?.providerFailureCode
       ? { providerFailureCode: fxFailure.providerFailureCode }
       : {}),

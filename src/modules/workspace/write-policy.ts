@@ -37,6 +37,7 @@ export function mutationContext(
     authMethod: transactionAuthMethod(principal),
     sourceSurface: options.sourceSurface ?? "UI",
     reason: options.reason,
+    ...(principal.mcpConnectionId ? { mcpConnectionId: principal.mcpConnectionId } : {}),
     ...(principal.sessionMode === "demo" ? { demoWriteAuthorized: true } : {}),
   };
 }

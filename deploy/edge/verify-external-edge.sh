@@ -5,18 +5,24 @@ umask 077
 
 readonly production_environment="/etc/business-finlynq/compose.env"
 readonly development_environment="/etc/business-finlynq-development/compose.env"
+readonly dev_environment="/etc/business-finlynq-dev/compose.env"
 readonly production_project="business-finlynq"
 readonly development_project="business-finlynq-development"
+readonly dev_project="business-finlynq-dev"
 readonly production_network="business_finlynq_edge"
 readonly development_network="business_finlynq_development_edge"
+readonly dev_network="business_finlynq_dev_edge"
 readonly production_alias="production-app"
 readonly development_alias="development-app"
+readonly dev_alias="dev-app"
 readonly production_private_frontend_network="business_finlynq_private-frontend"
 readonly production_private_app_alias="release-app"
 readonly production_loopback_port="3100"
 readonly development_loopback_port="3200"
+readonly dev_loopback_port="3201"
 readonly production_hostname="business.finlynq.com"
 readonly development_hostname="stage.business.finlynq.com"
+readonly dev_hostname="dev.business.finlynq.com"
 readonly central_project="finlynq-shared-edge"
 readonly central_service="edge"
 readonly central_container_name="finlynq-shared-edge-edge-1"
@@ -43,8 +49,10 @@ allow_legacy_minimal_production_health="false"
 allow_pre_router_production="false"
 allow_production_router_maintenance="false"
 allow_development_router_maintenance="false"
+allow_dev_router_maintenance="false"
 expect_production_live_uncommitted="false"
 expect_development_live_uncommitted="false"
+expect_dev_live_uncommitted="false"
 allow_first_router_forward_repair="false"
 first_router_forward_repair_journal_sha256=""
 temporary_files=()
@@ -525,6 +533,25 @@ resolve_development_public_contract() {
   fi
 }
 
+resolve_dev_public_contract() {
+  local durable_mode="$1"
+  [[ "$durable_mode" == active || "$durable_mode" == maintenance ]] \
+    || fail "dev release-router mode is invalid"
+  if [[ "$expect_dev_live_uncommitted" == true ]]; then
+    [[ "$allow_dev_router_maintenance" == false ]] \
+      || fail "dev router verification flags are ambiguous"
+    [[ "$durable_mode" == maintenance ]] \
+      || fail "dev live-uncommitted verification requires durable maintenance mode"
+    printf 'active'
+  elif [[ "$durable_mode" == maintenance ]]; then
+    [[ "$allow_dev_router_maintenance" == true ]] \
+      || fail "dev maintenance was not explicitly allowed"
+    printf 'maintenance'
+  else
+    printf 'active'
+  fi
+}
+
 verify_central_edge() {
   local container inspection bindings expected_bindings network
   container="$(container_for_service "$central_project" "$central_service")"
@@ -694,8 +721,10 @@ while (( $# > 0 )); do
     --allow-pre-router-production) allow_pre_router_production="true"; shift ;;
     --allow-production-router-maintenance) allow_production_router_maintenance="true"; shift ;;
     --allow-development-router-maintenance) allow_development_router_maintenance="true"; shift ;;
+    --allow-dev-router-maintenance) allow_dev_router_maintenance="true"; shift ;;
     --expect-production-live-uncommitted) expect_production_live_uncommitted="true"; shift ;;
     --expect-development-live-uncommitted) expect_development_live_uncommitted="true"; shift ;;
+    --expect-dev-live-uncommitted) expect_dev_live_uncommitted="true"; shift ;;
     --allow-first-router-forward-repair)
       (( $# >= 2 )) || fail "--allow-first-router-forward-repair requires a digest"
       allow_first_router_forward_repair="true"; first_router_forward_repair_journal_sha256="$2"; shift 2 ;;
@@ -703,10 +732,12 @@ while (( $# > 0 )); do
   esac
 done
 
-[[ "$scope" == preflight || "$scope" == development || "$scope" == production || "$scope" == full ]] \
-  || fail "--scope must be preflight, development, production, or full"
-[[ "$warmup_host" == none || "$warmup_host" == production || "$warmup_host" == development ]] \
-  || fail "--warmup-host must be production or development"
+[[ "$scope" == preflight || "$scope" == dev || "$scope" == development \
+  || "$scope" == production || "$scope" == full ]] \
+  || fail "--scope must be preflight, dev, development, production, or full"
+[[ "$warmup_host" == none || "$warmup_host" == production \
+  || "$warmup_host" == development || "$warmup_host" == dev ]] \
+  || fail "--warmup-host must be production, development, or dev"
 [[ -z "$expected_production_revision" || "$expected_production_revision" =~ ^[a-f0-9]{40}$ ]] \
   || fail "expected production revision must be a full Git SHA"
 [[ -z "$first_router_forward_repair_journal_sha256" || "$first_router_forward_repair_journal_sha256" =~ ^[a-f0-9]{64}$ ]] \
@@ -747,6 +778,11 @@ if [[ "$expect_development_live_uncommitted" == true ]]; then
     && "$allow_development_router_maintenance" == false ]] \
     || fail "live-uncommitted verification is restricted to the development deployment boundary"
 fi
+if [[ "$expect_dev_live_uncommitted" == true ]]; then
+  [[ "$scope" == dev && "$warmup_host" == dev \
+    && "$allow_dev_router_maintenance" == false ]] \
+    || fail "live-uncommitted verification is restricted to the dev deployment boundary"
+fi
 [[ "$(id -u)" == 0 ]] || fail "run this command as root"
 for command_name in awk curl docker env grep jq mktemp openssl readlink rm sha256sum sleep sort stat timeout; do
   command -v "$command_name" >/dev/null 2>&1 || fail "required command is unavailable: $command_name"
@@ -756,12 +792,15 @@ required_networks=()
 [[ "$scope" == preflight || "$scope" == production || "$scope" == full ]] \
   && required_networks+=("$production_network")
 [[ "$scope" == development || "$scope" == full ]] && required_networks+=("$development_network")
+[[ "$scope" == dev || "$scope" == full ]] && required_networks+=("$dev_network")
 edge_container="$(verify_central_edge "${required_networks[@]}")"
 
 production_mode=""
 development_mode=""
 production_revision=""
 development_revision=""
+dev_mode=""
+dev_revision=""
 if [[ "$scope" == preflight ]]; then
   project_query="$(docker ps --all --filter "label=com.docker.compose.project=$production_project" --format '{{.ID}}')"
   [[ -z "$project_query" ]] || fail "production preflight requires an empty Business Compose project"
@@ -806,6 +845,37 @@ if [[ "$scope" == development || "$scope" == full ]]; then
     "$development_alias" "$development_loopback_port" "$development_revision" false false \
     "$expect_development_live_uncommitted")"
 fi
+if [[ "$scope" == dev || "$scope" == full ]]; then
+  [[ -f "$dev_environment" && ! -L "$dev_environment" ]] \
+    || fail "the dev Compose environment is unavailable"
+  docker network inspect "$dev_network" | jq -e '
+    length == 1 and .[0].Name == "business_finlynq_dev_edge" and
+    .[0].Driver == "bridge" and .[0].Internal == true and
+    .[0].Attachable == false and .[0].Ingress == false and
+    (.[0].IPAM.Config | length) == 1 and
+    .[0].IPAM.Config[0].Subnet == "10.240.10.112/28" and
+    .[0].Labels["com.finlynq.edge-owner"] == "finlynq-shared-edge" and
+    .[0].Labels["com.finlynq.edge-contract"] == "v1" and
+    .[0].Labels["com.finlynq.application"] == "business-finlynq" and
+    .[0].Labels["com.finlynq.environment"] == "dev"
+  ' >/dev/null || fail "the central dev ingress network differs from its contract"
+  [[ "$(read_environment_value "$dev_environment" BUSINESS_FINLYNQ_EDGE_MODE)" == external ]] \
+    || fail "dev must use the central shared edge"
+  [[ "$(read_environment_value "$dev_environment" BUSINESS_FINLYNQ_EDGE_NETWORK)" \
+    == "$dev_network" \
+    && "$(read_environment_value "$dev_environment" BUSINESS_FINLYNQ_APP_NETWORK_ALIAS)" \
+      == "$dev_alias" \
+    && "$(read_environment_value "$dev_environment" BUSINESS_FINLYNQ_APP_PORT)" \
+      == "$dev_loopback_port" ]] \
+    || fail "dev network alias or loopback port differs from its contract"
+  dev_revision="$(read_environment_value \
+    "$dev_environment" BUSINESS_FINLYNQ_IMAGE_REVISION)"
+  [[ "$dev_revision" =~ ^[a-f0-9]{40}$ && ! "$dev_revision" =~ ^0+$ ]] \
+    || fail "dev revision metadata is invalid"
+  dev_mode="$(verify_business_runtime "$dev_project" "$dev_network" \
+    "$dev_alias" "$dev_loopback_port" "$dev_revision" false false \
+    "$expect_dev_live_uncommitted")"
+fi
 
 if [[ "$scope" == preflight ]]; then
   headers="$(mktemp)"; temporary_files+=("$headers")
@@ -840,6 +910,15 @@ if [[ "$scope" == development || "$scope" == full ]]; then
     active) public_contract_is_valid "$development_hostname" "$development_warmup" ;;
     maintenance) public_maintenance_contract_is_valid "$development_hostname" "$development_warmup" ;;
     *) fail "development public contract resolution is invalid" ;;
+  esac
+fi
+if [[ "$scope" == dev || "$scope" == full ]]; then
+  dev_warmup=false; [[ "$warmup_host" == dev ]] && dev_warmup=true
+  dev_public_contract="$(resolve_dev_public_contract "$dev_mode")"
+  case "$dev_public_contract" in
+    active) public_contract_is_valid "$dev_hostname" "$dev_warmup" ;;
+    maintenance) public_maintenance_contract_is_valid "$dev_hostname" "$dev_warmup" ;;
+    *) fail "dev public contract resolution is invalid" ;;
   esac
 fi
 

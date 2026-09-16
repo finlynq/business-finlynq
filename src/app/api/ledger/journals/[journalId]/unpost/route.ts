@@ -17,7 +17,7 @@ export const POST = createMutationRoute({
   maximumBytes: 16_000,
   successStatus: 200,
   unauthorizedMessage: "An authorized real organization session is required.",
-  forbiddenMessage: "Only an active organization owner or administrator can unpost a journal.",
+  forbiddenMessage: "Only an active organization owner can unpost a journal.",
   invalidParamsMessage: "An authorized organization journal is required.",
   invalidParamsStatus: 403,
   invalidMessage: "Provide an audit reason of at least 10 characters.",

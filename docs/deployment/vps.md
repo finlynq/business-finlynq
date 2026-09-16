@@ -63,10 +63,12 @@ project `finlynq-shared-edge`, service `edge`, container
 `com.finlynq.edge-contract=v1`.
 
 Business Compose joins existing external networks only. Production must expose
-`production-app:3000` on `business_finlynq_edge`; development must expose
-`development-app:3000` on `business_finlynq_development_edge`. Application
-installers fail if those networks are absent and never create or remove them.
-Set `BUSINESS_FINLYNQ_EDGE_MODE=external` and `TRUSTED_PROXY_HOPS=1`.
+`production-app:3000` on `business_finlynq_edge`; hosted development must expose
+`dev-app:3000` on `business_finlynq_dev_edge`; and staging must expose
+`development-app:3000` on the historically named
+`business_finlynq_development_edge`. Application installers fail if those
+networks are absent and never create or remove them. Set
+`BUSINESS_FINLYNQ_EDGE_MODE=external` and `TRUSTED_PROXY_HOPS=1`.
 
 `deploy/edge/verify-external-edge.sh` checks the central identity, the relevant
 Business network attachment, Business runtime alias ownership, Business public

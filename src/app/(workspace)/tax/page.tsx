@@ -1,7 +1,9 @@
 import Link from "next/link";
 import { formatMoney } from "@/kernel/money";
 import { loadTaxDeterminations } from "@/modules/reporting/tenant-reporting";
+import { loadTaxFilingWorkspace } from "@/modules/tax/filing-workspace";
 import { requireWorkspacePrincipal } from "@/modules/workspace/access";
+import { TaxFilingWorkspace } from "../../_components/tax-filing-workspace.client";
 import { DemoNotice, EmptyState, PageHeader, StatusPill } from "../../_components/ui";
 
 function displayAmount(currency: string, amount: string): string {
@@ -22,15 +24,20 @@ function requiresReview(status: string): boolean {
 export default async function TaxPage({ searchParams }: { searchParams: Promise<{ status?: string }> }) {
   const principal = await requireWorkspacePrincipal("/app/tax");
   const reviewOnly = (await searchParams).status === "review";
-  const determinations = await loadTaxDeterminations(principal, { reviewOnly });
+  const [determinations, filingWorkspace] = await Promise.all([
+    loadTaxDeterminations(principal, { reviewOnly }),
+    loadTaxFilingWorkspace(principal),
+  ]);
   const reviewCount = determinations.filter((decision) => requiresReview(decision.status)).length;
+  const filingReviewCount = filingWorkspace.filings.filter((filing) => filing.status === "REVIEW_REQUIRED").length;
+  const mappedScopes = new Set(filingWorkspace.mappings.map((mapping) => `${mapping.ledgerId}|${mapping.templateId}`)).size;
 
   return (
     <div className="page-content">
       <PageHeader
-        eyebrow="Tax decision engine"
-        title={reviewOnly ? "Tax exceptions" : "Tax determinations"}
-        description="Versioned posted outcomes and immutable draft decisions attached to source documents. Unsupported facts are held for review instead of silently becoming zero tax."
+        eyebrow="Tax compliance workspace"
+        title={reviewOnly ? "Tax exceptions" : "Prepare and reconcile tax returns"}
+        description="Use shared, versioned tax templates with client-specific account mappings. Prepare a return from posted ledger activity or load a historical filing and compare every reported field with the system."
         actions={reviewOnly ? <Link className="secondary-button" href="/app/tax">View all determinations</Link> : undefined}
       />
       {principal.sessionMode === "demo" && (
@@ -38,6 +45,95 @@ export default async function TaxPage({ searchParams }: { searchParams: Promise<
           This list reflects the shared writable demo. Transaction and tax changes from every visitor remain visible until the seeded business is restored nightly.
         </DemoNotice>
       )}
+
+      {!reviewOnly && <>
+        <section className="metric-grid" aria-label="Tax filing overview">
+          <article className="metric-card"><span className="metric-signal signal-blue" /><p>Shared templates</p><div><strong>{filingWorkspace.templates.length}</strong></div><span>Reusable across every client; definitions and rules are versioned.</span></article>
+          <article className="metric-card"><span className="metric-signal signal-green" /><p>Mapped client scopes</p><div><strong>{mappedScopes}</strong></div><span>Each company and ledger retains its own immutable mapping history.</span></article>
+          <article className="metric-card"><span className="metric-signal signal-purple" /><p>Filing workpapers</p><div><strong>{filingWorkspace.filings.length}</strong></div><span>Prepared returns and imported historical filing snapshots.</span></article>
+          <article className="metric-card"><span className="metric-signal signal-amber" /><p>Reconciliation review</p><div><strong>{filingReviewCount}</strong></div><span>Workpapers with a reported variance or failed template rule.</span></article>
+        </section>
+
+        <TaxFilingWorkspace workspace={filingWorkspace} />
+
+        <section className="panel" aria-labelledby="tax-template-rules-title">
+          <div className="panel-heading">
+            <div>
+              <p className="eyebrow">Template-owned controls</p>
+              <h2 id="tax-template-rules-title">Fields, formulas and validation rules</h2>
+              <p>Rules travel with the template version—not with a client mapping—so every client is evaluated consistently.</p>
+            </div>
+            <span className="attention-count">{filingWorkspace.templates.reduce((total, template) => total + template.definition.validations.length, 0)}</span>
+          </div>
+          <div className="tax-card-grid">
+            {filingWorkspace.templates.map((template) => <article key={template.id}>
+              <div><strong>{template.name}</strong><small>{template.authority} · {template.jurisdiction} · form {template.formCode} · version {template.version}</small></div>
+              <dl>
+                <div><dt>Fields</dt><dd>{template.definition.fields.length}</dd></div>
+                <div><dt>Rules</dt><dd>{template.definition.validations.length}</dd></div>
+              </dl>
+              <p>{template.definition.instructions}</p>
+              <details className="mapping-details">
+                <summary>Review embedded rules</summary>
+                <ul className="checklist large-checklist">
+                  {template.definition.validations.map((rule) => <li key={rule.key}>
+                    <span className="check-open" aria-hidden="true">{rule.type === "PERCENTAGE_RANGE" ? "%" : rule.type === "THRESHOLD" ? "≤" : "✓"}</span>
+                    <div><strong>{rule.label}</strong><small>{rule.description}</small></div>
+                    <span className="status-pill status-neutral">{rule.severity}</span>
+                  </li>)}
+                </ul>
+              </details>
+              <a className="text-link" href={template.sourceUri} target="_blank" rel="noreferrer">Official source <span aria-hidden="true">↗</span></a>
+            </article>)}
+          </div>
+        </section>
+
+        <section className="panel" aria-labelledby="filing-history-title">
+          <div className="panel-heading">
+            <div>
+              <p className="eyebrow">Immutable workpapers</p>
+              <h2 id="filing-history-title">Prepared and imported returns</h2>
+            </div>
+            <span className="attention-count">{filingWorkspace.filings.length}</span>
+          </div>
+          {filingWorkspace.filings.length ? <div className="table-scroll" tabIndex={0} aria-label="Tax filing workpapers; scroll horizontally if needed">
+            <table>
+              <caption className="sr-only">Prepared returns and historical filing reconciliations</caption>
+              <thead><tr><th>Period / source</th><th>Client scope</th><th>Template</th><th>Result</th><th>Exceptions</th><th>Reconciliation detail</th></tr></thead>
+              <tbody>{filingWorkspace.filings.map((filing) => {
+                const variances = filing.reconciliation.filter((field) => field.status !== "MATCHED");
+                const failedRules = filing.validations.filter((rule) => rule.status === "FAIL");
+                const currency = filingWorkspace.templates.find((template) => template.id === filing.templateId)?.currencyCode ?? "CAD";
+                return <tr key={filing.id}>
+                  <td><strong>{filing.periodStart} – {filing.periodEnd}</strong><small>{filing.filingType === "PREPARED" ? "Prepared declaration" : `Historical · ${filing.externalReference ?? "No reference"}`}</small></td>
+                  <td><strong>{filing.entityCode}</strong><small>{filing.ledgerCode}</small></td>
+                  <td><strong>{filing.templateName}</strong><small>Version {filing.templateVersion}</small></td>
+                  <td><StatusPill status={filing.status} /></td>
+                  <td><strong>{variances.length} field{variances.length === 1 ? "" : "s"}</strong><small>{failedRules.length} rule exception{failedRules.length === 1 ? "" : "s"}</small></td>
+                  <td>
+                    <details className="mapping-details">
+                      <summary>Compare values</summary>
+                      <div className="table-scroll">
+                        <table>
+                          <thead><tr><th>Line</th><th>System</th><th>Filed</th><th>Difference</th><th>Status</th></tr></thead>
+                          <tbody>{filing.reconciliation.map((field) => <tr key={field.fieldKey}>
+                            <td><strong>{field.code}</strong><small>{field.label}</small></td>
+                            <td className="amount-cell">{formatMoney(field.calculatedValue, currency)}</td>
+                            <td className="amount-cell">{field.reportedValue === null ? "—" : formatMoney(field.reportedValue, currency)}</td>
+                            <td className="amount-cell">{field.difference === null ? "—" : formatMoney(field.difference, currency)}</td>
+                            <td><StatusPill status={field.status} /></td>
+                          </tr>)}</tbody>
+                        </table>
+                      </div>
+                    </details>
+                  </td>
+                </tr>;
+              })}</tbody>
+            </table>
+          </div> : <EmptyState title="No filing workpapers yet">Prepare a return or load a historical filing after mapping the template’s account-backed fields.</EmptyState>}
+          <p className="panel-note">A workpaper records the template version, mapping version, posted-ledger calculation, reported values, differences, and rule outcomes used at that moment. It does not transmit a filing to a tax authority.</p>
+        </section>
+      </>}
 
       {!reviewOnly && reviewCount > 0 && (
         <section className="attention-banner" aria-labelledby="tax-review-title">
@@ -53,8 +149,8 @@ export default async function TaxPage({ searchParams }: { searchParams: Promise<
       <section className="panel" aria-labelledby="tax-determinations-title">
         <div className="panel-heading">
           <div>
-            <p className="eyebrow">Immutable evidence</p>
-            <h2 id="tax-determinations-title">{reviewOnly ? "Manual review required" : "Recorded decisions"}</h2>
+            <p className="eyebrow">Transaction tax evidence</p>
+            <h2 id="tax-determinations-title">{reviewOnly ? "Manual review required" : "Recorded transaction decisions"}</h2>
           </div>
           <span className="attention-count">{determinations.length}</span>
         </div>

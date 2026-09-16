@@ -24,6 +24,7 @@ import {
 import { withWorkspaceTenantRead } from "@/modules/workspace/tenant-read";
 import { supportedCurrencies } from "@/kernel/money";
 import { createCommandFingerprint } from "@/kernel/command-fingerprint";
+import { isRetryableDatabaseError } from "@/db/retryable";
 import { demoAccountingDate } from "@/modules/demo/accounting-clock";
 import {
   readOrganizationFxProviderPolicy,
@@ -36,6 +37,27 @@ import {
 } from "./accounting-configuration-contract";
 
 export { accountSegmentKeys, type AccountSegmentKey } from "./accounting-configuration-contract";
+
+class AccountCombinationConfigurationError extends Error {
+  readonly code = "ACCOUNT_COMBINATION_CONFIGURATION_REJECTED";
+  readonly safeDetails: Readonly<{
+    legalEntityId: string;
+    ledgerId: string;
+    accountId: string;
+    effectiveFrom: string | null;
+    effectiveTo: string | null;
+    equivalentCombinationExists: boolean;
+    constraintCategory: string;
+    remediation: string;
+    retryGuidance: string;
+  }>;
+
+  constructor(details: AccountCombinationConfigurationError["safeDetails"], options?: ErrorOptions) {
+    super("The account combination was rejected by a tenant-safe configuration control.", options);
+    this.name = "AccountCombinationConfigurationError";
+    this.safeDetails = details;
+  }
+}
 
 const countrySchema = z.string().trim().toUpperCase().regex(/^[A-Z]{2}$/);
 const regionSchema = z.string().trim().toUpperCase().regex(/^[A-Z0-9-]{2,10}$/);
@@ -331,6 +353,11 @@ export type AccountingConfigurationDto = Readonly<{
       code: string;
       displayName: string;
       accountClass: string;
+      controlKind: "NONE" | "AR" | "AP";
+      postable: boolean;
+      active: boolean;
+      validFrom: string;
+      validTo: string | null;
     }>[];
   }>[];
   accountCombinations: readonly Readonly<{
@@ -575,12 +602,15 @@ export async function loadAccountingConfiguration(
       ),
       client.query<{
         id: string; ledger_id: string; code: string; display_name: string; account_class: string;
+        control_kind: "NONE" | "AR" | "AP"; postable: boolean; active: boolean;
+        valid_from: string; valid_to: string | null;
       }>(
         `SELECT account.id, account.ledger_id, account.code,
-           account.display_name, account.class::text AS account_class
+           account.display_name, account.class::text AS account_class,
+           account.control_kind, account.postable, account.active,
+           account.valid_from::text, account.valid_to::text
          FROM gl_accounts account
          WHERE account.organization_id = $1
-           AND account.active AND account.postable
          ORDER BY account.ledger_id, account.code, account.id
          LIMIT 5000`,
         [principal.organizationId],
@@ -835,6 +865,11 @@ export async function loadAccountingConfiguration(
             code: account.code,
             displayName: account.display_name,
             accountClass: account.account_class,
+            controlKind: account.control_kind,
+            postable: account.postable,
+            active: account.active,
+            validFrom: account.valid_from,
+            validTo: account.valid_to,
           })),
       })),
       accountCombinations,
@@ -878,7 +913,7 @@ async function mutateConfiguration<T>(input: Readonly<{
   assertConfigurationMutationSession(input.principal);
   const context = mutationContext(input.principal, input.requestId, {
     reason: input.reason,
-    sourceSurface: input.sourceSurface ?? "API",
+    sourceSurface: input.sourceSurface ?? (input.principal.mcpConnectionId ? "MCP" : "API"),
   });
   assertTenantWritesEnabled(context);
   return withTenantTransaction(context, async (client) => {
@@ -998,18 +1033,40 @@ export async function createAccountCombination(input: Readonly<{
   requestId: string;
 }> & z.output<typeof accountCombinationConfigurationSchema>) {
   return mutateConfiguration(input, async (client) => {
-    const result = await client.query<{ id: string }>(
-      `SELECT (created).id
-       FROM (
-         SELECT app.accounting_create_account_combination(
-           $1::uuid,$2::uuid,$3::uuid,$4::uuid,$5::uuid,$6::uuid,
-           $7::uuid,$8::uuid,$9::uuid,$10::uuid,$11::uuid,$12::uuid,
-           $13::uuid,$14::uuid,$15::uuid
-         ) AS created
-       ) mutation`,
+    const account = await client.query<{ valid_from: string; valid_to: string | null }>(
+      `SELECT account.valid_from::text, account.valid_to::text
+       FROM legal_entities entity
+       JOIN ledgers ledger
+         ON ledger.organization_id = entity.organization_id
+        AND ledger.legal_entity_id = entity.id
+       JOIN gl_accounts account
+         ON account.organization_id = ledger.organization_id
+        AND account.ledger_id = ledger.id
+       WHERE entity.organization_id = $1 AND entity.id = $2 AND entity.active
+         AND ledger.id = $3 AND ledger.active
+         AND account.id = $4 AND account.active AND account.postable`,
+      [input.principal.organizationId, input.legalEntityId, input.ledgerId, input.accountId],
+    );
+    const selectedAccount = account.rows[0];
+    const existing = await client.query<{ id: string; active: boolean }>(
+      `SELECT id, active FROM account_combinations
+       WHERE organization_id = $1 AND ledger_id = $2 AND entity_id = $3 AND account_id = $4
+         AND subaccount_id IS NOT DISTINCT FROM $5::uuid
+         AND department_id IS NOT DISTINCT FROM $6::uuid
+         AND intercompany_entity_id IS NOT DISTINCT FROM $7::uuid
+         AND custom_1_id IS NOT DISTINCT FROM $8::uuid
+         AND custom_2_id IS NOT DISTINCT FROM $9::uuid
+         AND custom_3_id IS NOT DISTINCT FROM $10::uuid
+         AND custom_4_id IS NOT DISTINCT FROM $11::uuid
+         AND custom_5_id IS NOT DISTINCT FROM $12::uuid
+         AND custom_6_id IS NOT DISTINCT FROM $13::uuid
+         AND custom_7_id IS NOT DISTINCT FROM $14::uuid
+         AND custom_8_id IS NOT DISTINCT FROM $15::uuid
+       FOR SHARE`,
       [
-        input.legalEntityId,
+        input.principal.organizationId,
         input.ledgerId,
+        input.legalEntityId,
         input.accountId,
         input.subaccountId,
         input.departmentId,
@@ -1022,12 +1079,71 @@ export async function createAccountCombination(input: Readonly<{
         input.custom6Id,
         input.custom7Id,
         input.custom8Id,
-        input.replacesCombinationId,
       ],
     );
-    const id = result.rows[0]?.id;
-    if (!id) throw new Error("Account combination was not created");
-    return { id };
+    const equivalent = existing.rows[0];
+    try {
+      const result = await client.query<{ id: string }>(
+        `SELECT (created).id
+         FROM (
+           SELECT app.accounting_create_account_combination(
+             $1::uuid,$2::uuid,$3::uuid,$4::uuid,$5::uuid,$6::uuid,
+             $7::uuid,$8::uuid,$9::uuid,$10::uuid,$11::uuid,$12::uuid,
+             $13::uuid,$14::uuid,$15::uuid
+           ) AS created
+         ) mutation`,
+        [
+          input.legalEntityId,
+          input.ledgerId,
+          input.accountId,
+          input.subaccountId,
+          input.departmentId,
+          input.intercompanyEntityId,
+          input.custom1Id,
+          input.custom2Id,
+          input.custom3Id,
+          input.custom4Id,
+          input.custom5Id,
+          input.custom6Id,
+          input.custom7Id,
+          input.custom8Id,
+          input.replacesCombinationId,
+        ],
+      );
+      const id = result.rows[0]?.id;
+      if (!id) throw new Error("Account combination was not created");
+      return {
+        id,
+        idempotentReplay: Boolean(equivalent?.active && !input.replacesCombinationId),
+      };
+    } catch (error) {
+      if (isRetryableDatabaseError(error)) throw error;
+      const sqlState = error && typeof error === "object" && "code" in error
+        ? String(error.code)
+        : "";
+      const constraintCategory = sqlState === "22023"
+        ? "TENANT_CONFIGURATION_MISMATCH"
+        : sqlState === "55000"
+          ? "REQUIRED_SEGMENT_OR_DEPENDENCY"
+          : new Set(["28000", "42501"]).has(sqlState)
+            ? "AUTHORIZATION_CHANGED"
+            : sqlState === "23505"
+              ? "EQUIVALENT_COMBINATION_CONFLICT"
+              : "INTEGRITY_CONTROL";
+      throw new AccountCombinationConfigurationError({
+        legalEntityId: input.legalEntityId,
+        ledgerId: input.ledgerId,
+        accountId: input.accountId,
+        effectiveFrom: selectedAccount?.valid_from ?? null,
+        effectiveTo: selectedAccount?.valid_to ?? null,
+        equivalentCombinationExists: Boolean(equivalent),
+        constraintCategory,
+        remediation: selectedAccount
+          ? "Verify required segment values and their tenant, ledger, active, and validity state before retrying the same normalized combination."
+          : "Select an active, postable natural account owned by the selected active entity ledger.",
+        retryGuidance: "Retry with the same normalized identifiers; an equivalent active combination is returned without duplication.",
+      }, { cause: error });
+    }
   });
 }
 

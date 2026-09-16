@@ -59,22 +59,32 @@ export const bankStatementRowSchema = z.object({
 
 export const bankStatementExtractionSchema = z.object({
   extractionVersion: z.literal("finlynq.statement.v1"),
+  importMode: z.enum(["STATEMENT_BALANCES", "TRANSACTION_EXPORT"]).default("STATEMENT_BALANCES"),
   institution: safeText(200),
   maskedAccount: safeText(100),
   accountKind: z.enum(["CASH", "CREDIT_CARD"]),
   currency: currencySchema,
   statementStartOn: z.iso.date(),
   statementEndOn: z.iso.date(),
-  balanceConvention: z.enum(["SIGNED_ACCOUNT_BALANCE", "POSITIVE_AMOUNT_OWED"]),
-  openingBalance: exactDecimalSchema,
-  closingBalance: exactDecimalSchema,
+  balanceConvention: z.enum(["SIGNED_ACCOUNT_BALANCE", "POSITIVE_AMOUNT_OWED"]).default("SIGNED_ACCOUNT_BALANCE"),
+  openingBalance: exactDecimalSchema.optional(),
+  closingBalance: exactDecimalSchema.optional(),
   namedBalances: z.array(z.object({
     name: safeText(100),
     amount: exactDecimalSchema,
   }).strict()).max(20).default([]),
   pageCount: z.number().int().min(1).max(1_000).optional(),
   rows: z.array(bankStatementRowSchema).min(1).max(1_000),
-}).strict();
+}).strict().superRefine((value, context) => {
+  const hasOpening = value.openingBalance !== undefined;
+  const hasClosing = value.closingBalance !== undefined;
+  if (value.importMode === "STATEMENT_BALANCES" && (!hasOpening || !hasClosing)) {
+    context.addIssue({ code: "custom", message: "Statement-balance imports require opening and closing balances" });
+  }
+  if (value.importMode === "TRANSACTION_EXPORT" && (hasOpening || hasClosing)) {
+    context.addIssue({ code: "custom", message: "Transaction exports must omit opening and closing balances; use statement-balance mode when they are available" });
+  }
+});
 
 export const bankStatementMappingSchema = z.discriminatedUnion("mode", [
   z.object({
@@ -112,21 +122,22 @@ export type NormalizedBankStatementRow = Readonly<{
 
 export type BankStatementPreview = Readonly<{
   extractionVersion: "finlynq.statement.v1";
+  importMode: "STATEMENT_BALANCES" | "TRANSACTION_EXPORT";
   institution: string;
   maskedAccount: string;
   accountKind: "CASH" | "CREDIT_CARD";
   currencyCode: string;
   statementStartOn: string;
   statementEndOn: string;
-  openingBalance: string;
-  closingBalance: string;
+  openingBalance: string | null;
+  closingBalance: string | null;
   namedBalances: readonly Readonly<{ name: string; amount: string }>[];
   rows: readonly NormalizedBankStatementRow[];
   includedRowCount: number;
   excludedRowCount: number;
   transactionTotal: string;
-  statementMovement: string;
-  movementDifference: string;
+  statementMovement: string | null;
+  movementDifference: string | null;
   issues: readonly Readonly<{ code: string; message: string; rowNumber?: number }>[];
   readyToImport: boolean;
   previewHash: string;
@@ -164,8 +175,8 @@ export function previewBankStatementExtraction(input: BankStatementExtraction): 
   const normalizeBalance = (value: string) => fixed(
     parsed.balanceConvention === "POSITIVE_AMOUNT_OWED" ? new Decimal(value).negated() : value,
   );
-  const openingBalance = normalizeBalance(parsed.openingBalance);
-  const closingBalance = normalizeBalance(parsed.closingBalance);
+  const openingBalance = parsed.openingBalance === undefined ? null : normalizeBalance(parsed.openingBalance);
+  const closingBalance = parsed.closingBalance === undefined ? null : normalizeBalance(parsed.closingBalance);
   const namedBalances = parsed.namedBalances.map((balance) => ({
     name: canonicalText(balance.name)!,
     amount: normalizeBalance(balance.amount),
@@ -219,9 +230,11 @@ export function previewBankStatementExtraction(input: BankStatementExtraction): 
 
   const included = rows.filter((row) => !row.excluded);
   const transactionTotal = included.reduce((total, row) => total.plus(row.amount), new Decimal(0));
-  const statementMovement = new Decimal(closingBalance).minus(openingBalance);
-  const movementDifference = statementMovement.minus(transactionTotal);
-  if (!movementDifference.isZero()) {
+  const statementMovement = openingBalance === null || closingBalance === null
+    ? null
+    : new Decimal(closingBalance).minus(openingBalance);
+  const movementDifference = statementMovement === null ? null : statementMovement.minus(transactionTotal);
+  if (movementDifference !== null && !movementDifference.isZero()) {
     issues.push({
       code: "STATEMENT_MOVEMENT_MISMATCH",
       message: "Included rows must equal closing balance minus opening balance before import.",
@@ -233,6 +246,7 @@ export function previewBankStatementExtraction(input: BankStatementExtraction): 
 
   const canonicalPreview = {
     extractionVersion: parsed.extractionVersion,
+    importMode: parsed.importMode,
     institution: canonicalText(parsed.institution),
     maskedAccount: canonicalText(parsed.maskedAccount),
     accountKind: parsed.accountKind,
@@ -247,6 +261,7 @@ export function previewBankStatementExtraction(input: BankStatementExtraction): 
   };
   return {
     extractionVersion: parsed.extractionVersion,
+    importMode: parsed.importMode,
     institution: canonicalPreview.institution!,
     maskedAccount: canonicalPreview.maskedAccount!,
     accountKind: parsed.accountKind,
@@ -260,13 +275,15 @@ export function previewBankStatementExtraction(input: BankStatementExtraction): 
     includedRowCount: included.length,
     excludedRowCount: rows.length - included.length,
     transactionTotal: fixed(transactionTotal),
-    statementMovement: fixed(statementMovement),
-    movementDifference: fixed(movementDifference),
+    statementMovement: statementMovement === null ? null : fixed(statementMovement),
+    movementDifference: movementDifference === null ? null : fixed(movementDifference),
     issues,
     readyToImport: issues.length === 0,
     previewHash: digest(canonicalPreview),
     instruction: issues.length === 0
-      ? "Review the normalized signs, account mapping, period, balances, exclusions, and previewHash before confirming import. Import creates immutable banking observations and a draft reconciliation; it never posts a journal."
+      ? parsed.importMode === "STATEMENT_BALANCES"
+        ? "Review the normalized signs, account mapping, period, balances, exclusions, and previewHash before confirming import. Import creates immutable banking observations and a draft reconciliation; it never posts a journal."
+        : "Review every paginated source row, normalized sign, account mapping, date range, exclusions, and previewHash before confirming this transaction export. Import creates immutable banking observations without inventing a balance or reconciliation; it never posts a journal."
       : "Correct every reported extraction issue and preview again. Do not import this result.",
   };
 }

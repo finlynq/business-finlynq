@@ -124,32 +124,52 @@ export const SETUP_MCP_TOOLS: readonly McpToolDefinition[] = [
   }),
   defineMcpTool({
     policy: { name: "finlynq_setup_update_party", group: "SETUP", access: "WRITE", permission: PERMISSIONS.manageParties },
-    title: "Update or deactivate party",
-    description: "Change a party's encrypted display name or active state using expected current values. Deactivation also deactivates its customer/supplier accounts and preserves all history.",
+    title: "Owner: correct or deactivate party",
+    description: "Owner-only, MFA-backed correction of a party's encrypted display name or active state using exact expected values and a permanent reason. Stable IDs, document links, and history are preserved; duplicate normalized names return a warning.",
     inputSchema: updatePartySchema,
     destructive: true,
-    invoke: (args, runtime) => updateParty({ context: mcpMutationContext(runtime.principal, runtime.requestId, args.reason), ...args }),
+    invoke: (args, runtime) => updateParty({
+      context: mutationContext(runtime.sessionPrincipal, runtime.requestId, {
+        reason: args.reason,
+        sourceSurface: "MCP",
+      }),
+      ...args,
+    }),
   }),
   defineMcpTool({
     policy: { name: "finlynq_setup_create_gl_account", group: "SETUP", access: "WRITE", permission: PERMISSIONS.manageSegments },
     title: "Create chart-of-accounts account",
-    description: "Create an idempotent natural account in one ledger with class, control kind, posting state, and validity dates. Create an account combination separately before booking to it.",
+    description: "Create an idempotent natural account in one ledger with class, control kind, posting state, and validity dates. Set createDefaultCombination to create the all-null/default entity combination atomically; a combination failure rolls back the account.",
     inputSchema: createGlAccountSchema,
-    invoke: (args, runtime) => createGlAccount({ context: mcpMutationContext(runtime.principal, runtime.requestId, `Create GL account ${args.code}`), ...args }),
+    idempotent: true,
+    invoke: (args, runtime) => createGlAccount({
+      context: mutationContext(runtime.sessionPrincipal, runtime.requestId, {
+        reason: `Create GL account ${args.code}`,
+        sourceSurface: "MCP",
+      }),
+      ...args,
+    }),
   }),
   defineMcpTool({
     policy: { name: "finlynq_setup_update_gl_account", group: "SETUP", access: "WRITE", permission: PERMISSIONS.manageSegments },
     title: "Update or deactivate GL account",
-    description: "Update display name, posting state, active state, or end date using exact expected values. Used account identity and bank cash mappings remain protected by database guards.",
+    description: "Update display name, posting state, active state, start date, or end date using exact expected values. Earlier start dates preserve IDs; later dates return structured dependency conflicts when they would invalidate accounting history.",
     inputSchema: updateGlAccountSchema,
     destructive: true,
-    invoke: (args, runtime) => updateGlAccount({ context: mcpMutationContext(runtime.principal, runtime.requestId, args.reason), ...args }),
+    invoke: (args, runtime) => updateGlAccount({
+      context: mutationContext(runtime.sessionPrincipal, runtime.requestId, {
+        reason: args.reason,
+        sourceSurface: "MCP",
+      }),
+      ...args,
+    }),
   }),
   defineMcpTool({
     policy: { name: "finlynq_setup_create_account_combination", group: "SETUP", access: "WRITE", permission: PERMISSIONS.manageSegments },
     title: "Create account combination",
-    description: "Create a valid entity, natural-account, subaccount, department, intercompany, and custom-dimension combination. Use null for unused optional segments.",
+    description: "Idempotently create or return a valid entity, natural-account, subaccount, department, intercompany, and custom-dimension combination. Use null for unused optional segments.",
     inputSchema: accountCombinationConfigurationSchema,
+    idempotent: true,
     invoke: (args, runtime) => createAccountCombination({ principal: runtime.sessionPrincipal, requestId: runtime.requestId, ...args }),
   }),
   defineMcpTool({

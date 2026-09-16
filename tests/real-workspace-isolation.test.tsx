@@ -37,11 +37,13 @@ const mocks = vi.hoisted(() => {
       demoOnly: boolean;
       readiness: "EMPTY_ORGANIZATION" | "READY";
       canManage: boolean;
+      canCorrect: boolean;
       parties: never[];
     }> => ({
       demoOnly: false,
       readiness: "EMPTY_ORGANIZATION" as const,
       canManage: false,
+      canCorrect: false,
       parties: [],
     })),
     loadPartyAccountCreationOptions: vi.fn(async (): Promise<readonly Readonly<{
@@ -111,6 +113,15 @@ const mocks = vi.hoisted(() => {
       }],
     })),
     loadTaxDeterminations: vi.fn(async () => []),
+    loadTaxFilingWorkspace: vi.fn(async () => ({
+      templates: [],
+      ledgers: [],
+      accounts: [],
+      mappings: [],
+      filings: [],
+      canManageMappings: false,
+      canPrepareFilings: false,
+    })),
     loadSubledgerWorkspace: vi.fn(async (_principal: unknown, ownerModule: "receivables" | "payables") => ({
       ownerModule,
       businessKind: ownerModule === "receivables" ? "SALES_INVOICE" as const : "SUPPLIER_BILL" as const,
@@ -168,6 +179,9 @@ vi.mock("@/modules/reporting/tenant-reporting", async (importOriginal) => ({
 }));
 vi.mock("@/modules/subledger/workspace", () => ({
   loadSubledgerWorkspace: mocks.loadSubledgerWorkspace,
+}));
+vi.mock("@/modules/tax/filing-workspace", () => ({
+  loadTaxFilingWorkspace: mocks.loadTaxFilingWorkspace,
 }));
 vi.mock("@/modules/workspace/entity-context", () => ({
   currentWorkspaceEntityContext: mocks.currentWorkspaceEntityContext,
@@ -276,6 +290,7 @@ describe("real organization workspace isolation", () => {
       expect.objectContaining({ entityCode: "SECOND", currency: "USD" }),
     );
     expect(mocks.loadTaxDeterminations).toHaveBeenCalledWith(mocks.principal, { reviewOnly: false });
+    expect(mocks.loadTaxFilingWorkspace).toHaveBeenCalledWith(mocks.principal);
     expect(mocks.loadSubledgerWorkspace).toHaveBeenCalledWith(
       mocks.principal,
       "payables",
@@ -375,6 +390,7 @@ describe("real organization workspace isolation", () => {
       demoOnly: false,
       readiness: "READY" as const,
       canManage: true,
+      canCorrect: true,
       parties: [],
     });
     mocks.loadPartyAccountCreationOptions.mockResolvedValueOnce([{

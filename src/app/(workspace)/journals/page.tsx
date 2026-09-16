@@ -43,7 +43,7 @@ export default async function JournalsPage({ searchParams }: { searchParams: Pro
       <PageHeader
         eyebrow="General ledger"
         title="Journals"
-        description="Review the debit, credit, and ending posted balance for every booked account. Manual-journal owner/admin controls are audited; source-owned corrections stay in their source module."
+        description="Review the debit, credit, and ending posted balance for every booked account. Manual-journal owner controls are audited; source-owned corrections stay in their source module."
         actions={workspace.canDraft ? <Link className="primary-button" href="/app/journals/new">＋ New journal</Link> : undefined}
       />
       {workspace.demoOnly && <DemoNotice>This is one shared writable demo company. Everyone sees changes until the seeded company is restored nightly.</DemoNotice>}
