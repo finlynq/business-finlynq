@@ -42,72 +42,108 @@ service. Stop if any configured hostname, checkout, Compose project, or service
 points at a different environment. A successful response from the requested
 hostname is not sufficient proof when two hostnames route to the same backend.
 
-### Current automation gap
+Each hosted environment has an independent checkout, Compose namespace,
+database volume, secret set, deployment state, stable router, loopback port,
+edge network, alias, public route, deployment service, and finalization
+verifier. Never put `dev.business.finlynq.com` and
+`stage.business.finlynq.com` in the same central-edge site block or point them
+at the same upstream.
 
-The checked-in `deploy/development/*` automation currently reads `origin/stage`,
-uses `/home/deploy/business-finlynq-stage`, and requires
-`stage.business.finlynq.com`. Despite the historical `development` names in its
-paths, Compose project, and systemd service, it is the **staging deployer** and
-must not be used for a hosted-development request.
-
-The shared edge may still expose `dev.business.finlynq.com` as a compatibility
-route to the staging backend. That alias is not an independent deployment of
-`dev`. Until a dedicated, isolated `dev` checkout, Compose project, state,
-database, secrets, deployment signal, and verifier are implemented, the
-repository cannot safely complete a hosted-development deployment. Report that
-gap instead of promoting `dev` to `stage` or treating the compatibility route
-as a successful dev deployment.
-
-A same-repository push to `stage` must pass the complete `quality-gate` job before CI publishes the immutable `deploy-stage-<full-sha>` tag. The staging timer accepts only that exact tag and a fast-forward `origin/stage` commit. Production instead accepts only the exact keyless deployment-signal attestation for `origin/main` documented in [Continuous deployment from main](./continuous-deployment.md).
+A same-repository push to `dev` must pass the complete `quality-gate` job
+before CI publishes the immutable `deploy-development-<full-sha>` tag. The dev
+timer accepts only that exact tag and a fast-forward `origin/dev` commit. A
+push to `stage` similarly publishes `deploy-stage-<full-sha>`, which only the
+staging timer consumes. Production instead accepts only the exact keyless
+deployment-signal attestation for `origin/main` documented in
+[Continuous deployment from main](./continuous-deployment.md).
 
 ## Development checkout
 
 Daily work happens on `dev` in `/home/deploy/business-finlynq-dev`. This
-checkout is the source for the future hosted-development deployment, but the
-current repository does not yet provide that deployment path. Unit, lint, type,
-and static checks can run from this checkout without a long-lived database;
+checkout is also the only source for the hosted-development deployment. Unit,
+lint, type, and static checks can run from this checkout without a long-lived database;
 database integration tests should use a disposable local PostgreSQL database
 through the `TEST_DATABASE_URL`, `TEST_APP_DATABASE_URL`, and
 `TEST_AUTH_WORKER_DATABASE_URL` settings documented in the repository README.
 Never point development work or tests at the staging or production database,
-and never substitute the staging deployer for the missing dev deployer.
+and never substitute the staging deployer for the dev deployer.
 
-## Current staging isolation contract
+## Deployment isolation contract
 
-The existing non-production automation deploys staging. It uses its own
-checkout, Compose project, loopback port, database volume, networks, secrets,
-and deployment state:
+The three deployment targets use disjoint resources:
 
-| Boundary | Staging | Production |
-| --- | --- | --- |
-| Checkout | `/home/deploy/business-finlynq-stage` | `/home/deploy/business-finlynq` |
-| Compose project | `business-finlynq-development` | `business-finlynq` |
-| Configuration | `/etc/business-finlynq-development` | `/etc/business-finlynq` |
-| State | `/var/lib/business-finlynq-development` | `/var/lib/business-finlynq` |
-| Loopback router ingress | `3200` | `3100` |
-| Database volume | `business_finlynq_development_pgdata` | `business_finlynq_pgdata` |
-| Public hostname | `stage.business.finlynq.com` | `business.finlynq.com` |
+| Boundary | Development | Staging | Production |
+| --- | --- | --- | --- |
+| Branch | `dev` | `stage` | `main` |
+| Checkout | `/home/deploy/business-finlynq-dev` | `/home/deploy/business-finlynq-stage` | `/home/deploy/business-finlynq` |
+| Compose project | `business-finlynq-dev` | `business-finlynq-development` | `business-finlynq` |
+| Configuration | `/etc/business-finlynq-dev` | `/etc/business-finlynq-development` | `/etc/business-finlynq` |
+| State | `/var/lib/business-finlynq-dev` | `/var/lib/business-finlynq-development` | `/var/lib/business-finlynq` |
+| Deployment service | `business-finlynq-dev-deployment.service` | `business-finlynq-development-deployment.service` | `business-finlynq-continuous-deployment.service` |
+| Loopback router ingress | `3201` | `3200` | `3100` |
+| Database volume | `business_finlynq_dev_pgdata` | `business_finlynq_development_pgdata` | `business_finlynq_pgdata` |
+| Edge network | `business_finlynq_dev_edge` | `business_finlynq_development_edge` | `business_finlynq_edge` |
+| Edge alias | `dev-app` | `development-app` | `production-app` |
+| Public hostname | `dev.business.finlynq.com` | `stage.business.finlynq.com` | `business.finlynq.com` |
 
-The staging and production deployment services acquire
+All three deployment services acquire
 `/var/lib/business-finlynq/deployment-host.lock`, so builds and migrations
 cannot overlap on the shared server. Historical resource names containing
 `development` refer to this staging stack and do not make it a deployment of
-the `dev` branch. The centrally owned shared edge joins the staging ingress
-network only to reach the `development-app` alias; the application database and
-private network remain inaccessible from production containers.
+the `dev` branch. The centrally owned shared edge joins each ingress network
+only to reach that environment's alias; application databases and private
+networks remain inaccessible from the edge and from the other environments.
 
 Staging data is disposable and must never be restored from an unsanitized production backup. Staging starts with demo login/writes and the real-business write engine enabled, but real account login, signup, email delivery, Turnstile, and bank feeds disabled. Enable those identity gates only after installing staging-specific provider credentials; never copy production provider credentials or encryption keys.
 
 ## Installation
 
-After `stage` exists remotely and its first CI run has published the immutable signal, run from a clean reviewed checkout:
+The central edge owns and provisions `business_finlynq_dev_edge`; the Business
+installer validates its exact subnet and labels but never creates or repairs
+it. For the first hosted-development deployment, provision that reviewed
+network, then run from the clean `dev` checkout while the public route still
+points nowhere or remains in maintenance:
+
+```bash
+sudo bash deploy/dev/install-dev.sh \
+  --external-edge \
+  --skip-public-acceptance
+sudo systemctl start business-finlynq-dev-deployment.service
+```
+
+Verify the private loopback endpoint at `127.0.0.1:3201`, the exact running
+revision, isolated database volume, and `dev-app` ownership on
+`business_finlynq_dev_edge`. Then release the separately reviewed shared-edge
+change that routes only `dev.business.finlynq.com` to `dev-app:3000`. Once that
+route is live, require public acceptance, enable the timer, reconcile the same
+accepted revision, and run the root-owned finalization verifier:
+
+```bash
+sudo bash deploy/dev/install-dev.sh \
+  --external-edge \
+  --require-public-acceptance \
+  --enable
+sudo systemctl start business-finlynq-dev-deployment.service
+sudo /usr/local/sbin/business-finlynq-verify-dev-finalized
+```
+
+Do not begin the staging promotion unless the last command ends with
+`FINALIZED revision=<full-sha>` for the exact `origin/dev` revision under
+review.
+
+After `stage` exists remotely and its CI run has published the immutable
+staging signal, run from the clean `/home/deploy/business-finlynq-stage`
+checkout:
 
 ```bash
 sudo bash deploy/development/install-development.sh --enable
 sudo systemctl start business-finlynq-development-deployment.service
 ```
 
-The installer creates independent random database credentials and encryption secrets without printing them. It also creates the externally connected staging edge network and gives `deploy` narrowly scoped permission to start, inspect, and read the journal for the historically named development deployment service.
+Each installer creates independent random database credentials and encryption
+secrets without printing them. Neither installer creates its externally
+connected edge network. Each gives `deploy` narrowly scoped permission to
+start, inspect, and read the journal for only its matching deployment service.
 
 The installer also publishes a root-owned, read-only finalization verifier. It
 accepts no arguments and derives the accepted revision from protected state, so
