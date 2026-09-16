@@ -257,6 +257,7 @@ BEGIN
     'tax_pack_versions', 'entity_tax_registrations',
     'tax_determination_snapshots', 'tax_filing_templates',
     'tax_account_mapping_sets', 'tax_account_mapping_lines', 'tax_filings',
+    'asset_categories', 'asset_register', 'asset_schedule_entries', 'asset_lifecycle_events',
     'bank_connections', 'bank_connection_credential_events', 'bank_external_accounts', 'bank_sync_runs',
     'bank_observations', 'bank_observation_versions', 'bank_balance_anchors',
     'bank_statement_imports', 'bank_statement_import_rows',
@@ -282,7 +283,8 @@ BEGIN
     'bank_reconciliation_sessions', 'mcp_connections', 'mcp_oauth_codes',
     'mcp_access_tokens', 'mcp_refresh_tokens', 'mcp_approvals',
     'mcp_tool_executions',
-    'document_storage_connections', 'document_storage_oauth', 'document_inbox_items'
+    'document_storage_connections', 'document_storage_oauth', 'document_inbox_items',
+    'asset_register', 'asset_schedule_entries'
   ] LOOP
     IF to_regclass(format('public.%I', selected_name)) IS NOT NULL THEN
       EXECUTE format('GRANT INSERT, UPDATE ON TABLE public.%I TO business_finlynq_app', selected_name);
@@ -295,6 +297,7 @@ BEGIN
     'open_item_void_events',
     'tax_determination_snapshots', 'tax_account_mapping_sets',
     'tax_account_mapping_lines', 'tax_filings',
+    'asset_categories', 'asset_lifecycle_events',
     'bank_connection_credential_events',
     'bank_observations', 'bank_observation_versions', 'bank_balance_anchors',
     'bank_statement_imports', 'bank_statement_import_rows',

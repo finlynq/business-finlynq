@@ -60,8 +60,9 @@ function previewValue(value: string) {
   return { value: value.slice(0, PREVIEW_CELL_CHARACTERS), truncated: true };
 }
 
-function parseDelimitedPreview(text: string, delimiter: string) {
+function parseDelimitedPreview(text: string, delimiter: string, page: number) {
   const previewRows: string[][] = [];
+  const headers: string[] = [];
   let row: string[] = [];
   let field = "";
   let inQuotes = false;
@@ -72,10 +73,13 @@ function parseDelimitedPreview(text: string, delimiter: string) {
   let currentColumns = 0;
   let truncatedCells = 0;
 
+  const firstRow = (page - 1) * PREVIEW_ROWS;
+  const finalRow = firstRow + PREVIEW_ROWS;
   const commitField = () => {
     const preview = previewValue(field);
     if (preview.truncated) truncatedCells += 1;
-    if (rowCount < PREVIEW_ROWS && currentColumns < PREVIEW_COLUMNS) row.push(preview.value);
+    if (rowCount >= firstRow && rowCount < finalRow && currentColumns < PREVIEW_COLUMNS) row.push(preview.value);
+    if (rowCount === 0 && currentColumns < PREVIEW_COLUMNS) headers.push(preview.value);
     currentColumns += 1;
     field = "";
     closedQuote = false;
@@ -83,7 +87,7 @@ function parseDelimitedPreview(text: string, delimiter: string) {
   const commitRow = () => {
     commitField();
     maximumColumns = Math.max(maximumColumns, currentColumns);
-    if (rowCount < PREVIEW_ROWS) previewRows.push(row);
+    if (rowCount >= firstRow && rowCount < finalRow) previewRows.push(row);
     row = [];
     currentColumns = 0;
     rowCount += 1;
@@ -118,7 +122,7 @@ function parseDelimitedPreview(text: string, delimiter: string) {
     rowCount,
     dataRowCount: Math.max(0, rowCount - 1),
     maximumColumns,
-    headers: previewRows[0] ?? [],
+    headers,
     quoting: quotedFields ? "RFC4180_DOUBLE_QUOTE" : "NONE",
     quotedFields,
     truncated: rowCount > PREVIEW_ROWS || maximumColumns > PREVIEW_COLUMNS || truncatedCells > 0,
@@ -126,18 +130,19 @@ function parseDelimitedPreview(text: string, delimiter: string) {
       rowLimit: PREVIEW_ROWS,
       columnLimit: PREVIEW_COLUMNS,
       cellCharacterLimit: PREVIEW_CELL_CHARACTERS,
-      rowsOmitted: Math.max(0, rowCount - PREVIEW_ROWS),
+      rowsOmitted: Math.max(0, rowCount - previewRows.length),
       columnsOmitted: Math.max(0, maximumColumns - PREVIEW_COLUMNS),
       cellsTruncated: truncatedCells,
     },
   };
 }
 
-function plainTextPreview(text: string) {
+function plainTextPreview(text: string, page: number) {
   const lines = text.split(/\r\n|\r|\n/);
   if (/[\r\n]$/.test(text)) lines.pop();
   let truncatedCells = 0;
-  const rows = lines.slice(0, PREVIEW_ROWS).map((line) => {
+  const firstRow = (page - 1) * PREVIEW_ROWS;
+  const rows = lines.slice(firstRow, firstRow + PREVIEW_ROWS).map((line) => {
     const value = previewValue(line);
     if (value.truncated) truncatedCells += 1;
     return [value.value];
@@ -155,27 +160,32 @@ function plainTextPreview(text: string) {
       rowLimit: PREVIEW_ROWS,
       columnLimit: 1,
       cellCharacterLimit: PREVIEW_CELL_CHARACTERS,
-      rowsOmitted: Math.max(0, lines.length - PREVIEW_ROWS),
+      rowsOmitted: Math.max(0, lines.length - rows.length),
       columnsOmitted: 0,
       cellsTruncated: truncatedCells,
     },
   };
 }
 
-function textPreview(bytes: Buffer, format: InboxDocumentFormat, canonicalMimeType: string) {
+function textPreview(bytes: Buffer, format: InboxDocumentFormat, canonicalMimeType: string, page: number) {
   const decoded = decodeStructuredText(bytes);
   const delimiter = detectDelimiter(decoded.text, format);
-  const parsed = delimiter ? parseDelimitedPreview(decoded.text, delimiter) : plainTextPreview(decoded.text);
+  const parsed = delimiter ? parseDelimitedPreview(decoded.text, delimiter, page) : plainTextPreview(decoded.text, page);
+  const pageCount = Math.max(1, Math.ceil(parsed.rowCount / PREVIEW_ROWS));
+  if (page > pageCount) throw new StorageError("STORAGE_PAGE_INVALID", "This text document does not contain that row page.");
   return {
     contentKind: "DELIMITED_TEXT" as const,
     mimeType: canonicalMimeType,
-    pageCount: 1,
+    pageCount,
     text: parsed.rows.map((row) => row.join("\t")).join("\n"),
     preview: {
       kind: format,
       encoding: decoded.encoding,
       delimiter: delimiterLabel(delimiter),
       lineEnding: lineEnding(decoded.text),
+      page,
+      firstSourceRow: parsed.rowCount === 0 ? 0 : ((page - 1) * PREVIEW_ROWS) + 1,
+      lastSourceRow: Math.min(page * PREVIEW_ROWS, parsed.rowCount),
       ...parsed,
     },
     routingTarget: "BANKING_IMPORT_REVIEW" as const,
@@ -288,8 +298,7 @@ function workbookPreview(bytes: Buffer, format: "XLS" | "XLSX", canonicalMimeTyp
 
 export function structuredDocumentPreview(bytes: Buffer, format: InboxDocumentFormat, canonicalMimeType: string, page: number) {
   if (["CSV", "TSV", "TEXT"].includes(format)) {
-    if (page !== 1) throw new StorageError("STORAGE_PAGE_INVALID", "Text documents have one preview page.");
-    return textPreview(bytes, format, canonicalMimeType);
+    return textPreview(bytes, format, canonicalMimeType, page);
   }
   if (format === "XLS" || format === "XLSX") return workbookPreview(bytes, format, canonicalMimeType, page);
   throw new StorageError("STORAGE_TYPE_MISMATCH", "This document is not a structured text or workbook file.");
