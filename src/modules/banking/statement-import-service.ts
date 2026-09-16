@@ -370,7 +370,7 @@ async function reconciliationForImport(
   client: PoolClient,
   context: TenantTransactionContext,
   account: ExternalAccount,
-  preview: BankStatementPreview,
+  preview: BankStatementPreview & { openingBalance: string; closingBalance: string },
   statementImportId: string,
   key: Readonly<{ dek: Buffer }>,
 ): Promise<Readonly<{ id: string; reused: boolean }>> {
@@ -688,9 +688,16 @@ export async function importBankStatementInTransaction(
     }
 
     const statementImportId = randomUUID();
-    const reconciliation = await reconciliationForImport(
-      client, input.context, account, preview, statementImportId, key,
-    );
+    const reconciliation = preview.importMode === "STATEMENT_BALANCES"
+      ? await reconciliationForImport(
+        client,
+        input.context,
+        account,
+        preview as BankStatementPreview & { openingBalance: string; closingBalance: string },
+        statementImportId,
+        key,
+      )
+      : null;
     await client.query(
       "SELECT pg_advisory_xact_lock(hashtextextended('business-finlynq:bank-sync-connection:' || $1::text || ':' || $2::text, 0))",
       [input.context.organizationId, account.connection_id],
@@ -851,15 +858,17 @@ export async function importBankStatementInTransaction(
       });
     }
 
-    await client.query(
-      `INSERT INTO bank_balance_anchors(
-         organization_id, external_account_id, sync_run_id, balance,
-         available_balance, currency_code, balance_at
-       ) VALUES ($1,$2,$3,$4,NULL,$5,($6::date + interval '1 day' - interval '1 millisecond'))
-       ON CONFLICT (external_account_id, sync_run_id) DO NOTHING`,
-      [input.context.organizationId, account.id, syncRunId,
-        preview.closingBalance, preview.currencyCode, preview.statementEndOn],
-    );
+    if (preview.importMode === "STATEMENT_BALANCES") {
+      await client.query(
+        `INSERT INTO bank_balance_anchors(
+           organization_id, external_account_id, sync_run_id, balance,
+           available_balance, currency_code, balance_at
+         ) VALUES ($1,$2,$3,$4,NULL,$5,($6::date + interval '1 day' - interval '1 millisecond'))
+         ON CONFLICT (external_account_id, sync_run_id) DO NOTHING`,
+        [input.context.organizationId, account.id, syncRunId,
+          preview.closingBalance, preview.currencyCode, preview.statementEndOn],
+      );
+    }
 
     const extractionCiphertext = encryptedValue({
       plaintext: JSON.stringify({ preview, mapping: input.mapping, confirmedBy: input.context.actorId }),
@@ -875,14 +884,14 @@ export async function importBankStatementInTransaction(
          id, organization_id, inbox_item_id, evidence_asset_id,
          external_account_id, sync_run_id, reconciliation_session_id,
          source_sha256, extraction_version, extraction_ciphertext, key_version,
-         preview_hash, statement_start_on, statement_end_on, opening_balance,
+         preview_hash, import_mode, statement_start_on, statement_end_on, opening_balance,
          closing_balance, currency_code, included_row_count, excluded_row_count,
          duplicate_row_count, created_by
-       ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)`,
+       ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)`,
       [statementImportId, input.context.organizationId, input.inboxItemId,
-        input.evidenceAssetId, account.id, syncRunId, reconciliation.id,
+        input.evidenceAssetId, account.id, syncRunId, reconciliation?.id ?? null,
         input.sourceSha256, preview.extractionVersion, extractionCiphertext,
-        key.keyVersion, preview.previewHash, preview.statementStartOn,
+        key.keyVersion, preview.previewHash, preview.importMode, preview.statementStartOn,
         preview.statementEndOn, preview.openingBalance, preview.closingBalance,
         preview.currencyCode, preview.includedRowCount, preview.excludedRowCount,
         duplicateRowCount, input.context.actorId],
@@ -914,13 +923,15 @@ export async function importBankStatementInTransaction(
       [input.context.organizationId, syncRunId,
         preview.includedRowCount, importedRowCount],
     );
-    await client.query(
-      `UPDATE bank_external_accounts SET last_reported_balance = $3,
-         last_balance_at = ($4::date + interval '1 day' - interval '1 millisecond')
-       WHERE organization_id = $1 AND id = $2`,
-      [input.context.organizationId, account.id,
-        preview.closingBalance, preview.statementEndOn],
-    );
+    if (preview.importMode === "STATEMENT_BALANCES") {
+      await client.query(
+        `UPDATE bank_external_accounts SET last_reported_balance = $3,
+           last_balance_at = ($4::date + interval '1 day' - interval '1 millisecond')
+         WHERE organization_id = $1 AND id = $2`,
+        [input.context.organizationId, account.id,
+          preview.closingBalance, preview.statementEndOn],
+      );
+    }
     await client.query(
       `UPDATE bank_connections SET last_synced_at = now(), last_error_code = NULL
        WHERE organization_id = $1 AND id = $2 AND credential_version = $3`,
@@ -930,9 +941,9 @@ export async function importBankStatementInTransaction(
     return {
       statementImportId,
       externalAccountId: account.id,
-      reconciliationId: reconciliation.id,
+      reconciliationId: reconciliation?.id ?? null,
       evidenceAssetId: input.evidenceAssetId,
-      reconciliationReused: reconciliation.reused,
+      reconciliationReused: reconciliation?.reused ?? false,
       importedRowCount,
       duplicateRowCount,
       excludedRowCount: preview.excludedRowCount,
@@ -941,7 +952,9 @@ export async function importBankStatementInTransaction(
       transferCandidates: await transferCandidates(
         client, input.context, account.id, importedVersionIds,
       ),
-      instruction: "Immutable observations and a draft reconciliation were created. Review and match them in banking. No journal was posted.",
+      instruction: preview.importMode === "STATEMENT_BALANCES"
+        ? "Immutable observations and a draft reconciliation were created. Review and match them in banking. No journal was posted."
+        : "Immutable observations were imported from the reviewed transaction export. No balance, reconciliation, or journal was invented; create a reconciliation later when statement balances are available.",
     };
   } finally {
     key.dek.fill(0);
