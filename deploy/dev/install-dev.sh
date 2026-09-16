@@ -1,0 +1,484 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+set +x
+
+umask 077
+
+script_directory="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)" || {
+  printf 'Business Finlynq development installation failed: could not resolve the script directory\n' >&2
+  exit 1
+}
+readonly script_directory
+readonly repository="/home/deploy/business-finlynq-dev"
+readonly expected_origin="https://github.com/finlynq/business-finlynq.git"
+readonly configuration_directory="/etc/business-finlynq-dev"
+readonly secret_directory="$configuration_directory/secrets"
+readonly compose_environment="$configuration_directory/compose.env"
+readonly state_directory="/var/lib/business-finlynq-dev"
+readonly shared_state_directory="/var/lib/business-finlynq"
+readonly host_deployment_lock="$shared_state_directory/deployment-host.lock"
+readonly development_edge_network="business_finlynq_dev_edge"
+readonly deploy_target="/usr/local/sbin/business-finlynq-deploy-dev"
+readonly finalization_verifier_target="/usr/local/sbin/business-finlynq-verify-dev-finalized"
+readonly installed_verifier_directory="/usr/local/libexec/business-finlynq"
+readonly external_edge_verifier_target="$installed_verifier_directory/verify-external-edge-dev.sh"
+readonly service_target="/etc/systemd/system/business-finlynq-dev-deployment.service"
+readonly timer_target="/etc/systemd/system/business-finlynq-dev-deployment.timer"
+readonly sudoers_target="/etc/sudoers.d/business-finlynq-dev-deployment"
+
+fail() {
+  printf 'Business Finlynq development installation failed: %s\n' "$*" >&2
+  exit 1
+}
+
+checked_random_hex_32() {
+  local value
+  value="$(openssl rand -hex 32)" \
+    || fail "could not generate a development database credential"
+  [[ "$value" =~ ^[a-f0-9]{64}$ ]] \
+    || fail "OpenSSL returned an invalid development database credential"
+  printf '%s' "$value"
+}
+
+checked_random_base64_32() {
+  local value
+  value="$(openssl rand -base64 32)" \
+    || fail "could not generate the development organization root key"
+  [[ "$value" =~ ^[A-Za-z0-9+/]{43}=$ ]] \
+    || fail "OpenSSL returned an invalid development organization root key"
+  printf '%s' "$value"
+}
+
+enable_timer=false
+enable_all_features=false
+edge_mode="external"
+public_acceptance_mode=""
+yahoo_fx_mode=""
+auth_email_from=""
+auth_email_reply_to=""
+turnstile_site_key=""
+while (( $# > 0 )); do
+  case "$1" in
+    --enable)
+      enable_timer=true
+      shift
+      ;;
+    --enable-all-features)
+      enable_all_features=true
+      shift
+      ;;
+    --external-edge)
+      edge_mode="external"
+      shift
+      ;;
+    --require-public-acceptance)
+      public_acceptance_mode="true"
+      shift
+      ;;
+    --skip-public-acceptance)
+      public_acceptance_mode="false"
+      shift
+      ;;
+    --enable-yahoo-fx-experimental)
+      yahoo_fx_mode="true"
+      shift
+      ;;
+    --disable-yahoo-fx)
+      yahoo_fx_mode="false"
+      shift
+      ;;
+    --auth-email-from)
+      [[ "$#" -ge 2 ]] || fail "--auth-email-from requires a mailbox"
+      auth_email_from="$2"
+      shift 2
+      ;;
+    --auth-email-reply-to)
+      [[ "$#" -ge 2 ]] || fail "--auth-email-reply-to requires a mailbox"
+      auth_email_reply_to="$2"
+      shift 2
+      ;;
+    --turnstile-site-key)
+      [[ "$#" -ge 2 ]] || fail "--turnstile-site-key requires a public site key"
+      turnstile_site_key="$2"
+      shift 2
+      ;;
+    *) fail "unknown option: $1" ;;
+  esac
+done
+
+if [[ "$enable_all_features" != true ]] \
+  && [[ -n "$auth_email_from" || -n "$auth_email_reply_to" || -n "$turnstile_site_key" ]]; then
+  fail "provider metadata requires --enable-all-features"
+fi
+
+[[ "$(id -u)" == 0 ]] || fail "run this installer as root"
+for command_name in awk chmod chown docker flock getent git id install jq mktemp mv openssl readlink rm runuser \
+  stat sync systemctl visudo wc; do
+  command -v "$command_name" >/dev/null 2>&1 \
+    || fail "required command is unavailable: $command_name"
+done
+for source_file in deploy-dev.sh verify-dev-finalized.sh docker-compose.dev.yml \
+  business-finlynq-dev-deployment.service \
+  business-finlynq-dev-deployment.timer; do
+  [[ -f "$script_directory/$source_file" && ! -L "$script_directory/$source_file" ]] \
+    || fail "installer source is unavailable: $source_file"
+done
+[[ -f "$script_directory/../edge/verify-external-edge.sh" \
+  && ! -L "$script_directory/../edge/verify-external-edge.sh" ]] \
+  || fail "installer source is unavailable: ../edge/verify-external-edge.sh"
+getent passwd deploy >/dev/null || fail "the deploy account is unavailable"
+getent group business-finlynq-secrets >/dev/null \
+  || fail "the business-finlynq-secrets group is unavailable"
+secret_gid="$(getent group business-finlynq-secrets | awk -F: '{print $3}')"
+[[ "$secret_gid" =~ ^[0-9]+$ ]] || fail "the deployment secret-group GID is invalid"
+
+if [[ ! -e "$repository" ]]; then
+  [[ -d /home/deploy && ! -L /home/deploy \
+    && "$(stat -c '%U:%G' -- /home/deploy)" == deploy:deploy ]] \
+    || fail "the deploy home is unavailable or unsafe"
+  runuser -u deploy -- /usr/bin/env -i \
+    HOME=/home/deploy USER=deploy LOGNAME=deploy SHELL=/bin/bash \
+    PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+    GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null \
+    git clone --branch dev --single-branch --no-tags "$expected_origin" "$repository"
+fi
+[[ -d "$repository/.git" && ! -L "$repository" \
+  && "$(stat -c '%U:%G' -- "$repository")" == deploy:deploy ]] \
+  || fail "the development checkout is unavailable or unsafe"
+development_origin="$(runuser -u deploy -- git -C "$repository" remote get-url origin)"
+development_branch="$(runuser -u deploy -- git -C "$repository" symbolic-ref --short HEAD)"
+[[ "$development_origin" == "$expected_origin" && "$development_branch" == dev ]] \
+  || fail "the development checkout is not the reviewed dev branch"
+
+install -d -o root -g deploy -m 0750 -- "$configuration_directory"
+install -d -o root -g business-finlynq-secrets -m 0750 -- "$secret_directory"
+install -d -o root -g root -m 0700 -- "$state_directory"
+install -d -o root -g deploy -m 0775 -- "$shared_state_directory"
+[[ -d "$shared_state_directory" && ! -L "$shared_state_directory" \
+  && "$(stat -c '%U:%G:%a' -- "$shared_state_directory")" == root:deploy:775 ]] \
+  || fail "the shared deployment-lock directory is unsafe"
+deploy_gid="$(id -g deploy 2>/dev/null)" \
+  || fail "host deployment coordination requires the deploy account"
+if [[ ! -e "$host_deployment_lock" ]]; then
+  install -o root -g "$deploy_gid" -m 0660 -- /dev/null "$host_deployment_lock"
+fi
+[[ -f "$host_deployment_lock" && ! -L "$host_deployment_lock" \
+  && "$(readlink -f -- "$host_deployment_lock")" == "$host_deployment_lock" ]] \
+  || fail "the shared deployment lock is unavailable or unsafe"
+chown root:"$deploy_gid" "$host_deployment_lock"
+chmod 0660 "$host_deployment_lock"
+[[ "$(stat -c '%u:%g:%a:%h' -- "$host_deployment_lock")" == "0:$deploy_gid:660:1" ]] \
+  || fail "the shared deployment lock must be root:deploy mode 0660"
+
+if [[ ! -e "$compose_environment" ]]; then
+  owner_password="$(checked_random_hex_32)" || fail "could not prepare the database owner credential"
+  app_password="$(checked_random_hex_32)" || fail "could not prepare the app database credential"
+  auth_worker_password="$(checked_random_hex_32)" \
+    || fail "could not prepare the auth-worker database credential"
+  backup_password="$(checked_random_hex_32)" \
+    || fail "could not prepare the backup database credential"
+  initial_revision="$(runuser -u deploy -- git -C "$repository" rev-parse HEAD)"
+  [[ "$initial_revision" =~ ^[a-f0-9]{40}$ && ! "$initial_revision" =~ ^0+$ ]] \
+    || fail "the initial development revision is invalid"
+
+  environment_temporary="$(mktemp "$configuration_directory/.compose.env.XXXXXX")"
+  {
+    printf 'POSTGRES_PASSWORD=%s\n' "$owner_password"
+    printf 'APP_DATABASE_PASSWORD_FILE=%s/app-db-password\n' "$secret_directory"
+    printf 'AUTH_WORKER_DATABASE_PASSWORD_FILE=%s/auth-worker-db-password\n' "$secret_directory"
+    printf 'BACKUP_DATABASE_PASSWORD_FILE=%s/backup-db-password\n' "$secret_directory"
+    printf 'ORGANIZATION_ROOT_KEK_FILE=%s/organization-root-kek\n' "$secret_directory"
+    printf 'IDENTITY_SECRET_FILE=%s/identity-secret\n' "$secret_directory"
+    printf 'BUSINESS_FINLYNQ_SECRET_GID=%s\n' "$secret_gid"
+    printf 'BUSINESS_FINLYNQ_HOSTNAME=dev.business.finlynq.com\n'
+    printf 'BUSINESS_FINLYNQ_DEVELOPMENT_HOSTNAME=dev.business.finlynq.com\n'
+    printf 'BUSINESS_FINLYNQ_APP_ORIGIN=https://dev.business.finlynq.com\n'
+    printf 'BUSINESS_FINLYNQ_APP_PORT=3201\n'
+    printf 'BUSINESS_FINLYNQ_APP_NETWORK_ALIAS=dev-app\n'
+    printf 'BUSINESS_FINLYNQ_PGDATA_VOLUME=business_finlynq_dev_pgdata\n'
+    printf 'BUSINESS_FINLYNQ_PRIVATE_NETWORK=business_finlynq_dev_private\n'
+    printf 'BUSINESS_FINLYNQ_EGRESS_NETWORK=business_finlynq_dev_egress\n'
+    printf 'BUSINESS_FINLYNQ_EDGE_NETWORK=business_finlynq_dev_edge\n'
+    printf 'BUSINESS_FINLYNQ_EDGE_MODE=%s\n' "$edge_mode"
+    printf 'BUSINESS_FINLYNQ_RESTORE_DRILL_NETWORK=business_finlynq_dev_restore_drill\n'
+    printf 'BUSINESS_FINLYNQ_PRIVATE_SUBNET=10.240.11.0/27\n'
+    printf 'BUSINESS_FINLYNQ_EVIDENCE_SUBNET=10.240.11.32/28\n'
+    printf 'BUSINESS_FINLYNQ_EGRESS_SUBNET=10.240.11.48/28\n'
+    printf 'BUSINESS_FINLYNQ_SCANNER_EGRESS_SUBNET=10.240.11.64/28\n'
+    printf 'BUSINESS_FINLYNQ_FRONTEND_SUBNET=10.240.11.80/28\n'
+    printf 'BUSINESS_FINLYNQ_ROUTER_CONTROL_SUBNET=10.240.11.96/28\n'
+    printf 'BUSINESS_FINLYNQ_RESTORE_DRILL_SUBNET=10.240.11.112/28\n'
+    printf 'TRUSTED_PROXY_HOPS=1\n'
+    printf 'SESSION_COOKIE_NAME=__Host-business_finlynq_dev_session\n'
+    printf 'DEMO_LOGIN_ENABLED=true\n'
+    printf 'DEMO_WRITES_ENABLED=true\n'
+    printf 'ACCOUNT_LOGIN_ENABLED=false\n'
+    printf 'AUTH_OIDC_ENABLED=false\n'
+    printf 'AUTH_OIDC_SIGNUP_ENABLED=false\n'
+    printf 'AUTH_OIDC_ISSUER=\n'
+    printf 'AUTH_OIDC_AUTHORIZATION_ENDPOINT=\n'
+    printf 'AUTH_OIDC_TOKEN_ENDPOINT=\n'
+    printf 'AUTH_OIDC_JWKS_URI=\n'
+    printf 'AUTH_OIDC_CLIENT_ID=\n'
+    printf 'AUTH_OIDC_ALLOWED_TENANTS=\n'
+    printf 'AUTH_OIDC_MFA_AMR_CLAIM_PROVISIONED=false\n'
+    printf 'AUTH_OIDC_MFA_AUTH_CONTEXTS=\n'
+    printf 'AUTH_OIDC_MAXIMUM_TOKEN_LIFETIME_SECONDS=7200\n'
+    printf 'AUTH_OIDC_TOKEN_TIMEOUT_MILLISECONDS=10000\n'
+    printf 'AUTH_OIDC_JWKS_TIMEOUT_MILLISECONDS=5000\n'
+    printf 'ACCOUNT_SIGNUP_ENABLED=false\n'
+    printf 'AUTH_EMAIL_DELIVERY_ENABLED=false\n'
+    printf 'SIGNUP_TURNSTILE_ENABLED=false\n'
+    printf 'BUSINESS_WRITES_ENABLED=true\n'
+    printf 'BANK_FEEDS_ENABLED=false\n'
+    printf 'YAHOO_FX_ENABLED=false\n'
+    printf 'DOCUMENT_INBOX_MAX_DEPTH=8\n'
+    printf 'DOCUMENT_INBOX_MAX_PROVIDER_CALLS=10\n'
+    printf 'DEVELOPMENT_REQUIRE_PUBLIC_ACCEPTANCE=false\n'
+    printf 'BUSINESS_FINLYNQ_IMAGE_REVISION=%s\n' "$initial_revision"
+  } >"$environment_temporary"
+  install -o root -g deploy -m 0600 -- "$environment_temporary" "$compose_environment"
+  rm -f -- "$environment_temporary"
+
+  root_key_temporary="$(mktemp "$secret_directory/.organization-root-kek.XXXXXX")"
+  identity_temporary="$(mktemp "$secret_directory/.identity-secret.XXXXXX")"
+  root_key="$(checked_random_base64_32)" \
+    || fail "could not prepare the development organization root key"
+  printf '%s\n' "$root_key" >"$root_key_temporary"
+  unset root_key
+  if ! openssl rand 64 | openssl base64 -A >"$identity_temporary"; then
+    fail "could not generate the development identity secret"
+  fi
+  [[ "$(wc -c <"$identity_temporary")" == 88 ]] \
+    || fail "OpenSSL returned an invalid development identity secret"
+  printf '\n' >>"$identity_temporary"
+  printf '%s\n' "$app_password" >"$secret_directory/app-db-password"
+  printf '%s\n' "$auth_worker_password" >"$secret_directory/auth-worker-db-password"
+  printf '%s\n' "$backup_password" >"$secret_directory/backup-db-password"
+  mv -f -- "$root_key_temporary" "$secret_directory/organization-root-kek"
+  mv -f -- "$identity_temporary" "$secret_directory/identity-secret"
+  chown root:business-finlynq-secrets "$secret_directory"/*
+  chmod 0440 "$secret_directory"/*
+  unset owner_password app_password auth_worker_password backup_password
+fi
+
+[[ -f "$compose_environment" && ! -L "$compose_environment" \
+  && "$(stat -c '%U:%G:%a' -- "$compose_environment")" == root:deploy:600 ]] \
+  || fail "the development Compose environment is unavailable or unsafe"
+for secret_file in organization-root-kek identity-secret app-db-password \
+  auth-worker-db-password backup-db-password; do
+  [[ -f "$secret_directory/$secret_file" && ! -L "$secret_directory/$secret_file" \
+    && "$(stat -c '%U:%G:%a' -- "$secret_directory/$secret_file")" \
+      == root:business-finlynq-secrets:440 ]] \
+    || fail "a development secret is unavailable or unsafe: $secret_file"
+done
+
+dev_hostname="dev.business.finlynq.com"
+dev_app_origin="https://$dev_hostname"
+configured_hostname="$(awk -F= '$1 == "BUSINESS_FINLYNQ_HOSTNAME" { count++; sub(/^[^=]*=/, ""); value = $0 }
+  END { if (count != 1) exit 42; print value }' "$compose_environment")" \
+  || fail "BUSINESS_FINLYNQ_HOSTNAME must be defined exactly once"
+configured_development_hostname="$(awk -F= '$1 == "BUSINESS_FINLYNQ_DEVELOPMENT_HOSTNAME" { count++; sub(/^[^=]*=/, ""); value = $0 }
+  END { if (count != 1) exit 42; print value }' "$compose_environment")" \
+  || fail "BUSINESS_FINLYNQ_DEVELOPMENT_HOSTNAME must be defined exactly once"
+configured_app_origin="$(awk -F= '$1 == "BUSINESS_FINLYNQ_APP_ORIGIN" { count++; sub(/^[^=]*=/, ""); value = $0 }
+  END { if (count != 1) exit 42; print value }' "$compose_environment")" \
+  || fail "BUSINESS_FINLYNQ_APP_ORIGIN must be defined exactly once"
+
+[[ "$configured_hostname" == "$dev_hostname" \
+  && "$configured_development_hostname" == "$dev_hostname" \
+  && "$configured_app_origin" == "$dev_app_origin" ]] \
+  || fail "the hosted-development hostname configuration differs from its exact contract"
+
+if [[ "$enable_all_features" == true ]]; then
+  [[ -n "$auth_email_from" && "${#auth_email_from}" -le 320 \
+    && "$auth_email_from" == *@* && "$auth_email_from" != *"="* \
+    && "$auth_email_from" != *$'\n'* && "$auth_email_from" != *$'\r'* ]] \
+    || fail "--auth-email-from must be a valid single-line mailbox"
+  if [[ -n "$auth_email_reply_to" ]]; then
+    [[ "${#auth_email_reply_to}" -le 320 && "$auth_email_reply_to" == *@* \
+      && "$auth_email_reply_to" != *"="* && "$auth_email_reply_to" != *$'\n'* \
+      && "$auth_email_reply_to" != *$'\r'* ]] \
+      || fail "--auth-email-reply-to must be a valid single-line mailbox"
+  fi
+  [[ "$turnstile_site_key" =~ ^[A-Za-z0-9_-]{10,200}$ ]] \
+    || fail "--turnstile-site-key is invalid"
+
+  for provider_secret in resend-api-key turnstile-secret-key; do
+    [[ -f "$secret_directory/$provider_secret" \
+      && -s "$secret_directory/$provider_secret" \
+      && ! -L "$secret_directory/$provider_secret" \
+      && "$(stat -c '%U:%G:%a' -- "$secret_directory/$provider_secret")" \
+        == root:business-finlynq-secrets:440 ]] \
+      || fail "a development provider secret is unavailable or unsafe: $provider_secret"
+    awk 'NR != 1 || length($0) < 10 || length($0) > 4096 || index($0, "\r") { exit 1 }' \
+      "$secret_directory/$provider_secret" \
+      || fail "a development provider secret must contain exactly one value: $provider_secret"
+  done
+
+  feature_environment_temporary="$(mktemp "$configuration_directory/.compose.env.features.XXXXXX")"
+  awk -F= \
+    -v auth_email_from="$auth_email_from" \
+    -v auth_email_reply_to="$auth_email_reply_to" \
+    -v resend_key_file="$secret_directory/resend-api-key" \
+    -v turnstile_site_key="$turnstile_site_key" \
+    -v turnstile_key_file="$secret_directory/turnstile-secret-key" '
+    BEGIN {
+      keys[1] = "DEMO_LOGIN_ENABLED"
+      keys[2] = "DEMO_WRITES_ENABLED"
+      keys[3] = "ACCOUNT_LOGIN_ENABLED"
+      keys[4] = "ACCOUNT_SIGNUP_ENABLED"
+      keys[5] = "AUTH_EMAIL_DELIVERY_ENABLED"
+      keys[6] = "AUTH_EMAIL_PROVIDER"
+      keys[7] = "AUTH_EMAIL_FROM"
+      keys[8] = "AUTH_EMAIL_REPLY_TO"
+      keys[9] = "AUTH_RESEND_API_KEY_FILE"
+      keys[10] = "SIGNUP_TURNSTILE_ENABLED"
+      keys[11] = "SIGNUP_TURNSTILE_SITE_KEY"
+      keys[12] = "TURNSTILE_SECRET_KEY_FILE"
+      keys[13] = "BUSINESS_WRITES_ENABLED"
+      keys[14] = "BANK_FEEDS_ENABLED"
+      keys[15] = "DEVELOPMENT_REQUIRE_PUBLIC_ACCEPTANCE"
+      for (key_index = 1; key_index <= 15; key_index++) values[keys[key_index]] = "true"
+      values["AUTH_EMAIL_PROVIDER"] = "resend"
+      values["AUTH_EMAIL_FROM"] = auth_email_from
+      values["AUTH_EMAIL_REPLY_TO"] = auth_email_reply_to
+      values["AUTH_RESEND_API_KEY_FILE"] = resend_key_file
+      values["SIGNUP_TURNSTILE_SITE_KEY"] = turnstile_site_key
+      values["TURNSTILE_SECRET_KEY_FILE"] = turnstile_key_file
+    }
+    {
+      key = $1
+      if (key in values) {
+        if (seen[key]++) exit 42
+        print key "=" values[key]
+        next
+      }
+      print
+    }
+    END {
+      for (key_index = 1; key_index <= 15; key_index++) {
+        key = keys[key_index]
+        if (!seen[key]) print key "=" values[key]
+      }
+    }
+  ' "$compose_environment" >"$feature_environment_temporary" \
+    || {
+      rm -f -- "$feature_environment_temporary"
+      fail "could not enable the development feature gates"
+    }
+  chown root:deploy "$feature_environment_temporary"
+  chmod 0600 "$feature_environment_temporary"
+  mv -f -- "$feature_environment_temporary" "$compose_environment"
+  sync -f -- "$compose_environment"
+  printf 'Development account, write, bot-protection, and bank-feed gates enabled.\n'
+fi
+
+if [[ -n "$yahoo_fx_mode" ]]; then
+  yahoo_environment_temporary="$(mktemp "$configuration_directory/.compose.env.yahoo-fx.XXXXXX")"
+  awk -F= -v selected="$yahoo_fx_mode" '
+    BEGIN { key = "YAHOO_FX_ENABLED" }
+    {
+      if ($1 == key) {
+        if (seen++) exit 42
+        print key "=" selected
+        next
+      }
+      print
+    }
+    END { if (!seen) print key "=" selected }
+  ' "$compose_environment" >"$yahoo_environment_temporary"     || {
+      rm -f -- "$yahoo_environment_temporary"
+      fail "could not update the development Yahoo FX gate"
+    }
+  chown root:deploy "$yahoo_environment_temporary"
+  chmod 0600 "$yahoo_environment_temporary"
+  mv -f -- "$yahoo_environment_temporary" "$compose_environment"
+  sync -f -- "$compose_environment"
+  printf 'Development Yahoo FX experimental gate set to %s.\n' "$yahoo_fx_mode"
+fi
+
+if [[ -n "$public_acceptance_mode" ]]; then
+  public_acceptance_temporary="$(mktemp "$configuration_directory/.compose.env.public-acceptance.XXXXXX")"
+  awk -F= -v selected="$public_acceptance_mode" '
+    BEGIN { key = "DEVELOPMENT_REQUIRE_PUBLIC_ACCEPTANCE" }
+    {
+      if ($1 == key) {
+        if (seen++) exit 42
+        print key "=" selected
+        next
+      }
+      print
+    }
+    END { if (seen != 1) exit 42 }
+  ' "$compose_environment" >"$public_acceptance_temporary" \
+    || {
+      rm -f -- "$public_acceptance_temporary"
+      fail "could not update the development public-acceptance gate"
+    }
+  chown root:deploy "$public_acceptance_temporary"
+  chmod 0600 "$public_acceptance_temporary"
+  mv -f -- "$public_acceptance_temporary" "$compose_environment"
+  sync -f -- "$compose_environment"
+  printf 'Development public acceptance requirement set to %s; provider gates were unchanged.\n' \
+    "$public_acceptance_mode"
+fi
+
+configured_edge_mode="$(awk -F= '$1 == "BUSINESS_FINLYNQ_EDGE_MODE" { sub(/^[^=]*=/, ""); print }' \
+  "$compose_environment")"
+configured_edge_mode_count="$(awk -F= '$1 == "BUSINESS_FINLYNQ_EDGE_MODE" { count++ } END { print count + 0 }' \
+  "$compose_environment")"
+[[ "$configured_edge_mode_count" == 0 || "$configured_edge_mode_count" == 1 ]] \
+  || fail "BUSINESS_FINLYNQ_EDGE_MODE must be defined at most once"
+configured_edge_mode="${configured_edge_mode:-external}"
+[[ "$configured_edge_mode" == external && "$edge_mode" == external ]] \
+  || fail "shared-edge contract v1 requires BUSINESS_FINLYNQ_EDGE_MODE=external"
+
+docker network inspect "$development_edge_network" >/dev/null 2>&1 \
+  || fail "the central shared-edge ingress network is unavailable: $development_edge_network"
+network_driver="$(docker network inspect --format '{{.Driver}}' "$development_edge_network")"
+network_scope="$(docker network inspect --format '{{.Scope}}' "$development_edge_network")"
+network_internal="$(docker network inspect --format '{{.Internal}}' "$development_edge_network")"
+[[ "$network_driver" == bridge && "$network_scope" == local && "$network_internal" == true ]] \
+  || fail "the central development ingress must be an internal local bridge"
+docker network inspect "$development_edge_network" | jq -e '
+  length == 1 and .[0].Name == "business_finlynq_dev_edge" and
+  .[0].Driver == "bridge" and .[0].Internal == true and
+  .[0].Attachable == false and .[0].Ingress == false and
+  (.[0].IPAM.Config | length) == 1 and
+  .[0].IPAM.Config[0].Subnet == "10.240.10.112/28" and
+  .[0].Labels["com.finlynq.edge-owner"] == "finlynq-shared-edge" and
+  .[0].Labels["com.finlynq.edge-contract"] == "v1" and
+  .[0].Labels["com.finlynq.application"] == "business-finlynq" and
+  .[0].Labels["com.finlynq.environment"] == "dev"
+' >/dev/null || fail "the central dev ingress network differs from its exact contract"
+
+install -d -o root -g root -m 0755 -- /usr/local/sbin
+install -o root -g root -m 0550 -- "$script_directory/deploy-dev.sh" "$deploy_target"
+install -o root -g root -m 0550 \
+  -- "$script_directory/verify-dev-finalized.sh" "$finalization_verifier_target"
+install -d -o root -g root -m 0755 -- "$installed_verifier_directory"
+install -o root -g root -m 0550 \
+  -- "$script_directory/../edge/verify-external-edge.sh" "$external_edge_verifier_target"
+install -o root -g root -m 0644 \
+  -- "$script_directory/business-finlynq-dev-deployment.service" "$service_target"
+install -o root -g root -m 0644 \
+  -- "$script_directory/business-finlynq-dev-deployment.timer" "$timer_target"
+
+sudoers_temporary="$(mktemp /etc/sudoers.d/.business-finlynq-dev.XXXXXX)"
+printf '%s\n' \
+  'deploy ALL=(root) NOPASSWD: /usr/bin/systemctl start business-finlynq-dev-deployment.service, /usr/bin/systemctl status business-finlynq-dev-deployment.service --no-pager, /usr/bin/journalctl -u business-finlynq-dev-deployment.service --since today --no-pager, /usr/local/sbin/business-finlynq-verify-dev-finalized' \
+  >"$sudoers_temporary"
+chmod 0440 "$sudoers_temporary"
+visudo -cf "$sudoers_temporary" >/dev/null
+install -o root -g root -m 0440 -- "$sudoers_temporary" "$sudoers_target"
+rm -f -- "$sudoers_temporary"
+
+systemctl daemon-reload
+if [[ "$enable_timer" == true ]]; then
+  systemctl enable --now business-finlynq-dev-deployment.timer
+  printf 'Development deployment timer enabled.\n'
+else
+  printf 'Development deployment installed but left disabled.\n'
+fi
+printf 'Development checkout, secrets, central ingress dependency, service, and restricted deploy access are ready.\n'

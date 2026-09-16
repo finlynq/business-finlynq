@@ -4,13 +4,14 @@ set +x
 
 umask 077
 
-readonly repository="/home/deploy/business-finlynq-stage"
-readonly legacy_development_repository="/home/deploy/business-finlynq-development"
+readonly repository="/home/deploy/business-finlynq-dev"
+readonly legacy_development_repository="/home/deploy/business-finlynq-dev-legacy"
 readonly expected_origin="https://github.com/finlynq/business-finlynq.git"
-readonly installed_deployer="/usr/local/sbin/business-finlynq-deploy-development"
-readonly compose_environment="/etc/business-finlynq-development/compose.env"
-readonly project="business-finlynq-development"
-readonly state_directory="/var/lib/business-finlynq-development"
+readonly installed_deployer="/usr/local/sbin/business-finlynq-deploy-dev"
+readonly compose_environment="/etc/business-finlynq-dev/compose.env"
+readonly compose_override="$repository/deploy/dev/docker-compose.dev.yml"
+readonly project="business-finlynq-dev"
+readonly state_directory="/var/lib/business-finlynq-dev"
 readonly deployment_lock="$state_directory/deployment.lock"
 readonly host_deployment_lock="/var/lib/business-finlynq/deployment-host.lock"
 readonly legacy_failure_latch="$state_directory/deployment-failed"
@@ -20,9 +21,13 @@ readonly accepted_revision_file="$state_directory/accepted-revision"
 readonly release_router_reference="business-finlynq-release-router:v2"
 readonly release_router_revision="release-router-v2"
 readonly release_router_contract="v2"
+# The release-router tag is intentionally host-global and content-addressed by
+# its fixed v2 contract. Keep the build identity shared with stage/production
+# so an already-attested canonical image can be reused across isolated runtime
+# projects without rebuilding or retagging it.
 readonly release_router_build_project="business-finlynq-release-router-build-v2"
 readonly release_router_source_date_epoch="1788998400"
-readonly release_router_state_volume="business_finlynq_development_private-release-router-state-v2"
+readonly release_router_state_volume="business_finlynq_dev_private-release-router-state-v2"
 readonly build_cache_limit="8GB"
 readonly clean_path="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 release_acceptance_token=""
@@ -74,6 +79,8 @@ fi
 
 [[ -d "$repository/.git" && ! -L "$repository" ]] \
   || fail "the canonical development checkout is unavailable"
+[[ -f "$compose_override" && ! -L "$compose_override" ]] \
+  || fail "the hosted-development Compose override is unavailable"
 [[ -f "$compose_environment" && ! -L "$compose_environment" \
   && "$(stat -c '%U:%G:%a' -- "$compose_environment")" == root:deploy:600 ]] \
   || fail "the protected development Compose environment is unavailable or unsafe"
@@ -116,7 +123,7 @@ git_as_deploy() {
 }
 
 refresh_installed_deployer_if_needed() {
-  local revision="$1" relative_path="deploy/development/deploy-development.sh"
+  local revision="$1" relative_path="deploy/dev/deploy-dev.sh"
   local expected_oid observed_oid candidate_digest installed_digest
   local candidate_source="" staged_target=""
   validate_revision "$revision"
@@ -162,7 +169,7 @@ refresh_installed_deployer_if_needed() {
     return 0
   fi
 
-  staged_target="$(mktemp "${installed_deployer%/*}/.business-finlynq-deploy-development.XXXXXX")" \
+  staged_target="$(mktemp "${installed_deployer%/*}/.business-finlynq-deploy-dev.XXXXXX")" \
     || fail "installed development deployer staging could not be created"
   install -o root -g root -m 0550 -- "$candidate_source" "$staged_target" \
     || fail "candidate development deployer could not be installed"
@@ -209,7 +216,7 @@ compose() {
     --project-name "$project" \
     --project-directory "$repository" \
     --env-file "$compose_environment" \
-    -f "$repository/docker-compose.yml" "$@"
+    -f "$repository/docker-compose.yml" -f "$compose_override" "$@"
 }
 
 compose_release_router_build() {
@@ -225,7 +232,8 @@ compose_release_router_build() {
     --project-name "$release_router_build_project" \
     --project-directory "$repository" \
     --env-file "$compose_environment" \
-    -f "$repository/docker-compose.yml" build --provenance=false --sbom=false \
+    -f "$repository/docker-compose.yml" -f "$compose_override" \
+    build --provenance=false --sbom=false \
     --build-arg "SOURCE_DATE_EPOCH=$release_router_source_date_epoch" release_router
 }
 
@@ -335,8 +343,8 @@ verify_external_edge_if_selected() {
   local selected_mode selected_count verifier_boundary_flag
   validate_revision "$verifier_revision"
   case "$verification_boundary" in
-    normal) verifier_boundary_flag="--allow-development-router-maintenance" ;;
-    live-uncommitted) verifier_boundary_flag="--expect-development-live-uncommitted" ;;
+    normal) verifier_boundary_flag="--allow-dev-router-maintenance" ;;
+    live-uncommitted) verifier_boundary_flag="--expect-dev-live-uncommitted" ;;
     *) fail "external-edge verification boundary is invalid" ;;
   esac
   selected_count="$(awk -F= '$1 == "BUSINESS_FINLYNQ_EDGE_MODE" { count++ } END { print count + 0 }' \
@@ -389,7 +397,7 @@ verify_external_edge_if_selected() {
       || fail "candidate external-edge verifier staging ownership could not be set"
     chmod 0500 "$verifier_path" \
       || fail "candidate external-edge verifier staging mode could not be set"
-    bash "$verifier_path" --scope development --warmup-host development \
+    bash "$verifier_path" --scope dev --warmup-host dev \
       "$verifier_boundary_flag"
   )
 }
@@ -627,7 +635,7 @@ wait_for_public_readiness() {
   local -a readiness_headers=()
   hostname="$(read_environment_value BUSINESS_FINLYNQ_HOSTNAME)" \
     || fail "BUSINESS_FINLYNQ_HOSTNAME could not be read"
-  [[ "$hostname" == stage.business.finlynq.com ]] \
+  [[ "$hostname" == dev.business.finlynq.com ]] \
     || fail "public acceptance requires the exact development hostname"
   if [[ -n "$release_acceptance_token" ]]; then
     [[ "$release_acceptance_token" =~ ^[a-f0-9]{64}$ ]] \
@@ -660,14 +668,14 @@ wait_for_release_router_maintenance() {
   for attempt in {1..15}; do
     if live="$(curl --noproxy '*' --fail --silent --show-error --max-time 5 \
       --header 'X-Request-Id: development-maintenance' \
-      http://127.0.0.1:3200/api/live 2>/dev/null)" \
+      http://127.0.0.1:3201/api/live 2>/dev/null)" \
       && jq -e 'type == "object" and keys == ["status"] and .status == "live"' \
         <<<"$live" >/dev/null; then
       status=""
       if status="$(curl --noproxy '*' --silent --show-error --max-time 5 \
         --header 'X-Request-Id: development-maintenance' \
         --dump-header "$headers" --output "$body" --write-out '%{http_code}' \
-        http://127.0.0.1:3200/api/health 2>/dev/null)" \
+        http://127.0.0.1:3201/api/health 2>/dev/null)" \
         && [[ "$status" == 503 ]] \
         && jq -e 'type == "object" and keys == ["status"] and .status == "unavailable"' \
           "$body" >/dev/null \
@@ -748,7 +756,7 @@ release_router_container_is_attested() {
     --arg revision "$release_router_revision" --arg contract "$release_router_contract" \
     --arg stateVolume "$release_router_state_volume" '
     length == 1 and .[0].Image == $imageId and .[0].Config.Image == $image and
-    .[0].Config.Labels["com.docker.compose.project"] == "business-finlynq-development" and
+    .[0].Config.Labels["com.docker.compose.project"] == "business-finlynq-dev" and
     .[0].Config.Labels["com.docker.compose.service"] == "release_router" and
     .[0].Config.Labels["org.opencontainers.image.revision"] == $revision and
     .[0].Config.Labels["com.business-finlynq.release-router.contract"] == $contract and
@@ -798,7 +806,7 @@ persist_release_router_named_volume_mode() {
   jq -e --arg name "$release_router_state_volume" '
     length == 1 and .[0].Name == $name and .[0].Driver == "local" and
     .[0].Scope == "local" and
-    .[0].Labels["com.docker.compose.project"] == "business-finlynq-development" and
+    .[0].Labels["com.docker.compose.project"] == "business-finlynq-dev" and
     .[0].Labels["com.docker.compose.volume"] == "business_finlynq_release_router_state"
   ' <<<"$volume_inspection" >/dev/null || return 1
   if docker run --rm --network none --read-only --cap-drop ALL \
@@ -848,17 +856,17 @@ persist_release_router_named_volume_mode() {
 assert_fresh_development_resources() {
   local volume_names network_names resource edge_mode edge_inspection router_volume_inspection
   local -a protected_data_volumes=(
-    business_finlynq_development_pgdata
-    business_finlynq_development_pgdata_clamav
+    business_finlynq_dev_pgdata
+    business_finlynq_dev_pgdata_clamav
   )
   local -a protected_internal_networks=(
-    business_finlynq_development_private
-    business_finlynq_development_private_evidence
-    business_finlynq_development_egress
-    business_finlynq_development_egress_scanner
-    business_finlynq_development_private-frontend
-    business_finlynq_development_private-router-control
-    business_finlynq_development_restore_drill
+    business_finlynq_dev_private
+    business_finlynq_dev_private_evidence
+    business_finlynq_dev_egress
+    business_finlynq_dev_egress_scanner
+    business_finlynq_dev_private-frontend
+    business_finlynq_dev_private-router-control
+    business_finlynq_dev_restore_drill
   )
 
   volume_names="$(docker volume ls --format '{{.Name}}')" \
@@ -885,20 +893,26 @@ assert_fresh_development_resources() {
     ! grep -Fxq "$resource" <<<"$network_names" \
       || fail "retained development internal network prevents a fresh installation: $resource"
   done
-  grep -Fxq business_finlynq_development_edge <<<"$network_names" \
+  grep -Fxq business_finlynq_dev_edge <<<"$network_names" \
     || fail "the installer-attested development edge network is unavailable"
   edge_mode="$(read_environment_value BUSINESS_FINLYNQ_EDGE_MODE)" \
     || fail "the development edge mode could not be read for fresh installation"
   [[ "$edge_mode" == external ]] \
     || fail "shared-edge contract v1 requires BUSINESS_FINLYNQ_EDGE_MODE=external"
-  edge_inspection="$(docker network inspect business_finlynq_development_edge)" \
+  edge_inspection="$(docker network inspect business_finlynq_dev_edge)" \
     || fail "the development edge network could not be inspected"
   jq -e '
-    length == 1 and .[0].Name == "business_finlynq_development_edge" and
+    length == 1 and .[0].Name == "business_finlynq_dev_edge" and
     .[0].Driver == "bridge" and .[0].Scope == "local" and
     .[0].Attachable == false and .[0].Ingress == false and
     (.[0].Options == null or .[0].Options == {}) and
-    .[0].Internal == true
+    .[0].Internal == true and
+    (.[0].IPAM.Config | length) == 1 and
+    .[0].IPAM.Config[0].Subnet == "10.240.10.112/28" and
+    .[0].Labels["com.finlynq.edge-owner"] == "finlynq-shared-edge" and
+    .[0].Labels["com.finlynq.edge-contract"] == "v1" and
+    .[0].Labels["com.finlynq.application"] == "business-finlynq" and
+    .[0].Labels["com.finlynq.environment"] == "dev"
   ' <<<"$edge_inspection" >/dev/null \
     || fail "the central development ingress network no longer matches contract v1"
 }
@@ -913,7 +927,7 @@ release_router_runtime_is_accepted() {
     --arg revision "$release_router_revision" --arg contract "$release_router_contract" \
     --arg stateVolume "$release_router_state_volume" '
     length == 1 and .[0].Image == $imageId and .[0].Config.Image == $image and
-    .[0].Config.Labels["com.docker.compose.project"] == "business-finlynq-development" and
+    .[0].Config.Labels["com.docker.compose.project"] == "business-finlynq-dev" and
     .[0].Config.Labels["com.docker.compose.service"] == "release_router" and
     .[0].Config.Labels["org.opencontainers.image.revision"] == $revision and
     .[0].Config.Labels["com.business-finlynq.release-router.contract"] == $contract and
@@ -928,12 +942,12 @@ release_router_runtime_is_accepted() {
     .[0].Mounts[0].Destination == "/state" and .[0].Mounts[0].RW == true and
     ((.[0].HostConfig.Tmpfs // {}) | keys | sort) == ["/config", "/data", "/tmp"] and
     (.[0].HostConfig.PortBindings["3000/tcp"] ==
-      [{"HostIp":"127.0.0.1", "HostPort":"3200"}]) and
+      [{"HostIp":"127.0.0.1", "HostPort":"3201"}]) and
     ([.[0].NetworkSettings.Networks | keys[]] | sort) ==
-      ["business_finlynq_development_edge", "business_finlynq_development_private-frontend",
-        "business_finlynq_development_private-router-control"] and
-    ([.[0].NetworkSettings.Networks.business_finlynq_development_edge.Aliases[]] |
-      index("development-app")) != null and
+      ["business_finlynq_dev_edge", "business_finlynq_dev_private-frontend",
+        "business_finlynq_dev_private-router-control"] and
+    ([.[0].NetworkSettings.Networks.business_finlynq_dev_edge.Aliases[]] |
+      index("dev-app")) != null and
     .[0].Config.Entrypoint == ["/usr/local/bin/release-router-entrypoint"] and
     .[0].Config.Cmd == ["serve"]
   ' <<<"$router_inspection" >/dev/null || return 1
@@ -1046,8 +1060,8 @@ repository_root="$(git_as_deploy rev-parse --show-toplevel)" \
   || fail "the canonical development repository root changed"
 repository_branch="$(git_as_deploy symbolic-ref --short HEAD)" \
   || fail "the development checkout branch could not be read"
-[[ "$repository_branch" == stage ]] \
-  || fail "the staging checkout is not on stage"
+[[ "$repository_branch" == dev ]] \
+  || fail "the development checkout is not on dev"
 repository_origin="$(git_as_deploy remote get-url origin)" \
   || fail "the development origin could not be read"
 [[ "$repository_origin" == "$expected_origin" ]] \
@@ -1058,19 +1072,19 @@ repository_status="$(git_as_deploy status --porcelain=v1 --untracked-files=all)"
   || fail "the development checkout is not clean"
 
 git_as_deploy fetch --prune --force --no-tags origin \
-  '+refs/heads/stage:refs/remotes/origin/stage' \
-  '+refs/tags/deploy-stage-*:refs/tags/deploy-stage-*'
+  '+refs/heads/dev:refs/remotes/origin/dev' \
+  '+refs/tags/deploy-development-*:refs/tags/deploy-development-*'
 
 source_revision="$(git_as_deploy rev-parse HEAD)" \
   || fail "the deployed development revision could not be read"
-candidate_revision="$(git_as_deploy rev-parse refs/remotes/origin/stage)" \
+candidate_revision="$(git_as_deploy rev-parse refs/remotes/origin/dev)" \
   || fail "the fetched development revision could not be read"
 validate_revision "$source_revision"
 validate_revision "$candidate_revision"
 git_as_deploy merge-base --is-ancestor "$source_revision" "$candidate_revision" \
-  || fail "origin/stage is not a fast-forward descendant of the deployed revision"
+  || fail "origin/dev is not a fast-forward descendant of the deployed revision"
 
-signal_tag="deploy-stage-$candidate_revision"
+signal_tag="deploy-development-$candidate_revision"
 signal_revision="$(git_as_deploy rev-parse "refs/tags/$signal_tag^{commit}" 2>/dev/null)" \
   || fail "the immutable development deployment signal is unavailable"
 [[ "$signal_revision" == "$candidate_revision" ]] \
@@ -1081,10 +1095,10 @@ verify_compose_boundary() {
   local revision="$1" topology rendered resource expected app_port app_origin app_alias
   local app_frontend_alias router_image found_resource_output
   local -a found_resources expected_resources=(
-    "business_finlynq_development_pgdata"
-    "business_finlynq_development_private"
-    "business_finlynq_development_egress"
-    "business_finlynq_development_edge"
+    "business_finlynq_dev_pgdata"
+    "business_finlynq_dev_private"
+    "business_finlynq_dev_egress"
+    "business_finlynq_dev_edge"
   )
   validate_revision "$revision"
   topology="$(revision_release_topology "$revision")" \
@@ -1093,13 +1107,13 @@ verify_compose_boundary() {
     || fail "development Compose configuration could not be rendered"
   app_origin="$(jq -er '.services.app.environment.APP_ORIGIN' <<<"$rendered")" \
     || fail "development APP_ORIGIN could not be read from Compose"
-  [[ "$app_origin" == https://stage.business.finlynq.com ]] \
+  [[ "$app_origin" == https://dev.business.finlynq.com ]] \
     || fail "development APP_ORIGIN must use the exact HTTPS development hostname"
   if [[ "$topology" == router ]]; then
     expected_resources+=(
-      "business_finlynq_development_private-frontend"
-      "business_finlynq_development_private-router-control"
-      "business_finlynq_development_private-release-router-state-v2"
+      "business_finlynq_dev_private-frontend"
+      "business_finlynq_dev_private-router-control"
+      "business_finlynq_dev_private-release-router-state-v2"
     )
     router_image="$(jq -er '.services.release_router.image' <<<"$rendered")" \
       || fail "development release-router image could not be read from Compose"
@@ -1118,7 +1132,7 @@ verify_compose_boundary() {
         ["business_finlynq_edge", "business_finlynq_frontend",
           "business_finlynq_router_control"] and
       .networks.business_finlynq_router_control.name ==
-        "business_finlynq_development_private-router-control" and
+        "business_finlynq_dev_private-router-control" and
       ((.networks.business_finlynq_router_control.internal // false) == false) and
       .networks.business_finlynq_router_control.driver == "bridge" and
       .networks.business_finlynq_router_control.driver_opts == {
@@ -1127,9 +1141,9 @@ verify_compose_boundary() {
       }
     ' <<<"$rendered" >/dev/null \
       || fail "development release-router control network is invalid"
-    [[ "$app_port" == 3200 ]] \
-      || fail "development release router must bind loopback port 3200"
-    [[ "$app_alias" == development-app ]] \
+    [[ "$app_port" == 3201 ]] \
+      || fail "development release router must bind loopback port 3201"
+    [[ "$app_alias" == dev-app ]] \
       || fail "development release router must expose only its dedicated edge alias"
     [[ "$app_frontend_alias" == release-app \
       && "$(jq -r '.services.app.ports | length' <<<"$rendered")" == 0 \
@@ -1142,8 +1156,8 @@ verify_compose_boundary() {
     app_alias="$(jq -er '.services.app.networks.business_finlynq_edge.aliases[0]' \
       <<<"$rendered")" \
       || fail "legacy development edge alias could not be read from Compose"
-    [[ "$app_port" == 3200 ]] || fail "legacy development app must bind loopback port 3200"
-    [[ "$app_alias" == development-app ]] \
+    [[ "$app_port" == 3201 ]] || fail "legacy development app must bind loopback port 3201"
+    [[ "$app_alias" == dev-app ]] \
       || fail "legacy development app must expose only its dedicated edge alias"
     [[ "$(jq -r '.services | has("release_router")' <<<"$rendered")" == false ]] \
       || fail "legacy development Compose unexpectedly defines a release router"
@@ -1160,7 +1174,7 @@ verify_compose_boundary() {
       || fail "development resource is not isolated: $expected"
   done
   for resource in "${found_resources[@]}"; do
-    [[ "$resource" == business_finlynq_development_* ]] \
+    [[ "$resource" == business_finlynq_dev_* ]] \
       || fail "development Compose references a non-development resource: $resource"
   done
 }
@@ -1233,8 +1247,8 @@ document_provider_configuration_matches() {
     expected_disabled_source="$repository/deploy/backup/not-configured"
     legacy_disabled_source="$legacy_development_repository/deploy/backup/not-configured"
     if [[ -z "$provider_client_id" && "$source" == "$expected_disabled_source" ]]; then
-      # The stage checkout replaced the former development checkout without
-      # changing this inert placeholder. Permit the accepted container's exact
+      # An earlier dev installation may have used the legacy checkout path
+      # without changing this inert placeholder. Permit its exact
       # legacy bind only while the provider is disabled and the mounted bytes
       # still match the reviewed placeholder below. Real provider credentials,
       # enabled providers, arbitrary source paths, and writable binds remain
@@ -1398,15 +1412,15 @@ quarantine_legacy_development_app_alias() {
   running="$(docker inspect --format '{{.State.Running}}' "$container")" || return 1
   [[ "$running" == false ]] || return 1
   network_alias_has_exact_owner \
-    business_finlynq_development_edge development-app "$container" || return 1
-  docker network disconnect --force business_finlynq_development_edge \
+    business_finlynq_dev_edge dev-app "$container" || return 1
+  docker network disconnect --force business_finlynq_dev_edge \
     "$container" || return 1
   networks="$(docker inspect --format '{{json .NetworkSettings.Networks}}' \
     "$container")" || return 1
-  jq -e 'has("business_finlynq_development_edge") | not' \
+  jq -e 'has("business_finlynq_dev_edge") | not' \
     <<<"$networks" >/dev/null || return 1
   network_alias_has_no_owner \
-    business_finlynq_development_edge development-app
+    business_finlynq_dev_edge dev-app
 }
 
 restore_legacy_development_app_alias() {
@@ -1434,7 +1448,7 @@ restore_legacy_development_app_alias() {
       [[ "$(exact_development_app_container "$failed_revision")" \
         == "$candidate_container" ]] || return 1
       network_alias_has_no_owner \
-        business_finlynq_development_edge development-app || return 1
+        business_finlynq_dev_edge dev-app || return 1
       docker rm --force -- "$candidate_container" >/dev/null || return 1
       container_output="$(docker ps --all --no-trunc --quiet \
         --filter label=com.docker.compose.project="$project" \
@@ -1442,29 +1456,29 @@ restore_legacy_development_app_alias() {
       [[ -z "$container_output" ]] || return 1
     fi
     network_alias_has_no_owner \
-      business_finlynq_development_edge development-app || return 1
+      business_finlynq_dev_edge dev-app || return 1
     return 0
   fi
   networks="$(docker inspect --format '{{json .NetworkSettings.Networks}}' \
     "$container")" || return 1
   if jq -e '
-    has("business_finlynq_development_edge") and
-    any(.business_finlynq_development_edge.Aliases[]?; . == "development-app")
+    has("business_finlynq_dev_edge") and
+    any(.business_finlynq_dev_edge.Aliases[]?; . == "dev-app")
   ' <<<"$networks" >/dev/null; then
     network_alias_has_exact_owner \
-      business_finlynq_development_edge development-app "$container"
+      business_finlynq_dev_edge dev-app "$container"
     return
   fi
-  jq -e 'has("business_finlynq_development_edge") | not' \
+  jq -e 'has("business_finlynq_dev_edge") | not' \
     <<<"$networks" >/dev/null || return 1
   running="$(docker inspect --format '{{.State.Running}}' "$container")" || return 1
   [[ "$running" == false ]] || return 1
   network_alias_has_no_owner \
-    business_finlynq_development_edge development-app || return 1
-  docker network connect --alias development-app \
-    business_finlynq_development_edge "$container" || return 1
+    business_finlynq_dev_edge dev-app || return 1
+  docker network connect --alias dev-app \
+    business_finlynq_dev_edge "$container" || return 1
   network_alias_has_exact_owner \
-    business_finlynq_development_edge development-app "$container"
+    business_finlynq_dev_edge dev-app "$container"
 }
 
 release_is_accepted() {
@@ -1536,30 +1550,30 @@ release_is_accepted() {
     ensure_release_router_image false || return 1
     jq -e '
       ((.ports // {}) | length) == 0 and
-      (.networks | has("business_finlynq_development_edge") | not) and
-      (.networks | has("business_finlynq_development_private-frontend")) and
-      ([.networks["business_finlynq_development_private-frontend"].Aliases[]] |
+      (.networks | has("business_finlynq_dev_edge") | not) and
+      (.networks | has("business_finlynq_dev_private-frontend")) and
+      ([.networks["business_finlynq_dev_private-frontend"].Aliases[]] |
         index("release-app")) != null
     ' <<<"$app_network_contract" >/dev/null || return 1
     [[ "${#router_containers[@]}" == 1 ]] || return 1
     release_router_runtime_is_accepted || return 1
     network_alias_has_exact_owner \
-      business_finlynq_development_edge development-app \
+      business_finlynq_dev_edge dev-app \
       "${router_containers[0]}" || return 1
     network_alias_has_exact_owner \
-      business_finlynq_development_private-frontend release-app \
+      business_finlynq_dev_private-frontend release-app \
       "$app_container" || return 1
   else
     [[ "${#router_containers[@]}" == 0 ]] || return 1
     jq -e '
-      (.ports["3000/tcp"] == [{"HostIp":"127.0.0.1", "HostPort":"3200"}]) and
-      (.networks | has("business_finlynq_development_edge")) and
-      ([.networks.business_finlynq_development_edge.Aliases[]] |
-        index("development-app")) != null and
-      (.networks | has("business_finlynq_development_private-frontend") | not)
+      (.ports["3000/tcp"] == [{"HostIp":"127.0.0.1", "HostPort":"3201"}]) and
+      (.networks | has("business_finlynq_dev_edge")) and
+      ([.networks.business_finlynq_dev_edge.Aliases[]] |
+        index("dev-app")) != null and
+      (.networks | has("business_finlynq_dev_private-frontend") | not)
     ' <<<"$app_network_contract" >/dev/null || return 1
     network_alias_has_exact_owner \
-      business_finlynq_development_edge development-app \
+      business_finlynq_dev_edge dev-app \
       "$app_container" || return 1
   fi
   document_provider_configuration_matches \
@@ -1579,7 +1593,7 @@ release_is_accepted() {
     [[ "$actual" == "$expected" ]] || return 1
   done
   detailed_health="$(curl --noproxy '*' --fail --silent --show-error --max-time 20 \
-    --header 'X-Business-Finlynq-Internal-Health: 1' http://127.0.0.1:3200/api/health)" \
+    --header 'X-Business-Finlynq-Internal-Health: 1' http://127.0.0.1:3201/api/health)" \
     || return 1
   jq -e --arg revision "$expected_revision" \
     '.status == "ready" and .revision == $revision' <<<"$detailed_health" >/dev/null \
@@ -1588,7 +1602,7 @@ release_is_accepted() {
   [[ "$require_public" == true || "$require_public" == false ]] || return 1
   if [[ "$require_public" == true && "$public_policy" == full ]]; then
     hostname="$(read_environment_value BUSINESS_FINLYNQ_HOSTNAME)" || return 1
-    [[ "$hostname" == stage.business.finlynq.com ]] || return 1
+    [[ "$hostname" == dev.business.finlynq.com ]] || return 1
     if [[ -n "$release_acceptance_token" ]]; then
       [[ "$release_acceptance_token" =~ ^[a-f0-9]{64}$ ]] || return 1
       public_health_headers=(
@@ -1828,14 +1842,14 @@ contain_development_router_on_failure() {
       && reload_release_router maintenance \
       && wait_for_release_router_maintenance \
       && network_alias_has_exact_owner \
-        business_finlynq_development_edge development-app "$router_container"; then
+        business_finlynq_dev_edge dev-app "$router_container"; then
       return 0
     fi
     docker stop --time 30 "$router_container" >/dev/null || return 1
   fi
   persist_release_router_mode_offline "$router_container" maintenance \
     && network_alias_has_exact_owner \
-      business_finlynq_development_edge development-app "$router_container"
+      business_finlynq_dev_edge dev-app "$router_container"
 }
 
 run_public_acceptance() {
@@ -2192,7 +2206,7 @@ if [[ "$candidate_topology" == router ]]; then
   [[ "$release_acceptance_token" =~ ^[a-f0-9]{64}$ ]] \
     || fail "development release-acceptance token is invalid"
   if [[ "$source_topology" == legacy ]]; then
-    # The legacy app owns port 3200 and the external alias. Stop it only after
+    # The legacy app owns port 3201 and the external alias. Stop it only after
     # every candidate image is ready, quarantine its exact stopped endpoint,
     # then create the stable router once.
     legacy_app_container="$(exact_legacy_development_app_container "$source_revision")" \
@@ -2200,7 +2214,7 @@ if [[ "$candidate_topology" == router ]]; then
     [[ "$(docker inspect --format '{{.State.Running}}' "$legacy_app_container")" == true ]] \
       || fail "the accepted legacy development app is not running before router bootstrap"
     network_alias_has_exact_owner \
-      business_finlynq_development_edge development-app "$legacy_app_container" \
+      business_finlynq_dev_edge dev-app "$legacy_app_container" \
       || fail "the accepted legacy development alias does not have one exact owner"
     compose --profile auth-email stop --timeout 60 auth_email_worker app
     quarantine_legacy_development_app_alias "$source_revision" "$legacy_app_container" \
@@ -2234,10 +2248,10 @@ if [[ "$candidate_topology" == router ]]; then
     release_router_runtime_is_accepted \
       || fail "the fresh development release router is not accepted in maintenance"
     network_alias_has_exact_owner \
-      business_finlynq_development_edge development-app "$persistent_release_router_id" \
+      business_finlynq_dev_edge dev-app "$persistent_release_router_id" \
       || fail "the fresh development public alias does not have one exact router owner"
     network_alias_has_no_owner \
-      business_finlynq_development_private-frontend release-app \
+      business_finlynq_dev_private-frontend release-app \
       || fail "the fresh development private app alias unexpectedly has an owner"
   fi
   if [[ "$source_topology" == router && "$initial_development_bootstrap" != true ]]; then

@@ -5,16 +5,16 @@ set +x
 umask 077
 
 readonly clean_path="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-readonly service="business-finlynq-development-deployment.service"
-readonly configuration_directory="/etc/business-finlynq-development"
+readonly service="business-finlynq-dev-deployment.service"
+readonly configuration_directory="/etc/business-finlynq-dev"
 readonly compose_environment="$configuration_directory/compose.env"
-readonly state_directory="/var/lib/business-finlynq-development"
+readonly state_directory="/var/lib/business-finlynq-dev"
 readonly accepted_revision_file="$state_directory/accepted-revision"
 readonly host_deployment_lock="/var/lib/business-finlynq/deployment-host.lock"
-readonly repository="/home/deploy/business-finlynq-stage"
-readonly finalization_verifier="/usr/local/sbin/business-finlynq-verify-development-finalized"
-readonly external_edge_verifier="/usr/local/libexec/business-finlynq/verify-external-edge.sh"
-readonly project="business-finlynq-development"
+readonly repository="/home/deploy/business-finlynq-dev"
+readonly finalization_verifier="/usr/local/sbin/business-finlynq-verify-dev-finalized"
+readonly external_edge_verifier="/usr/local/libexec/business-finlynq/verify-external-edge-dev.sh"
+readonly project="business-finlynq-dev"
 
 PATH="$clean_path"
 export PATH
@@ -190,7 +190,7 @@ readonly accepted_revision
 [[ "$accepted_revision" =~ ^[a-f0-9]{40}$ && ! "$accepted_revision" =~ ^0+$ ]] \
   || fail "the accepted revision is invalid"
 verify_installed_blob \
-  "$finalization_verifier" deploy/development/verify-development-finalized.sh
+    "$finalization_verifier" deploy/dev/verify-dev-finalized.sh
 verify_installed_blob \
   "$external_edge_verifier" deploy/edge/verify-external-edge.sh
 compose_revision="$(read_exact_value "$compose_environment" BUSINESS_FINLYNQ_IMAGE_REVISION)"
@@ -234,7 +234,7 @@ case "$account_login_enabled" in
 esac
 
 env -i PATH="$clean_path" bash "$external_edge_verifier" \
-  --scope development \
-  --warmup-host development
+  --scope dev \
+  --warmup-host dev
 
 printf 'FINALIZED revision=%s\n' "$accepted_revision"

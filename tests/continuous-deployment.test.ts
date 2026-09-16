@@ -109,7 +109,13 @@ describe("continuous deployment safety boundary", () => {
       'verify_runtime_revision "$app_container" app business-finlynq-app true',
     );
     expect(verifyDevelopmentFinalized).toContain(
+      'account_login_enabled="$(read_exact_value "$compose_environment" ACCOUNT_LOGIN_ENABLED)"',
+    );
+    expect(verifyDevelopmentFinalized).toContain(
       '"$worker_container" auth_email_worker business-finlynq-auth-worker false',
+    );
+    expect(verifyDevelopmentFinalized).toContain(
+      "auth_email_worker must be absent when account login is disabled",
     );
     expect(verifyDevelopmentFinalized).toContain(
       'tagged_image_id="$(docker image inspect --format \'{{.Id}}\' "$image")"',
@@ -1284,6 +1290,18 @@ describe("continuous deployment safety boundary", () => {
       sameProof,
     );
     expect(samePrivateProof).toBeGreaterThanOrEqual(0);
+    expect(sameRevision).toContain('same_revision_router_requires_commit=false');
+    expect(sameRevision).toContain('same_revision_edge_boundary=normal');
+    expect(sameRevision).toContain('case "$same_revision_router_mode" in');
+    expect(sameRevision).toContain("active)\n          release_acceptance_token=\"\"");
+    expect(sameRevision).toContain('same_revision_router_requires_commit=true');
+    expect(sameRevision).toContain('same_revision_edge_boundary=live-uncommitted');
+    expect(sameRevision).toContain(
+      'verify_external_edge_if_selected "$candidate_revision" "$same_revision_edge_boundary"',
+    );
+    expect(sameRevision).toContain(
+      'if [[ "$same_revision_router_requires_commit" == true ]]; then',
+    );
     expect(sameReload).toBeGreaterThan(samePrivateProof);
     expect(samePublic).toBeGreaterThan(sameReload);
     expect(sameProof).toBeGreaterThan(samePublic);
