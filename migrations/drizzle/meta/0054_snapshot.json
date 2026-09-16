@@ -15316,7 +15316,7 @@
         },
         "tax_account_mapping_lines_multiplier_check": {
           "name": "tax_account_mapping_lines_multiplier_check",
-          "value": "\"tax_account_mapping_lines\".\"multiplier\" BETWEEN -1000 AND 1000 AND \"tax_account_mapping_lines\".\"multiplier\" <> 0"
+          "value": "abs(\"tax_account_mapping_lines\".\"multiplier\") <= 1000 AND \"tax_account_mapping_lines\".\"multiplier\" <> 0"
         }
       },
       "isRLSEnabled": false
@@ -15927,7 +15927,7 @@
         },
         "tax_filing_templates_definition_check": {
           "name": "tax_filing_templates_definition_check",
-          "value": "jsonb_typeof(\"tax_filing_templates\".\"definition\") = 'object' AND (\"tax_filing_templates\".\"definition\" ->> 'schemaVersion')::integer = 1"
+          "value": "jsonb_typeof(\"tax_filing_templates\".\"definition\") = 'object' AND \"tax_filing_templates\".\"definition\" ->> 'schemaVersion' = '1'"
         },
         "tax_filing_templates_source_digest_check": {
           "name": "tax_filing_templates_source_digest_check",
@@ -16241,7 +16241,7 @@
         },
         "tax_filings_import_evidence_check": {
           "name": "tax_filings_import_evidence_check",
-          "value": "\"tax_filings\".\"filing_type\" <> 'HISTORICAL_IMPORT'\n        OR (\"tax_filings\".\"external_reference\" IS NOT NULL\n          AND char_length(btrim(\"tax_filings\".\"external_reference\")) BETWEEN 1 AND 200\n          AND \"tax_filings\".\"reported_values\" <> '{}'::jsonb)"
+          "value": "\"tax_filings\".\"filing_type\" <> 'HISTORICAL_IMPORT'\n        OR (\"tax_filings\".\"external_reference\" IS NOT NULL\n          AND char_length(btrim(\"tax_filings\".\"external_reference\")) BETWEEN 1 AND 200\n          AND \"tax_filings\".\"reported_values\" <> '{}')"
         },
         "tax_filings_hash_check": {
           "name": "tax_filings_hash_check",

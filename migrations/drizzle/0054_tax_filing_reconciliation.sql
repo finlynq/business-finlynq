@@ -8,7 +8,7 @@ CREATE TABLE "tax_account_mapping_lines" (
 	"multiplier" numeric(12, 6) DEFAULT '1' NOT NULL,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
 	CONSTRAINT "tax_account_mapping_lines_basis_check" CHECK ("tax_account_mapping_lines"."balance_basis" IN ('DEBITS', 'CREDITS', 'NET_DEBIT', 'NET_CREDIT', 'ABSOLUTE_NET')),
-	CONSTRAINT "tax_account_mapping_lines_multiplier_check" CHECK ("tax_account_mapping_lines"."multiplier" BETWEEN -1000 AND 1000 AND "tax_account_mapping_lines"."multiplier" <> 0)
+	CONSTRAINT "tax_account_mapping_lines_multiplier_check" CHECK (abs("tax_account_mapping_lines"."multiplier") <= 1000 AND "tax_account_mapping_lines"."multiplier" <> 0)
 );
 --> statement-breakpoint
 CREATE TABLE "tax_account_mapping_sets" (
@@ -45,7 +45,7 @@ CREATE TABLE "tax_filing_templates" (
 	"published_at" timestamp with time zone NOT NULL,
 	CONSTRAINT "tax_filing_templates_version_check" CHECK ("tax_filing_templates"."version" > 0),
 	CONSTRAINT "tax_filing_templates_effective_period_check" CHECK ("tax_filing_templates"."effective_to" IS NULL OR "tax_filing_templates"."effective_to" >= "tax_filing_templates"."effective_from"),
-	CONSTRAINT "tax_filing_templates_definition_check" CHECK (jsonb_typeof("tax_filing_templates"."definition") = 'object' AND ("tax_filing_templates"."definition" ->> 'schemaVersion')::integer = 1),
+	CONSTRAINT "tax_filing_templates_definition_check" CHECK (jsonb_typeof("tax_filing_templates"."definition") = 'object' AND "tax_filing_templates"."definition" ->> 'schemaVersion' = '1'),
 	CONSTRAINT "tax_filing_templates_source_digest_check" CHECK ("tax_filing_templates"."source_digest" ~ '^[a-f0-9]{64}$')
 );
 --> statement-breakpoint
@@ -82,7 +82,7 @@ CREATE TABLE "tax_filings" (
 	CONSTRAINT "tax_filings_import_evidence_check" CHECK ("tax_filings"."filing_type" <> 'HISTORICAL_IMPORT'
         OR ("tax_filings"."external_reference" IS NOT NULL
           AND char_length(btrim("tax_filings"."external_reference")) BETWEEN 1 AND 200
-          AND "tax_filings"."reported_values" <> '{}'::jsonb)),
+          AND "tax_filings"."reported_values" <> '{}')),
 	CONSTRAINT "tax_filings_hash_check" CHECK ("tax_filings"."command_hash" ~ '^[a-f0-9]{64}$')
 );
 --> statement-breakpoint

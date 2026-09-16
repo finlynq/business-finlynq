@@ -129,7 +129,7 @@ export const taxFilingTemplates = pgTable(
     ),
     check(
       "tax_filing_templates_definition_check",
-      sql`jsonb_typeof(${table.definition}) = 'object' AND (${table.definition} ->> 'schemaVersion')::integer = 1`,
+      sql`jsonb_typeof(${table.definition}) = 'object' AND ${table.definition} ->> 'schemaVersion' = '1'`,
     ),
     check(
       "tax_filing_templates_source_digest_check",
@@ -240,7 +240,7 @@ export const taxAccountMappingLines = pgTable(
     ),
     check(
       "tax_account_mapping_lines_multiplier_check",
-      sql`${table.multiplier} BETWEEN -1000 AND 1000 AND ${table.multiplier} <> 0`,
+      sql`abs(${table.multiplier}) <= 1000 AND ${table.multiplier} <> 0`,
     ),
   ],
 );
@@ -324,7 +324,7 @@ export const taxFilings = pgTable(
       sql`${table.filingType} <> 'HISTORICAL_IMPORT'
         OR (${table.externalReference} IS NOT NULL
           AND char_length(btrim(${table.externalReference})) BETWEEN 1 AND 200
-          AND ${table.reportedValues} <> '{}'::jsonb)`,
+          AND ${table.reportedValues} <> '{}')`,
     ),
     check("tax_filings_hash_check", sql`${table.commandHash} ~ '^[a-f0-9]{64}$'`),
   ],
