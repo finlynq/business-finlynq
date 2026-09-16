@@ -1284,6 +1284,18 @@ describe("continuous deployment safety boundary", () => {
       sameProof,
     );
     expect(samePrivateProof).toBeGreaterThanOrEqual(0);
+    expect(sameRevision).toContain('same_revision_router_requires_commit=false');
+    expect(sameRevision).toContain('same_revision_edge_boundary=normal');
+    expect(sameRevision).toContain('case "$same_revision_router_mode" in');
+    expect(sameRevision).toContain("active)\n          release_acceptance_token=\"\"");
+    expect(sameRevision).toContain('same_revision_router_requires_commit=true');
+    expect(sameRevision).toContain('same_revision_edge_boundary=live-uncommitted');
+    expect(sameRevision).toContain(
+      'verify_external_edge_if_selected "$candidate_revision" "$same_revision_edge_boundary"',
+    );
+    expect(sameRevision).toContain(
+      'if [[ "$same_revision_router_requires_commit" == true ]]; then',
+    );
     expect(sameReload).toBeGreaterThan(samePrivateProof);
     expect(samePublic).toBeGreaterThan(sameReload);
     expect(sameProof).toBeGreaterThan(samePublic);

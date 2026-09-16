@@ -6,6 +6,7 @@ headers, logs, and edge deployment. Business Finlynq owns only its application
 services and these stable interfaces:
 
 - `business_finlynq_edge` -> `production-app:3000`
+- `business_finlynq_dev_edge` -> `dev-app:3000`
 - `business_finlynq_development_edge` -> `development-app:3000`
 
 `verify-external-edge.sh` performs read-only central identity, Business
