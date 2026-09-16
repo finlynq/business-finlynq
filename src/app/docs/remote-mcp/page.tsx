@@ -64,7 +64,7 @@ export default function RemoteMcpDocumentationPage() {
         <ul>
           <li>New daily write access asks for confirmation; setup is off until the user enables it.</li>
           <li>A confirmation is bound to one tool and an exact canonical argument hash, expires after 15 minutes, and is consumed once.</li>
-          <li>Allow writes bypasses per-action approval. High-assurance setup and reconciliation writes use the recent MFA verification captured when direct access is enabled; the user must verify and save the policy again after that window expires.</li>
+          <li>Allow writes bypasses per-action approval. MFA is required once when direct access is enabled, and that authorization remains active until the user turns Allow writes off or disconnects the client.</li>
           <li>Transactions keep FinLynQ&apos;s idempotency, balance, period, content-hash, maker-checker, tax, FX, and subledger controls.</li>
           <li>Agents cannot receive credentials, administer users, change recovery controls, or initiate bank transfers.</li>
         </ul>

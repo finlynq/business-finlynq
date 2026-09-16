@@ -157,22 +157,59 @@ describe("remote MCP live authorization", () => {
       allowed: true,
       delegatedSessionId,
       stepUpExpiresAt: stepUpExpiresAt.toISOString(),
+      persistentMfaAuthorization: true,
     });
-    expect(mcpSessionPrincipal(snapshot().principal, authorization.stepUpExpiresAt, authorization.delegatedSessionId)).toMatchObject({
+    expect(mcpSessionPrincipal(
+      snapshot().principal,
+      authorization.stepUpExpiresAt,
+      authorization.delegatedSessionId,
+      authorization.persistentMfaAuthorization,
+    )).toMatchObject({
       sessionId: delegatedSessionId,
-      stepUpExpiresAt,
+      stepUpExpiresAt: new Date("9999-12-31T23:59:59.999Z"),
     });
   });
 
-  it("fails direct high-assurance writes after their MFA window instead of requesting approval", async () => {
+  it("keeps direct Daily and Setup Allow writes authorized after the original MFA window", async () => {
+    const protectedTool: McpToolPolicy = {
+      name: "finlynq_setup_create_gl_account",
+      group: "SETUP",
+      access: "WRITE",
+      mfaRequirement: "REQUIRED",
+    };
+    const selected = snapshot({
+      dailyMode: "ALLOW_WRITES",
+      setupMode: "ALLOW_WRITES",
+      directWriteSessionId: "66666666-6666-4666-8666-666666666666",
+      directWriteStepUpExpiresAt: new Date(0),
+    });
+    const authorization = await authorizeMcpWrite(
+      selected,
+      protectedTool,
+      { idempotencyKey: "persistent-direct-setup" },
+    );
+    expect(authorization).toMatchObject({ allowed: true, persistentMfaAuthorization: true });
+    expect(mcpSessionPrincipal(
+      selected.principal,
+      authorization.stepUpExpiresAt,
+      authorization.delegatedSessionId,
+      authorization.persistentMfaAuthorization,
+    ).stepUpExpiresAt).toEqual(new Date("9999-12-31T23:59:59.999Z"));
+    expect(mcpToolAuthorizationMetadata(
+      selected,
+      protectedTool,
+    )).toMatchObject({ "finlynq/mfaDecision": "SATISFIED" });
+  });
+
+  it("requires the initial MFA authorization before direct high-assurance writes", async () => {
     await expect(authorizeMcpWrite(
       snapshot({
         setupMode: "ALLOW_WRITES",
-        directWriteSessionId: "66666666-6666-4666-8666-666666666666",
-        directWriteStepUpExpiresAt: new Date(0),
+        directWriteSessionId: null,
+        directWriteStepUpExpiresAt: null,
       }),
       { name: "finlynq_setup_create_gl_account", group: "SETUP", access: "WRITE" },
-      { idempotencyKey: "expired-direct-setup" },
+      { idempotencyKey: "missing-direct-setup-authorization" },
     )).rejects.toMatchObject({ code: "MCP_STEP_UP_REQUIRED" });
   });
 

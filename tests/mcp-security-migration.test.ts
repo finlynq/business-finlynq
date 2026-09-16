@@ -35,7 +35,7 @@ describe("remote MCP database security contract", () => {
     expect(securityMigration).toContain("REVOKE ALL ON FUNCTION app.mcp_user_is_active(uuid) FROM PUBLIC");
   });
 
-  it("delegates high assurance only from an explicit unexpired browser MFA approval", () => {
+  it("keeps one-time approvals expiring while direct Allow writes retains its initial MFA authorization", () => {
     expect(assuranceMigration).toContain("mfa_step_up_expires_at");
     expect(sessionBindingMigration).toContain("mfa_session_id");
     expect(sessionBindingMigration).toContain("direct_write_session_id");
@@ -45,7 +45,9 @@ describe("remote MCP database security contract", () => {
     expect(connectionPolicy).toContain("mfa_step_up_expires_at > now()");
     expect(connectionPolicy).toContain("mfa_session_id IS NOT NULL");
     expect(connectionPolicy).toContain("delegatedSessionId: approved.rows[0].mfa_session_id");
-    expect(oauthStore).toContain("stepUpExpiresAt: delegatedStepUpExpiry");
+    expect(connectionPolicy).toContain("persistentMfaAuthorization: true");
+    expect(connectionPolicy).not.toContain("snapshot.directWriteStepUpExpiresAt.getTime() <= Date.now()");
+    expect(oauthStore).toContain("PERSISTENT_MCP_MFA_EXPIRY");
     expect(oauthStore).toContain("sessionId: delegatedSessionId ?? principal.connectionId");
     expect(oauthStore).not.toContain("stepUpExpiresAt: principal.tokenExpiresAt");
   });
