@@ -20,6 +20,7 @@ describe("isolated hosted-development deployment", () => {
       'readonly project="business-finlynq-dev"',
       'readonly state_directory="/var/lib/business-finlynq-dev"',
       'readonly installed_deployer="/usr/local/sbin/business-finlynq-deploy-dev"',
+      'readonly release_router_build_project="business-finlynq-release-router-build-v2"',
       'readonly release_router_state_volume="business_finlynq_dev_private-release-router-state-v2"',
       'candidate_revision="$(git_as_deploy rev-parse refs/remotes/origin/dev)"',
       'signal_tag="deploy-development-$candidate_revision"',
@@ -32,6 +33,7 @@ describe("isolated hosted-development deployment", () => {
     expect(deployer).not.toContain("/var/lib/business-finlynq-development");
     expect(deployer).not.toContain("refs/remotes/origin/stage");
     expect(deployer).not.toContain("refs/remotes/origin/main");
+    expect(deployer).not.toContain("business-finlynq-dev-release-router-build-v2");
     expect(installer).toContain("BUSINESS_FINLYNQ_HOSTNAME=dev.business.finlynq.com");
     expect(installer).toContain("BUSINESS_FINLYNQ_APP_PORT=3201");
     expect(installer).toContain("BUSINESS_FINLYNQ_APP_NETWORK_ALIAS=dev-app");
