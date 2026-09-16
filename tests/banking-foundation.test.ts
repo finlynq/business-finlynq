@@ -255,7 +255,7 @@ describe("banking persistence and workflow contract", () => {
     expect(seed).toContain("bank_connections: \"1\"");
     expect(seed).toContain("bank_accounts: \"2\"");
     expect(seed).toContain("bank_observations: \"3\"");
-    expect(seed).toContain("export const DEMO_BASELINE_VERSION = 7");
+    expect(seed).toContain("export const DEMO_BASELINE_VERSION = 8");
     expect(seed).toContain("state.baseline_version < DEMO_BASELINE_VERSION");
     expect(seed).toContain("purgeSharedDemoBusinessData(client, DEMO_ORGANIZATION_ID)");
   });

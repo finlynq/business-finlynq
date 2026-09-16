@@ -61,6 +61,7 @@ const runtimeSelectRelations = [
   "open_item_void_events", "open_item_balances", "tax_pack_versions",
   "entity_tax_registrations", "tax_determination_snapshots", "tax_filing_templates",
   "tax_account_mapping_sets", "tax_account_mapping_lines", "tax_filings",
+  "asset_categories", "asset_register", "asset_schedule_entries", "asset_lifecycle_events",
   "bank_connections", "bank_connection_credential_events",
   "bank_external_accounts", "bank_sync_runs", "bank_observations",
   "bank_observation_versions", "bank_balance_anchors",
@@ -80,12 +81,14 @@ const runtimeInsertUpdateRelations = [
   "mcp_access_tokens", "mcp_refresh_tokens", "mcp_approvals",
   "mcp_tool_executions",
   "document_storage_connections", "document_storage_oauth", "document_inbox_items",
+  "asset_register", "asset_schedule_entries",
 ];
 const runtimeInsertRelations = [
   "journal_approvals", "journal_entry_relations", "source_documents", "document_evidence_assets",
   "subledger_events", "open_items", "document_settlement_allocations",
   "open_item_void_events", "tax_determination_snapshots",
   "tax_account_mapping_sets", "tax_account_mapping_lines", "tax_filings",
+  "asset_categories", "asset_lifecycle_events",
   "bank_connection_credential_events", "bank_observations",
   "bank_observation_versions", "bank_balance_anchors",
   "bank_statement_imports", "bank_statement_import_rows",

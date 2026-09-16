@@ -18,6 +18,7 @@ const workspaceItems: readonly NavigationItem[] = [
   { abbreviation: "AR", label: "Receivables", href: "/app/receivables/invoices" },
   { abbreviation: "AP", label: "Payables", href: "/app/payables/bills" },
   { abbreviation: "BK", label: "Banking", href: "/app/banking" },
+  { abbreviation: "AS", label: "Assets & prepaids", href: "/app/assets" },
   { abbreviation: "TX", label: "Tax", href: "/app/tax" },
   { abbreviation: "RP", label: "Reports", href: "/app/reports/trial-balance" },
   { abbreviation: "CT", label: "Controls", href: "/app/controls/period-close" },

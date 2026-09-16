@@ -88,6 +88,18 @@ describe("structured inbox previews", () => {
       },
     });
     expect(result.preview.rows[1]).toEqual(["2026-09-01", "Coffee, client", "4.50"]);
+    expect(result.pageCount).toBe(2);
+    expect(result.preview).toMatchObject({ page: 1, firstSourceRow: 1, lastSourceRow: 25 });
+    const secondPage = structuredDocumentPreview(bytes, "CSV", "text/csv", 2);
+    expect(secondPage.preview).toMatchObject({
+      page: 2,
+      firstSourceRow: 26,
+      lastSourceRow: 32,
+      headers: ["Date", "Description", "Amount"],
+    });
+    expect(secondPage.preview.rows).toHaveLength(7);
+    expect(secondPage.preview.rows[0]).toEqual(["2026-09-02", "Row 23", "1.00"]);
+    expect(() => structuredDocumentPreview(bytes, "CSV", "text/csv", 3)).toThrow(/row page/);
     expect(() => structuredDocumentPreview(Buffer.from('a,b\n"unterminated'), "CSV", "text/csv", 1)).toThrow(/not terminated/);
   });
 
