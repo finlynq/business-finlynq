@@ -28,6 +28,8 @@ export type RouteFailureOperation =
   | "session-mfa-enrollment-start"
   | "session-revocation"
   | "subledger-mutation"
+  | "tax-filing-create"
+  | "tax-mapping-save"
   | "trusted-browser-management";
 
 export type ObservedRouteOperation = RouteFailureOperation
