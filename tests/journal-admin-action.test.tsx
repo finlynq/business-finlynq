@@ -21,7 +21,7 @@ describe("journal administrative action", () => {
     );
 
     expect(markup).toContain("Audit reason");
-    expect(markup).toContain("I understand this is an owner/admin accounting control");
+    expect(markup).toContain("I understand this is an owner accounting control");
     expect(markup).toContain("Confirm unpost");
     expect(markup).not.toContain("FinLynQ authenticator code");
   });

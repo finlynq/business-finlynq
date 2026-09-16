@@ -5,6 +5,11 @@ import { z } from "zod";
 import { validateSettlementFunding } from "@/modules/subledger/settlement-funding";
 import { PERMISSIONS } from "@/modules/identity/permissions";
 import { createManualJournal, reversePostedJournal } from "@/modules/ledger/journal-service";
+import {
+  deleteJournal,
+  journalAdministrativeCommandSchema,
+  unpostJournal,
+} from "@/modules/ledger/journal-administration-service";
 import { postJournal } from "@/modules/ledger/posting-service";
 import { approveSubmittedJournal, submitJournalForApproval } from "@/modules/ledger/journal-workflow-service";
 import {
@@ -50,6 +55,7 @@ import {
   voidBankMatchAllocation,
 } from "@/modules/banking/banking-service";
 import { mcpMutationContext } from "./oauth-store";
+import { mutationContext } from "@/modules/workspace/write-policy";
 import { defineMcpTool, type McpToolDefinition, type McpToolRuntime } from "./tool-types";
 
 const emptySchema = z.object({}).strict();
@@ -302,6 +308,48 @@ export const DAILY_MCP_TOOLS: readonly McpToolDefinition[] = [
     inputSchema: z.object({ originalJournalId: z.uuid(), periodId: z.uuid(), accountingDate: z.iso.date(), description: z.string().trim().min(1).max(500), reason: z.string().trim().min(5).max(500), idempotencyKey: z.string().trim().min(1).max(200) }).strict(),
     destructive: true,
     invoke: (args, runtime) => reversePostedJournal({ context: mcpMutationContext(runtime.principal, runtime.requestId, args.reason), ...args }),
+  }),
+  defineMcpTool({
+    policy: {
+      name: "finlynq_daily_unpost_journal",
+      group: "DAILY",
+      access: "WRITE",
+      permission: PERMISSIONS.administerJournal,
+      mfaRequirement: "REQUIRED",
+    },
+    title: "Owner: unpost eligible journal",
+    description: "Owner-only, MFA-backed correction that returns an eligible posted manual journal to draft without deleting its journal or audit evidence. Requires a permanent reason, confirmation under the connection write policy, and an idempotency key; dependencies and closed periods fail closed.",
+    inputSchema: journalAdministrativeCommandSchema,
+    destructive: true,
+    idempotent: true,
+    invoke: (args, runtime) => unpostJournal({
+      context: mutationContext(runtime.sessionPrincipal, runtime.requestId, {
+        reason: args.reason,
+        sourceSurface: "MCP",
+      }),
+      ...args,
+    }),
+  }),
+  defineMcpTool({
+    policy: {
+      name: "finlynq_daily_delete_journal",
+      group: "DAILY",
+      access: "WRITE",
+      permission: PERMISSIONS.administerJournal,
+      mfaRequirement: "REQUIRED",
+    },
+    title: "Owner: delete eligible journal",
+    description: "Owner-only, MFA-backed correction that tombstones an eligible manual draft while retaining journal lines and permanent audit evidence. Posted journals must be unposted first. Requires a permanent reason, confirmation under the connection write policy, and an idempotency key; all dependencies fail closed.",
+    inputSchema: journalAdministrativeCommandSchema,
+    destructive: true,
+    idempotent: true,
+    invoke: (args, runtime) => deleteJournal({
+      context: mutationContext(runtime.sessionPrincipal, runtime.requestId, {
+        reason: args.reason,
+        sourceSurface: "MCP",
+      }),
+      ...args,
+    }),
   }),
   defineMcpTool({
     policy: { name: "finlynq_daily_list_documents", group: "DAILY", access: "READ", permissionsAny: [PERMISSIONS.readReceivables, PERMISSIONS.readPayables] },

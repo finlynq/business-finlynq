@@ -19,6 +19,8 @@ export type SessionPrincipal = Readonly<{
   expiresAt: Date;
   mfaVerifiedAt: Date | null;
   stepUpExpiresAt: Date | null;
+  /** Present only for a remote MCP principal; never trusted without a live database recheck. */
+  mcpConnectionId?: string;
   /** Omitted state never authorizes real writes; the database transaction rechecks it. */
   organizationWritesEnabled?: boolean;
 }>;

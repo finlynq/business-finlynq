@@ -247,22 +247,36 @@ export function AccountingSettings({
   const [combinationEntityId, setCombinationEntityId] = useState(configuration.entities[0]?.id ?? "");
   const combinationEntity = configuration.entities.find((entity) => entity.id === combinationEntityId)
     ?? configuration.entities[0];
+  const combinationAccounts = combinationEntity?.accounts.filter((account) => account.active && account.postable) ?? [];
   const [combinationAccountId, setCombinationAccountId] = useState(
-    configuration.entities[0]?.accounts[0]?.id ?? "",
+    configuration.entities[0]?.accounts.find((account) => account.active && account.postable)?.id ?? "",
   );
-  const combinationAccount = combinationEntity?.accounts.find((account) => account.id === combinationAccountId)
-    ?? combinationEntity?.accounts[0];
+  const combinationAccount = combinationAccounts.find((account) => account.id === combinationAccountId)
+    ?? combinationAccounts[0];
+  const configuredAccounts = configuration.entities.flatMap((entity) => entity.accounts.map((account) => ({
+    ...account,
+    entityCode: entity.code,
+    ledgerCode: entity.ledgerCode,
+  })));
+  const [editableAccountId, setEditableAccountId] = useState(configuredAccounts[0]?.id ?? "");
+  const editableAccount = configuredAccounts.find((account) => account.id === editableAccountId)
+    ?? configuredAccounts[0];
+  const [accountDisplayName, setAccountDisplayName] = useState(editableAccount?.displayName ?? "");
+  const [accountPostable, setAccountPostable] = useState(editableAccount?.postable ?? true);
+  const [accountActive, setAccountActive] = useState(editableAccount?.active ?? true);
+  const [accountValidFrom, setAccountValidFrom] = useState(editableAccount?.validFrom ?? localDateDefault());
+  const [accountValidTo, setAccountValidTo] = useState(editableAccount?.validTo ?? "");
   const [combinationIntercompanyId, setCombinationIntercompanyId] = useState("");
   const [combinationSegments, setCombinationSegments] = useState<Record<AccountSegmentKey, string>>(
     emptySegmentSelection,
   );
   const [replacesCombinationId, setReplacesCombinationId] = useState("");
-  const replacementCandidates = useMemo(() => configuration.accountCombinations.filter((combination) => (
+  const replacementCandidates = configuration.accountCombinations.filter((combination) => (
     combination.active
       && !combination.used
       && combination.legalEntityId === combinationEntity?.id
       && combination.accountId === combinationAccount?.id
-  )), [configuration.accountCombinations, combinationAccount?.id, combinationEntity?.id]);
+  ));
   const [taxEntityId, setTaxEntityId] = useState(configuration.entities[0]?.id ?? "");
   const [taxPackKey, setTaxPackKey] = useState(
     configuration.taxPacks.find((pack) => pack.key === "generic.unsupported")?.key
@@ -496,6 +510,48 @@ export function AccountingSettings({
 
       <section className="panel form-panel" id="account-segments" aria-labelledby="account-segments-title">
         <div className="panel-heading"><span className="eyebrow">Chart dimensions</span><h2 id="account-segments-title">Account segments</h2><p>Entity and Account are always present. Optional values remain null internally and render as 0000. Custom 1–8 can be named and hidden; once used, their identity is protected.</p></div>
+        {configuration.canManageSegments && editableAccount && (
+          <form className="close-form" onSubmit={(event) => {
+            event.preventDefault();
+            void mutate("gl-account", "/api/accounting/configuration/gl-accounts", "PATCH", {
+              accountId: editableAccount.id,
+              displayName: accountDisplayName,
+              postable: accountPostable,
+              active: accountActive,
+              validFrom: accountValidFrom,
+              validTo: accountValidTo || null,
+              expected: {
+                displayName: editableAccount.displayName,
+                postable: editableAccount.postable,
+                active: editableAccount.active,
+                validFrom: editableAccount.validFrom,
+                validTo: editableAccount.validTo,
+              },
+              reason,
+            }, `${editableAccount.entityCode}.${editableAccount.code} validity was updated without replacing its combinations.`);
+          }}>
+            <h3>Update a natural account</h3>
+            <p className="panel-note">Moving the start date earlier expands availability without changing account or combination IDs. A later date is blocked when earlier journals or bank mappings depend on the account.</p>
+            <div className="form-grid form-grid-three">
+              <label><span>Account</span><select value={editableAccount.id} onChange={(event) => {
+                const selected = configuredAccounts.find((account) => account.id === event.target.value);
+                if (!selected) return;
+                setEditableAccountId(selected.id);
+                setAccountDisplayName(selected.displayName);
+                setAccountPostable(selected.postable);
+                setAccountActive(selected.active);
+                setAccountValidFrom(selected.validFrom);
+                setAccountValidTo(selected.validTo ?? "");
+              }}>{configuredAccounts.map((account) => <option key={account.id} value={account.id}>{account.entityCode}.{account.code} — {account.displayName}</option>)}</select></label>
+              <label><span>Display name</span><input value={accountDisplayName} onChange={(event) => setAccountDisplayName(event.target.value)} minLength={1} maxLength={200} required /></label>
+              <label><span>Valid from</span><input type="date" value={accountValidFrom} onChange={(event) => setAccountValidFrom(event.target.value)} required /></label>
+              <label><span>Valid to (optional)</span><input type="date" value={accountValidTo} onChange={(event) => setAccountValidTo(event.target.value)} min={accountValidFrom} /></label>
+              <label className="checkbox-row"><input type="checkbox" checked={accountPostable} onChange={(event) => setAccountPostable(event.target.checked)} /><span>Postable</span></label>
+              <label className="checkbox-row"><input type="checkbox" checked={accountActive} onChange={(event) => setAccountActive(event.target.checked)} /><span>Active</span></label>
+            </div>
+            <div className="form-actions"><button className="primary-button" type="submit" disabled={busy !== null}>{busy === "gl-account" ? "Saving…" : "Save account"}</button></div>
+          </form>
+        )}
         <div className="table-scroll" tabIndex={0} aria-label="Account segment configuration">
           <table><thead><tr><th>Key</th><th>Display name</th><th>Lifecycle</th><th>Values</th><th>Incomplete combinations</th><th>Visible</th><th>Required</th><th>Action</th></tr></thead><tbody>{configuration.segments.map((segment) => {
             const draft = segmentDrafts[segment.key] ?? { displayName: segment.displayName, visible: segment.visible, required: segment.required };
@@ -576,11 +632,11 @@ export function AccountingSettings({
               <label><span>Legal entity</span><select value={combinationEntity.id} onChange={(event) => {
                 const nextEntity = configuration.entities.find((entity) => entity.id === event.target.value);
                 setCombinationEntityId(event.target.value);
-                setCombinationAccountId(nextEntity?.accounts[0]?.id ?? "");
+                setCombinationAccountId(nextEntity?.accounts.find((account) => account.active && account.postable)?.id ?? "");
                 setCombinationIntercompanyId("");
                 setReplacesCombinationId("");
               }}>{configuration.entities.map((entity) => <option key={entity.id} value={entity.id}>{entity.code} — {entity.displayName}</option>)}</select></label>
-              <label><span>Natural account</span><select value={combinationAccount.id} onChange={(event) => { setCombinationAccountId(event.target.value); setReplacesCombinationId(""); }}>{combinationEntity.accounts.map((account) => <option key={account.id} value={account.id}>{account.code} — {account.displayName}</option>)}</select></label>
+              <label><span>Natural account</span><select value={combinationAccount.id} onChange={(event) => { setCombinationAccountId(event.target.value); setReplacesCombinationId(""); }}>{combinationAccounts.map((account) => <option key={account.id} value={account.id}>{account.code} — {account.displayName}</option>)}</select></label>
               <label><span>Intercompany entity (optional)</span><select value={combinationIntercompanyId} onChange={(event) => setCombinationIntercompanyId(event.target.value)}><option value="">0000 — Not used</option>{configuration.entities.filter((entity) => entity.id !== combinationEntity.id).map((entity) => <option key={entity.id} value={entity.id}>{entity.code} — {entity.displayName}</option>)}</select></label>
               {activeSegments.map((segment) => <label key={segment.id}><span>{segment.displayName}{segment.required ? " (required)" : ""}</span><select value={combinationSegments[segment.key]} required={segment.required} onChange={(event) => setCombinationSegments((current) => ({ ...current, [segment.key]: event.target.value }))}><option value="">0000 — Not used</option>{segment.values.filter((value) => value.active).map((value) => <option key={value.id} value={value.id}>{value.code} — {value.displayName}</option>)}</select></label>)}
               <label className="full-field"><span>Replace an unused combination (optional)</span><select value={replacesCombinationId} onChange={(event) => setReplacesCombinationId(event.target.value)}><option value="">Do not replace an existing combination</option>{replacementCandidates.map((combination) => <option key={combination.id} value={combination.id}>{combination.displayKey} — {combination.accountName}</option>)}</select></label>
