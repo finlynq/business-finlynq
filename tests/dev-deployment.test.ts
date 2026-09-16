@@ -92,6 +92,15 @@ describe("isolated hosted-development deployment", () => {
     );
     expect(verifier).toContain("--scope dev");
     expect(verifier).toContain("--warmup-host dev");
+    expect(verifier).toContain(
+      'account_login_enabled="$(read_exact_value "$compose_environment" ACCOUNT_LOGIN_ENABLED)"',
+    );
+    expect(verifier).toContain(
+      '"$worker_container" auth_email_worker business-finlynq-auth-worker false',
+    );
+    expect(verifier).toContain(
+      "auth_email_worker must be absent when account login is disabled",
+    );
     expect(verifier).toContain("FINALIZED revision=%s");
   });
 

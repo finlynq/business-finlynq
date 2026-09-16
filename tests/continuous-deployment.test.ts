@@ -109,7 +109,13 @@ describe("continuous deployment safety boundary", () => {
       'verify_runtime_revision "$app_container" app business-finlynq-app true',
     );
     expect(verifyDevelopmentFinalized).toContain(
+      'account_login_enabled="$(read_exact_value "$compose_environment" ACCOUNT_LOGIN_ENABLED)"',
+    );
+    expect(verifyDevelopmentFinalized).toContain(
       '"$worker_container" auth_email_worker business-finlynq-auth-worker false',
+    );
+    expect(verifyDevelopmentFinalized).toContain(
+      "auth_email_worker must be absent when account login is disabled",
     );
     expect(verifyDevelopmentFinalized).toContain(
       'tagged_image_id="$(docker image inspect --format \'{{.Id}}\' "$image")"',
