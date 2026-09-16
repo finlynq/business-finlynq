@@ -214,9 +214,24 @@ router_mode="$(docker exec "$router_container" sh -ec 'cat /state/mode')" \
 
 app_container="$(single_running_container app)"
 verify_runtime_revision "$app_container" app business-finlynq-app true
-worker_container="$(single_running_container auth_email_worker)"
-verify_runtime_revision \
-  "$worker_container" auth_email_worker business-finlynq-auth-worker false
+account_login_enabled="$(read_exact_value "$compose_environment" ACCOUNT_LOGIN_ENABLED)"
+case "$account_login_enabled" in
+  true)
+    worker_container="$(single_running_container auth_email_worker)"
+    verify_runtime_revision \
+      "$worker_container" auth_email_worker business-finlynq-auth-worker false
+    ;;
+  false)
+    worker_container_output="$(docker ps --all --no-trunc \
+      --filter "label=com.docker.compose.project=$project" \
+      --filter label=com.docker.compose.service=auth_email_worker \
+      --format '{{.ID}}')" \
+      || fail "auth_email_worker container inventory could not be inspected"
+    [[ -z "$worker_container_output" ]] \
+      || fail "auth_email_worker must be absent when account login is disabled"
+    ;;
+  *) fail "ACCOUNT_LOGIN_ENABLED must be true or false" ;;
+esac
 
 env -i PATH="$clean_path" bash "$external_edge_verifier" \
   --scope dev \
