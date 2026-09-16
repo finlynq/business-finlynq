@@ -24,7 +24,8 @@ export function PageHeader({
 }
 
 export function StatusPill({ status }: { status: string }) {
-  const success = status === "POSTED" || status === "APPLIED" || status === "OPEN";
+  const success = status === "POSTED" || status === "APPLIED" || status === "OPEN" ||
+    status === "READY" || status === "MATCHED";
   const blocked = status === "BLOCKED" || status.includes("REVIEW") || status.includes("ADJUSTMENT");
   return <span className={`status-pill ${success ? "status-success" : blocked ? "status-warning" : "status-neutral"}`}>{status}</span>;
 }

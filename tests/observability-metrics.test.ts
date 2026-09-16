@@ -141,7 +141,7 @@ describe("internal observability metrics", () => {
 
   it("keeps every API route inside the measured coverage contract", () => {
     const apiRoot = join(process.cwd(), "src", "app", "api");
-    const observedBoundary = /observeRouteHandler\(|create(?:Subledger|Banking)?MutationRoute(?:<|\()|organizationAdminMutationRoute\(/;
+    const observedBoundary = /observeRouteHandler\(|create(?:Subledger|Banking|Tax)?MutationRoute(?:<|\()|organizationAdminMutationRoute\(/;
 
     for (const path of routeFiles(apiRoot)) {
       expect(readFileSync(path, "utf8"), relative(apiRoot, path)).toMatch(observedBoundary);
