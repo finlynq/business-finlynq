@@ -1,20 +1,82 @@
-# Staging deployment from `stage`
+# Development and staging deployment
 
-Business Finlynq uses three long-lived branches with a one-way promotion path:
+## Environment and promotion contract
 
-- `dev` is the daily development branch and has no hosted deployment;
-- `stage` deploys to the staging stack at `stage.business.finlynq.com`;
-- `main` deploys to production at `business.finlynq.com`.
+Business Finlynq uses three long-lived branches with three distinct deployment
+targets and a one-way promotion path:
+
+| Branch | Environment | Public hostname |
+| --- | --- | --- |
+| `dev` | Hosted development | `dev.business.finlynq.com` |
+| `stage` | Staging | `stage.business.finlynq.com` |
+| `main` | Production | `business.finlynq.com` |
+
+Promote revisions only in this direction: `dev` -> `stage` -> `main`. A request
+to "deploy to dev" means deploy `origin/dev` to
+`dev.business.finlynq.com`. It does **not** authorize a merge or push to
+`stage`, and it must never be satisfied by deploying the staging stack. A
+request to deploy or promote to staging must name `stage` or
+`stage.business.finlynq.com` explicitly.
+
+Each environment has a separate purpose:
+
+1. Developers integrate changes on `dev`, deploy them to the hosted development
+   environment, and test that the application works correctly at
+   `dev.business.finlynq.com`.
+2. After development acceptance, promote the exact accepted revision to
+   `stage`. Staging is the production-migration rehearsal: run the same schema,
+   data, grant, bootstrap, application, and verification sequence intended for
+   production against isolated demo or sanitized data at
+   `stage.business.finlynq.com`.
+3. Only after the staging rehearsal succeeds, promote the exact accepted
+   staging revision to `main` and run the separately controlled production
+   deployment at `business.finlynq.com`.
+
+If any gate fails, stop promotion, fix the issue on `dev`, and repeat the dev
+and staging gates. Do not patch `stage` or `main` directly to bypass a failed
+earlier environment.
+
+Before starting a deployment, record and verify all five values: requested
+environment, source branch, full revision, public hostname, and deployment
+service. Stop if any configured hostname, checkout, Compose project, or service
+points at a different environment. A successful response from the requested
+hostname is not sufficient proof when two hostnames route to the same backend.
+
+### Current automation gap
+
+The checked-in `deploy/development/*` automation currently reads `origin/stage`,
+uses `/home/deploy/business-finlynq-stage`, and requires
+`stage.business.finlynq.com`. Despite the historical `development` names in its
+paths, Compose project, and systemd service, it is the **staging deployer** and
+must not be used for a hosted-development request.
+
+The shared edge may still expose `dev.business.finlynq.com` as a compatibility
+route to the staging backend. That alias is not an independent deployment of
+`dev`. Until a dedicated, isolated `dev` checkout, Compose project, state,
+database, secrets, deployment signal, and verifier are implemented, the
+repository cannot safely complete a hosted-development deployment. Report that
+gap instead of promoting `dev` to `stage` or treating the compatibility route
+as a successful dev deployment.
 
 A same-repository push to `stage` must pass the complete `quality-gate` job before CI publishes the immutable `deploy-stage-<full-sha>` tag. The staging timer accepts only that exact tag and a fast-forward `origin/stage` commit. Production instead accepts only the exact keyless deployment-signal attestation for `origin/main` documented in [Continuous deployment from main](./continuous-deployment.md).
 
-## Local development checkout
+## Development checkout
 
-Daily work happens on `dev` in `/home/deploy/business-finlynq-dev`. That checkout already contains the complete Next.js frontend and server code, so it does not need a separate hosted frontend. It also does not need a third long-lived database. Unit, lint, type, and static checks can run without one; database integration tests should use a disposable local PostgreSQL database through the `TEST_DATABASE_URL`, `TEST_APP_DATABASE_URL`, and `TEST_AUTH_WORKER_DATABASE_URL` settings documented in the repository README. Never point local development at the staging or production database.
+Daily work happens on `dev` in `/home/deploy/business-finlynq-dev`. This
+checkout is the source for the future hosted-development deployment, but the
+current repository does not yet provide that deployment path. Unit, lint, type,
+and static checks can run from this checkout without a long-lived database;
+database integration tests should use a disposable local PostgreSQL database
+through the `TEST_DATABASE_URL`, `TEST_APP_DATABASE_URL`, and
+`TEST_AUTH_WORKER_DATABASE_URL` settings documented in the repository README.
+Never point development work or tests at the staging or production database,
+and never substitute the staging deployer for the missing dev deployer.
 
-## Isolation contract
+## Current staging isolation contract
 
-The development stack uses its own checkout, Compose project, loopback port, database volume, networks, secrets, and deployment state:
+The existing non-production automation deploys staging. It uses its own
+checkout, Compose project, loopback port, database volume, networks, secrets,
+and deployment state:
 
 | Boundary | Staging | Production |
 | --- | --- | --- |
@@ -26,7 +88,13 @@ The development stack uses its own checkout, Compose project, loopback port, dat
 | Database volume | `business_finlynq_development_pgdata` | `business_finlynq_pgdata` |
 | Public hostname | `stage.business.finlynq.com` | `business.finlynq.com` |
 
-Both deployment services acquire `/var/lib/business-finlynq/deployment-host.lock`, so builds and migrations cannot overlap on the shared server. The centrally owned shared edge joins the development ingress network only to reach the `development-app` alias; the application database and private network remain inaccessible from production containers.
+The staging and production deployment services acquire
+`/var/lib/business-finlynq/deployment-host.lock`, so builds and migrations
+cannot overlap on the shared server. Historical resource names containing
+`development` refer to this staging stack and do not make it a deployment of
+the `dev` branch. The centrally owned shared edge joins the staging ingress
+network only to reach the `development-app` alias; the application database and
+private network remain inaccessible from production containers.
 
 Staging data is disposable and must never be restored from an unsanitized production backup. Staging starts with demo login/writes and the real-business write engine enabled, but real account login, signup, email delivery, Turnstile, and bank feeds disabled. Enable those identity gates only after installing staging-specific provider credentials; never copy production provider credentials or encryption keys.
 
@@ -39,7 +107,7 @@ sudo bash deploy/development/install-development.sh --enable
 sudo systemctl start business-finlynq-development-deployment.service
 ```
 
-The installer creates independent random database credentials and encryption secrets without printing them. It also creates the external development edge network and gives `deploy` narrowly scoped permission to start, inspect, and read the journal for the development deployment service.
+The installer creates independent random database credentials and encryption secrets without printing them. It also creates the externally connected staging edge network and gives `deploy` narrowly scoped permission to start, inspect, and read the journal for the historically named development deployment service.
 
 The installer also publishes a root-owned, read-only finalization verifier. It
 accepts no arguments and derives the accepted revision from protected state, so
@@ -67,9 +135,18 @@ compromised `deploy` account. On hosts where `deploy` can access the Docker
 daemon, that account is already root-equivalent. Removing that broader access
 requires a separate review of every deployment and troubleshooting workflow.
 
-## Staging hostname cutover
+## Historical staging hostname cutover
 
-The legacy staging hostname was `dev.business.finlynq.com`. Cut over to `stage.business.finlynq.com` in this order so login and public acceptance never authorize a partially configured origin:
+Historically, staging used `dev.business.finlynq.com`. That hostname is now
+reserved for the distinct hosted-development environment described above. The
+following records the completed staging cutover to
+`stage.business.finlynq.com`; it does not authorize reusing the current staging
+backend as the dev environment. When hosted development is provisioned, replace
+the legacy compatibility route only through the separately governed shared-edge
+cutover and only after the new isolated dev backend is ready through a private
+verification path.
+
+The staging cutover sequence was:
 
 1. In GoDaddy DNS, create an `A` record for `stage.business` pointing to `51.161.113.222`. Keep the existing `dev.business` record during the transition.
 2. Add `https://stage.business.finlynq.com/api/auth/oidc/callback` to the staging Microsoft Entra app registration. Keep the legacy callback until the cutover is accepted. Update any enabled document-provider and Turnstile registrations to allow the new hostname.
@@ -91,7 +168,7 @@ The migration flag accepts only the exact legacy origin triplet and rewrites it 
 
 The environment sets `BUSINESS_FINLYNQ_EDGE_MODE=external` because shared-edge contract v1 is the only supported public-ingress mode. The installer requires the pre-existing `business_finlynq_development_edge` internal bridge and never creates or repairs it. `DEVELOPMENT_REQUIRE_PUBLIC_ACCEPTANCE=false` permits the first internal deployment before central route activation. After central cutover, rerun the installer with `--external-edge --require-public-acceptance`. That protected update changes only `DEVELOPMENT_REQUIRE_PUBLIC_ACCEPTANCE`; it does not enable login, email, Turnstile, bank-feed, or other provider gates. Rerun the development deployer at the same accepted revision to force configuration reconciliation and prove public browser acceptance. When public acceptance is required, the deployer waits up to two minutes for a private-preview `/api/health` request through the exact development hostname to return `ready` before starting browser acceptance. The request carries the deployment's ephemeral preview token; uncredentialed public health and application routes remain in maintenance with `503` until activation. The acceptance container marks that public target as an already managed server so Playwright cannot fall back to starting a second local Next.js process; ordinary CI browser runs still start their own reviewed build.
 
-## Enable every development feature
+## Enable every staging feature
 
 Keep the initial fail-closed installation until staging-specific provider credentials exist. Create a separate Resend sending-access key and a separate Cloudflare Turnstile widget restricted to `stage.business.finlynq.com`; using the same verified sending domain is acceptable, but never copy a production API key or Turnstile secret into staging. Treat the sender address domain as an exact provider contract: if Resend lists only `finlynq.com` as verified, use an address ending in `@finlynq.com`, such as `noreply-stage-business@finlynq.com`. Do not assume an unlisted nested sender domain such as `stage.business.finlynq.com` is covered; verify the intended `From` address with one delivery to an operator-owned mailbox before enabling automated delivery.
 
@@ -131,7 +208,7 @@ From a clean, reviewed `stage` checkout, opt in explicitly with the non-secret s
 sudo bash deploy/development/install-development.sh \
   --enable \
   --enable-all-features \
-  --auth-email-from 'Business Finlynq Development <noreply-dev-business@finlynq.com>' \
+  --auth-email-from 'Business Finlynq Staging <noreply-stage-business@finlynq.com>' \
   --auth-email-reply-to 'support@finlynq.com' \
   --turnstile-site-key '<development-site-key>'
 sudo systemctl start business-finlynq-development-deployment.service
@@ -203,16 +280,16 @@ activation procedure in this guide. Provider tests in ordinary CI use mocks;
 optional live checks are non-production, explicitly authorized, and never a
 release-gate dependency.
 
-## Direct-to-development acceptance and automatic recovery
+## Direct-to-staging acceptance and automatic recovery
 
 Every signalled candidate is installed directly on the staging stack; there is no second shadow stack, and the PostgreSQL volume remains mounted throughout deployment and recovery. With `DEVELOPMENT_REQUIRE_PUBLIC_ACCEPTANCE=true`, browser acceptance targets `https://stage.business.finlynq.com` through the private-preview token and is attempted twice before the candidate is rejected. With the flag false, the deployer performs only its private/internal candidate checks and does not claim public browser acceptance.
 
-For router-aware routine releases, candidate images are built before the maintenance interval. The existing stable router is then atomically reloaded to maintenance, so uncredentialed development traffic receives deterministic `503` responses while the old app is stopped, migration/bootstrap dependencies and the candidate start, and any required two-attempt browser gate runs. A candidate that passes every private and public check reloads the same listener live-active while durable state remains maintenance; the accepted-revision record is atomically published, then the router's durable `active` sentinel is committed last. A failed finalization restores the prior accepted pointer and fail-closes the router, so a restarted listener cannot select an unaccepted candidate. The one-time legacy transition cannot enter router maintenance until the old app releases port `3200`; that bootstrap may briefly refuse connections before the stable router starts fail-closed in maintenance.
+For router-aware routine releases, candidate images are built before the maintenance interval. The existing stable router is then atomically reloaded to maintenance, so uncredentialed staging traffic receives deterministic `503` responses while the old app is stopped, migration/bootstrap dependencies and the candidate start, and any required two-attempt browser gate runs. A candidate that passes every private and public check reloads the same listener live-active while durable state remains maintenance; the accepted-revision record is atomically published, then the router's durable `active` sentinel is committed last. A failed finalization restores the prior accepted pointer and fail-closes the router, so a restarted listener cannot select an unaccepted candidate. The one-time legacy transition cannot enter router maintenance until the old app releases port `3200`; that bootstrap may briefly refuse connections before the stable router starts fail-closed in maintenance.
 
 The deployer records the last fully accepted SHA in the root-only `accepted-revision` state file. If checkout, build, migration/startup, public acceptance, or final health verification fails, it attempts to restore that exact checkout and image revision. Recovery is considered successful only after the restored app reports the expected revision on its internal detailed health endpoint and the public HTTPS health endpoint remains ready. Before a newer candidate mutates an installation already held in fail-closed maintenance, the candidate's immutable external-edge verifier accepts only the complete deterministic maintenance contract (`/api/live` ready, application/readiness routes `503`, `Retry-After: 5`, and the reviewed security boundaries); active routing still requires the complete ready contract. If an accepted runtime image tag is no longer present, recovery rebuilds only the required runtime images from that exact accepted checkout and verifies their embedded revision labels before starting them.
 
 
-After verified recovery, the failed SHA is quarantined rather than globally latching all future deployments. The deployer removes only containers from the development Compose project whose image label matches that SHA, removes the exact Finlynq image tags for that SHA, prunes dangling images with the same revision label, and bounds BuildKit cache to 8 GB. It never runs `docker system prune`, never removes a volume, and preserves an image revision if another Compose project still uses it. The quarantine is a single atomic state file, not an artifact directory, so repeated failures cannot accumulate retained release folders.
+After verified recovery, the failed SHA is quarantined rather than globally latching all future deployments. The deployer removes only containers from the staging Compose project (historically named `business-finlynq-development`) whose image label matches that SHA, removes the exact Finlynq image tags for that SHA, prunes dangling images with the same revision label, and bounds BuildKit cache to 8 GB. It never runs `docker system prune`, never removes a volume, and preserves an image revision if another Compose project still uses it. The quarantine is a single atomic state file, not an artifact directory, so repeated failures cannot accumulate retained release folders.
 
 The same quarantined SHA is not retried. Its cleanup is retried automatically when needed, and a newer fast-forward SHA with its own successful CI signal is evaluated without operator acknowledgement. Only an inability to verify the restored runtime creates `deployment-hard-failed` and stops subsequent candidates for manual recovery; this is the safety boundary for potentially incompatible persistent-database changes.
 
@@ -220,9 +297,32 @@ On the one-time transition from the old global latch, the latch’s `sourceRevis
 
 ## Promotion
 
-Develop and test on `dev`, promote the reviewed revision to `stage`, and validate the deployed staging stack. Then merge the exact accepted `stage` revision into `main` with a normal fast-forward or reviewed pull request. Never force-push a long-lived branch. Production remains unchanged until the resulting `main` commit passes its own quality gate and receives its separate production deployment signal.
+Promotion requires evidence from all three gates:
 
-Inspect the development automation with:
+1. **Development acceptance:** deploy the candidate from `origin/dev` only to
+   `dev.business.finlynq.com`. Run the required automated suite and functional
+   smoke tests there, verify health and authentication boundaries, and record
+   the accepted full Git revision.
+2. **Staging migration rehearsal:** promote that exact revision to `stage` with
+   a normal fast-forward or reviewed pull request. Deploy it only to
+   `stage.business.finlynq.com`. Execute the same ordered migration and rollout
+   procedure planned for production, including schema and data migrations,
+   database grants, application startup, health checks, critical workflows,
+   and recovery or rollback checks. Use only isolated demo or sanitized data;
+   never restore an unsanitized production backup. Record the accepted revision
+   and rehearsal result.
+3. **Production migration:** promote the exact staging-accepted revision to
+   `main` with a normal fast-forward or reviewed pull request. Confirm that the
+   Git revision and migration set match the successful staging rehearsal, then
+   use the separately controlled production deployment and validation process.
+
+Never use a staging deployment as evidence that `dev` was deployed, never skip
+an environment, never introduce unreviewed migration steps between staging and
+production, and never force-push a long-lived branch. Production remains
+unchanged until the resulting `main` commit passes its own quality gate and
+receives its separate production deployment signal.
+
+Inspect the historically named staging automation with:
 
 ```bash
 systemctl status business-finlynq-development-deployment.timer
