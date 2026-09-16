@@ -143,6 +143,7 @@ export type TenantPartyDirectoryDto = Readonly<{
   demoOnly: boolean;
   readiness: TenantReadiness;
   canManage: boolean;
+  canCorrect: boolean;
   parties: readonly TenantPartyDto[];
   pagination: RegisterPagination;
 }>;
@@ -592,7 +593,7 @@ export async function loadTenantJournalWorkspace(
       }) && await actorHasActiveOrganizationRole(client, {
         organizationId: principal.organizationId,
         actorId: principal.userId,
-        roleKeys: ["OWNER", "ORGANIZATION_ADMIN"],
+        roleKeys: ["OWNER"],
       });
     const today = principal.sessionMode === "demo"
       ? demoAccountingDate()
@@ -917,6 +918,12 @@ export async function loadTenantPartyDirectory(
       actorId: principal.userId,
       permission: PERMISSIONS.manageParties,
     });
+    const canCorrect = principal.sessionMode === "real" && canManage &&
+      await actorHasActiveOrganizationRole(client, {
+        organizationId: principal.organizationId,
+        actorId: principal.userId,
+        roleKeys: ["OWNER"],
+      });
     if (!(await actorHasActivePermission(client, {
       organizationId: principal.organizationId,
       actorId: principal.userId,
@@ -934,6 +941,7 @@ export async function loadTenantPartyDirectory(
         demoOnly: membership.isDemo,
         readiness,
         canManage,
+        canCorrect,
         parties: [],
         pagination: {
           page,
@@ -1079,6 +1087,7 @@ export async function loadTenantPartyDirectory(
         demoOnly: membership.isDemo,
         readiness,
         canManage,
+        canCorrect,
         pagination: partyPage.pagination,
         parties: partyPage.rows.map((row) => ({
           id: row.id,

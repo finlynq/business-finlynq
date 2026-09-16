@@ -117,6 +117,35 @@ describe("remote MCP advertised tool catalog", () => {
     }
   });
 
+  it("advertises owner-only, MFA-backed correction tools with permanent reasons", () => {
+    for (const name of [
+      "finlynq_daily_unpost_journal",
+      "finlynq_daily_delete_journal",
+    ]) {
+      const { tool, schema } = advertisedSchema(name);
+      expect(tool.policy).toMatchObject({
+        group: "DAILY",
+        access: "WRITE",
+        permission: "ledger.journal.administer",
+        mfaRequirement: "REQUIRED",
+      });
+      expect(tool.destructive).toBe(true);
+      expect(tool.idempotent).toBe(true);
+      expect([...(schema.required ?? [])].sort()).toEqual([
+        "idempotencyKey",
+        "journalId",
+        "reason",
+      ]);
+      expect(tool.description).toContain("Owner-only");
+    }
+
+    const party = advertisedSchema("finlynq_setup_update_party");
+    expect(party.tool.destructive).toBe(true);
+    expect(party.tool.description).toContain("Owner-only");
+    expect(party.schema.required).toContain("reason");
+    expect(party.schema.required).toContain("expectedDisplayName");
+  });
+
   it("advertises a high-assurance, tenant-policy-only FX provider setup tool", () => {
     const { tool, schema } = advertisedSchema("finlynq_setup_configure_fx_provider_policy");
     expect(tool.policy).toMatchObject({

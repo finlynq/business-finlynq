@@ -386,6 +386,13 @@
       "when": 1789520309839,
       "tag": "0054_tax_filing_reconciliation",
       "breakpoints": true
+    },
+    {
+      "idx": 55,
+      "version": "7",
+      "when": 1789563636379,
+      "tag": "0055_mcp_account_configuration_controls",
+      "breakpoints": true
     }
   ]
 }

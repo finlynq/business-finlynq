@@ -16,6 +16,7 @@ const tenantContextInputSchema = z.object({
   sourceSurface: z.enum(["UI", "API", "IMPORT", "WORKER", "MCP"]),
   reason: z.string().trim().min(1).max(500).optional(),
   demoWriteAuthorized: z.boolean().optional(),
+  mcpConnectionId: z.uuid().optional(),
 });
 
 const tenantContextSchema = tenantContextInputSchema.transform((context, issueContext) => {
@@ -144,6 +145,9 @@ export async function withTenantTransaction<T>(
     await client.query("SELECT set_config('app.auth_method', $1, true)", [context.authMethod]);
     await client.query("SELECT set_config('app.source_surface', $1, true)", [context.sourceSurface]);
     await client.query("SELECT set_config('app.reason', $1, true)", [context.reason ?? ""]);
+    await client.query("SELECT set_config('app.mcp_connection_id', $1, true)", [
+      context.mcpConnectionId ?? "",
+    ]);
     await client.query("SELECT set_config('app.demo_write_authorized', $1, true)", [
       context.demoWriteAuthorized === true ? "true" : "false",
     ]);
