@@ -15316,7 +15316,7 @@
         },
         "tax_account_mapping_lines_multiplier_check": {
           "name": "tax_account_mapping_lines_multiplier_check",
-          "value": "abs(\"tax_account_mapping_lines\".\"multiplier\") <= 1000 AND \"tax_account_mapping_lines\".\"multiplier\" <> 0"
+          "value": "abs(\"tax_account_mapping_lines\".\"multiplier\") <= (1000)::numeric AND \"tax_account_mapping_lines\".\"multiplier\" <> 0"
         }
       },
       "isRLSEnabled": false

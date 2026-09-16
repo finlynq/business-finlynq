@@ -8,7 +8,7 @@ CREATE TABLE "tax_account_mapping_lines" (
 	"multiplier" numeric(12, 6) DEFAULT '1' NOT NULL,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
 	CONSTRAINT "tax_account_mapping_lines_basis_check" CHECK ("tax_account_mapping_lines"."balance_basis" IN ('DEBITS', 'CREDITS', 'NET_DEBIT', 'NET_CREDIT', 'ABSOLUTE_NET')),
-	CONSTRAINT "tax_account_mapping_lines_multiplier_check" CHECK (abs("tax_account_mapping_lines"."multiplier") <= 1000 AND "tax_account_mapping_lines"."multiplier" <> 0)
+	CONSTRAINT "tax_account_mapping_lines_multiplier_check" CHECK (abs("tax_account_mapping_lines"."multiplier") <= (1000)::numeric AND "tax_account_mapping_lines"."multiplier" <> 0)
 );
 --> statement-breakpoint
 CREATE TABLE "tax_account_mapping_sets" (

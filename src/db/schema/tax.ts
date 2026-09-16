@@ -240,7 +240,7 @@ export const taxAccountMappingLines = pgTable(
     ),
     check(
       "tax_account_mapping_lines_multiplier_check",
-      sql`abs(${table.multiplier}) <= 1000 AND ${table.multiplier} <> 0`,
+      sql`abs(${table.multiplier}) <= (1000)::numeric AND ${table.multiplier} <> 0`,
     ),
   ],
 );
