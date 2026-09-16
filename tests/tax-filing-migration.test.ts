@@ -22,6 +22,8 @@ describe("tax filing reconciliation migration", () => {
   it("keeps shared templates global while forcing tenant isolation on client data", () => {
     expect(migration).not.toContain("jsonb_object_length");
     expect(migration).toContain(`"tax_filings"."reported_values" <> '{}'::jsonb`);
+    expect(migration.indexOf("tax_account_mapping_sets_org_id_unique"))
+      .toBeLessThan(migration.indexOf("tax_account_mapping_lines_org_set_fk"));
     expect(migration).not.toContain("ALTER TABLE tax_filing_templates ENABLE ROW LEVEL SECURITY");
     for (const table of ["tax_account_mapping_sets", "tax_account_mapping_lines", "tax_filings"]) {
       expect(migration).toContain(`ALTER TABLE ${table} ENABLE ROW LEVEL SECURITY`);

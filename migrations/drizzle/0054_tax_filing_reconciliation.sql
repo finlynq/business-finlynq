@@ -86,6 +86,7 @@ CREATE TABLE "tax_filings" (
 	CONSTRAINT "tax_filings_hash_check" CHECK ("tax_filings"."command_hash" ~ '^[a-f0-9]{64}$')
 );
 --> statement-breakpoint
+CREATE UNIQUE INDEX "tax_account_mapping_sets_org_id_unique" ON "tax_account_mapping_sets" USING btree ("organization_id","id");--> statement-breakpoint
 ALTER TABLE "tax_account_mapping_lines" ADD CONSTRAINT "tax_account_mapping_lines_organization_id_organizations_id_fk" FOREIGN KEY ("organization_id") REFERENCES "public"."organizations"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "tax_account_mapping_lines" ADD CONSTRAINT "tax_account_mapping_lines_org_set_fk" FOREIGN KEY ("organization_id","mapping_set_id") REFERENCES "public"."tax_account_mapping_sets"("organization_id","id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "tax_account_mapping_lines" ADD CONSTRAINT "tax_account_mapping_lines_org_account_fk" FOREIGN KEY ("organization_id","gl_account_id") REFERENCES "public"."gl_accounts"("organization_id","id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
@@ -102,7 +103,6 @@ ALTER TABLE "tax_filings" ADD CONSTRAINT "tax_filings_org_mapping_set_fk" FOREIG
 CREATE UNIQUE INDEX "tax_account_mapping_lines_org_id_unique" ON "tax_account_mapping_lines" USING btree ("organization_id","id");--> statement-breakpoint
 CREATE UNIQUE INDEX "tax_account_mapping_lines_identity_unique" ON "tax_account_mapping_lines" USING btree ("mapping_set_id","field_key","gl_account_id");--> statement-breakpoint
 CREATE INDEX "tax_account_mapping_lines_set_field_idx" ON "tax_account_mapping_lines" USING btree ("mapping_set_id","field_key");--> statement-breakpoint
-CREATE UNIQUE INDEX "tax_account_mapping_sets_org_id_unique" ON "tax_account_mapping_sets" USING btree ("organization_id","id");--> statement-breakpoint
 CREATE UNIQUE INDEX "tax_account_mapping_sets_scope_version_unique" ON "tax_account_mapping_sets" USING btree ("organization_id","ledger_id","template_id","version");--> statement-breakpoint
 CREATE UNIQUE INDEX "tax_account_mapping_sets_org_idempotency_unique" ON "tax_account_mapping_sets" USING btree ("organization_id","idempotency_key");--> statement-breakpoint
 CREATE INDEX "tax_account_mapping_sets_active_lookup" ON "tax_account_mapping_sets" USING btree ("organization_id","ledger_id","template_id","version");--> statement-breakpoint
