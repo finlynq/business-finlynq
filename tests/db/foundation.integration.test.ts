@@ -529,6 +529,96 @@ runDatabaseTests("PostgreSQL accounting controls", () => {
     });
   });
 
+  it("uses only the exact live MCP connection for durable direct-write authorization", async () => {
+    const historicalSessionId = randomUUID();
+    const connectionId = randomUUID();
+    const clientId = `foundation-${randomUUID()}`;
+    const accountId = randomUUID();
+    await adminPool.query(
+      `INSERT INTO auth_sessions(
+         id, token_hash, user_id, organization_id, membership_id,
+         auth_method, session_mode, user_agent_hash, idle_timeout_seconds,
+         idle_expires_at, expires_at, mfa_verified_at, step_up_expires_at
+       ) VALUES(
+         $1,$2,$3,$4,$5,'PASSWORD','REAL',repeat('m',64),7200,
+         now() - interval '2 hours',now() - interval '1 hour',
+         now() - interval '3 hours',now() - interval '170 minutes'
+       )`,
+      [
+        historicalSessionId,
+        `foundation-mcp-session-${historicalSessionId}`,
+        ids.actor,
+        ids.orgA,
+        ids.membership,
+      ],
+    );
+    await adminPool.query(
+      `INSERT INTO mcp_oauth_clients(client_id, client_name, redirect_uris)
+       VALUES($1,'Foundation direct-write client',ARRAY['https://client.example/callback'])`,
+      [clientId],
+    );
+    await adminPool.query(
+      `INSERT INTO mcp_connections(
+         id, organization_id, user_id, membership_id, client_id, client_name,
+         scopes, daily_mode, setup_mode, direct_write_session_id,
+         direct_write_step_up_expires_at
+       ) VALUES(
+         $1,$2,$3,$4,$5,'Foundation direct-write client',
+         ARRAY['mcp:setup:write'],'READ_ONLY','ALLOW_WRITES',$6,
+         now() - interval '170 minutes'
+       )`,
+      [connectionId, ids.orgA, ids.actor, ids.membership, clientId, historicalSessionId],
+    );
+    await adminPool.query(
+      `INSERT INTO gl_accounts(
+         id, organization_id, ledger_id, code, display_name, class,
+         control_kind, postable, active, valid_from
+       ) VALUES($1,$2,$3,$4,'Durable MCP account','ASSET','NONE',true,true,'2026-01-01')`,
+      [accountId, ids.orgA, ids.ledger, `MCP${accountId.replaceAll("-", "").slice(0, 8)}`],
+    );
+
+    const createCombination = async () => {
+      const client = await runtimePool.connect();
+      try {
+        await client.query("BEGIN");
+        await client.query("SELECT set_config('app.organization_id', $1, true)", [ids.orgA]);
+        await client.query("SELECT set_config('app.actor_id', $1, true)", [ids.actor]);
+        await client.query("SELECT set_config('app.session_id', $1, true)", [historicalSessionId]);
+        await client.query("SELECT set_config('app.session_mode', 'real', true)");
+        await client.query("SELECT set_config('app.auth_method', 'password+mfa', true)");
+        await client.query("SELECT set_config('app.source_surface', 'MCP', true)");
+        await client.query("SELECT set_config('app.reason', 'Create durable MCP account combination', true)");
+        await client.query("SELECT set_config('app.request_id', $1, true)", [randomUUID()]);
+        await client.query("SELECT set_config('app.mcp_connection_id', $1, true)", [connectionId]);
+        const result = await client.query<{ id: string }>(
+          `SELECT (created).id
+           FROM (SELECT app.accounting_create_account_combination(
+             $1::uuid,$2::uuid,$3::uuid,
+             NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL
+           ) AS created) mutation`,
+          [ids.entity, ids.ledger, accountId],
+        );
+        await client.query("COMMIT");
+        return result.rows[0]?.id;
+      } catch (error) {
+        await client.query("ROLLBACK");
+        throw error;
+      } finally {
+        client.release();
+      }
+    };
+
+    const combinationId = await createCombination();
+    expect(combinationId).toMatch(/^[0-9a-f-]{36}$/);
+    await expect(createCombination()).resolves.toBe(combinationId);
+
+    await adminPool.query(
+      "UPDATE mcp_connections SET revoked_at = now() WHERE organization_id = $1 AND id = $2",
+      [ids.orgA, connectionId],
+    );
+    await expect(createCombination()).rejects.toThrow(/active authorization context/i);
+  });
+
   it("posts an exact balanced journal and writes audit in the same transaction", async () => {
     const result = await postJournal({
       context: {
@@ -724,10 +814,10 @@ runDatabaseTests("PostgreSQL accounting controls", () => {
       journalId: created.journalId,
       reason: "Ordinary member must not delete this draft",
       idempotencyKey: randomUUID(),
-    })).rejects.toThrow(/active owner or organization administrator/i);
+    })).rejects.toThrow(/active organization owner/i);
   });
 
-  it("maintains future and reactivated admin entitlements while denying permission-only custom roles", async () => {
+  it("keeps journal administration owner-only despite administrator or custom-role grants", async () => {
     const administratorUserId = randomUUID();
     const administratorMembershipId = randomUUID();
     const administratorSessionId = randomUUID();
@@ -806,12 +896,12 @@ runDatabaseTests("PostgreSQL accounting controls", () => {
        WHERE organization_id=$1 AND role_id=$2 AND permission_key='ledger.journal.administer'`,
       [ids.orgA, administratorRoleId!],
     );
-    expect(reactivatedEntitlement.rows[0]?.count).toBe(1);
-    await expect(adminPool.query(
+    expect(reactivatedEntitlement.rows[0]?.count).toBe(0);
+    await adminPool.query(
       `DELETE FROM role_permissions
        WHERE organization_id=$1 AND role_id=$2 AND permission_key='ledger.journal.administer'`,
       [ids.orgA, administratorRoleId!],
-    )).rejects.toThrow(/must retain ledger\.journal\.administer/i);
+    );
 
     const customTarget = await createAdministrativeJournal(
       "Permission-only custom role denial journal",
@@ -869,17 +959,18 @@ runDatabaseTests("PostgreSQL accounting controls", () => {
       journalId: administratorTarget.journalId,
       reason: "Organization administrator removes reviewed duplicate draft",
       idempotencyKey: randomUUID(),
-    })).resolves.toMatchObject({ status: "DELETED", idempotentReplay: false });
+    })).rejects.toThrow(/active organization owner/i);
 
     for (const [journalId, reason] of [
-      [customTarget.journalId, "Administrator tombstones the custom-role boundary fixture"],
-      [staleTarget.journalId, "Administrator tombstones the stale-step-up boundary fixture"],
+      [customTarget.journalId, "Owner tombstones the custom-role boundary fixture"],
+      [staleTarget.journalId, "Owner tombstones the stale-step-up boundary fixture"],
+      [administratorTarget.journalId, "Owner tombstones the administrator boundary fixture"],
     ] as const) {
       await expect(deleteJournal({
         context: {
           organizationId: ids.orgA,
-          actorId: administratorUserId,
-          sessionId: administratorSessionId,
+          actorId: ids.actor,
+          sessionId: ids.validSession,
           sessionMode: "real",
           requestId: randomUUID(),
           authMethod: "password+mfa",

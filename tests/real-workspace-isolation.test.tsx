@@ -37,11 +37,13 @@ const mocks = vi.hoisted(() => {
       demoOnly: boolean;
       readiness: "EMPTY_ORGANIZATION" | "READY";
       canManage: boolean;
+      canCorrect: boolean;
       parties: never[];
     }> => ({
       demoOnly: false,
       readiness: "EMPTY_ORGANIZATION" as const,
       canManage: false,
+      canCorrect: false,
       parties: [],
     })),
     loadPartyAccountCreationOptions: vi.fn(async (): Promise<readonly Readonly<{
@@ -388,6 +390,7 @@ describe("real organization workspace isolation", () => {
       demoOnly: false,
       readiness: "READY" as const,
       canManage: true,
+      canCorrect: true,
       parties: [],
     });
     mocks.loadPartyAccountCreationOptions.mockResolvedValueOnce([{

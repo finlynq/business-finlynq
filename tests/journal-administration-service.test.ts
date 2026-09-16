@@ -46,7 +46,7 @@ beforeEach(() => {
   mocks.assertWritable.mockResolvedValue(undefined);
 });
 
-describe("journal owner/admin controls", () => {
+describe("journal owner controls", () => {
   it("repeats permission enforcement inside the transaction and unposts idempotently", async () => {
     mocks.query.mockResolvedValue({ rows: [{
       journal_id: journalId,
@@ -74,7 +74,7 @@ describe("journal owner/admin controls", () => {
     expect(mocks.assertRole).toHaveBeenCalledWith(expect.anything(), {
       organizationId: context.organizationId,
       actorId: context.actorId,
-      roleKeys: ["OWNER", "ORGANIZATION_ADMIN"],
+      roleKeys: ["OWNER"],
     });
     expect(mocks.query).toHaveBeenCalledWith(
       "SELECT * FROM app.admin_control_journal_transaction($1,$2,$3,$4)",
@@ -120,18 +120,18 @@ describe("journal owner/admin controls", () => {
       journalId,
       reason: context.reason,
       idempotencyKey,
-    })).rejects.toThrow(/active owner or organization administrator/);
+    })).rejects.toThrow(/active organization owner/);
     expect(mocks.query).not.toHaveBeenCalled();
   });
 
   it("denies a custom role even if someone attached the permission", async () => {
-    mocks.assertRole.mockRejectedValueOnce(new Error("owner or administrator role is required"));
+    mocks.assertRole.mockRejectedValueOnce(new Error("owner role is required"));
     await expect(deleteJournal({
       context,
       journalId,
       reason: context.reason,
       idempotencyKey,
-    })).rejects.toThrow(/active owner or organization administrator/);
+    })).rejects.toThrow(/active organization owner/);
     expect(mocks.query).not.toHaveBeenCalled();
   });
 

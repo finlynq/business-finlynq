@@ -511,6 +511,7 @@ export function mcpSessionPrincipal(
     stepUpExpiresAt: capturedStepUpExpiry && persistentMfaAuthorization
       ? PERSISTENT_MCP_MFA_EXPIRY
       : capturedStepUpExpiry,
+    mcpConnectionId: principal.connectionId,
     organizationWritesEnabled: principal.organizationWritesEnabled,
   };
 }

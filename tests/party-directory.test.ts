@@ -30,6 +30,7 @@ const principal: SessionPrincipal = {
 };
 
 const mocks = vi.hoisted(() => ({
+  actorHasActiveOrganizationRole: vi.fn(async () => true),
   actorHasActivePermission: vi.fn(async () => true),
   principalCanWrite: vi.fn(() => true),
   withWorkspaceTenantRead: vi.fn(),
@@ -47,6 +48,7 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock("@/modules/identity/authorization", () => ({
+  actorHasActiveOrganizationRole: mocks.actorHasActiveOrganizationRole,
   actorHasActivePermission: mocks.actorHasActivePermission,
 }));
 vi.mock("@/modules/identity/session", () => ({
@@ -119,6 +121,7 @@ function databaseClient(): PoolClient {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mocks.actorHasActiveOrganizationRole.mockResolvedValue(true);
   mocks.actorHasActivePermission.mockResolvedValue(true);
   mocks.principalCanWrite.mockReturnValue(true);
   mocks.loadActiveOrganizationKey.mockResolvedValue({ dek: Buffer.alloc(32), keyVersion: 1 });
@@ -138,6 +141,7 @@ describe("organization-wide party directory", () => {
     });
 
     const directory = await loadTenantPartyDirectory(principal);
+    expect(directory.canCorrect).toBe(true);
     expect(directory.parties).toEqual([expect.objectContaining({
       id: ids.party,
       partyNumber: "P-000184",

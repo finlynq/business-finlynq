@@ -5,6 +5,7 @@ import { loadPartyAccountCreationOptions } from "@/modules/parties/party-workspa
 import { normalizeRegisterPage } from "@/modules/workspace/register-pagination";
 import { PartyAccountAttachForm } from "../../_components/party-account-attach-form.client";
 import { PartyCreateForm } from "../../_components/party-create-form.client";
+import { PartyCorrectionForm } from "../../_components/party-correction-form.client";
 import { RegisterPaginationNav } from "../../_components/register-pagination";
 import styles from "../../_components/party-directory.module.css";
 import { DemoNotice, EmptyState, PageHeader } from "../../_components/ui";
@@ -71,7 +72,7 @@ export default async function PartiesPage({ searchParams }: { searchParams: Prom
                     <th scope="col">Party</th>
                     <th scope="col">Accounting roles by entity</th>
                     <th scope="col">Addresses</th>
-                    <th scope="col">Manage roles</th>
+                    <th scope="col">Manage</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -119,14 +120,26 @@ export default async function PartiesPage({ searchParams }: { searchParams: Prom
                       </td>
                       <td>
                         {directory.canManage ? (
-                          <details className={styles.attachDetails}>
-                            <summary>Add customer / supplier accounting role</summary>
-                            <PartyAccountAttachForm
-                              partyId={party.id}
-                              partyName={party.displayName}
-                              accountOptions={accountOptions}
-                            />
-                          </details>
+                          <>
+                            <details className={styles.attachDetails}>
+                              <summary>Add customer / supplier accounting role</summary>
+                              <PartyAccountAttachForm
+                                partyId={party.id}
+                                partyName={party.displayName}
+                                accountOptions={accountOptions}
+                              />
+                            </details>
+                            {directory.canCorrect && (
+                              <details className={styles.attachDetails}>
+                                <summary>Correct name or status</summary>
+                                <PartyCorrectionForm
+                                  partyId={party.id}
+                                  displayName={party.displayName}
+                                  active={party.active}
+                                />
+                              </details>
+                            )}
+                          </>
                         ) : <span className={styles.emptyValue}>Read only</span>}
                       </td>
                     </tr>

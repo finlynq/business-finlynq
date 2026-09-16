@@ -166,6 +166,7 @@ describe("remote MCP live authorization", () => {
       authorization.persistentMfaAuthorization,
     )).toMatchObject({
       sessionId: delegatedSessionId,
+      mcpConnectionId: snapshot().principal.connectionId,
       stepUpExpiresAt: new Date("9999-12-31T23:59:59.999Z"),
     });
   });

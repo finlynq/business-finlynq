@@ -31,6 +31,8 @@ const ids = {
   session: "10000000-0000-4000-8000-000000000003",
   ledger: "20000000-0000-4000-8000-000000000001",
   account: "20000000-0000-4000-8000-000000000002",
+  entity: "20000000-0000-4000-8000-000000000003",
+  combination: "20000000-0000-4000-8000-000000000004",
 };
 
 const context = {
@@ -66,7 +68,7 @@ beforeEach(() => {
 describe("chart-of-accounts command boundary", () => {
   it("keeps transaction context outside the strict create schema and preserves idempotent replay", async () => {
     mocks.query.mockImplementation(async (statement: string) => {
-      if (statement.includes("FROM ledgers")) return { rows: [{ exists: true }] };
+      if (statement.includes("FROM ledgers")) return { rows: [{ legal_entity_id: ids.entity }] };
       if (statement.includes("FROM gl_accounts")) {
         return { rows: [{
           id: ids.account,
@@ -97,11 +99,13 @@ describe("chart-of-accounts command boundary", () => {
       displayName: "Cloud software",
       postable: true,
       active: true,
+      validFrom: createCommand.validFrom,
       validTo: null,
       expected: {
         displayName: "Software subscriptions",
         postable: true,
         active: true,
+        validFrom: createCommand.validFrom,
         validTo: null,
       },
       reason: "Rename expense account",
@@ -111,8 +115,140 @@ describe("chart-of-accounts command boundary", () => {
       "Account changed after it was loaded, is outside this organization, or violates a protected mapping",
     );
     expect(mocks.query).toHaveBeenCalledWith(
-      expect.stringContaining("AND display_name = $7"),
-      expect.arrayContaining([updateCommand.expected.displayName]),
+      expect.stringContaining("FOR UPDATE"),
+      [ids.organization, ids.account],
+    );
+  });
+
+  it("creates the default account combination atomically and reuses the same account id", async () => {
+    let insertedAccountId = "";
+    mocks.query.mockImplementation(async (statement: string, parameters?: readonly unknown[]) => {
+      if (statement.includes("FROM ledgers")) return { rows: [{ legal_entity_id: ids.entity }] };
+      if (statement.includes("FROM gl_accounts")) return { rows: [] };
+      if (statement.includes("INSERT INTO gl_accounts")) {
+        insertedAccountId = String(parameters?.[0]);
+        return { rows: [{ id: insertedAccountId, code: createCommand.code }] };
+      }
+      if (statement.includes("app.accounting_create_account_combination")) {
+        expect(parameters).toEqual([ids.entity, ids.ledger, insertedAccountId]);
+        return { rows: [{ id: ids.combination }] };
+      }
+      throw new Error(`Unexpected chart SQL: ${statement}`);
+    });
+
+    const result = await createGlAccount({
+      ...createCommand,
+      createDefaultCombination: true,
+    });
+    expect(result).toEqual({
+      accountId: insertedAccountId,
+      accountCombinationId: ids.combination,
+      code: createCommand.code,
+      idempotentReplay: false,
+    });
+    expect(insertedAccountId).toMatch(/^[0-9a-f-]{36}$/);
+  });
+
+  it("returns structured dependency evidence when a later start date would invalidate history", async () => {
+    mocks.query
+      .mockResolvedValueOnce({ rows: [{
+        id: ids.account,
+        ledger_id: ids.ledger,
+        display_name: createCommand.displayName,
+        postable: true,
+        active: true,
+        valid_from: "2025-01-01",
+        valid_to: null,
+      }] })
+      .mockResolvedValueOnce({ rows: [{
+        journal_line_count: 3,
+        source_document_count: 2,
+        bank_mapping_count: 1,
+        earliest_conflicting_date: "2025-02-14",
+      }] });
+
+    await expect(updateGlAccount({
+      context: { ...context, reason: "Move account availability later" },
+      accountId: ids.account,
+      displayName: createCommand.displayName,
+      postable: true,
+      active: true,
+      validFrom: "2026-01-01",
+      validTo: null,
+      expected: {
+        displayName: createCommand.displayName,
+        postable: true,
+        active: true,
+        validFrom: "2025-01-01",
+        validTo: null,
+      },
+      reason: "Move account availability later",
+    })).rejects.toMatchObject({
+      code: "GL_ACCOUNT_VALID_FROM_CONFLICT",
+      safeDetails: {
+        earliestConflictingAccountingDate: "2025-02-14",
+        dependencyCounts: { journalLines: 3, sourceDocuments: 2, bankMappings: 1 },
+      },
+    });
+  });
+
+  it("moves an account start date earlier without replacing its combinations", async () => {
+    mocks.query
+      .mockResolvedValueOnce({ rows: [{
+        id: ids.account,
+        ledger_id: ids.ledger,
+        display_name: createCommand.displayName,
+        postable: true,
+        active: true,
+        valid_from: "2026-01-01",
+        valid_to: null,
+      }] })
+      .mockResolvedValueOnce({ rows: [{
+        id: ids.account,
+        display_name: createCommand.displayName,
+        postable: true,
+        active: true,
+        valid_from: "2025-01-01",
+        valid_to: null,
+      }] })
+      .mockResolvedValueOnce({ rows: [{
+        id: ids.combination,
+        previous_valid_from: "2026-01-01",
+        effective_valid_from: "2025-01-01",
+      }] })
+      .mockResolvedValueOnce({ rows: [{}] });
+
+    await expect(updateGlAccount({
+      context: { ...context, reason: "Expand account availability earlier" },
+      accountId: ids.account,
+      displayName: createCommand.displayName,
+      postable: true,
+      active: true,
+      validFrom: "2025-01-01",
+      validTo: null,
+      expected: {
+        displayName: createCommand.displayName,
+        postable: true,
+        active: true,
+        validFrom: "2026-01-01",
+        validTo: null,
+      },
+      reason: "Expand account availability earlier",
+    })).resolves.toMatchObject({
+      accountId: ids.account,
+      validFrom: "2025-01-01",
+      impactPreview: {
+        combinationCount: 1,
+        combinations: [{
+          id: ids.combination,
+          previousValidFrom: "2026-01-01",
+          effectiveValidFrom: "2025-01-01",
+        }],
+      },
+    });
+    expect(mocks.query).toHaveBeenLastCalledWith(
+      expect.stringContaining("accounting.gl_account.updated"),
+      expect.arrayContaining(["2026-01-01", "2025-01-01", 1]),
     );
   });
 

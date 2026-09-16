@@ -13,7 +13,7 @@ import {
   assertWritableOrganization,
 } from "@/modules/workspace/write-policy";
 
-const commandSchema = z.object({
+export const journalAdministrativeCommandSchema = z.object({
   journalId: z.uuid(),
   reason: z.string().trim().min(10).max(500),
   idempotencyKey: z.uuid(),
@@ -54,7 +54,7 @@ async function controlJournal(
   }>,
 ): Promise<JournalAdministrativeResult> {
   assertTenantWritesEnabled(unparsed.context);
-  const command = commandSchema.parse({
+  const command = journalAdministrativeCommandSchema.parse({
     journalId: unparsed.journalId,
     reason: unparsed.reason,
     idempotencyKey: unparsed.idempotencyKey,
@@ -81,11 +81,11 @@ async function controlJournal(
         await assertActorHasActiveOrganizationRole(client, {
           organizationId: unparsed.context.organizationId,
           actorId: unparsed.context.actorId,
-          roleKeys: ["OWNER", "ORGANIZATION_ADMIN"],
+          roleKeys: ["OWNER"],
         });
       } catch (error) {
         throw new AuthorizationDeniedError(
-          "Journal administration requires an active owner or organization administrator role",
+          "Journal administration requires an active organization owner role",
           { cause: error },
         );
       }
