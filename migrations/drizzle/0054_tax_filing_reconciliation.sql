@@ -82,7 +82,7 @@ CREATE TABLE "tax_filings" (
 	CONSTRAINT "tax_filings_import_evidence_check" CHECK ("tax_filings"."filing_type" <> 'HISTORICAL_IMPORT'
         OR ("tax_filings"."external_reference" IS NOT NULL
           AND char_length(btrim("tax_filings"."external_reference")) BETWEEN 1 AND 200
-          AND jsonb_object_length("tax_filings"."reported_values") > 0)),
+          AND "tax_filings"."reported_values" <> '{}'::jsonb)),
 	CONSTRAINT "tax_filings_hash_check" CHECK ("tax_filings"."command_hash" ~ '^[a-f0-9]{64}$')
 );
 --> statement-breakpoint

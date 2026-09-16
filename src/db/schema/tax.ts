@@ -324,7 +324,7 @@ export const taxFilings = pgTable(
       sql`${table.filingType} <> 'HISTORICAL_IMPORT'
         OR (${table.externalReference} IS NOT NULL
           AND char_length(btrim(${table.externalReference})) BETWEEN 1 AND 200
-          AND jsonb_object_length(${table.reportedValues}) > 0)`,
+          AND ${table.reportedValues} <> '{}'::jsonb)`,
     ),
     check("tax_filings_hash_check", sql`${table.commandHash} ~ '^[a-f0-9]{64}$'`),
   ],

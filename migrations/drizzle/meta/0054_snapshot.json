@@ -16241,7 +16241,7 @@
         },
         "tax_filings_import_evidence_check": {
           "name": "tax_filings_import_evidence_check",
-          "value": "\"tax_filings\".\"filing_type\" <> 'HISTORICAL_IMPORT'\n        OR (\"tax_filings\".\"external_reference\" IS NOT NULL\n          AND char_length(btrim(\"tax_filings\".\"external_reference\")) BETWEEN 1 AND 200\n          AND jsonb_object_length(\"tax_filings\".\"reported_values\") > 0)"
+          "value": "\"tax_filings\".\"filing_type\" <> 'HISTORICAL_IMPORT'\n        OR (\"tax_filings\".\"external_reference\" IS NOT NULL\n          AND char_length(btrim(\"tax_filings\".\"external_reference\")) BETWEEN 1 AND 200\n          AND \"tax_filings\".\"reported_values\" <> '{}'::jsonb)"
         },
         "tax_filings_hash_check": {
           "name": "tax_filings_hash_check",
