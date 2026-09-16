@@ -21,7 +21,11 @@ readonly accepted_revision_file="$state_directory/accepted-revision"
 readonly release_router_reference="business-finlynq-release-router:v2"
 readonly release_router_revision="release-router-v2"
 readonly release_router_contract="v2"
-readonly release_router_build_project="business-finlynq-dev-release-router-build-v2"
+# The release-router tag is intentionally host-global and content-addressed by
+# its fixed v2 contract. Keep the build identity shared with stage/production
+# so an already-attested canonical image can be reused across isolated runtime
+# projects without rebuilding or retagging it.
+readonly release_router_build_project="business-finlynq-release-router-build-v2"
 readonly release_router_source_date_epoch="1788998400"
 readonly release_router_state_volume="business_finlynq_dev_private-release-router-state-v2"
 readonly build_cache_limit="8GB"
