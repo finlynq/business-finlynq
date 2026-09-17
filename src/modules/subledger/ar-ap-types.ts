@@ -112,6 +112,40 @@ export type ListCurrentDocumentsCommand = Readonly<{
   limit?: number;
 }>;
 
+export type PayableOpenItemStatus = "OPEN" | "PARTIALLY_SETTLED" | "SETTLED" | "REVERSED";
+
+export type PayableOpenItemRecord = Readonly<{
+  openItemId: string;
+  sourceNumber: string;
+  sourceDocumentId: string;
+  sourceDocumentVersion: number;
+  documentStatus: SourceDocumentStatus;
+  legalEntityId: string;
+  ledgerId: string;
+  partyAccountId: string;
+  controlAccountCombinationId: string;
+  currency: string;
+  originalAmount: string;
+  allocatedAmount: string;
+  remainingAmount: string;
+  documentDate: string;
+  dueDate: string | null;
+  settlementStatus: PayableOpenItemStatus;
+}>;
+
+export type ListPayableOpenItemsCommand = Readonly<{
+  context: TenantTransactionContext;
+  legalEntityId?: string;
+  ledgerId?: string;
+  partyAccountId?: string;
+  sourceDocumentId?: string;
+  sourceNumber?: string;
+  currency?: string;
+  statuses?: readonly PayableOpenItemStatus[];
+  asOfDate?: string;
+  limit?: number;
+}>;
+
 export type GetCurrentDocumentCommand = Readonly<{
   context: TenantTransactionContext;
   ownerModule: SubledgerOwnerModule;

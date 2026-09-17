@@ -573,7 +573,7 @@ runDatabaseTests("PostgreSQL accounting controls", () => {
       `INSERT INTO gl_accounts(
          id, organization_id, ledger_id, code, display_name, class,
          control_kind, postable, active, valid_from
-       ) VALUES($1,$2,$3,$4,'Durable MCP account','ASSET','NONE',true,true,'2026-01-01')`,
+       ) VALUES($1,$2,$3,$4,'Durable MCP account','ASSET','NONE',true,true,'2025-01-01')`,
       [accountId, ids.orgA, ids.ledger, `MCP${accountId.replaceAll("-", "").slice(0, 8)}`],
     );
 
@@ -608,8 +608,28 @@ runDatabaseTests("PostgreSQL accounting controls", () => {
       }
     };
 
-    const combinationId = await createCombination();
+    const concurrentCombinationIds = await Promise.all([
+      createCombination(),
+      createCombination(),
+      createCombination(),
+    ]);
+    const combinationId = concurrentCombinationIds[0];
     expect(combinationId).toMatch(/^[0-9a-f-]{36}$/);
+    expect(new Set(concurrentCombinationIds)).toEqual(new Set([combinationId]));
+    const storedCombinations = await adminPool.query<{
+      combination_count: number;
+      valid_from: string;
+    }>(
+      `SELECT count(*)::int AS combination_count, min(account.valid_from)::text AS valid_from
+       FROM account_combinations combination
+       JOIN gl_accounts account
+         ON account.organization_id = combination.organization_id
+        AND account.id = combination.account_id
+       WHERE combination.organization_id = $1 AND combination.account_id = $2
+         AND combination.active`,
+      [ids.orgA, accountId],
+    );
+    expect(storedCombinations.rows[0]).toEqual({ combination_count: 1, valid_from: "2025-01-01" });
     await expect(createCombination()).resolves.toBe(combinationId);
 
     await adminPool.query(

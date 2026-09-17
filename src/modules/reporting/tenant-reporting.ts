@@ -284,6 +284,26 @@ export type ReportSelection = Readonly<{
   segmentFilters?: ReportSegmentFilters;
 }>;
 
+export class ReportSelectionError extends Error {
+  readonly code: "REPORT_ENTITY_NOT_FOUND" | "REPORT_ACCOUNT_NOT_FOUND" | "REPORT_ACCOUNT_MISMATCH";
+  readonly safeDetails: Readonly<{
+    entityId?: string;
+    accountId?: string;
+    accountCode?: string;
+  }>;
+
+  constructor(
+    code: ReportSelectionError["code"],
+    message: string,
+    details: ReportSelectionError["safeDetails"],
+  ) {
+    super(message);
+    this.name = "ReportSelectionError";
+    this.code = code;
+    this.safeDetails = details;
+  }
+}
+
 export async function loadReportDimensions(principal: SessionPrincipal): Promise<ReportDimensions> {
   return withWorkspaceTenantRead(readContext(principal), "/app/reports", async (client) => {
     await assertReportPermission(client, principal, PERMISSIONS.readMcpLedger);
@@ -334,17 +354,18 @@ export async function loadReportDimensions(principal: SessionPrincipal): Promise
       display_name: string;
       account_class: string;
     }>(
-      `SELECT DISTINCT combination.entity_id, account.id, account.code,
+      `SELECT entity.id AS entity_id, account.id, account.code,
          account.display_name, account.class::text AS account_class
-       FROM account_combinations combination
+       FROM legal_entities entity
+       JOIN ledgers ledger
+         ON ledger.organization_id = entity.organization_id
+        AND ledger.legal_entity_id = entity.id
+        AND ledger.kind = 'PRIMARY' AND ledger.active
        JOIN gl_accounts account
-         ON account.organization_id = combination.organization_id
-        AND account.id = combination.account_id
-       JOIN legal_entities entity
-         ON entity.organization_id = combination.organization_id
-        AND entity.id = combination.entity_id AND entity.active
-       WHERE combination.organization_id = $1 AND account.active
-       ORDER BY combination.entity_id, account.code`,
+         ON account.organization_id = ledger.organization_id
+        AND account.ledger_id = ledger.id
+       WHERE entity.organization_id = $1 AND entity.active AND account.active
+       ORDER BY entity.id, account.code`,
       [principal.organizationId],
     );
     const segmentResult = await client.query<{
@@ -420,8 +441,17 @@ export function resolveReportSelection(
   dimensions: ReportDimensions,
   input: ReportFilterInput = {},
 ): ReportSelection | null {
-  const entity = dimensions.entities.find((candidate) => candidate.id === input.entity)
-    ?? dimensions.entities[0];
+  const requestedEntity = input.entity
+    ? dimensions.entities.find((candidate) => candidate.id === input.entity)
+    : undefined;
+  if (input.entity && !requestedEntity) {
+    throw new ReportSelectionError(
+      "REPORT_ENTITY_NOT_FOUND",
+      "The requested reporting entity is not available in this organization",
+      { entityId: input.entity },
+    );
+  }
+  const entity = requestedEntity ?? dimensions.entities[0];
   if (!entity) return null;
   const defaultPeriod = entity.periods.find((period) => period.id === entity.defaultPeriodId)
     ?? entity.periods.at(-1);
@@ -444,10 +474,35 @@ export function resolveReportSelection(
     [fromPeriodId, toPeriodId] = [toPeriodId, fromPeriodId];
   }
   const accountCode = normalizedReportCode(input.accountCode);
-  const account = (accountCode
+  const accountById = input.account
+    ? entity.accounts.find((candidate) => candidate.id === input.account)
+    : undefined;
+  const accountByCode = accountCode
     ? entity.accounts.find((candidate) => candidate.code === accountCode)
-    : entity.accounts.find((candidate) => candidate.id === input.account))
-    ?? entity.accounts[0];
+    : undefined;
+  if (input.account && !accountById) {
+    throw new ReportSelectionError(
+      "REPORT_ACCOUNT_NOT_FOUND",
+      "The requested natural account is not available for this entity",
+      { entityId: entity.id, accountId: input.account, ...(accountCode ? { accountCode } : {}) },
+    );
+  }
+  if (input.accountCode && !accountByCode) {
+    throw new ReportSelectionError(
+      "REPORT_ACCOUNT_NOT_FOUND",
+      "The requested natural account code is not available for this entity",
+      { entityId: entity.id, ...(input.account ? { accountId: input.account } : {}), accountCode: input.accountCode },
+    );
+  }
+  if (accountById && accountByCode && accountById.id !== accountByCode.id) {
+    throw new ReportSelectionError(
+      "REPORT_ACCOUNT_MISMATCH",
+      "The requested natural account ID and code do not identify the same account",
+      { entityId: entity.id, accountId: accountById.id, accountCode: accountByCode.code },
+    );
+  }
+  const accountWasRequested = Boolean(input.account || input.accountCode);
+  const account = accountById ?? accountByCode ?? entity.accounts[0];
   const allowedSegmentKeys = new Set((dimensions.segments ?? []).map((segment) => segment.key));
   const segmentFilters = Object.fromEntries(reportDimensionKeys.flatMap((key) => {
     if (!allowedSegmentKeys.has(key)) return [];
@@ -467,9 +522,7 @@ export function resolveReportSelection(
     fromPeriodId,
     toPeriodId,
     accountId: account?.id ?? null,
-    accountCode: accountCode && entity.accounts.some((candidate) => candidate.code === accountCode)
-      ? accountCode
-      : null,
+    accountCode: accountWasRequested ? account?.code ?? null : null,
     segmentFilters,
   };
 }
