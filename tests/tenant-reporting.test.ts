@@ -40,6 +40,7 @@ import {
   financialStatementDisplayLines,
   loadEffectiveAccountHierarchy,
   loadAccountingOverview,
+  loadReportDimensions,
   loadTaxDeterminations,
   loadTrialBalance,
   profitAndLossRows,
@@ -350,7 +351,7 @@ describe("tenant reporting authorization and tax exception evidence", () => {
       from: "2026-08-31",
       to: "2026-08-01",
       fromPeriod: "ffffffff-ffff-4fff-8fff-ffffffffffff",
-      account: "ffffffff-ffff-4fff-8fff-ffffffffffff",
+      account: dimensions.entities[0]?.accounts[0]?.id,
       accountCode: "1000",
       segmentFilters: { department: "ops", custom1: "invalid value" },
     });
@@ -365,6 +366,66 @@ describe("tenant reporting authorization and tax exception evidence", () => {
       segmentFilters: { department: "OPS" },
     });
     expect(reportSearchParams(selection!).toString()).toContain("segment_department=OPS");
+  });
+
+  it("fails closed for unknown, cross-entity, or mismatched report accounts", () => {
+    const dimensions: ReportDimensions = {
+      segments: [],
+      entities: [{
+        id: "30000000-0000-4000-8000-000000000010",
+        code: "US01",
+        displayName: "US company",
+        ledgerId: "30000000-0000-4000-8000-000000000011",
+        ledgerCode: "US01-PRIMARY",
+        currency: "USD",
+        defaultPeriodId: null,
+        periods: [],
+        accounts: [
+          { id: "30000000-0000-4000-8000-000000000012", code: "1000", displayName: "Cash", accountClass: "ASSET" },
+          { id: "30000000-0000-4000-8000-000000000013", code: "1010", displayName: "Bank", accountClass: "ASSET" },
+        ],
+      }],
+    };
+
+    expect(() => resolveReportSelection(dimensions, {
+      entity: dimensions.entities[0]!.id,
+      account: dimensions.entities[0]!.accounts[1]!.id,
+      accountCode: "1000",
+    })).toThrow(expect.objectContaining({ code: "REPORT_ACCOUNT_MISMATCH" }));
+    expect(() => resolveReportSelection(dimensions, {
+      entity: dimensions.entities[0]!.id,
+      account: "ffffffff-ffff-4fff-8fff-ffffffffffff",
+    })).toThrow(expect.objectContaining({ code: "REPORT_ACCOUNT_NOT_FOUND" }));
+    expect(() => resolveReportSelection(dimensions, {
+      entity: "ffffffff-ffff-4fff-8fff-ffffffffffff",
+    })).toThrow(expect.objectContaining({ code: "REPORT_ENTITY_NOT_FOUND" }));
+  });
+
+  it("loads active natural accounts even when they have no combination", async () => {
+    mocks.query
+      .mockResolvedValueOnce({ rows: [{
+        id: "30000000-0000-4000-8000-000000000010",
+        code: "US01",
+        display_name: "US company",
+        ledger_id: "30000000-0000-4000-8000-000000000011",
+        ledger_code: "US01-PRIMARY",
+        functional_currency: "USD",
+      }] })
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [{
+        entity_id: "30000000-0000-4000-8000-000000000010",
+        id: "30000000-0000-4000-8000-000000000013",
+        code: "1010",
+        display_name: "Bank without a combination",
+        account_class: "ASSET",
+      }] })
+      .mockResolvedValueOnce({ rows: [] });
+
+    const dimensions = await loadReportDimensions(principal);
+
+    expect(dimensions.entities[0]?.accounts).toEqual([expect.objectContaining({ code: "1010" })]);
+    expect(mocks.query.mock.calls[2]?.[0]).toContain("JOIN gl_accounts account");
+    expect(mocks.query.mock.calls[2]?.[0]).not.toContain("account_combinations");
   });
 
   it("builds natural-sign financial statements and protects every CSV cell from formulas", () => {

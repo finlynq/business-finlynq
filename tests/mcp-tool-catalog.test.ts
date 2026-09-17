@@ -252,6 +252,30 @@ describe("remote MCP advertised tool catalog", () => {
     }).success).toBe(false);
   });
 
+  it("advertises a settlement-safe payable open-item lookup", () => {
+    const { tool, schema } = advertisedSchema("finlynq_daily_list_payable_open_items");
+
+    expect(tool.policy).toMatchObject({
+      group: "DAILY",
+      access: "READ",
+      permission: "payables.read",
+    });
+    expect(Object.keys(schema.properties ?? {}).sort()).toEqual([
+      "asOfDate",
+      "currency",
+      "ledgerId",
+      "legalEntityId",
+      "limit",
+      "partyAccountId",
+      "sourceDocumentId",
+      "sourceNumber",
+      "statuses",
+    ]);
+    expect(tool.description).toContain("exact settlement IDs");
+    expect(tool.description).toContain("remaining exact amounts");
+    expect(tool.description).toContain("Open and partially settled items are returned by default");
+  });
+
   it("forces dynamic MCP responses and prevents shared or protocol-crossing catalog caches", async () => {
     expect(dynamic).toBe("force-dynamic");
 
