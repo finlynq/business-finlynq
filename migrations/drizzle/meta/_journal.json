@@ -414,6 +414,13 @@
       "when": 1789573295068,
       "tag": "0058_asset_register_idempotency",
       "breakpoints": true
+    },
+    {
+      "idx": 59,
+      "version": "7",
+      "when": 1789740280028,
+      "tag": "0059_publish_canada_t2_template",
+      "breakpoints": true
     }
   ]
 }
