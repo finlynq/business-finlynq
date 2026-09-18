@@ -14,6 +14,7 @@ test("period controls creates a monthly calendar and refreshes the selectable pe
   expect(login.status()).toBe(303);
   await page.goto(destination);
   try {
+    await page.getByText("Add fiscal periods", { exact: true }).click();
     const form = page.getByRole("form", { name: "Add fiscal periods" });
     await expect(form).toBeVisible();
     await form.getByLabel("Fiscal year", { exact: true }).fill("2098");

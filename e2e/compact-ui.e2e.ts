@@ -1,14 +1,27 @@
 import { expect, test, type Page } from "@playwright/test";
-import { installReleaseAcceptanceRoute } from "./release-acceptance";
+import { installReleaseAcceptanceRoute, releaseGet } from "./release-acceptance";
 
 test.beforeEach(async ({ context }) => { await installReleaseAcceptanceRoute(context); });
+test.afterEach(async ({ page }) => { await bestEffortRevokeDemoSession(page); });
 
 async function openDemo(page: Page, next: string) {
   await page.goto(`/login?next=${encodeURIComponent(next)}`);
   const href = await page.getByRole("link", { name: /Open the public demo/ }).getAttribute("href");
   if (!href) throw new Error("Demo entry unavailable for compact UI acceptance");
-  await page.goto(href);
+  const login = await releaseGet(page.request, href);
+  expect(login.status()).toBe(303);
+  expect(new URL(login.headers().location).pathname).toBe(next);
+  await page.goto(next);
+  await expect(page).toHaveURL(new RegExp(`${next.replaceAll("/", "\\/")}$`));
   await expect(page.getByRole("main")).toBeVisible();
+}
+
+async function bestEffortRevokeDemoSession(page: Page) {
+  const currentUrl = page.url();
+  if (!currentUrl.startsWith("http") || !new URL(currentUrl).pathname.startsWith("/app")) return;
+  await page.getByRole("button", { name: "Open account and security menu" }).click({ timeout: 1_000 }).catch(() => undefined);
+  await page.getByRole("button", { name: "Sign out" }).click({ timeout: 1_000 }).catch(() => undefined);
+  await page.waitForURL(/\/$/, { timeout: 2_000 }).catch(() => undefined);
 }
 
 async function expectNoPageOverflow(page: Page) {
@@ -91,7 +104,7 @@ test("disclosures retain edits, reveal invalid fields, and survive accounting ta
   await name.evaluate((input: HTMLInputElement) => input.reportValidity());
   await expect(disclosure).toHaveAttribute("open", "");
   await expect(name).toBeFocused();
-  await expect(page.getByLabel("Audit reason", { exact: true }).first()).toBeVisible();
+  await expect(page.getByLabel(/Audit reason/).first()).toBeVisible();
 });
 
 test("report range switching preserves both period and date inputs", async ({ page }) => {
