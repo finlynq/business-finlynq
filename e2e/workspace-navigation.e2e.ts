@@ -1,4 +1,9 @@
 import { expect, test, type Page } from "@playwright/test";
+import { installReleaseAcceptanceRoute } from "./release-acceptance";
+
+test.beforeEach(async ({ context }) => {
+  await installReleaseAcceptanceRoute(context);
+});
 
 async function openDemo(page: Page, next: string) {
   await page.goto(`/login?next=${encodeURIComponent(next)}`);

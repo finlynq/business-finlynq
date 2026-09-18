@@ -21,6 +21,7 @@ const initialInstaller = source("deploy/production/install-initial-production.sh
 const playwright = source("playwright.config.ts");
 const releaseGate = source("e2e/release-gate.e2e.ts");
 const fiscalPeriodGate = source("e2e/fiscal-period-creation.e2e.ts");
+const workspaceNavigationGate = source("e2e/workspace-navigation.e2e.ts");
 const releaseAcceptance = source("e2e/release-acceptance.ts");
 const boundaryVerifier = source("scripts/operations/verify-compose-boundaries.mjs");
 const releaseRunbook = source("docs/operations/release-runbook.md");
@@ -865,6 +866,7 @@ describe("stable fail-closed release router", () => {
     expect(fiscalPeriodGate).toContain("installReleaseAcceptanceRoute(context)");
     expect(fiscalPeriodGate).toContain("releaseGet(page.request, demoHref)");
     expect(fiscalPeriodGate).not.toMatch(/\.request\.(?:get|post|delete)\(/);
+    expect(workspaceNavigationGate).toContain("installReleaseAcceptanceRoute(context)");
     expect(acceptance).toContain("PLAYWRIGHT_RELEASE_ACCEPTANCE_TOKEN:");
     expect(acceptance).toContain("/app/test-results:size=256m");
     expect(acceptance).toContain("/app/playwright-report:size=64m");
