@@ -35,12 +35,12 @@ export default async function BillsPage({
       <PageHeader
         eyebrow="Accounts payable"
         title="Supplier bills & payments"
-        description="Capture service bills, determine recoverable tax, post immutable AP journals, allocate payments, and correct mistakes by voiding at the source."
+        description="Record supplier bills, review due dates and track settlements. Open a document to review its lines, tax and supporting evidence."
         actions={<Link className="secondary-button" href="/app/parties">Manage suppliers</Link>}
       />
       {workspace.demoOnly && (
         <DemoNotice>
-          This is your private writable demo business. Create, issue, allocate, and void transactions freely; the same browser can return after logout or session expiry, and the seeded company is restored nightly.
+          This is one shared writable demo company. Every visitor can see changes until the seeded company is restored nightly. Use synthetic information only.
         </DemoNotice>
       )}
       {!ready ? (
@@ -53,3 +53,4 @@ export default async function BillsPage({
     </div>
   );
 }
+export const metadata = { title: "Supplier bills & payments" };

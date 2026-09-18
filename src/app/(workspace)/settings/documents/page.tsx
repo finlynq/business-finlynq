@@ -8,6 +8,7 @@ import { listStorageConnections } from "@/modules/document-storage/connections";
 import { listDocumentInbox } from "@/modules/document-storage/inbox";
 import { DemoNotice, PageHeader } from "@/app/_components/ui";
 import { DocumentInbox } from "@/app/_components/document-inbox.client";
+import { SettingsNavigation } from "@/app/_components/route-tabs";
 
 export const dynamic = "force-dynamic";
 export default async function DocumentInboxPage({ searchParams }: { searchParams: Promise<{ storage?: string }> }) {
@@ -23,10 +24,12 @@ export default async function DocumentInboxPage({ searchParams }: { searchParams
       return { entities, permissions };
     }),
   ]) : null;
-  return <main className="page-content">
+  return <div className="page-content">
     <PageHeader eyebrow="Documents" title="Document inbox" description="Drop invoices into your connected drive, then use your AI client to prepare drafts and organize the originals."
       actions={<Link className="secondary-button" href="/app/settings/mcp">AI & MCP connections</Link>} />
+    <SettingsNavigation active="documents" />
     {!real && <DemoNotice>Connect cloud storage from a real organization. The shared demo does not access personal files.</DemoNotice>}
     {data && <DocumentInbox initialOutcome={outcome} initialConnections={data[0]} initialInbox={data[1]} entities={data[2].entities} permissions={data[2].permissions} providers={configuredProviders()} />}
-  </main>;
+  </div>;
 }
+export const metadata = { title: "Document inbox" };

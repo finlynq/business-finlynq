@@ -265,7 +265,7 @@ describe("real organization workspace isolation", () => {
       BillsPage({ searchParams: Promise.resolve({}) }),
       InvoicesPage({ searchParams: Promise.resolve({}) }),
       TrialBalancePage({ searchParams: Promise.resolve({}) }),
-      TaxPage({ searchParams: Promise.resolve({}) }),
+      TaxPage({ searchParams: Promise.resolve({ view: "transactions" }) }),
     ]);
     for (const page of pages) {
       const output = serialized(page);
@@ -441,7 +441,12 @@ describe("real organization workspace isolation", () => {
     });
     const searchEntries = findSearchEntries(shell);
     expect(searchEntries.length).toBeGreaterThan(0);
-    for (const entry of demoSearchIndex) expect(searchEntries.map((item) => item.label)).not.toContain(entry.title);
+    for (const entry of demoSearchIndex) {
+      // Generic report names are valid navigation for every organization;
+      // synthetic record names and demo-specific report details are not.
+      if (entry.kind !== "report") expect(searchEntries.map((item) => item.label)).not.toContain(entry.title);
+      expect(serialized(searchEntries)).not.toContain(entry.subtitle);
+    }
 
     const response = await trialBalanceCsv(new NextRequest("http://localhost/app/reports/trial-balance.csv"));
     expect(response.status).toBe(200);

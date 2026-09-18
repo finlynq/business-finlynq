@@ -125,3 +125,4 @@ export default async function BalanceSheetPage({ searchParams }: { searchParams:
     </div>
   );
 }
+export const metadata = { title: "Balance sheet" };

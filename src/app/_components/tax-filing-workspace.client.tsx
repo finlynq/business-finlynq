@@ -1,5 +1,7 @@
 "use client";
 
+import { SectionTabs } from "./section-tabs.client";
+
 import { useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { MutationFeedback } from "@/app/_components/mutation-feedback.client";
@@ -135,6 +137,7 @@ export function TaxFilingWorkspace({ workspace }: { workspace: TaxFilingWorkspac
     () => initialSelections.bases,
   );
   const [mappingReason, setMappingReason] = useState("");
+  const [mappingQuery, setMappingQuery] = useState("");
   const [mappingFeedback, setMappingFeedback] = useState<Feedback | null>(null);
   const [mappingBusy, setMappingBusy] = useState(false);
   const mappingCommand = useRef(idempotencyCommand());
@@ -332,7 +335,10 @@ export function TaxFilingWorkspace({ workspace }: { workspace: TaxFilingWorkspac
         </div>
       </section>
 
-      <div className="equal-columns dashboard-columns">
+      <SectionTabs label="Tax preparation sections" defaultSection="tax-workpaper" sections={[
+        { id: "tax-mappings", label: "Account mappings" },
+        { id: "tax-workpaper", label: "Prepare or reconcile" },
+      ]}>
         <section className="panel form-panel" aria-labelledby="tax-mapping-title">
           <div className="panel-heading">
             <div>
@@ -342,8 +348,9 @@ export function TaxFilingWorkspace({ workspace }: { workspace: TaxFilingWorkspac
             </div>
           </div>
           <form className="close-form" onSubmit={(event) => { void saveMappings(event); }}>
+            <label className="full-field"><span>Find a template field</span><input type="search" value={mappingQuery} onChange={(event) => setMappingQuery(event.target.value)} placeholder="Line code or field name" /><small>Filtering only changes the fields shown. Saving keeps mappings for every field.</small></label>
             <div className={styles.mappingList}>
-              {mappingFields.map((field) => <fieldset key={field.key} className={styles.mappingField}>
+              {mappingFields.filter((field) => `${field.code} ${field.label} ${field.description}`.toLocaleLowerCase().includes(mappingQuery.trim().toLocaleLowerCase())).map((field) => <fieldset key={field.key} className={styles.mappingField}>
                 <legend><span className="code-chip">{field.code}</span> {field.label}{field.kind === "ACCOUNT" && field.required ? " *" : " · optional"}</legend>
                 <p>{field.description}</p>
                 <label><span>Ledger accounts</span>
@@ -457,13 +464,14 @@ export function TaxFilingWorkspace({ workspace }: { workspace: TaxFilingWorkspac
             </>}
 
             <p className="form-footnote">Calculations use posted journal lines in the selected date range and mapping version. The resulting workpaper is immutable and does not submit data to {template.authority}.</p>
+            {!mappingReady && <p className="validation-message validation-error">Map the required fields in the Account mappings tab before preparing a return.</p>}
             {!workspace.canPrepareFilings && <p className="validation-message">Your role can view tax workpapers but cannot prepare or import filings.</p>}
             <div className="form-actions">
               <button className="primary-button" type="submit" disabled={!workspace.canPrepareFilings || filingBusy || !mappingReady}>{filingBusy ? "Calculating…" : filingType === "PREPARED" ? "Prepare return" : "Reconcile historical filing"}</button>
             </div>
           </form>
         </section>
-      </div>
+      </SectionTabs>
     </div>
   );
 }

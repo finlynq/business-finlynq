@@ -71,6 +71,11 @@
   grid-column: span 1;
 }
 
+.advanced { grid-column:1/-1; border-top:1px solid var(--line); }
+.advanced summary { display:list-item; min-height:44px; padding:14px 0 8px; color:var(--accent-dark); cursor:pointer; font-size:12px; font-weight:750; }
+.advanced summary:focus-visible { outline:3px solid #1c83c3; outline-offset:2px; }
+.dimensionGrid { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:12px; padding:8px 0 14px; }
+
 .actions {
   display: flex;
   flex-wrap: wrap;

@@ -159,3 +159,4 @@ export default async function AccountPage() {
     </div>
   );
 }
+export const metadata = { title: "Account & security" };

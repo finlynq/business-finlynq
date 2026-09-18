@@ -2,6 +2,7 @@ import { OrganizationSettings } from "@/app/_components/organization-settings.cl
 import { DemoNotice, PageHeader } from "@/app/_components/ui";
 import { loadOrganizationAdministration } from "@/modules/identity/organization-administration";
 import { requireWorkspacePrincipal } from "@/modules/workspace/access";
+import { SettingsNavigation } from "@/app/_components/route-tabs";
 
 export default async function SettingsPage() {
   const principal = await requireWorkspacePrincipal("/app/settings");
@@ -13,8 +14,8 @@ export default async function SettingsPage() {
         eyebrow="Business administration"
         title="Organization settings"
         description="Maintain the business profile, invite team members, assign fixed roles, and control active access without deleting identity history."
-        actions={<><Link className="secondary-button" href="/app/settings/documents">Document inbox</Link><Link className="primary-button" href="/app/settings/accounting">Accounting configuration</Link></>}
       />
+      <SettingsNavigation active="organization" />
       {workspace.isDemo && (
         <DemoNotice>
           This page has the same organization and access controls as a standard account, but the demo is shared, all members and invitations are synthetic, email delivery is suppressed, and the seeded company resets nightly.
@@ -24,4 +25,4 @@ export default async function SettingsPage() {
     </div>
   );
 }
-import Link from "next/link";
+export const metadata = { title: "Organization settings" };

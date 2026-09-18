@@ -154,3 +154,4 @@ export default async function TrialBalancePage({
     </div>
   );
 }
+export const metadata = { title: "Trial balance" };

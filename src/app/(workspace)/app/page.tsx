@@ -7,6 +7,7 @@ import {
 import { requireWorkspacePrincipal } from "@/modules/workspace/access";
 import { currentWorkspaceEntityContext } from "@/modules/workspace/entity-context";
 import { DemoNotice, EmptyState, PageHeader, StatusPill } from "../../_components/ui";
+import styles from "@/app/_components/workspace-navigation.module.css";
 
 function displayAmount(currency: string, amount: string): string {
   return formatMoney(amount, currency);
@@ -149,6 +150,16 @@ export default async function OverviewPage({
         )}
       </section>
 
+      {metrics.length > 0 && <section aria-labelledby="workspace-shortcuts-title">
+        <div className="section-heading"><div><p className="eyebrow">Continue your work</p><h2 id="workspace-shortcuts-title">Common tasks</h2></div></div>
+        <div className={styles.quickLinks}>
+          {overview.access.receivables && <Link href="/app/receivables/invoices">Review customer invoices <span aria-hidden="true">→</span></Link>}
+          {overview.access.payables && <Link href="/app/payables/bills">Review supplier bills <span aria-hidden="true">→</span></Link>}
+          {overview.access.ledger && <Link href="/app/reports">Run an accounting report <span aria-hidden="true">→</span></Link>}
+          {overview.access.tax && <Link href="/app/tax">Prepare a tax return <span aria-hidden="true">→</span></Link>}
+        </div>
+      </section>}
+
       {overview.access.ledger && <section aria-labelledby="entities-title">
         <div className="section-heading">
           <div><p className="eyebrow">Legal entities</p><h2 id="entities-title">Primary ledgers</h2></div>
@@ -218,3 +229,4 @@ export default async function OverviewPage({
     </div>
   );
 }
+export const metadata = { title: "Accounting overview" };

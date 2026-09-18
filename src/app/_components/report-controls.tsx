@@ -1,10 +1,10 @@
-import Link from "next/link";
 import {
   reportSearchParams,
   type ReportDimensions,
   type ReportSelection,
 } from "@/modules/reporting/tenant-reporting";
 import styles from "./report-controls.module.css";
+import { RouteTabs } from "./route-tabs";
 
 const reports = [
   ["trial-balance", "Trial balance", "/app/reports/trial-balance"],
@@ -24,17 +24,10 @@ export function ReportNavigation({
 }) {
   const query = selection ? reportSearchParams(selection).toString() : "";
   return (
-    <nav className={styles.navigation} aria-label="Accounting reports">
-      {reports.map(([key, label, route]) => (
-        <Link
-          aria-current={active === key ? "page" : undefined}
-          href={`${route}${query ? `?${query}` : ""}`}
-          key={key}
-        >
-          {label}
-        </Link>
-      ))}
-    </nav>
+    <RouteTabs label="Accounting reports" active={active} tabs={[
+      { key: "all", label: "All reports", href: "/app/reports" },
+      ...reports.map(([key, label, route]) => ({ key, label, href: `${route}${query ? `?${query}` : ""}` })),
+    ]} />
   );
 }
 
@@ -111,7 +104,9 @@ export function ReportFilters({
         </label>
       )}
       {showDimensions && (
-        <>
+        <details className={styles.advanced} open={Boolean(selection.accountCode || Object.values(selection.segmentFilters ?? {}).some(Boolean))}>
+          <summary>Account & dimension filters{selection.accountCode || Object.values(selection.segmentFilters ?? {}).some(Boolean) ? " · active" : ""}</summary>
+          <div className={styles.dimensionGrid}>
           <label className={styles.dimension}>
             <span>Natural account</span>
             <select name="accountCode" defaultValue={selection.accountCode ?? ""}>
@@ -135,7 +130,8 @@ export function ReportFilters({
               />
             </label>
           ))}
-        </>
+          </div>
+        </details>
       )}
       <div className={styles.actions}>
         <button className="primary-button" type="submit">Run report</button>

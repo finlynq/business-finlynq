@@ -14,19 +14,21 @@ import {
 const workspaceItems: readonly NavigationItem[] = [
   { abbreviation: "OV", label: "Overview", href: "/app" },
   { abbreviation: "GL", label: "General ledger", href: "/app/journals" },
-  { abbreviation: "PT", label: "Parties", href: "/app/parties" },
   { abbreviation: "AR", label: "Receivables", href: "/app/receivables/invoices" },
   { abbreviation: "AP", label: "Payables", href: "/app/payables/bills" },
   { abbreviation: "BK", label: "Banking", href: "/app/banking" },
   { abbreviation: "AS", label: "Assets & prepaids", href: "/app/assets" },
-  { abbreviation: "TX", label: "Tax", href: "/app/tax" },
-  { abbreviation: "RP", label: "Reports", href: "/app/reports/trial-balance" },
-  { abbreviation: "CT", label: "Controls", href: "/app/controls/period-close" },
-  { abbreviation: "ST", label: "Settings", href: "/app/settings" },
+  { abbreviation: "DC", label: "Documents", href: "/app/settings/documents" },
+  { abbreviation: "RP", label: "Reports", href: "/app/reports", group: "Review & close" },
+  { abbreviation: "TX", label: "Tax", href: "/app/tax", group: "Review & close" },
+  { abbreviation: "CT", label: "Period close", href: "/app/controls/period-close", group: "Review & close" },
+  { abbreviation: "PT", label: "Parties", href: "/app/parties", group: "Administration" },
+  { abbreviation: "EN", label: "Legal entities", href: "/app/entities", group: "Administration" },
+  { abbreviation: "ST", label: "Settings", href: "/app/settings", group: "Administration" },
 ];
 
 const connectionItems: readonly NavigationItem[] = [
-  { abbreviation: "AI", label: "AI & MCP", href: "/app/settings/mcp" },
+  { abbreviation: "AI", label: "AI & MCP", href: "/app/settings/mcp", group: "Administration" },
 ];
 
 function createSearchIndex(includeDemoRecords: boolean): readonly SearchEntry[] {
@@ -36,6 +38,15 @@ function createSearchIndex(includeDemoRecords: boolean): readonly SearchEntry[] 
     href: item.href,
     keywords: item.abbreviation,
   }));
+  routes.push(
+    { label: "Trial balance", detail: "Report · debits and credits", href: "/app/reports/trial-balance", keywords: "GL balances export CSV" },
+    { label: "Balance sheet", detail: "Report · financial position", href: "/app/reports/balance-sheet", keywords: "assets liabilities equity" },
+    { label: "Profit & loss", detail: "Report · financial performance", href: "/app/reports/profit-and-loss", keywords: "income revenue expenses earnings" },
+    { label: "Account inquiry", detail: "Report · transaction detail", href: "/app/reports/account-inquiry", keywords: "GL journal activity" },
+    { label: "Accounting configuration", detail: "Settings · entities, accounts and currencies", href: "/app/settings/accounting", keywords: "chart dimensions tax packs exchange rates hierarchies" },
+    { label: "Account & security", detail: "Your profile and authentication", href: "/app/account", keywords: "MFA authenticator trusted browsers" },
+    { label: "MCP connection guide", detail: "Help · connect an AI client", href: "/docs/remote-mcp", keywords: "documentation OAuth integration" },
+  );
   const records: SearchEntry[] = (includeDemoRecords ? demoSearchIndex : []).map((entry) => ({
       label: entry.title,
       detail: entry.subtitle,
@@ -113,12 +124,12 @@ export function WorkspaceShell({
                 ? readOnly ? "Sandbox writes disabled" : "Resets nightly"
                 : readOnly ? "Writes disabled" : "Role-based posting"}</span>
             </div>
-            <GlobalSearch entries={searchIndex} />
+            <GlobalSearch entries={searchIndex} includesDemoRecords={principal.sessionMode === "demo"} />
           </div>
         </div>
         <main id="main-content">{children}</main>
         <footer className="app-footer">
-          <span>Business Finlynq foundation · AGPL-3.0-or-later</span>
+          <span>Business Finlynq · <Link href="/docs/remote-mcp">Connection guide</Link> · <Link href="/security">Security</Link></span>
           <span>{principal.sessionMode === "demo" ? "Synthetic demo data · do not enter real information" : "Encrypted organization workspace"}</span>
         </footer>
       </div>

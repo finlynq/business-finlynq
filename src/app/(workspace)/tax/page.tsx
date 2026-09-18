@@ -5,6 +5,7 @@ import { loadTaxFilingWorkspace } from "@/modules/tax/filing-workspace";
 import { requireWorkspacePrincipal } from "@/modules/workspace/access";
 import { TaxFilingWorkspace } from "../../_components/tax-filing-workspace.client";
 import { DemoNotice, EmptyState, PageHeader, StatusPill } from "../../_components/ui";
+import { RouteTabs } from "@/app/_components/route-tabs";
 
 function displayAmount(currency: string, amount: string): string {
   return formatMoney(amount, currency);
@@ -21,9 +22,11 @@ function requiresReview(status: string): boolean {
   return status.includes("REVIEW");
 }
 
-export default async function TaxPage({ searchParams }: { searchParams: Promise<{ status?: string }> }) {
+export default async function TaxPage({ searchParams }: { searchParams: Promise<{ status?: string; view?: string }> }) {
   const principal = await requireWorkspacePrincipal("/app/tax");
-  const reviewOnly = (await searchParams).status === "review";
+  const parameters = await searchParams;
+  const reviewOnly = parameters.status === "review";
+  const view = reviewOnly ? "review" : ["history", "templates", "transactions"].includes(parameters.view ?? "") ? parameters.view! : "prepare";
   const [determinations, filingWorkspace] = await Promise.all([
     loadTaxDeterminations(principal, { reviewOnly }),
     loadTaxFilingWorkspace(principal),
@@ -36,10 +39,17 @@ export default async function TaxPage({ searchParams }: { searchParams: Promise<
     <div className="page-content">
       <PageHeader
         eyebrow="Tax compliance workspace"
-        title={reviewOnly ? "Tax exceptions" : "Prepare and reconcile tax returns"}
-        description="Use shared, versioned tax templates with client-specific account mappings. Prepare a return from posted ledger activity or load a historical filing and compare every reported field with the system."
-        actions={reviewOnly ? <Link className="secondary-button" href="/app/tax">View all determinations</Link> : undefined}
+        title={reviewOnly ? "Tax exceptions" : "Tax returns & review"}
+        description="Prepare returns, reconcile historical filings and review transaction tax decisions. Choose a workspace below to keep preparation, evidence and setup in focus."
+        actions={reviewOnly ? <Link className="secondary-button" href="/app/tax?view=transactions">View all determinations</Link> : undefined}
       />
+      <RouteTabs label="Tax workspace views" active={view} tabs={[
+        { key: "prepare", label: "Prepare return", href: "/app/tax" },
+        { key: "history", label: "Filing history", href: "/app/tax?view=history" },
+        { key: "templates", label: "Templates & rules", href: "/app/tax?view=templates" },
+        { key: "transactions", label: "Transaction tax", href: "/app/tax?view=transactions" },
+        { key: "review", label: "Exceptions", href: "/app/tax?status=review" },
+      ]} />
       {principal.sessionMode === "demo" && (
         <DemoNotice>
           This list reflects the shared writable demo. Transaction and tax changes from every visitor remain visible until the seeded business is restored nightly.
@@ -54,9 +64,9 @@ export default async function TaxPage({ searchParams }: { searchParams: Promise<
           <article className="metric-card"><span className="metric-signal signal-amber" /><p>Reconciliation review</p><div><strong>{filingReviewCount}</strong></div><span>Workpapers with a reported variance or failed template rule.</span></article>
         </section>
 
-        <TaxFilingWorkspace workspace={filingWorkspace} />
+        {view === "prepare" && <TaxFilingWorkspace workspace={filingWorkspace} />}
 
-        <section className="panel" aria-labelledby="tax-template-rules-title">
+        {view === "templates" && <section className="panel" aria-labelledby="tax-template-rules-title">
           <div className="panel-heading">
             <div>
               <p className="eyebrow">Template-owned controls</p>
@@ -87,9 +97,9 @@ export default async function TaxPage({ searchParams }: { searchParams: Promise<
             </article>)}
           </div>
           <p className="panel-note">Shared templates are immutable, reviewed platform artifacts published with a deployment. Client account mappings never change the shared definition.</p>
-        </section>
+        </section>}
 
-        <section className="panel" aria-labelledby="filing-history-title">
+        {view === "history" && <section className="panel" aria-labelledby="filing-history-title">
           <div className="panel-heading">
             <div>
               <p className="eyebrow">Immutable workpapers</p>
@@ -133,7 +143,7 @@ export default async function TaxPage({ searchParams }: { searchParams: Promise<
             </table>
           </div> : <EmptyState title="No filing workpapers yet">Prepare a return or load a historical filing after mapping the template’s account-backed fields.</EmptyState>}
           <p className="panel-note">A workpaper records the template version, mapping version, posted-ledger calculation, reported values, differences, and rule outcomes used at that moment. It does not transmit a filing to a tax authority.</p>
-        </section>
+        </section>}
       </>}
 
       {!reviewOnly && reviewCount > 0 && (
@@ -147,7 +157,7 @@ export default async function TaxPage({ searchParams }: { searchParams: Promise<
         </section>
       )}
 
-      <section className="panel" aria-labelledby="tax-determinations-title">
+      {(view === "transactions" || reviewOnly) && <section className="panel" aria-labelledby="tax-determinations-title">
         <div className="panel-heading">
           <div>
             <p className="eyebrow">Transaction tax evidence</p>
@@ -196,7 +206,8 @@ export default async function TaxPage({ searchParams }: { searchParams: Promise<
           </EmptyState>
         )}
         <p className="panel-note">Each row preserves the tax-pack version and rule used for the current draft or at posting time. Source corrections create new accounting evidence instead of overwriting posted history.</p>
-      </section>
+      </section>}
     </div>
   );
 }
+export const metadata = { title: "Tax returns & review" };

@@ -110,3 +110,4 @@ export default async function JournalDetailPage({
     </div>
   );
 }
+export const metadata = { title: "Journal detail" };
