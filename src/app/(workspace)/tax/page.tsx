@@ -86,6 +86,7 @@ export default async function TaxPage({ searchParams }: { searchParams: Promise<
               <a className="text-link" href={template.sourceUri} target="_blank" rel="noreferrer">Official source <span aria-hidden="true">↗</span></a>
             </article>)}
           </div>
+          <p className="panel-note">Shared templates are immutable, reviewed platform artifacts published with a deployment. Client account mappings never change the shared definition.</p>
         </section>
 
         <section className="panel" aria-labelledby="filing-history-title">

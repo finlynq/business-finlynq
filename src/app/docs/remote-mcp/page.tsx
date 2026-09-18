@@ -23,13 +23,23 @@ export default function RemoteMcpDocumentationPage() {
       <section className="panel">
         <div className="panel-heading"><div><p className="eyebrow">Least privilege</p><h2>Scopes and tool groups</h2></div></div>
         <div className="table-scroll"><table><thead><tr><th>Scope</th><th>Purpose</th></tr></thead><tbody>
-          <tr><td><code>{MCP_OAUTH_SCOPES.dailyRead}</code></td><td>Journals, documents, banking observations, reconciliation state, tax review, and reports.</td></tr>
-          <tr><td><code>{MCP_OAUTH_SCOPES.dailyWrite}</code></td><td>Daily entries, invoices, bills, settlements, reconciliation, and permitted posting workflows.</td></tr>
+          <tr><td><code>{MCP_OAUTH_SCOPES.dailyRead}</code></td><td>Journals, documents, banking observations, reconciliation state, tax review and filing workpapers, and reports.</td></tr>
+          <tr><td><code>{MCP_OAUTH_SCOPES.dailyWrite}</code></td><td>Daily entries, invoices, bills, settlements, reconciliation, tax workpapers, and permitted posting workflows.</td></tr>
           <tr><td><code>{MCP_OAUTH_SCOPES.setupRead}</code></td><td>Accounting configuration, parties, chart context, periods, and hierarchies.</td></tr>
-          <tr><td><code>{MCP_OAUTH_SCOPES.setupWrite}</code></td><td>Accounts, parties, entities, dimensions, currencies, tax registrations, policies, and bank mappings.</td></tr>
+          <tr><td><code>{MCP_OAUTH_SCOPES.setupWrite}</code></td><td>Accounts, parties, entities, dimensions, currencies, tax registrations and account mappings, policies, and bank mappings.</td></tr>
           <tr><td><code>{MCP_OAUTH_SCOPES.offlineAccess}</code></td><td>Rotating refresh token for a connection that should survive the ten-minute access-token lifetime.</td></tr>
         </tbody></table></div>
         <p className="panel-note">OAuth scope is only the outer boundary. Every request also checks the connection&apos;s Daily/Setup mode, optional per-tool override, current organization membership, live role permissions, organization write state, and the accounting workflow&apos;s own controls.</p>
+      </section>
+      <section className="panel">
+        <div className="panel-heading"><div><p className="eyebrow">Tax compliance</p><h2>Prepare and reconcile filing workpapers</h2></div></div>
+        <ol>
+          <li><code>finlynq_setup_get_tax_filing_configuration</code> returns reviewed shared templates, eligible ledgers and accounts, and the latest client mapping versions. <code>finlynq_daily_get_tax_filing_workspace</code> adds filing history for preparation and review.</li>
+          <li><code>finlynq_setup_save_tax_account_mappings</code> appends an immutable mapping version. It requires Setup write access and <code>tax.mappings.manage</code>.</li>
+          <li><code>finlynq_daily_create_tax_filing_workpaper</code> prepares a declaration from posted activity or reconciles reported values from a historical return. It requires Daily write access and <code>tax.filings.prepare</code>.</li>
+          <li><code>finlynq_daily_tax_review_queue</code> remains the transaction-tax evidence review surface; it is separate from filing workpapers.</li>
+        </ol>
+        <p>Templates are global, immutable, reviewed platform artifacts. Tenant MCP connections can read them but cannot publish or replace them. No tax tool transmits a return, initiates a payment, or logs in to a tax authority.</p>
       </section>
       <section className="panel">
         <div className="panel-heading"><div><p className="eyebrow">Payables</p><h2>Bank and non-cash supplier settlements</h2></div></div>
