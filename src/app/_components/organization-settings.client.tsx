@@ -3,6 +3,7 @@
 import { useMemo, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
+import { MutationFeedback } from "@/app/_components/mutation-feedback.client";
 import type {
   OrganizationAdministrationDto,
   OrganizationMemberDto,
@@ -103,14 +104,7 @@ export function OrganizationSettings({ workspace }: { workspace: OrganizationAdm
 
   return (
     <div className="settings-layout">
-      {feedback && (
-        <div
-          className={`validation-message ${feedback.kind === "error" ? "validation-error" : "validation-success"}`}
-          role={feedback.kind === "error" ? "alert" : "status"}
-        >
-          {feedback.message}
-        </div>
-      )}
+      {feedback && <MutationFeedback {...feedback} onDismiss={() => setFeedback(null)} />}
 
       {!workspace.isDemo && !stepUpComplete && (
         <section className="panel form-panel settings-step-up" aria-labelledby="settings-step-up-title">

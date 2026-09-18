@@ -3,6 +3,7 @@
 import { useMemo, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
+import { MutationFeedback } from "@/app/_components/mutation-feedback.client";
 import {
   accountSegmentKeys,
   type AccountSegmentKey,
@@ -454,11 +455,7 @@ export function AccountingSettings({
 
   return (
     <div className="settings-layout">
-      {feedback && (
-        <div className={`validation-message ${feedback.kind === "error" ? "validation-error" : "validation-success"}`} role={feedback.kind === "error" ? "alert" : "status"}>
-          {feedback.message}
-        </div>
-      )}
+      {feedback && <MutationFeedback {...feedback} onDismiss={() => setFeedback(null)} />}
 
       {!isDemo && !stepUpComplete && (
         <section className="panel form-panel" aria-labelledby="accounting-step-up-title">

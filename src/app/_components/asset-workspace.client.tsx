@@ -2,6 +2,7 @@
 
 import { useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
+import { MutationFeedback } from "@/app/_components/mutation-feedback.client";
 
 type Category = Readonly<{
   id: string;
@@ -89,7 +90,7 @@ export function AssetWorkspace({ workspace }: {
 }) {
   const router = useRouter();
   const [busy, setBusy] = useState<string | null>(null);
-  const [feedback, setFeedback] = useState<string | null>(null);
+  const [feedback, setFeedback] = useState<Readonly<{ kind: "success" | "error"; message: string }> | null>(null);
   const [selectedLedgerId, setSelectedLedgerId] = useState(
     workspace.categories[0]?.ledgerId ?? workspace.accounts[0]?.ledgerId ?? "",
   );
@@ -118,8 +119,8 @@ export function AssetWorkspace({ workspace }: {
         ...(impairmentAccountCombinationId ? { impairmentAccountCombinationId } : {}),
         ...(disposalAccountCombinationId ? { disposalAccountCombinationId } : {}),
       });
-      setFeedback("Category created."); router.refresh();
-    } catch (error) { setFeedback(error instanceof Error ? error.message : "Category creation failed."); }
+      setFeedback({ kind: "success", message: "Category created." }); router.refresh();
+    } catch (error) { setFeedback({ kind: "error", message: error instanceof Error ? error.message : "Category creation failed." }); }
     finally { setBusy(null); }
   }
 
@@ -146,8 +147,8 @@ export function AssetWorkspace({ workspace }: {
         sourceReference: String(formData.get("sourceReference") || "Manual asset register entry"),
         idempotencyKey: crypto.randomUUID(),
       });
-      setFeedback("Register record and deterministic schedule created."); router.refresh();
-    } catch (error) { setFeedback(error instanceof Error ? error.message : "Asset creation failed."); }
+      setFeedback({ kind: "success", message: "Register record and deterministic schedule created." }); router.refresh();
+    } catch (error) { setFeedback({ kind: "error", message: error instanceof Error ? error.message : "Asset creation failed." }); }
     finally { setBusy(null); }
   }
 
@@ -155,8 +156,8 @@ export function AssetWorkspace({ workspace }: {
     setBusy(id); setFeedback(null);
     try {
       await postJson(`/api/assets/schedules/${encodeURIComponent(id)}/draft`, { idempotencyKey: id });
-      setFeedback("Balanced journal draft created. Review and post it in General ledger."); router.refresh();
-    } catch (error) { setFeedback(error instanceof Error ? error.message : "Schedule journal failed."); }
+      setFeedback({ kind: "success", message: "Balanced journal draft created. Review and post it in General ledger." }); router.refresh();
+    } catch (error) { setFeedback({ kind: "error", message: error instanceof Error ? error.message : "Schedule journal failed." }); }
     finally { setBusy(null); }
   }
 
@@ -172,13 +173,13 @@ export function AssetWorkspace({ workspace }: {
         reason: String(formData.get("reason")),
         idempotencyKey: crypto.randomUUID(),
       });
-      setFeedback("Lifecycle evidence and any required balanced journal draft were created."); router.refresh();
-    } catch (error) { setFeedback(error instanceof Error ? error.message : "Lifecycle update failed."); }
+      setFeedback({ kind: "success", message: "Lifecycle evidence and any required balanced journal draft were created." }); router.refresh();
+    } catch (error) { setFeedback({ kind: "error", message: error instanceof Error ? error.message : "Lifecycle update failed." }); }
     finally { setBusy(null); }
   }
 
   return <>
-    {feedback && <p className="attention-banner" role="status">{feedback}</p>}
+    {feedback && <MutationFeedback {...feedback} onDismiss={() => setFeedback(null)} />}
     <section className="metric-grid" aria-label="Asset register overview">
       {(["TANGIBLE", "INTANGIBLE", "PREPAID"] as const).map((kind) => <article className="metric-card" key={kind}>
         <p>{kind === "TANGIBLE" ? "Tangible assets" : kind === "INTANGIBLE" ? "Intangible assets" : "Prepaid expenses"}</p>

@@ -2,6 +2,7 @@
 
 import { useRouter } from "next/navigation";
 import { useMemo, useState } from "react";
+import { MutationFeedback } from "@/app/_components/mutation-feedback.client";
 import type { TenantJournalReversalPeriodDto } from "@/modules/ledger/tenant-workspace";
 import styles from "./journal-register-action.module.css";
 
@@ -217,14 +218,7 @@ export function JournalRegisterAction({
               I understand there is no delete or in-place edit after this action.
             </span>
           </label>
-          {message && (
-            <p
-              className={`${styles.feedback} ${message.kind === "success" ? styles.success : styles.error}`}
-              role={message.kind === "error" ? "alert" : "status"}
-            >
-              {message.text}
-            </p>
-          )}
+          {message && <MutationFeedback kind={message.kind} message={message.text} onDismiss={() => setMessage(null)} />}
           <button type="submit" className={`primary-button compact-button ${styles.submit}`} disabled={busy || !confirmed}>
             {busy ? "Working…" : action.kind === "post" ? "Confirm posting" : "Post full reversal"}
           </button>

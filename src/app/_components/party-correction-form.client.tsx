@@ -2,6 +2,7 @@
 
 import { useRouter } from "next/navigation";
 import { useState } from "react";
+import { MutationFeedback } from "@/app/_components/mutation-feedback.client";
 import styles from "./party-directory.module.css";
 
 type Feedback = Readonly<{ kind: "success" | "error"; text: string }> | null;
@@ -86,7 +87,7 @@ export function PartyCorrectionForm({
       <label><span>Authenticator code (when requested)</span><input value={otp} onChange={(event) => setOtp(event.target.value.replace(/\D/g, "").slice(0, 6))} inputMode="numeric" autoComplete="one-time-code" pattern="[0-9]{6}" maxLength={6} disabled={busy} /></label>
       <label className="checkbox-field"><input type="checkbox" checked={enabled} onChange={(event) => setEnabled(event.target.checked)} disabled={busy} /><span>Party is active</span></label>
       <label className="checkbox-field"><input type="checkbox" checked={confirmed} onChange={(event) => setConfirmed(event.target.checked)} required disabled={busy} /><span>I confirm this owner correction and its permanent audit reason.</span></label>
-      {feedback && <p className={`${styles.attachMessage} validation-message ${feedback.kind === "success" ? "validation-success" : "validation-error"}`} role={feedback.kind === "error" ? "alert" : "status"}>{feedback.text}</p>}
+      {feedback && <MutationFeedback kind={feedback.kind} message={feedback.text} onDismiss={() => setFeedback(null)} />}
       <button className="secondary-button" type="submit" disabled={busy || !confirmed || !name.trim() || reason.trim().length < 5}>{busy ? "Saving…" : "Save correction"}</button>
     </form>
   );

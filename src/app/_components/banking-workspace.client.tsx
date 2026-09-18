@@ -1,6 +1,7 @@
 "use client";
 
 import { useRouter } from "next/navigation";
+import { MutationFeedback } from "@/app/_components/mutation-feedback.client";
 import { useState, type FormEvent } from "react";
 import type { BankingWorkspaceDto } from "@/modules/banking/banking-workspace";
 import { formatExactCurrencyAmount } from "@/modules/banking/exact-money";
@@ -67,9 +68,9 @@ export function parseBankMappingSelection(selection: string): Readonly<{
     : null;
 }
 
-function Feedback({ message, error }: { message: string; error: boolean }) {
+function Feedback({ message, error, onDismiss }: { message: string; error: boolean; onDismiss: () => void }) {
   if (!message) return null;
-  return <p role={error ? "alert" : "status"} className={`${styles.feedback} ${error ? styles.error : ""}`}>{message}</p>;
+  return <MutationFeedback kind={error ? "error" : "success"} message={message} onDismiss={onDismiss} />;
 }
 
 function ConnectionView({ workspace }: { workspace: BankingWorkspaceDto }) {
@@ -154,7 +155,7 @@ function ConnectionView({ workspace }: { workspace: BankingWorkspaceDto }) {
   const hasSimpleFin = workspace.connections.some((connection) => connection.provider === "SIMPLEFIN");
   const canConnect = workspace.feedEnabled && workspace.permissions.connect && !hasSimpleFin;
   return <div className={styles.stack}>
-    <Feedback message={message} error={error} />
+    <Feedback message={message} error={error} onDismiss={() => setMessage("")} />
     {canConnect && <section className="panel" aria-labelledby="simplefin-connect-title">
       <div className="panel-heading"><div><p className="eyebrow">Encrypted provider access</p><h2 id="simplefin-connect-title">Connect SimpleFIN</h2></div></div>
       <form className={styles.form} onSubmit={(event) => { void connect(event); }}>
@@ -299,7 +300,7 @@ function ReconciliationView({ workspace }: { workspace: BankingWorkspaceDto }) {
   }
 
   return <div className={styles.stack}>
-    <Feedback message={message} error={error} />
+    <Feedback message={message} error={error} onDismiss={() => setMessage("")} />
     <div className={styles.callout}><strong>Formal reconciliation boundary.</strong> Sessions snapshot a statement range, balances, company, ledger, and cash-account mapping. Creating a session never creates or posts a journal.</div>
     {workspace.permissions.reconcilePrepare && mapped.length > 0 && <section className="panel" aria-labelledby="new-reconciliation-title"><div className="panel-heading"><div><p className="eyebrow">Statement control</p><h2 id="new-reconciliation-title">New reconciliation</h2></div></div><form className={styles.form} onSubmit={(event) => { void create(event); }}><div className={styles.gridThree}>
       <label className={styles.full}><span>Mapped bank account</span><select name="externalAccountId" required defaultValue=""><option value="">Choose an account…</option>{mapped.map((account) => <option value={account.id} key={account.id}>{account.displayName} · {account.entityCode} · {account.currencyCode}</option>)}</select></label>
@@ -410,7 +411,7 @@ function RulesView({ workspace }: { workspace: BankingWorkspaceDto }) {
   }
 
   return <div className={styles.stack}>
-    <Feedback message={message} error={error} />
+    <Feedback message={message} error={error} onDismiss={() => setMessage("")} />
     <div className={styles.callout}><strong>Manual-review suggestions only.</strong> Active rules evaluate newly observed bank versions in priority order and create an encrypted suggestion for a person to review. This release does not turn a suggestion into a GL, AR, AP, or transfer draft, and it never posts accounting.</div>
     {workspace.permissions.rules && <section className="panel" aria-labelledby="new-bank-rule-title"><div className="panel-heading"><div><p className="eyebrow">Deterministic conditions</p><h2 id="new-bank-rule-title">New categorization rule</h2></div></div><form className={styles.form} onSubmit={(event) => { void create(event); }}><div className={styles.gridThree}>
       <label><span>Name</span><input name="name" minLength={2} maxLength={100} required /></label><label><span>Priority</span><input name="priority" type="number" min={1} max={10000} defaultValue={100} required /></label><label><span>State</span><select name="state" defaultValue="DRAFT"><option value="DRAFT">Draft</option><option value="ACTIVE">Active</option></select></label>
