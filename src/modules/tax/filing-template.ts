@@ -35,11 +35,25 @@ export const taxFilingFieldSchema = z.object({
       path: ["formula"],
     });
   }
-  if (field.allowAccountMapping !== (field.kind === "ACCOUNT")) {
+  if (field.kind === "CALCULATED" && field.allowAccountMapping) {
     context.addIssue({
       code: "custom",
-      message: "Only account fields can be mapped",
+      message: "Calculated fields cannot be mapped",
       path: ["allowAccountMapping"],
+    });
+  }
+  if (field.kind === "ACCOUNT" && !field.allowAccountMapping) {
+    context.addIssue({
+      code: "custom",
+      message: "Account fields must allow account mapping",
+      path: ["allowAccountMapping"],
+    });
+  }
+  if (field.defaultBalanceBasis && !field.allowAccountMapping) {
+    context.addIssue({
+      code: "custom",
+      message: "Only mappable fields can define a default balance basis",
+      path: ["defaultBalanceBasis"],
     });
   }
 });
@@ -257,18 +271,31 @@ export function evaluateTaxFilingTemplate(input: Readonly<{
   reportedValues?: Readonly<Record<string, string>>;
 }>): TaxFilingEvaluation {
   const definition = taxFilingTemplateDefinitionSchema.parse(input.definition);
-  const fieldKeys = new Set(definition.fields.map((field) => field.key));
+  const fieldsByKey = new Map(definition.fields.map((field) => [field.key, field]));
   for (const collection of [input.mappedValues, input.manualValues, input.reportedValues]) {
     for (const key of Object.keys(collection ?? {})) {
-      if (!fieldKeys.has(key)) throw new Error(`Unknown tax template field: ${key}`);
+      if (!fieldsByKey.has(key)) throw new Error(`Unknown tax template field: ${key}`);
+    }
+  }
+  for (const key of Object.keys(input.mappedValues ?? {})) {
+    if (!fieldsByKey.get(key)?.allowAccountMapping) {
+      throw new Error(`Tax template field does not accept mapped values: ${key}`);
+    }
+  }
+  for (const key of Object.keys(input.manualValues ?? {})) {
+    if (fieldsByKey.get(key)?.kind !== "MANUAL") {
+      throw new Error(`Tax template field does not accept manual values: ${key}`);
     }
   }
 
   const calculatedValues: Record<string, string> = {};
   for (const field of definition.fields) {
+    const hasMappedValue = Object.hasOwn(input.mappedValues ?? {}, field.key);
     const raw = field.kind === "CALCULATED"
       ? formulaValue(field, calculatedValues)
-      : exact((field.kind === "ACCOUNT" ? input.mappedValues : input.manualValues)?.[field.key] ?? "0");
+      : field.kind === "ACCOUNT" || hasMappedValue
+        ? exact(input.mappedValues?.[field.key] ?? "0")
+        : exact(input.manualValues?.[field.key] ?? "0");
     calculatedValues[field.key] = fixedMoney(raw, input.currency);
   }
 
@@ -278,8 +305,10 @@ export function evaluateTaxFilingTemplate(input: Readonly<{
     .map<TaxFieldReconciliation>((field) => {
       const calculatedValue = calculatedValues[field.key];
       const rawReported = input.reportedValues?.[field.key];
-      const source = field.kind === "ACCOUNT" ? "MAPPED_ACCOUNTS"
-        : field.kind === "MANUAL" ? "MANUAL_INPUT" : "FORMULA";
+      const source = field.kind === "CALCULATED" ? "FORMULA"
+        : field.kind === "ACCOUNT" || Object.hasOwn(input.mappedValues ?? {}, field.key)
+          ? "MAPPED_ACCOUNTS"
+          : "MANUAL_INPUT";
       if (rawReported === undefined) {
         return {
           fieldKey: field.key,

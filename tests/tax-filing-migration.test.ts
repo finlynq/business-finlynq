@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { canadaGstHstTemplate } from "@/modules/tax/templates/canada-gst-hst";
+import { taxFilingTemplateDefinitionSchema } from "@/modules/tax/filing-template";
 
 const root = process.cwd();
 const migration = readFileSync(join(root, "migrations/drizzle/0054_tax_filing_reconciliation.sql"), "utf8");
@@ -10,10 +10,12 @@ const runtimeGrants = readFileSync(join(root, "deploy/postgres/010-runtime-role.
 const verifier = readFileSync(join(root, "scripts/operations/verify-database-schema.mjs"), "utf8");
 
 describe("tax filing reconciliation migration", () => {
-  it("seeds the same reviewed Canadian template used by the application", () => {
+  it("retains the valid, digest-bound original Canadian template version", () => {
     const serialized = migration.match(/\$template\$(\{.*\})\$template\$::jsonb/)?.[1];
     expect(serialized).toBeDefined();
-    expect(JSON.parse(serialized!)).toEqual(canadaGstHstTemplate);
+    const originalDefinition = taxFilingTemplateDefinitionSchema.parse(JSON.parse(serialized!));
+    expect(originalDefinition.fields.filter((field) => field.kind === "ACCOUNT"))
+      .toHaveLength(3);
     const digest = createHash("sha256").update(serialized!).digest("hex");
     expect(migration).toContain(`'${digest}'`);
     expect(migration).toContain("'ca.gst-hst.return', 1");

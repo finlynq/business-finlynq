@@ -64,9 +64,9 @@ describe("CI predecessor-upgrade and restore verification", () => {
     );
   });
 
-  it("replays exactly 0000-0024 before preserving a tenant sentinel through 0059", () => {
+  it("replays exactly 0000-0024 before preserving a tenant sentinel through 0061", () => {
     expect(migrationJournal.entries.map((entry) => entry.idx)).toEqual(
-      Array.from({ length: 60 }, (_, index) => index),
+      Array.from({ length: 62 }, (_, index) => index),
     );
     expect(migrationJournal.entries.find((entry) => entry.idx === 25)?.tag).toBe(
       "0025_tenant_rls_completion",
@@ -159,6 +159,12 @@ describe("CI predecessor-upgrade and restore verification", () => {
     expect(migrationJournal.entries.find((entry) => entry.idx === 59)?.tag).toBe(
       "0059_publish_canada_t2_template",
     );
+    expect(migrationJournal.entries.find((entry) => entry.idx === 60)?.tag).toBe(
+      "0060_publish_canada_gst_hst_mapping_v2",
+    );
+    expect(migrationJournal.entries.find((entry) => entry.idx === 61)?.tag).toBe(
+      "0061_publish_canada_t2_mapping_v2",
+    );
     expect(tenantPolicyMigration).toContain("ALTER TABLE public.%I FORCE ROW LEVEL SECURITY");
     expect(tenantPolicyMigration).toContain("auth_sessions");
     expect(lifecycleScript).toContain("migration_prefix <= 24");
@@ -181,9 +187,9 @@ describe("CI predecessor-upgrade and restore verification", () => {
     expect(lifecycleScript).toContain(
       'run_migrations "$predecessor_database" "$repository_root/migrations/drizzle"',
     );
-    expect(lifecycleScript).toContain('[[ "$upgraded_count" == "60" ]]');
+    expect(lifecycleScript).toContain('[[ "$upgraded_count" == "62" ]]');
     expect(lifecycleScript).toContain(
-      "tenant sentinel was not preserved through migrations 0025 through 0059",
+      "tenant sentinel was not preserved through migrations 0025 through 0061",
     );
     expect(lifecycleScript).toContain("ci.predecessor-audit-after-upgrade");
     expect(lifecycleScript).toContain(

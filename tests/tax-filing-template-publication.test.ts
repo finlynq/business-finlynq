@@ -1,8 +1,10 @@
 import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { renderTaxFilingTemplateSeedSql } from "../scripts/operations/tax-filing-template-seed-contract";
 import { taxFilingTemplateDefinitionSchema } from "@/modules/tax/filing-template";
 import { canadaGstHstTemplate } from "@/modules/tax/templates/canada-gst-hst";
+import mappingManifest from "@/modules/tax/templates/canada-gst-hst-v2.json";
 
 const publication = {
   id: "f1000000-0000-4000-8000-000000000099",
@@ -21,6 +23,21 @@ const publication = {
 };
 
 describe("tax filing template publication", () => {
+  it("publishes the optional-mapping GST/HST version without migration drift", () => {
+    const migration = readFileSync(
+      "migrations/drizzle/0060_publish_canada_gst_hst_mapping_v2.sql",
+      "utf8",
+    );
+    const generated = renderTaxFilingTemplateSeedSql(mappingManifest);
+
+    expect(mappingManifest.version).toBe(2);
+    expect(mappingManifest.definition.fields
+      .filter((field) => field.kind === "MANUAL")
+      .every((field) => field.allowAccountMapping)).toBe(true);
+    expect(migration).toBe(generated.sql);
+    expect(migration).toContain(`'${generated.digest}'`);
+  });
+
   it("validates a reviewed manifest and emits a deterministic immutable seed", () => {
     const generated = renderTaxFilingTemplateSeedSql(publication);
     const digest = createHash("sha256")

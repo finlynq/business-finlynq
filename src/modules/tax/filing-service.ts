@@ -491,6 +491,16 @@ export async function createTaxFiling(input: Readonly<{
       periodStart: command.periodStart,
       periodEnd: command.periodEnd,
     });
+    const mappedManualFields = Object.keys(command.manualValues).filter((field) => (
+      Object.hasOwn(mappedValues, field)
+    ));
+    if (mappedManualFields.length > 0) {
+      throw new TaxFilingError(
+        "Remove manual values for fields supplied by account mappings.",
+        400,
+        "MAPPED_MANUAL_CONFLICT",
+      );
+    }
     const initial = evaluateTaxFilingTemplate({
       definition,
       currency: ledger.currency,
