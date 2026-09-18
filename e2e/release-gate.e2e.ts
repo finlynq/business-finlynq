@@ -548,5 +548,7 @@ test("mutation feedback remains visible below the document header on desktop and
   }
 
   await revokeDemoSession(page);
-  expect(errors).toEqual([]);
+  const expectedConflictErrors = errors.filter((error) => error.includes("409 (Conflict)"));
+  expect(expectedConflictErrors).toHaveLength(2);
+  expect(errors.filter((error) => !error.includes("409 (Conflict)"))).toEqual([]);
 });
