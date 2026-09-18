@@ -345,10 +345,16 @@ export function TaxFilingWorkspace({ workspace }: { workspace: TaxFilingWorkspac
                     size={Math.min(5, Math.max(3, ledgerAccounts.length))}
                     value={accountSelections[field.key] ?? []}
                     disabled={!workspace.canManageMappings || mappingBusy}
-                    onChange={(event) => setAccountSelections((current) => ({
-                      ...current,
-                      [field.key]: Array.from(event.currentTarget.selectedOptions, (option) => option.value),
-                    }))}
+                    onChange={(event) => {
+                      const selectedAccountIds = Array.from(
+                        event.currentTarget.selectedOptions,
+                        (option) => option.value,
+                      );
+                      setAccountSelections((current) => ({
+                        ...current,
+                        [field.key]: selectedAccountIds,
+                      }));
+                    }}
                   >
                     {ledgerAccounts.map((account) => <option key={account.id} value={account.id}>{account.code} · {account.displayName} · {account.accountClass}</option>)}
                   </select>
@@ -358,10 +364,13 @@ export function TaxFilingWorkspace({ workspace }: { workspace: TaxFilingWorkspac
                   <select
                     value={basisSelections[field.key] ?? field.defaultBalanceBasis ?? "NET_DEBIT"}
                     disabled={!workspace.canManageMappings || mappingBusy}
-                    onChange={(event) => setBasisSelections((current) => ({
-                      ...current,
-                      [field.key]: event.target.value as TaxMappingBalanceBasis,
-                    }))}
+                    onChange={(event) => {
+                      const balanceBasis = event.currentTarget.value as TaxMappingBalanceBasis;
+                      setBasisSelections((current) => ({
+                        ...current,
+                        [field.key]: balanceBasis,
+                      }));
+                    }}
                   >
                     {Object.entries(balanceBasisLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
                   </select>
@@ -403,7 +412,10 @@ export function TaxFilingWorkspace({ workspace }: { workspace: TaxFilingWorkspac
               <p>Enter supported adjustments not derived from mapped ledger accounts. Leave unused lines at zero.</p>
               <div className={styles.valueGrid}>{manualFields.map((field) => <label key={field.key}>
                 <span><span className="code-chip">{field.code}</span> {field.label}</span>
-                <input inputMode="decimal" value={manualValues[field.key] ?? ""} placeholder="0.00" disabled={filingBusy} onChange={(event) => setManualValues((current) => ({ ...current, [field.key]: event.target.value }))} />
+                <input inputMode="decimal" value={manualValues[field.key] ?? ""} placeholder="0.00" disabled={filingBusy} onChange={(event) => {
+                  const value = event.currentTarget.value;
+                  setManualValues((current) => ({ ...current, [field.key]: value }));
+                }} />
               </label>)}</div>
             </fieldset>}
 
@@ -418,7 +430,10 @@ export function TaxFilingWorkspace({ workspace }: { workspace: TaxFilingWorkspac
                 <p>Imported values remain editable for review. Field keys and CRA line codes are both accepted in CSV files.</p>
                 <div className={styles.valueGrid}>{template.definition.fields.filter((field) => field.reconcile).map((field) => <label key={field.key}>
                   <span><span className="code-chip">{field.code}</span> {field.label}</span>
-                  <input inputMode="decimal" value={reportedValues[field.key] ?? ""} placeholder="Not reported" disabled={filingBusy} onChange={(event) => setReportedValues((current) => ({ ...current, [field.key]: event.target.value }))} />
+                  <input inputMode="decimal" value={reportedValues[field.key] ?? ""} placeholder="Not reported" disabled={filingBusy} onChange={(event) => {
+                    const value = event.currentTarget.value;
+                    setReportedValues((current) => ({ ...current, [field.key]: value }));
+                  }} />
                 </label>)}</div>
               </fieldset>
             </>}

@@ -49,6 +49,11 @@ import {
 } from "@/modules/subledger/document-model";
 import { loadBankingWorkspace } from "@/modules/banking/banking-workspace";
 import {
+  createTaxFiling,
+  createTaxFilingSchema,
+} from "@/modules/tax/filing-service";
+import { loadTaxFilingWorkspace } from "@/modules/tax/filing-workspace";
+import {
   createBankMatchAllocation,
   createBankReconciliation,
   syncSimpleFin,
@@ -462,6 +467,26 @@ export const DAILY_MCP_TOOLS: readonly McpToolDefinition[] = [
     description: "List posted and current-draft tax determinations, optionally only items that need manual review. This reports tax evidence and never files a return.",
     inputSchema: z.object({ reviewOnly: z.boolean().default(true) }).strict(),
     invoke: (args, runtime) => loadTaxDeterminations(runtime.sessionPrincipal, { reviewOnly: args.reviewOnly }),
+  }),
+  defineMcpTool({
+    policy: { name: "finlynq_daily_get_tax_filing_workspace", group: "DAILY", access: "READ", permission: PERMISSIONS.readTax },
+    title: "Get tax filing workspace",
+    description: "Return the reviewed shared filing templates, eligible company ledgers and accounts, latest client mapping versions, and immutable filing workpaper history visible to the connected user. This does not submit a return to a tax authority.",
+    inputSchema: emptySchema,
+    invoke: (_args, runtime) => loadTaxFilingWorkspace(runtime.sessionPrincipal),
+  }),
+  defineMcpTool({
+    policy: { name: "finlynq_daily_create_tax_filing_workpaper", group: "DAILY", access: "WRITE", permission: PERMISSIONS.prepareTaxFilings },
+    title: "Prepare or reconcile tax filing workpaper",
+    description: "Create an immutable tax filing workpaper from posted ledger activity and the latest mapping version. PREPARED calculates a current declaration; HISTORICAL_IMPORT compares supplied reported values. This does not transmit or pay a return.",
+    inputSchema: createTaxFilingSchema,
+    idempotent: true,
+    invoke: (args, runtime) => createTaxFiling({
+      principal: runtime.sessionPrincipal,
+      requestId: runtime.requestId,
+      sourceSurface: "MCP",
+      ...args,
+    }),
   }),
   defineMcpTool({
     policy: { name: "finlynq_daily_banking_overview", group: "DAILY", access: "READ", permission: PERMISSIONS.readBanking },
