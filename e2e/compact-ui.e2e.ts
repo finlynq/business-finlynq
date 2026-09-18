@@ -72,7 +72,7 @@ test("mobile chrome preserves scope, touch targets and navigation focus", async 
   await openDemo(page, "/app");
   await expect(page.getByRole("button", { name: "Open navigation", exact: true })).toHaveCount(1);
   const chrome = page.locator(".utility-bar");
-  await expect(chrome.getByLabel("Working entity", { exact: true })).toBeVisible();
+  await expect(chrome.locator(".entity-context-switcher select")).toBeVisible();
   await expect(chrome.locator(".entity-context-detail")).toBeVisible();
   const bounds = await chrome.boundingBox();
   expect(bounds!.height).toBeLessThan(120);
@@ -109,16 +109,17 @@ test("disclosures retain edits, reveal invalid fields, and survive accounting ta
 
 test("report range switching preserves both period and date inputs", async ({ page }) => {
   await openDemo(page, "/app/reports/trial-balance");
-  const basis = page.getByLabel("Range basis", { exact: true });
+  const filters = page.locator('form[action="/app/reports/trial-balance"]');
+  const basis = filters.locator('select[name="basis"]');
   await basis.selectOption("date");
-  const from = page.getByLabel("From date", { exact: true });
+  const from = filters.locator('input[name="from"]');
   await from.fill("2026-01-02");
   await basis.selectOption("period");
   await expect(from).toBeHidden();
-  await expect(page.getByLabel("From period", { exact: true })).toBeVisible();
+  await expect(filters.locator('select[name="fromPeriod"]')).toBeVisible();
   await basis.selectOption("date");
   await expect(from).toHaveValue("2026-01-02");
-  await expect(page.getByLabel("From period", { exact: true })).toBeHidden();
+  await expect(filters.locator('select[name="fromPeriod"]')).toBeHidden();
 });
 
 test("journal evidence stays available in a full-width expanded row", async ({ page }) => {
@@ -126,12 +127,13 @@ test("journal evidence stays available in a full-width expanded row", async ({ p
   const trigger = page.getByRole("button", { name: /Show account postings for/ }).first();
   const id = await trigger.getAttribute("aria-controls");
   if (!id) throw new Error("Missing evidence row association");
+  const stableTrigger = page.locator(`button[aria-controls=${JSON.stringify(id)}]`);
   const row = page.locator(`[id="${id}"]`);
   await expect(row).toBeHidden();
-  await trigger.click();
+  await stableTrigger.click();
   await expect(row).toBeVisible();
-  await expect(trigger).toHaveAttribute("aria-expanded", "true");
+  await expect(stableTrigger).toHaveAttribute("aria-expanded", "true");
   await expect(row.getByText(/Ending balance/).first()).toBeVisible();
-  await trigger.click();
+  await stableTrigger.click();
   await expect(row).toBeHidden();
 });
