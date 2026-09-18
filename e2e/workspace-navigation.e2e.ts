@@ -8,7 +8,7 @@ async function openDemo(page: Page, next: string) {
   await expect(page).toHaveURL(new RegExp(`${next.replaceAll("/", "\\/")}$`));
 }
 
-test("reports and settings navigation retain a single clear active destination", async ({ page }) => {
+test("workspace navigation stays clear, accessible and state-preserving", async ({ page }) => {
   await openDemo(page, "/app/reports");
   await expect(page.getByRole("heading", { level: 1, name: "Reports", exact: true })).toBeVisible();
   await page.getByRole("link", { name: "Open balance sheet" }).click();
@@ -19,10 +19,7 @@ test("reports and settings navigation retain a single clear active destination",
   await expect(sidebar.locator('[aria-current="page"]')).toHaveCount(1);
   await expect(sidebar.getByRole("link", { name: "Documents", exact: true })).toHaveAttribute("aria-current", "page");
   await expect(page.getByRole("main")).toHaveCount(1);
-});
 
-test("accounting tabs support deep links and keyboard navigation", async ({ page }) => {
-  await openDemo(page, "/app/settings/accounting");
   await page.goto("/app/settings/accounting#currencies");
   const tabs = page.getByRole("tablist", { name: "Accounting configuration sections" });
   const rates = tabs.getByRole("tab", { name: "Currencies & rates" });
@@ -34,18 +31,16 @@ test("accounting tabs support deep links and keyboard navigation", async ({ page
   await page.keyboard.press("Home");
   await expect(tabs.getByRole("tab", { name: "Entities & ledgers" })).toHaveAttribute("aria-selected", "true");
   await expect(page.getByRole("tabpanel")).toHaveCount(1);
-});
 
-test("tax tabs preserve unfinished fields and remain usable on mobile", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
-  await openDemo(page, "/app/tax");
-  const tabs = page.getByRole("tablist", { name: "Tax preparation sections" });
+  await page.goto("/app/tax");
+  const taxTabs = page.getByRole("tablist", { name: "Tax preparation sections" });
   await page.getByLabel("Period start", { exact: true }).fill("2026-01-01");
-  await tabs.getByRole("tab", { name: "Account mappings" }).click();
+  await taxTabs.getByRole("tab", { name: "Account mappings" }).click();
   await page.getByRole("searchbox", { name: "Find a template field" }).fill("revenue");
-  await tabs.getByRole("tab", { name: "Prepare or reconcile" }).click();
+  await taxTabs.getByRole("tab", { name: "Prepare or reconcile" }).click();
   await expect(page.getByLabel("Period start", { exact: true })).toHaveValue("2026-01-01");
-  await tabs.getByRole("tab", { name: "Account mappings" }).click();
+  await taxTabs.getByRole("tab", { name: "Account mappings" }).click();
   await expect(page.getByRole("searchbox", { name: "Find a template field" })).toHaveValue("revenue");
   const width = await page.evaluate(() => ({ content: document.documentElement.scrollWidth, viewport: window.innerWidth }));
   expect(width.content).toBeLessThanOrEqual(width.viewport + 1);
