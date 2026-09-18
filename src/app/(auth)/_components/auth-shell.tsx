@@ -37,6 +37,7 @@ export function AuthShell({
           <h1>{title}</h1>
           <p className={styles.description}>{description}</p>
           <div id="auth-form">{children}</div>
+          <nav className={styles.policyLinks} aria-label="Account policies"><Link href="/privacy">Privacy</Link><Link href="/terms">Terms</Link><Link href="/security">Security</Link></nav>
         </div>
       </section>
     </main>

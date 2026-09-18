@@ -83,3 +83,4 @@ export default async function PlatformAdministrationPage() {
     </div>
   );
 }
+export const metadata = { title: "Platform operations" };

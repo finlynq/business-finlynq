@@ -44,6 +44,7 @@ code { font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; }
 .workspace-card .eyebrow,.mobile-nav-panel .eyebrow { color:#a4b8ce; }
 .demo-chip { justify-self:start; margin-top:5px; padding:4px 8px; border-radius:999px; color:#b3eee3; background:rgba(26,153,137,.2); font-size:10px; font-weight:800; text-transform:uppercase; }
 .desktop-navigation { flex:1; }
+.nav-group + .nav-group { margin-top:22px; }
 .nav-label { margin:0 10px 8px; color:#8198b1; font-size:10px; font-weight:850; letter-spacing:.14em; text-transform:uppercase; }
 .nav-label-spaced { margin-top:24px; }
 .nav-list { display:grid; gap:4px; margin:0; padding:0; list-style:none; }
@@ -302,3 +303,37 @@ input,select,textarea { width:100%; min-height:44px; padding:9px 11px; border:1p
 
 .close-form label.document-sharing-consent { display: flex; align-items: flex-start; gap: 10px; }
 .document-sharing-consent input[type="checkbox"] { width: 18px; height: 18px; min-height: 18px; flex: 0 0 18px; margin: 2px 0 0; }
+
+/* Shared workspace hierarchy: compact chrome, clear headings and room for data. */
+.app-frame .page-content { gap:24px; }
+.app-frame .page-header { padding-bottom:22px; border-bottom:1px solid var(--line); }
+.app-frame .page-header h1 { font-family:inherit; font-size:clamp(27px,2.5vw,34px); font-weight:750; letter-spacing:-.045em; }
+.app-frame .page-header>div:first-child>p:last-child { max-width:760px; line-height:1.65; }
+.app-frame .section-heading h2,.app-frame .panel-heading h2 { font-family:inherit; font-size:20px; font-weight:750; letter-spacing:-.025em; }
+.app-frame .panel-heading:has(> h2) { display:grid; grid-template-columns:1fr; gap:6px; align-items:start; }
+.app-frame .panel-heading>p,.app-frame .panel-heading>div>p:not(.eyebrow) { margin:5px 0 0; color:var(--muted); line-height:1.6; font-size:13px; }
+.app-frame .settings-form { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); align-items:end; gap:16px; padding:22px; }
+.app-frame .settings-form label { min-width:0; }
+.app-frame .panel { box-shadow:0 3px 12px rgba(28,45,68,.035); }
+.app-frame .table-scroll { max-width:100%; }
+.app-frame td,.app-frame th { font-variant-numeric:tabular-nums; }
+.app-frame .subledger-toolbar { align-items:end; }
+.app-frame .subledger-toolbar>.full-field { flex:1; max-width:520px; }
+.app-frame [id] { scroll-margin-top:95px; }
+.app-frame .app-footer a:hover { text-decoration:underline; }
+.workspace-disclosure { border:1px solid var(--line); border-radius:11px; background:var(--surface); }
+.workspace-disclosure>summary { min-height:52px; padding:16px 20px; color:var(--ink); font-weight:750; cursor:pointer; }
+.workspace-disclosure>summary:focus-visible { outline:3px solid #1c83c3; outline-offset:2px; }
+.workspace-disclosure>.panel { margin:0; border:0; box-shadow:none; }
+.documentation-page { max-width:1200px; margin-inline:auto; }
+.documentation-header { display:flex; align-items:center; justify-content:space-between; gap:20px; padding:22px 36px; border-bottom:1px solid var(--line); }
+.documentation-topics { display:flex; flex-wrap:wrap; gap:8px 20px; padding:14px 20px; border:1px solid var(--line); border-radius:10px; background:var(--surface); }
+.documentation-topics a { display:inline-flex; align-items:center; min-height:36px; color:var(--accent-dark); font-weight:750; }
+.documentation-page .panel>p,.documentation-page .panel>ol,.documentation-page .panel>ul { margin:20px; line-height:1.75; overflow-wrap:anywhere; }
+.documentation-page .panel>ol,.documentation-page .panel>ul { padding-left:22px; }
+.documentation-page .panel li+li { margin-top:10px; }
+.documentation-page .panel p a { color:var(--accent-dark); text-decoration:underline; }
+.documentation-page section[id] { scroll-margin-top:20px; }
+@media(min-width:861px) { .sidebar { padding-top:20px; } .workspace-card { margin-bottom:20px; } .sidebar .nav-list { gap:2px; } .sidebar .nav-list a { min-height:40px; font-size:13px; } }
+@media(max-width:1000px) { .app-frame .settings-form { grid-template-columns:repeat(2,minmax(0,1fr)); } }
+@media(max-width:580px) { .app-frame .settings-form { grid-template-columns:1fr; padding:16px; } .app-frame .page-header { padding-bottom:18px; } .app-frame [id] { scroll-margin-top:155px; } }

@@ -12,3 +12,4 @@ export default function RecoveryApprovalPage() {
     </div>
   );
 }
+export const metadata = { title: "Approve account recovery" };

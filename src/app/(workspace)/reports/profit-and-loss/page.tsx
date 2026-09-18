@@ -121,3 +121,4 @@ export default async function ProfitAndLossPage({ searchParams }: { searchParams
     </div>
   );
 }
+export const metadata = { title: "Profit & loss" };

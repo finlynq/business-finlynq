@@ -10,7 +10,7 @@ export type SearchEntry = Readonly<{
   keywords: string;
 }>;
 
-export function GlobalSearch({ entries }: { entries: readonly SearchEntry[] }) {
+export function GlobalSearch({ entries, includesDemoRecords = false }: { entries: readonly SearchEntry[]; includesDemoRecords?: boolean }) {
   const dialogRef = useRef<HTMLDialogElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
@@ -50,26 +50,26 @@ export function GlobalSearch({ entries }: { entries: readonly SearchEntry[] }) {
     <>
       <button ref={triggerRef} type="button" className="search-button" aria-label="Search" onClick={open}>
         <span aria-hidden="true">⌕</span>
-        <span className="search-button-label">Search parties, journals, invoices</span>
+        <span className="search-button-label">Find a page or report</span>
         <kbd>Ctrl/⌘ K</kbd>
       </button>
       <dialog ref={dialogRef} className="search-dialog" aria-labelledby="search-title" onClose={() => setQuery("")}>
         <div className="dialog-heading">
           <div>
-            <span className="eyebrow">Demo workspace</span>
+            <span className="eyebrow">Workspace navigation</span>
             <h2 id="search-title">Search Business Finlynq</h2>
           </div>
           <button type="button" className="icon-button close-button" aria-label="Close search" onClick={close}>×</button>
         </div>
         <label className="search-field">
-          <span className="sr-only">Search pages and demo records</span>
+          <span className="sr-only">{includesDemoRecords ? "Search pages and demo records" : "Search workspace pages"}</span>
           <span aria-hidden="true">⌕</span>
           <input
             ref={inputRef}
             type="search"
             value={query}
             onChange={(event) => setQuery(event.target.value)}
-            placeholder="Search by name, number, or module"
+            placeholder={includesDemoRecords ? "Page, report or sample record" : "Page, report or setting"}
           />
         </label>
         <div className="search-results" aria-live="polite">
@@ -85,10 +85,10 @@ export function GlobalSearch({ entries }: { entries: readonly SearchEntry[] }) {
               ))}
             </ul>
           ) : (
-            <p className="empty-search">No demo records match “{query.trim()}”.</p>
+            <p className="empty-search">No results match “{query.trim()}”. Try a page name such as Reports or Banking.</p>
           )}
         </div>
-        <p className="dialog-footnote">Search uses the visible demo index. It does not query encrypted production records.</p>
+        <p className="dialog-footnote">{includesDemoRecords ? "Find workspace pages and seeded demo examples. Use each register to search current transactions." : "Find pages and settings. Use the journal, invoice, bill or party register to search your organization’s records."}</p>
       </dialog>
     </>
   );

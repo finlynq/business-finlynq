@@ -1,5 +1,7 @@
 "use client";
 
+import { SectionTabs } from "./section-tabs.client";
+
 import { useMemo, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
@@ -465,6 +467,20 @@ export function AccountingSettings({
         </section>
       )}
 
+      {(configuration.canManageSettings || configuration.canManageSegments || configuration.canManagePostingPolicy) && (
+        <section className="panel form-panel" aria-labelledby="configuration-audit-title">
+          <div className="panel-heading"><div><p className="eyebrow">Applies to changes below</p><h2 id="configuration-audit-title">Reason for changes</h2></div></div>
+          <div className="close-form"><label className="full-field"><span>Audit reason</span><input value={reason} onChange={(event) => setReason(event.target.value)} minLength={8} maxLength={500} required /><small>This reason is recorded with each accounting configuration change.</small></label></div>
+        </section>
+      )}
+
+      <SectionTabs label="Accounting configuration sections" sections={[
+        { id: "legal-entities", label: "Entities & ledgers" },
+        { id: "account-segments", label: "Chart of accounts" },
+        { id: "reporting-hierarchies", label: "Reporting hierarchies" },
+        { id: "currencies", label: "Currencies & rates" },
+        { id: "tax-packs", label: "Tax registrations" },
+      ]}>
       <section className="panel form-panel" id="legal-entities" aria-labelledby="legal-entity-configuration-title">
         <div className="panel-heading"><span className="eyebrow">Multi-company foundation</span><h2 id="legal-entity-configuration-title">Legal entities & primary ledgers</h2><p>Each company receives an isolated primary ledger, monthly fiscal periods, base chart, posting policy, and functional currency. Tax automation outside Ontario and Washington is held for review.</p></div>
         <div className="table-scroll" tabIndex={0} aria-label="Configured legal entities">
@@ -1024,12 +1040,8 @@ export function AccountingSettings({
         <p className="panel-note"><strong>Supported automation:</strong> Ontario HST and the currently installed Seattle Washington sales/use-tax version. Every other jurisdiction uses <code>generic.unsupported</code> or a manual-review decision; the system never assumes a zero rate.</p>
       </section>
 
-      {(configuration.canManageSettings || configuration.canManageSegments || configuration.canManagePostingPolicy) && (
-        <section className="panel form-panel" aria-labelledby="configuration-audit-title">
-          <div className="panel-heading"><span className="eyebrow">Audit context</span><h2 id="configuration-audit-title">Reason for changes</h2></div>
-          <label className="full-field"><span>Audit reason</span><input value={reason} onChange={(event) => setReason(event.target.value)} minLength={8} maxLength={500} required /></label>
-        </section>
-      )}
+      </SectionTabs>
+
     </div>
   );
 }

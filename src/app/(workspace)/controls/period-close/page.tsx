@@ -51,3 +51,4 @@ export default async function PeriodClosePage() {
     </div>
   );
 }
+export const metadata = { title: "Period controls" };

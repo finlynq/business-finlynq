@@ -188,7 +188,7 @@ export function AssetWorkspace({ workspace }: {
       </article>)}
     </section>
 
-    {workspace.canDraftSchedules && workspace.assets.some((asset) => !["DISPOSED", "RETIRED", "TERMINATED"].includes(asset.status)) && <section className="panel" aria-labelledby="asset-lifecycle-title">
+    {workspace.canDraftSchedules && workspace.assets.some((asset) => !["DISPOSED", "RETIRED", "TERMINATED"].includes(asset.status)) && <details className="workspace-disclosure"><summary>Record a lifecycle event</summary><section className="panel" aria-labelledby="asset-lifecycle-title">
       <div className="panel-heading"><div><p className="eyebrow">Controlled adjustments</p><h2 id="asset-lifecycle-title">Record a lifecycle event</h2></div></div>
       <form className="settings-form" action={(data) => void submitLifecycle(data)}>
         <label><span>Register record</span><select name="assetId" required>{workspace.assets.filter((asset) => !["DISPOSED", "RETIRED", "TERMINATED"].includes(asset.status)).map((asset) => <option key={asset.id} value={asset.id}>{asset.assetNumber} · {asset.displayName}</option>)}</select></label>
@@ -198,7 +198,7 @@ export function AssetWorkspace({ workspace }: {
         <label><span>Permanent reason</span><input name="reason" required minLength={5} maxLength={500} /></label>
         <button className="primary-button" disabled={busy !== null}>{busy === "lifecycle" ? "Recording…" : "Record lifecycle event"}</button>
       </form>
-    </section>}
+    </section></details>}
 
     <section className="panel" aria-labelledby="asset-register-title">
       <div className="panel-heading"><div><p className="eyebrow">Register-to-GL roll-forward</p><h2 id="asset-register-title">Asset and prepaid register</h2></div><span className="attention-count">{workspace.assets.length}</span></div>
@@ -244,7 +244,7 @@ export function AssetWorkspace({ workspace }: {
       </table></div> : <p className="panel-note">Indefinite-life intangibles intentionally have no automatic amortization schedule.</p>}
     </section>
 
-    {workspace.canDraftSchedules && workspace.categories.length > 0 && <section className="panel" aria-labelledby="new-asset-title">
+    {workspace.canDraftSchedules && workspace.categories.length > 0 && <details className="workspace-disclosure"><summary>Create an asset or prepaid</summary><section className="panel" aria-labelledby="new-asset-title">
       <div className="panel-heading"><div><p className="eyebrow">New register item</p><h2 id="new-asset-title">Create an asset or prepaid</h2></div></div>
       <form className="settings-form" action={(data) => void submitAsset(data)}>
         <label><span>Category</span><select name="categoryId" required>{workspace.categories.map((category) => <option key={category.id} value={category.id}>{category.kind} · {category.code} · {category.displayName}</option>)}</select></label>
@@ -260,9 +260,9 @@ export function AssetWorkspace({ workspace }: {
         <label><span>Source reference</span><input name="sourceReference" maxLength={200} /></label>
         <button className="primary-button" disabled={busy !== null}>{busy === "asset" ? "Creating…" : "Create register record"}</button>
       </form>
-    </section>}
+    </section></details>}
 
-    {workspace.canManageCategories && workspace.accounts.length > 0 && <section className="panel" aria-labelledby="asset-category-title">
+    {workspace.canManageCategories && workspace.accounts.length > 0 && <details className="workspace-disclosure"><summary>Configure an asset category</summary><section className="panel" aria-labelledby="asset-category-title">
       <div className="panel-heading"><div><p className="eyebrow">Account mappings</p><h2 id="asset-category-title">Create a category</h2></div></div>
       <form className="settings-form" action={(data) => void submitCategory(data)}>
         <input type="hidden" name="legalEntityId" value={categoryAccounts[0]?.legalEntityId ?? ""} />
@@ -274,6 +274,6 @@ export function AssetWorkspace({ workspace }: {
         {(["costAccountCombinationId", "contraAccountCombinationId", "expenseAccountCombinationId", "impairmentAccountCombinationId", "disposalAccountCombinationId"] as const).map((name) => <label key={name}><span>{name === "costAccountCombinationId" ? "Cost / prepaid account" : name === "contraAccountCombinationId" ? "Accumulated depreciation / amortization" : name === "expenseAccountCombinationId" ? "Recognition expense account" : name === "impairmentAccountCombinationId" ? "Impairment expense account" : "Disposal expense account"}</span><select name={name} required={["costAccountCombinationId", "expenseAccountCombinationId"].includes(name)}><option value="">Not applicable</option>{categoryAccounts.map((account) => <option key={account.id} value={account.id}>{account.code} · {account.displayName} · {account.class}</option>)}</select></label>)}
         <button className="primary-button" disabled={busy !== null}>{busy === "category" ? "Creating…" : "Create category"}</button>
       </form>
-    </section>}
+    </section></details>}
   </>;
 }

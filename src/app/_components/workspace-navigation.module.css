@@ -1,0 +1,19 @@
+.tabs { display:flex; gap:4px; padding:5px; overflow-x:auto; border:1px solid var(--line); border-radius:10px; background:var(--surface); }
+.tabs > a,.tabs > button { flex-shrink:0; display:inline-flex; justify-content:center; align-items:center; min-height:42px; padding:9px 14px; border:0; border-radius:7px; color:var(--muted); background:transparent; font-size:13px; font-weight:750; white-space:nowrap; }
+.tabs > a:hover,.tabs > button:hover { color:var(--accent-dark); background:#edf6f3; }
+.tabs > a[aria-current="page"],.tabs > button[aria-selected="true"] { color:#fff; background:var(--accent-dark); }
+.tabs > :focus-visible { outline-offset:-3px; outline-color:#58b7ee; }
+.sections,.tabPanel { display:grid; min-width:0; gap:18px; }
+.tabPanel[hidden] { display:none; }
+.cards { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:18px; }
+.card { display:flex; flex-direction:column; align-items:flex-start; gap:12px; padding:24px; border:1px solid var(--line); border-radius:12px; background:var(--surface); box-shadow:0 3px 12px rgba(28,45,68,.035); }
+.card h2 { margin:0; font-size:20px; letter-spacing:-.025em; }
+.card p { margin:0; color:var(--muted); line-height:1.65; }
+.card small { display:block; margin-top:auto; color:var(--muted); line-height:1.5; }
+.card a { margin-top:6px; }
+.cardMark { display:grid; place-items:center; width:40px; height:40px; border-radius:10px; color:var(--accent-dark); background:#e9f4f1; font-size:12px; font-weight:850; }
+.quickLinks { display:grid; grid-template-columns:repeat(auto-fit,minmax(190px,1fr)); gap:12px; }
+.quickLinks a { display:flex; align-items:center; justify-content:space-between; gap:14px; min-height:66px; padding:15px 18px; border:1px solid var(--line); border-radius:10px; color:var(--ink); background:var(--surface); font-weight:750; }
+.quickLinks a:hover { border-color:var(--accent); background:#f5faf8; }
+.quickLinks span { color:var(--accent); }
+@media(max-width:700px) { .cards { grid-template-columns:1fr; } .card { padding:20px; } .tabs > a,.tabs > button { padding-inline:12px; } }

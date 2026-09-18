@@ -83,7 +83,7 @@ export function DocumentInbox({ initialConnections, initialInbox, entities, perm
       : message
         ? <MutationFeedback kind="success" message={message} onDismiss={() => setMessage("")} />
         : null}
-    {permissions.admin && <section className="panel form-panel"><div className="panel-heading"><h2>Connect document storage</h2></div>
+    {permissions.admin && <details className="workspace-disclosure" open={initialConnections.length === 0}><summary>Connect document storage</summary><section className="panel form-panel"><div className="panel-heading"><h2>Connect document storage</h2></div>
       <form className="close-form" onSubmit={(event) => { void connect(event); }}>
         <label><span>Provider</span><select value={provider} onChange={(event) => setProvider(event.target.value as StorageProvider)}>{providers.map((p) => <option key={p.provider} value={p.provider}>{providerLabel(p.provider)}{!p.configured ? " — unavailable" : ""}</option>)}</select></label>
         <label><span>Company</span><select name="entity" required>{entities.map((entity) => <option key={entity.id} value={entity.id}>{entity.display_name}</option>)}</select></label>
@@ -98,7 +98,7 @@ export function DocumentInbox({ initialConnections, initialInbox, entities, perm
         <button className="primary-button" disabled={busy || !entities.length || !storageAccessPolicy(provider).newConnections || !providers.find((p) => p.provider === provider)?.configured}>Connect {providerLabel(provider)}</button>
         {storageAccessPolicy(provider).newConnections && !providers.find((p) => p.provider === provider)?.configured && <p className="panel-note">FinLynQ’s connection to {providerLabel(provider)} is not enabled yet. Once available, you can sign in with your own account here.</p>}
       </form>
-    </section>}
+    </section></details>}
     <section className="panel"><div className="panel-heading"><h2>Connected folders</h2></div>
       {!connections.length && <p>No storage connections yet. An organization administrator can connect a drive above.</p>}
       {connections.map((connection) => <div className="document-connection" key={connection.id}>
