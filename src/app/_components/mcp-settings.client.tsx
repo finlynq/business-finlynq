@@ -3,6 +3,7 @@
 import { useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
+import { MutationFeedback } from "@/app/_components/mutation-feedback.client";
 import type { McpConnectionSettings } from "@/modules/mcp/connection-policy";
 import type { McpAccessMode } from "@/modules/mcp/protocol";
 import type { PendingMcpApproval } from "@/modules/mcp/settings-store";
@@ -124,7 +125,7 @@ export function McpSettings({
 
   return (
     <div className="settings-layout">
-      {feedback && <div className={`validation-message ${feedback.kind === "error" ? "validation-error" : "validation-success"}`} role={feedback.kind === "error" ? "alert" : "status"}>{feedback.message}</div>}
+      {feedback && <MutationFeedback {...feedback} onDismiss={() => setFeedback(null)} />}
 
       <section className="panel form-panel" aria-labelledby="mcp-endpoint-title">
         <div className="panel-heading"><div><p className="eyebrow">Remote endpoint</p><h2 id="mcp-endpoint-title">Connect an MCP client</h2><p>Use OAuth 2.1 with PKCE. FinLynQ never asks the agent for a password, API key, bank credential, or signing secret.</p></div></div>

@@ -2,6 +2,7 @@
 
 import { useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
+import { MutationFeedback } from "@/app/_components/mutation-feedback.client";
 import type { TaxFilingField, TaxMappingBalanceBasis } from "@/modules/tax/filing-template";
 import type { TaxFilingWorkspaceDto } from "@/modules/tax/filing-workspace";
 import styles from "./tax-filing-workspace.module.css";
@@ -301,9 +302,11 @@ export function TaxFilingWorkspace({ workspace }: { workspace: TaxFilingWorkspac
 
   const mappingReady = accountFields.filter((field) => field.required)
     .every((field) => (accountSelections[field.key] ?? []).length > 0);
+  const visibleFeedback = filingFeedback ?? mappingFeedback;
 
   return (
     <div className={styles.workspace}>
+      {visibleFeedback && <MutationFeedback {...visibleFeedback} onDismiss={() => { setMappingFeedback(null); setFilingFeedback(null); }} />}
       <section className={styles.scopeBar} aria-label="Tax filing scope">
         <label><span>Template</span>
           <select value={templateId} onChange={(event) => selectTemplate(event.target.value)}>
@@ -381,7 +384,6 @@ export function TaxFilingWorkspace({ workspace }: { workspace: TaxFilingWorkspac
               <textarea value={mappingReason} minLength={8} maxLength={500} required disabled={!workspace.canManageMappings || mappingBusy} onChange={(event) => setMappingReason(event.target.value)} placeholder="Why does this account mapping apply to this client?" />
             </label>
             {!workspace.canManageMappings && <p className="validation-message">Your role can view tax workpapers but cannot change client mappings.</p>}
-            {mappingFeedback && <p role={mappingFeedback.kind === "error" ? "alert" : "status"} className={`validation-message ${mappingFeedback.kind === "error" ? "validation-error" : "validation-success"}`}>{mappingFeedback.message}</p>}
             <div className="form-actions">
               <button className="primary-button" type="submit" disabled={!workspace.canManageMappings || mappingBusy || !mappingReady}>{mappingBusy ? "Saving…" : "Save mapping version"}</button>
             </div>
@@ -440,7 +442,6 @@ export function TaxFilingWorkspace({ workspace }: { workspace: TaxFilingWorkspac
 
             <p className="form-footnote">Calculations use posted journal lines in the selected date range and mapping version. The resulting workpaper is immutable and does not submit data to {template.authority}.</p>
             {!workspace.canPrepareFilings && <p className="validation-message">Your role can view tax workpapers but cannot prepare or import filings.</p>}
-            {filingFeedback && <p role={filingFeedback.kind === "error" ? "alert" : "status"} className={`validation-message ${filingFeedback.kind === "error" ? "validation-error" : "validation-success"}`}>{filingFeedback.message}</p>}
             <div className="form-actions">
               <button className="primary-button" type="submit" disabled={!workspace.canPrepareFilings || filingBusy || !mappingReady}>{filingBusy ? "Calculating…" : filingType === "PREPARED" ? "Prepare return" : "Reconcile historical filing"}</button>
             </div>

@@ -1048,6 +1048,9 @@ export async function createAccountCombination(input: Readonly<{
       [input.principal.organizationId, input.legalEntityId, input.ledgerId, input.accountId],
     );
     const selectedAccount = account.rows[0];
+    // This is advisory response metadata only. The SECURITY DEFINER command
+    // performs the authoritative advisory/row locking; the runtime role is
+    // intentionally read-only on account_combinations.
     const existing = await client.query<{ id: string; active: boolean }>(
       `SELECT id, active FROM account_combinations
        WHERE organization_id = $1 AND ledger_id = $2 AND entity_id = $3 AND account_id = $4
@@ -1061,8 +1064,7 @@ export async function createAccountCombination(input: Readonly<{
          AND custom_5_id IS NOT DISTINCT FROM $12::uuid
          AND custom_6_id IS NOT DISTINCT FROM $13::uuid
          AND custom_7_id IS NOT DISTINCT FROM $14::uuid
-         AND custom_8_id IS NOT DISTINCT FROM $15::uuid
-       FOR SHARE`,
+         AND custom_8_id IS NOT DISTINCT FROM $15::uuid`,
       [
         input.principal.organizationId,
         input.ledgerId,

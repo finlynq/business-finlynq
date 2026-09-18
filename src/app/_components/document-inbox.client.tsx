@@ -1,5 +1,6 @@
 "use client";
 import { useState, type FormEvent } from "react";
+import { MutationFeedback } from "@/app/_components/mutation-feedback.client";
 import type { listStorageConnections } from "@/modules/document-storage/connections";
 import type { listDocumentInbox } from "@/modules/document-storage/inbox";
 import type { StorageProvider } from "@/modules/document-storage/model";
@@ -77,7 +78,11 @@ export function DocumentInbox({ initialConnections, initialInbox, entities, perm
       <p>Ask Codex or ChatGPT: “Sync my FinLynQ document inbox, read each invoice, create the appropriate drafts, and file the originals. Send uncertain items for review.”</p>
       <p className="panel-note">Files stay in your drive. FinLynQ stores attachment details and accounting records. Processing uses your AI client; no AI API key is required here. Filing a document does not post or pay its invoice.</p>
     </section>
-    {error && <p role="alert" className="panel-note">{error}</p>}{message && <p role="status" className="panel-note">{message}</p>}
+    {error
+      ? <MutationFeedback kind="error" message={error} onDismiss={() => setError("")} />
+      : message
+        ? <MutationFeedback kind="success" message={message} onDismiss={() => setMessage("")} />
+        : null}
     {permissions.admin && <section className="panel form-panel"><div className="panel-heading"><h2>Connect document storage</h2></div>
       <form className="close-form" onSubmit={(event) => { void connect(event); }}>
         <label><span>Provider</span><select value={provider} onChange={(event) => setProvider(event.target.value as StorageProvider)}>{providers.map((p) => <option key={p.provider} value={p.provider}>{providerLabel(p.provider)}{!p.configured ? " — unavailable" : ""}</option>)}</select></label>

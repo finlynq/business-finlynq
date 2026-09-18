@@ -97,6 +97,8 @@ describe("account-combination setup boundary", () => {
       expect.stringContaining("app.accounting_create_account_combination"),
       expect.any(Array),
     );
+    expect(mocks.query.mock.calls[1]?.[0]).toContain("FROM account_combinations");
+    expect(mocks.query.mock.calls[1]?.[0]).not.toContain("FOR SHARE");
   });
 
   it("returns tenant-safe configuration details instead of a generic SQL rejection", async () => {

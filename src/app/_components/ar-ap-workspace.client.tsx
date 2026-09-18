@@ -33,6 +33,7 @@ import {
   type SubledgerDueFilter,
   type SubledgerRegisterFilter,
 } from "@/modules/subledger/register-filter";
+import { MutationFeedback } from "./mutation-feedback.client";
 import { EmptyState, StatusPill } from "./ui";
 import { RegisterPaginationNav } from "./register-pagination";
 import styles from "./ar-ap-register.module.css";
@@ -1228,11 +1229,13 @@ export function ArApWorkspace({
         </div>
       )}
 
-      <div className="subledger-feedback" aria-live="polite" aria-atomic="true">
-        {pending && <p className="validation-message validation-success">Refreshing the tenant register…</p>}
-        {message && <p className="validation-message validation-success">{message}</p>}
-        {error && <p className="validation-message validation-error">{error}</p>}
-      </div>
+      {error
+        ? <MutationFeedback kind="error" message={error} onDismiss={() => setError(null)} />
+        : message
+          ? <MutationFeedback kind="success" message={message} onDismiss={() => setMessage(null)} />
+          : pending
+            ? <MutationFeedback kind="info" message="Refreshing the tenant register…" />
+            : null}
 
       {detailDocument && (
         <DocumentDetails

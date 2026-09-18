@@ -2,6 +2,7 @@
 
 import { useRouter } from "next/navigation";
 import { useState, type FormEvent } from "react";
+import { MutationFeedback } from "@/app/_components/mutation-feedback.client";
 import type { PartyAccountCreationOptionDto } from "@/modules/parties/party-workspace";
 import styles from "./party-directory.module.css";
 
@@ -160,14 +161,7 @@ export function PartyAccountAttachForm({
       <button className="primary-button compact-button" type="submit" disabled={busy || accountOptions.length === 0}>
         {busy ? "Attaching…" : "Attach entity role"}
       </button>
-      {message && (
-        <p
-          className={`validation-message ${message.kind === "success" ? "validation-success" : "validation-error"} ${styles.attachMessage}`}
-          role={message.kind === "error" ? "alert" : "status"}
-        >
-          {message.text}
-        </p>
-      )}
+      {message && <MutationFeedback kind={message.kind} message={message.text} onDismiss={() => setMessage(null)} />}
     </form>
   );
 }
