@@ -22,6 +22,7 @@ const mocks = vi.hoisted(() => {
     requestPrincipal: vi.fn(async (): Promise<unknown> => null),
     issueDemoSession: vi.fn(),
     consumeRateLimit: vi.fn(async () => ({ allowed: true, retry_after_seconds: 0 })),
+    allowsInsecureLoopbackTestOrigin: vi.fn(() => false),
     markDemoStepUp: vi.fn(async () => true),
   };
 });
@@ -32,6 +33,7 @@ vi.mock("@/modules/identity/auth-store", () => ({
   markDemoStepUp: mocks.markDemoStepUp,
 }));
 vi.mock("@/modules/identity/request-security", () => ({
+  allowsInsecureLoopbackTestOrigin: mocks.allowsInsecureLoopbackTestOrigin,
   configuredAppOrigin: () => new URL("https://business.finlynq.com"),
   isSpeculativeNavigation: () => false,
   requestFingerprints: (request: { headers: Headers }) => ({
@@ -59,6 +61,7 @@ beforeEach(() => {
   process.env.DEMO_LOGIN_ENABLED = "true";
   mocks.requestPrincipal.mockResolvedValue(null);
   mocks.consumeRateLimit.mockResolvedValue({ allowed: true, retry_after_seconds: 0 });
+  mocks.allowsInsecureLoopbackTestOrigin.mockReturnValue(false);
   mocks.markDemoStepUp.mockResolvedValue(true);
 });
 
@@ -86,9 +89,38 @@ describe("shared demo session routes", () => {
       userAgentHash: "user-agent-hash:",
       requestId: expect.any(String),
     });
+    expect(mocks.consumeRateLimit).toHaveBeenCalledWith(
+      "demo-login-ip-minute",
+      "i".repeat(64),
+      10,
+      60,
+    );
     const cookies = response.headers.get("set-cookie") ?? "";
     expect(cookies).toContain("business_finlynq_session=");
     expect(cookies).not.toContain("business_finlynq_demo_claim=");
+  });
+
+  it("widens only the isolated loopback Playwright login budget", async () => {
+    mocks.allowsInsecureLoopbackTestOrigin.mockReturnValue(true);
+    mocks.issueDemoSession.mockResolvedValue({
+      session_id: "30000000-0000-4000-8000-000000000003",
+      claim_created: false,
+      claim_expires_at: new Date("2026-08-28T08:15:00Z"),
+    });
+    const response = await tryDemo(new NextRequest("https://business.finlynq.com/try-demo?next=/app"));
+    expect(response.status).toBe(303);
+    expect(mocks.consumeRateLimit).toHaveBeenCalledWith(
+      "demo-login-ip-minute",
+      "i".repeat(64),
+      60,
+      60,
+    );
+    expect(mocks.consumeRateLimit).toHaveBeenCalledWith(
+      "demo-login-global-minute",
+      "f".repeat(64),
+      60,
+      60,
+    );
   });
 
   it("sets only the HttpOnly session cookie for a new browser", async () => {

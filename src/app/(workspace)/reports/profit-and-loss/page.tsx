@@ -88,12 +88,12 @@ export default async function ProfitAndLossPage({ searchParams }: { searchParams
                   </tr>
                   {section.lines.map((line) => line.kind === "GROUP" ? (
                     <tr key={line.id} className={styles.hierarchyGroup}>
-                      <th scope="rowgroup" colSpan={segmentColumns.length + 1} style={{ paddingInlineStart: `${24 + line.depth * 20}px` }}>{line.label}</th>
+                      <th scope="rowgroup" colSpan={segmentColumns.length + 1} style={{ paddingInlineStart: `${16 + line.depth * 16}px` }}>{line.label}</th>
                       <td>{currency}</td><td className="amount-cell">{displayAmount(currency, line.amount)}</td>
                     </tr>
                   ) : (
                     <tr key={line.id}>
-                      <th className={styles.leafName} scope="row" style={{ paddingInlineStart: `${24 + line.depth * 20}px` }}>{line.row.accountName}</th>
+                      <th className={styles.leafName} scope="row" style={{ paddingInlineStart: `${16 + line.depth * 16}px` }}>{line.row.accountName}</th>
                       {segmentColumns.map((column) => <td key={column.key}><code>{reportSegmentCode(line.row, column.key)}</code></td>)}
                       <td>{line.row.currency}</td>
                       <td className="amount-cell">{displayAmount(line.row.currency, line.row.amount)}</td>

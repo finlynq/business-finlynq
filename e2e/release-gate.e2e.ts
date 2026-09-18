@@ -526,6 +526,7 @@ test("mutation feedback remains visible below the document header on desktop and
     await page.setViewportSize(viewport);
     await page.goto("/app/settings/accounting");
     await page.getByRole("tab", { name: "Chart of accounts" }).click();
+    await page.getByText("Create an account combination", { exact: true }).click();
     const createButton = page.getByRole("button", { name: "Create combination" });
     const form = createButton.locator("xpath=ancestor::form");
     await createButton.scrollIntoViewIfNeeded();

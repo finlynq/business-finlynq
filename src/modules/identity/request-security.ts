@@ -23,7 +23,7 @@ function forwardedAddresses(value: string | null): string[] | null {
   return addresses;
 }
 
-function allowsInsecureLoopbackTestOrigin(environment: RequestSecurityEnvironment, origin: URL): boolean {
+export function allowsInsecureLoopbackTestOrigin(environment: RequestSecurityEnvironment, origin: URL): boolean {
   return environment.ALLOW_INSECURE_TEST_ORIGIN === "true" &&
     environment.BUSINESS_FINLYNQ_TEST_CONTEXT === "playwright" &&
     origin.protocol === "http:" &&

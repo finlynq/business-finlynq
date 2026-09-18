@@ -263,7 +263,7 @@ export function RealJournalDraftForm({
                 ))}
               </select>
             </label>
-            <label>
+            <label className="memo-field">
               <span>Memo</span>
               <input type="text" maxLength={500} value={line.memo} onChange={(event) => updateLine(line.id, "memo", event.target.value)} placeholder="Optional" />
             </label>

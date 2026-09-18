@@ -185,7 +185,7 @@ export function PeriodTransitionForm({ workspace }: { workspace: PeriodControlWo
           </label>
           <label>
             <span>Audit reason</span>
-            <textarea value={reason} onChange={(event) => { setReason(event.target.value); changeCommand(); }} rows={4} minLength={20} maxLength={500} disabled={busy} placeholder="Explain why this controlled state change is required." />
+            <textarea value={reason} onChange={(event) => { setReason(event.target.value); changeCommand(); }} rows={3} minLength={20} maxLength={500} disabled={busy} placeholder="Explain why this controlled state change is required." />
           </label>
           {needsStepUp && !stepUpReady && (
             workspace.demoOnly ? (

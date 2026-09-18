@@ -1,5 +1,7 @@
 "use client";
 
+import { CompactDisclosure } from "./compact-disclosure.client";
+
 import { SectionTabs } from "./section-tabs.client";
 
 import { useMemo, useRef, useState } from "react";
@@ -350,7 +352,10 @@ export function TaxFilingWorkspace({ workspace }: { workspace: TaxFilingWorkspac
           <form className="close-form" onSubmit={(event) => { void saveMappings(event); }}>
             <label className="full-field"><span>Find a template field</span><input type="search" value={mappingQuery} onChange={(event) => setMappingQuery(event.target.value)} placeholder="Line code or field name" /><small>Filtering only changes the fields shown. Saving keeps mappings for every field.</small></label>
             <div className={styles.mappingList}>
-              {mappingFields.filter((field) => `${field.code} ${field.label} ${field.description}`.toLocaleLowerCase().includes(mappingQuery.trim().toLocaleLowerCase())).map((field) => <fieldset key={field.key} className={styles.mappingField}>
+              {mappingFields.filter((field) => `${field.code} ${field.label} ${field.description}`.toLocaleLowerCase().includes(mappingQuery.trim().toLocaleLowerCase())).map((field) => <CompactDisclosure key={field.key} defaultOpen={field.kind === "ACCOUNT" && field.required && !(accountSelections[field.key]?.length)} summary={<>
+                <span className="code-chip">{field.code}</span> {field.label}{field.kind === "ACCOUNT" && field.required ? " · required" : " · optional"}
+                <span className={styles.mappingSummary}>{(accountSelections[field.key] ?? []).map((id) => ledgerAccounts.find((account) => account.id === id)?.code ?? id).join(", ") || "No ledger mapping"} · {balanceBasisLabels[basisSelections[field.key] ?? field.defaultBalanceBasis ?? "NET_DEBIT"]}</span>
+              </>}><fieldset className={styles.mappingField}>
                 <legend><span className="code-chip">{field.code}</span> {field.label}{field.kind === "ACCOUNT" && field.required ? " *" : " · optional"}</legend>
                 <p>{field.description}</p>
                 <label><span>Ledger accounts</span>
@@ -397,7 +402,7 @@ export function TaxFilingWorkspace({ workspace }: { workspace: TaxFilingWorkspac
                     {Object.entries(balanceBasisLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
                   </select>
                 </label>
-              </fieldset>)}
+              </fieldset></CompactDisclosure>)}
             </div>
             <label><span>Change reason</span>
               <textarea value={mappingReason} minLength={8} maxLength={500} required disabled={!workspace.canManageMappings || mappingBusy} onChange={(event) => setMappingReason(event.target.value)} placeholder="Why does this account mapping apply to this client?" />
@@ -428,7 +433,7 @@ export function TaxFilingWorkspace({ workspace }: { workspace: TaxFilingWorkspac
               <label><span>Currency</span><input value={template.currencyCode} readOnly /></label>
             </div>
 
-            {manualFields.length > 0 && <fieldset className={styles.valueGroup}>
+            {manualFields.length > 0 && <CompactDisclosure summary={`Manual return adjustments · ${manualFields.filter((field) => manualValues[field.key]?.trim()).length} entered`} attention={manualFields.some((field) => Boolean(manualValues[field.key]?.trim()))}><fieldset className={styles.valueGroup}>
               <legend>Manual return adjustments</legend>
               <p>Enter supported values only for fields without ledger mappings. Mapped fields are calculated automatically; unused fields remain zero.</p>
               <div className={styles.valueGrid}>{manualFields.map((field) => {
@@ -442,7 +447,7 @@ export function TaxFilingWorkspace({ workspace }: { workspace: TaxFilingWorkspac
                   {mappedAccountCount > 0 && <small>{mappedAccountCount} mapped ledger account{mappedAccountCount === 1 ? "" : "s"}; manual entry is disabled.</small>}
                 </label>;
               })}</div>
-            </fieldset>}
+            </fieldset></CompactDisclosure>}
 
             {filingType === "HISTORICAL_IMPORT" && <>
               <div className="form-grid form-grid-three">

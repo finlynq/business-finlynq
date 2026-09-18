@@ -5,6 +5,7 @@ import {
 } from "@/modules/reporting/tenant-reporting";
 import styles from "./report-controls.module.css";
 import { RouteTabs } from "./route-tabs";
+import { ReportRangeFields } from "./report-range-fields.client";
 
 const reports = [
   ["trial-balance", "Trial balance", "/app/reports/trial-balance"],
@@ -61,35 +62,7 @@ export function ReportFilters({
           ))}
         </select>
       </label>
-      <label>
-        <span>Range basis</span>
-        <select name="basis" defaultValue={selection.basis}>
-          <option value="period">Fiscal periods</option>
-          <option value="date">Exact dates</option>
-        </select>
-      </label>
-      <label>
-        <span>From period</span>
-        <select name="fromPeriod" defaultValue={selection.fromPeriodId ?? ""}>
-          <option value="">No period</option>
-          {entity.periods.map((period) => <option key={period.id} value={period.id}>{period.label}</option>)}
-        </select>
-      </label>
-      <label>
-        <span>To period</span>
-        <select name="toPeriod" defaultValue={selection.toPeriodId ?? ""}>
-          <option value="">No period</option>
-          {entity.periods.map((period) => <option key={period.id} value={period.id}>{period.label}</option>)}
-        </select>
-      </label>
-      <label>
-        <span>From date</span>
-        <input name="from" type="date" defaultValue={selection.fromDate} />
-      </label>
-      <label>
-        <span>To date</span>
-        <input name="to" type="date" defaultValue={selection.toDate} />
-      </label>
+      <ReportRangeFields key={`${selection.entityId}:${selection.basis}:${selection.fromDate}:${selection.toDate}`} periods={entity.periods} selection={selection} />
       {showAccount && (
         <label className={styles.account}>
           <span>GL account</span>
@@ -137,9 +110,9 @@ export function ReportFilters({
         <button className="primary-button" type="submit">Run report</button>
         {csvHref && <a className="secondary-button" href={csvHref}>Download CSV</a>}
       </div>
-      <p className={styles.hint}>
+      <details className={styles.hint}><summary>How report ranges and dimensions work</summary><p>
         Fiscal-period mode uses the selected periods’ boundaries. Exact-date mode uses the date fields. Dimension filters accept a configured code or 0000 for an unused dimension. Reports are generated from posted journal lines in this entity’s functional currency.
-      </p>
+      </p></details>
     </form>
   );
 }
