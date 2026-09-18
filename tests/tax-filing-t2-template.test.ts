@@ -7,20 +7,35 @@ import {
   canadaT2CorporationTemplate,
 } from "@/modules/tax/templates/canada-t2-corporation";
 import manifest from "@/modules/tax/templates/canada-t2-corporation.json";
+import mappingManifest from "@/modules/tax/templates/canada-t2-corporation-v2.json";
 import { renderTaxFilingTemplateSeedSql } from "../scripts/operations/tax-filing-template-seed-contract";
 
 describe("Canada T2 corporation income-tax template", () => {
   it("publishes the reviewed 2025-and-later CRA T2 manifest without migration drift", () => {
-    const migration = readFileSync("migrations/drizzle/0059_publish_canada_t2_template.sql", "utf8");
-    const generated = renderTaxFilingTemplateSeedSql(manifest);
+    const originalMigration = readFileSync("migrations/drizzle/0059_publish_canada_t2_template.sql", "utf8");
+    const mappingMigration = readFileSync("migrations/drizzle/0061_publish_canada_t2_mapping_v2.sql", "utf8");
+    const original = renderTaxFilingTemplateSeedSql(manifest);
+    const mappingVersion = renderTaxFilingTemplateSeedSql(mappingManifest);
 
     expect(CANADA_T2_CORPORATION_TEMPLATE_KEY).toBe("ca.t2.corporation-income-tax");
     expect(CANADA_T2_CORPORATION_SOURCE).toBe(
       "https://www.canada.ca/content/dam/cra-arc/formspubs/pbg/t2/t2-26e.pdf",
     );
     expect(manifest.effectiveFrom).toBe("2025-01-01");
-    expect(migration).toBe(generated.sql);
-    expect(migration).toContain(`'${generated.digest}'`);
+    expect(mappingManifest.version).toBe(2);
+    expect(originalMigration).toBe(original.sql);
+    expect(originalMigration).toContain(`'${original.digest}'`);
+    expect(mappingMigration).toBe(mappingVersion.sql);
+    expect(mappingMigration).toContain(`'${mappingVersion.digest}'`);
+  });
+
+  it("allows every non-formula input field to use an optional account mapping", () => {
+    expect(canadaT2CorporationTemplate.fields
+      .filter((field) => field.kind === "MANUAL")
+      .every((field) => field.allowAccountMapping)).toBe(true);
+    expect(canadaT2CorporationTemplate.fields
+      .filter((field) => field.kind === "CALCULATED")
+      .every((field) => !field.allowAccountMapping)).toBe(true);
   });
 
   it("reconciles Schedule 1 income, taxable income, and the final refund", () => {

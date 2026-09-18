@@ -21,5 +21,6 @@
 .valueGrid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:11px; }
 .valueGrid label>span { min-height:30px; display:flex!important; align-items:center; gap:7px; font-size:11px; line-height:1.25; }
 .valueGrid input { font-family:ui-monospace,monospace; }
+.valueGrid small { display:block; margin-top:5px; color:var(--muted); font-size:11px; font-weight:500; line-height:1.35; }
 .fileField input { padding:8px; }
 @media (max-width:900px) { .scopeBar{grid-template-columns:1fr}.scopeStatus{border-left:0;border-top:3px solid #8ca6a1;padding:9px 0 0}.mappingField,.valueGrid{grid-template-columns:1fr} }

@@ -1,4 +1,4 @@
-import manifest from "./canada-t2-corporation.json";
+import manifest from "./canada-t2-corporation-v2.json";
 import { taxFilingTemplateDefinitionSchema } from "../filing-template";
 
 export const CANADA_T2_CORPORATION_TEMPLATE_ID = manifest.id;

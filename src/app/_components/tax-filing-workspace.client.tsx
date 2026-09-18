@@ -36,7 +36,7 @@ function mappingSelections(
   );
   const accounts: Record<string, string[]> = {};
   const bases: Record<string, TaxMappingBalanceBasis> = {};
-  for (const field of template?.definition.fields.filter((candidate) => candidate.kind === "ACCOUNT") ?? []) {
+  for (const field of template?.definition.fields.filter((candidate) => candidate.allowAccountMapping) ?? []) {
     const fieldMappings = mappings.filter((mapping) => mapping.fieldKey === field.key);
     accounts[field.key] = fieldMappings.map((mapping) => mapping.glAccountId);
     bases[field.key] = fieldMappings[0]?.balanceBasis ?? field.defaultBalanceBasis ?? "NET_DEBIT";
@@ -152,9 +152,13 @@ export function TaxFilingWorkspace({ workspace }: { workspace: TaxFilingWorkspac
 
   const template = currentTemplate(workspace, templateId);
   const ledger = currentLedger(workspace, ledgerId);
-  const accountFields = useMemo(
-    () => template?.definition.fields.filter((field) => field.kind === "ACCOUNT") ?? [],
+  const mappingFields = useMemo(
+    () => template?.definition.fields.filter((field) => field.allowAccountMapping) ?? [],
     [template],
+  );
+  const requiredMappingFields = useMemo(
+    () => mappingFields.filter((field) => field.kind === "ACCOUNT" && field.required),
+    [mappingFields],
   );
   const manualFields = useMemo(
     () => template?.definition.fields.filter((field) => field.kind === "MANUAL") ?? [],
@@ -193,7 +197,7 @@ export function TaxFilingWorkspace({ workspace }: { workspace: TaxFilingWorkspac
   const saveMappings = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (!template || !ledger || mappingBusy) return;
-    const mappings = accountFields.flatMap((field) => (accountSelections[field.key] ?? []).map((glAccountId) => ({
+    const mappings = mappingFields.flatMap((field) => (accountSelections[field.key] ?? []).map((glAccountId) => ({
       fieldKey: field.key,
       glAccountId,
       balanceBasis: basisSelections[field.key] ?? field.defaultBalanceBasis ?? "NET_DEBIT",
@@ -300,7 +304,7 @@ export function TaxFilingWorkspace({ workspace }: { workspace: TaxFilingWorkspac
     return <p className="validation-message validation-error">Configure an active ledger and install a tax template before using filing reconciliation.</p>;
   }
 
-  const mappingReady = accountFields.filter((field) => field.required)
+  const mappingReady = requiredMappingFields
     .every((field) => (accountSelections[field.key] ?? []).length > 0);
   const visibleFeedback = filingFeedback ?? mappingFeedback;
 
@@ -334,13 +338,13 @@ export function TaxFilingWorkspace({ workspace }: { workspace: TaxFilingWorkspac
             <div>
               <p className="eyebrow">Client-specific setup</p>
               <h2 id="tax-mapping-title">Map template fields</h2>
-              <p>Choose one or more accounts per field. Saving creates a new immutable mapping version.</p>
+              <p>Choose one or more accounts for any input field. Optional fields remain manually editable when they are not mapped.</p>
             </div>
           </div>
           <form className="close-form" onSubmit={(event) => { void saveMappings(event); }}>
             <div className={styles.mappingList}>
-              {accountFields.map((field) => <fieldset key={field.key} className={styles.mappingField}>
-                <legend><span className="code-chip">{field.code}</span> {field.label}{field.required ? " *" : ""}</legend>
+              {mappingFields.map((field) => <fieldset key={field.key} className={styles.mappingField}>
+                <legend><span className="code-chip">{field.code}</span> {field.label}{field.kind === "ACCOUNT" && field.required ? " *" : " · optional"}</legend>
                 <p>{field.description}</p>
                 <label><span>Ledger accounts</span>
                   <select
@@ -357,6 +361,14 @@ export function TaxFilingWorkspace({ workspace }: { workspace: TaxFilingWorkspac
                         ...current,
                         [field.key]: selectedAccountIds,
                       }));
+                      if (selectedAccountIds.length > 0 && field.kind === "MANUAL") {
+                        setManualValues((current) => {
+                          if (!Object.hasOwn(current, field.key)) return current;
+                          const next = { ...current };
+                          delete next[field.key];
+                          return next;
+                        });
+                      }
                     }}
                   >
                     {ledgerAccounts.map((account) => <option key={account.id} value={account.id}>{account.code} · {account.displayName} · {account.accountClass}</option>)}
@@ -411,14 +423,18 @@ export function TaxFilingWorkspace({ workspace }: { workspace: TaxFilingWorkspac
 
             {manualFields.length > 0 && <fieldset className={styles.valueGroup}>
               <legend>Manual return adjustments</legend>
-              <p>Enter supported adjustments not derived from mapped ledger accounts. Leave unused lines at zero.</p>
-              <div className={styles.valueGrid}>{manualFields.map((field) => <label key={field.key}>
-                <span><span className="code-chip">{field.code}</span> {field.label}</span>
-                <input inputMode="decimal" value={manualValues[field.key] ?? ""} placeholder="0.00" disabled={filingBusy} onChange={(event) => {
-                  const value = event.currentTarget.value;
-                  setManualValues((current) => ({ ...current, [field.key]: value }));
-                }} />
-              </label>)}</div>
+              <p>Enter supported values only for fields without ledger mappings. Mapped fields are calculated automatically; unused fields remain zero.</p>
+              <div className={styles.valueGrid}>{manualFields.map((field) => {
+                const mappedAccountCount = accountSelections[field.key]?.length ?? 0;
+                return <label key={field.key}>
+                  <span><span className="code-chip">{field.code}</span> {field.label}</span>
+                  <input inputMode="decimal" value={manualValues[field.key] ?? ""} placeholder={mappedAccountCount > 0 ? "Mapped from ledger" : "0.00"} disabled={filingBusy || mappedAccountCount > 0} onChange={(event) => {
+                    const value = event.currentTarget.value;
+                    setManualValues((current) => ({ ...current, [field.key]: value }));
+                  }} />
+                  {mappedAccountCount > 0 && <small>{mappedAccountCount} mapped ledger account{mappedAccountCount === 1 ? "" : "s"}; manual entry is disabled.</small>}
+                </label>;
+              })}</div>
             </fieldset>}
 
             {filingType === "HISTORICAL_IMPORT" && <>

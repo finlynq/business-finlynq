@@ -421,6 +421,20 @@
       "when": 1789740280028,
       "tag": "0059_publish_canada_t2_template",
       "breakpoints": true
+    },
+    {
+      "idx": 60,
+      "version": "7",
+      "when": 1789747492341,
+      "tag": "0060_publish_canada_gst_hst_mapping_v2",
+      "breakpoints": true
+    },
+    {
+      "idx": 61,
+      "version": "7",
+      "when": 1789747494520,
+      "tag": "0061_publish_canada_t2_mapping_v2",
+      "breakpoints": true
     }
   ]
 }

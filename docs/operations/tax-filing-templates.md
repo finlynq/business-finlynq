@@ -72,6 +72,19 @@ templates.
 6. Run `npm run check:predeploy`, review the migration and official sources, then
    deploy through the normal `dev` → `stage` → `main` promotion path.
 
+## Optional account mappings
+
+`ACCOUNT` fields must set `allowAccountMapping` to `true` and obtain their value
+from the reviewed client mapping version. `MANUAL` fields may also set
+`allowAccountMapping` to `true`; when a mapping exists, posted ledger activity
+supplies the value and manual entry is disabled. When no mapping exists, the
+same field remains available for manual entry. `CALCULATED` fields cannot be
+mapped because their versioned formula is authoritative.
+
+Each mappable field may define `defaultBalanceBasis`, while the saved mapping
+version retains the operator's selected basis and accounts. API and MCP callers
+must not send a manual value for a field present in the selected mapping set.
+
 ## MCP boundary
 
 Tenant MCP connections can inspect published templates and mapping context with
