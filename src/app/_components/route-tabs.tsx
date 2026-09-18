@@ -1,4 +1,7 @@
+"use client";
+
 import Link from "next/link";
+import { useEffect, useRef } from "react";
 import styles from "./workspace-navigation.module.css";
 
 export type RouteTab = Readonly<{ key: string; label: string; href: string }>;
@@ -8,7 +11,17 @@ export function RouteTabs({ label, active, tabs }: {
   active: string;
   tabs: readonly RouteTab[];
 }) {
-  return <nav className={styles.tabs} aria-label={label}>
+  const ref = useRef<HTMLElement>(null);
+  useEffect(() => {
+    const rail = ref.current;
+    const selected = rail?.querySelector<HTMLElement>('[aria-current="page"]');
+    if (!rail || !selected) return;
+    const item = selected.getBoundingClientRect();
+    const bounds = rail.getBoundingClientRect();
+    if (item.left < bounds.left) rail.scrollLeft -= bounds.left - item.left;
+    else if (item.right > bounds.right) rail.scrollLeft += item.right - bounds.right;
+  }, [active]);
+  return <nav ref={ref} className={styles.tabs} aria-label={label}>
     {tabs.map((tab) => <Link key={tab.key} href={tab.href} aria-current={tab.key === active ? "page" : undefined}>{tab.label}</Link>)}
   </nav>;
 }

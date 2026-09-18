@@ -1,4 +1,6 @@
 import { redirect } from "next/navigation";
+import { CompactDisclosure } from "../../_components/compact-disclosure.client";
+import { ExpandableTableRow } from "../../_components/expandable-table-row.client";
 import { currentPrincipal } from "@/modules/identity/session";
 import { loadTenantPartyDirectory } from "@/modules/ledger/tenant-workspace";
 import { loadPartyAccountCreationOptions } from "@/modules/parties/party-workspace";
@@ -41,7 +43,7 @@ export default async function PartiesPage({ searchParams }: { searchParams: Prom
       <PageHeader eyebrow="Customers & suppliers" title="Organization address book" description="Keep one record for each person or business, then connect its customer and supplier accounts to the legal entities you trade through." />
       {directory.demoOnly && <DemoNotice>These are encrypted synthetic records in the shared writable demo. Everyone sees changes until they reset nightly.</DemoNotice>}
       {directory.readiness === "READY" && directory.canManage && (
-        <PartyCreateForm />
+        <CompactDisclosure summary="New party" defaultOpen={directory.parties.length === 0 && !query}><PartyCreateForm /></CompactDisclosure>
       )}
       {directory.readiness === "ENCRYPTION_SETUP_REQUIRED" ? (
         <EmptyState title="Encryption setup is required">Provision the organization data-encryption key before saving or reading party master data.</EmptyState>
@@ -77,7 +79,7 @@ export default async function PartiesPage({ searchParams }: { searchParams: Prom
                 </thead>
                 <tbody>
                   {directory.parties.map((party) => (
-                    <tr key={party.id}>
+                    <ExpandableTableRow key={party.id} columns={4} label={`details for ${party.partyNumber}`} cells={<>
                       <td className={styles.partyCell}>
                         <div className={styles.partyIdentity}>
                           <span className="party-avatar" aria-hidden="true">{party.displayName.slice(0, 2).toUpperCase()}</span>
@@ -87,9 +89,11 @@ export default async function PartiesPage({ searchParams }: { searchParams: Prom
                           </div>
                         </div>
                       </td>
-                      <td>
-                        {party.accounts.length ? (
-                          <ul className={styles.accountList}>
+                      <td>{party.accounts.length ? party.accounts.map((account) => <div key={account.id}><strong>{account.entityCode} · {account.role === "CUSTOMER" ? "Customer" : "Supplier"}</strong><small>{account.accountNumber}{!account.active && " · Inactive"}</small></div>) : "No accounting roles"}</td>
+                      <td>{party.addresses.length} address{party.addresses.length === 1 ? "" : "es"}</td>
+                    </>}>
+                      <div className="party-expanded">
+                        <section><h3>Accounting roles by entity</h3>{party.accounts.length ? <ul className={styles.accountList}>
                             {party.accounts.map((account) => (
                               <li key={account.id}>
                                 <span>
@@ -102,12 +106,8 @@ export default async function PartiesPage({ searchParams }: { searchParams: Prom
                                 </span>
                               </li>
                             ))}
-                          </ul>
-                        ) : <span className={styles.emptyValue}>No legal-entity roles</span>}
-                      </td>
-                      <td>
-                        {party.addresses.length ? (
-                          <ul className={styles.addressList}>
+                          </ul> : <p>No legal-entity roles</p>}</section>
+                        <section><h3>Addresses and validity</h3>{party.addresses.length ? <ul className={styles.addressList}>
                             {party.addresses.map((address) => (
                               <li key={address.id}>
                                 <strong>{address.kind.replaceAll("_", " ")}</strong>
@@ -115,34 +115,13 @@ export default async function PartiesPage({ searchParams }: { searchParams: Prom
                                 <span className={styles.addressMeta}>Valid from {address.validFrom}{address.validTo ? ` through ${address.validTo}` : ""}</span>
                               </li>
                             ))}
-                          </ul>
-                        ) : <span className={styles.emptyValue}>No address recorded</span>}
-                      </td>
-                      <td>
-                        {directory.canManage ? (
-                          <>
-                            <details className={styles.attachDetails}>
-                              <summary>Add customer / supplier accounting role</summary>
-                              <PartyAccountAttachForm
-                                partyId={party.id}
-                                partyName={party.displayName}
-                                accountOptions={accountOptions}
-                              />
-                            </details>
-                            {directory.canCorrect && (
-                              <details className={styles.attachDetails}>
-                                <summary>Correct name or status</summary>
-                                <PartyCorrectionForm
-                                  partyId={party.id}
-                                  displayName={party.displayName}
-                                  active={party.active}
-                                />
-                              </details>
-                            )}
-                          </>
-                        ) : <span className={styles.emptyValue}>Read only</span>}
-                      </td>
-                    </tr>
+                          </ul> : <p>No address recorded</p>}</section>
+                        {directory.canManage ? <div className="party-management">
+                          <CompactDisclosure summary="Add customer / supplier accounting role"><PartyAccountAttachForm partyId={party.id} partyName={party.displayName} accountOptions={accountOptions} /></CompactDisclosure>
+                          {directory.canCorrect && <CompactDisclosure summary="Correct name or status"><PartyCorrectionForm partyId={party.id} displayName={party.displayName} active={party.active} /></CompactDisclosure>}
+                        </div> : <p>Read only</p>}
+                      </div>
+                    </ExpandableTableRow>
                   ))}
                 </tbody>
                 </table>

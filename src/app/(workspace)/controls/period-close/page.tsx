@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { CompactDisclosure } from "../../../_components/compact-disclosure.client";
 import { demoClosePackages } from "@/modules/demo/dashboard-data";
 import { loadPeriodControlWorkspace } from "@/modules/ledger/tenant-workspace";
 import { requireWorkspacePrincipal } from "@/modules/workspace/access";
@@ -26,7 +27,7 @@ export default async function PeriodClosePage() {
           <span aria-hidden="true">i</span>
           <p>OPEN moves to ADJUSTMENT ONLY before HARD CLOSED. SEALED is irreversible, and unposted journals block hard close and seal.</p>
         </aside>
-        <PeriodCreationForm workspace={workspace} defaultFiscalYear={new Date().getUTCFullYear()} />
+        <CompactDisclosure summary="Add fiscal periods" defaultOpen={workspace.periods.length === 0}><PeriodCreationForm workspace={workspace} defaultFiscalYear={new Date().getUTCFullYear()} /></CompactDisclosure>
         <PeriodTransitionForm
           key={workspace.periods.map((period) => `${period.id}:${period.version}`).join("|")}
           workspace={workspace}

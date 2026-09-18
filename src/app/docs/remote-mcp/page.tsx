@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { CompactDisclosure } from "../../_components/compact-disclosure.client";
 import { PageHeader } from "@/app/_components/ui";
 import { MCP_OAUTH_SCOPES } from "@/modules/mcp/protocol";
 import { BrandLockup } from "@/app/_components/brand-lockup";
@@ -18,9 +19,11 @@ export default function RemoteMcpDocumentationPage() {
         description="Connect a standards-compatible AI client to FinLynQ using HTTPS, OAuth 2.1 authorization code flow, PKCE S256, dynamic client registration, and resource-bound bearer tokens."
         actions={<Link className="secondary-button" href="/app/settings/mcp">Manage connections</Link>}
       />
-      <nav className="documentation-topics" aria-label="Guide topics">
+      <div className="documentation-layout">
+      <CompactDisclosure summary="Guide contents" desktopOpen className="documentation-contents"><nav className="documentation-topics" aria-label="Guide topics">
         <a href="#connection">Connect a client</a><a href="#scopes">Access scopes</a><a href="#filings">Tax workpapers</a><a href="#settlements">Settlements</a><a href="#cloud-inbox">Cloud inbox</a><a href="#attachments">Attachments</a><a href="#confirmations">Confirmations</a>
-      </nav>
+      </nav></CompactDisclosure>
+      <div className="documentation-content">
       <section className="panel form-panel" id="connection">
         <div className="panel-heading"><div><p className="eyebrow">Server</p><h2>Connection details</h2></div></div>
         <div className="close-form">
@@ -30,7 +33,7 @@ export default function RemoteMcpDocumentationPage() {
       </section>
       <section className="panel" id="scopes">
         <div className="panel-heading"><div><p className="eyebrow">Least privilege</p><h2>Scopes and tool groups</h2></div></div>
-        <div className="table-scroll"><table><thead><tr><th>Scope</th><th>Purpose</th></tr></thead><tbody>
+        <div className="table-scroll" tabIndex={0} aria-label="MCP scopes; scroll horizontally if needed"><table><thead><tr><th>Scope</th><th>Purpose</th></tr></thead><tbody>
           <tr><td><code>{MCP_OAUTH_SCOPES.dailyRead}</code></td><td>Journals, documents, banking observations, reconciliation state, tax review and filing workpapers, and reports.</td></tr>
           <tr><td><code>{MCP_OAUTH_SCOPES.dailyWrite}</code></td><td>Daily entries, invoices, bills, settlements, reconciliation, tax workpapers, and permitted posting workflows.</td></tr>
           <tr><td><code>{MCP_OAUTH_SCOPES.setupRead}</code></td><td>Accounting configuration, parties, chart context, periods, and hierarchies.</td></tr>
@@ -87,6 +90,7 @@ export default function RemoteMcpDocumentationPage() {
           <li>Agents cannot receive credentials, administer users, change recovery controls, or initiate bank transfers.</li>
         </ul>
       </section>
+      </div></div>
     </main>
     </div>
   );

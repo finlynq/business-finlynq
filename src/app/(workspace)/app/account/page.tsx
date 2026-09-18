@@ -144,9 +144,7 @@ export default async function AccountPage() {
       )}
 
       <section className="panel" aria-labelledby="account-links-title">
-        <div className="panel-heading">
-          <div><p className="eyebrow">Safe destinations</p><h2 id="account-links-title">Related settings and policies</h2></div>
-        </div>
+        <h2 id="account-links-title" className="sr-only">Related settings and policies</h2>
         <div className="panel-actions account-safe-links">
           <Link className="secondary-button" href="/app/settings/mcp">AI & MCP connections</Link>
           <Link className="secondary-button" href="/app/settings">Organization settings</Link>

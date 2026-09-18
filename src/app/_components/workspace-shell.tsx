@@ -103,18 +103,9 @@ export function WorkspaceShell({
         </div>
       </aside>
 
-      <div className="mobile-bar">
-        <MobileNavigation
-          organizationName={organization.name}
-          workspaceItems={workspaceItems}
-          connectionItems={connectionItems}
-        />
-        <Link href="/app" className="mobile-brand"><span className="brand-mark" aria-hidden="true">F</span><strong>Business Finlynq</strong></Link>
-        <div className="mobile-utilities"><AccountMenu principal={accountPrincipal} /></div>
-      </div>
-
       <div className="main-shell">
         <div className="utility-bar">
+          <div className="utility-mobile-menu"><MobileNavigation organizationName={organization.name} workspaceItems={workspaceItems} connectionItems={connectionItems} /></div>
           <EntityContextSwitcher context={entityContext} />
           <div className="utility-actions">
             <div className="workspace-session-note">
@@ -125,6 +116,7 @@ export function WorkspaceShell({
                 : readOnly ? "Writes disabled" : "Role-based posting"}</span>
             </div>
             <GlobalSearch entries={searchIndex} includesDemoRecords={principal.sessionMode === "demo"} />
+            <div className="utility-mobile-account"><AccountMenu principal={accountPrincipal} /></div>
           </div>
         </div>
         <main id="main-content">{children}</main>

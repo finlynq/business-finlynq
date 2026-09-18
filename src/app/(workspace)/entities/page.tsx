@@ -1,6 +1,7 @@
+import { EntityRegister } from "../../_components/entity-register";
 import { loadEntitySummaries } from "@/modules/reporting/tenant-reporting";
 import { requireWorkspacePrincipal } from "@/modules/workspace/access";
-import { DemoNotice, EmptyState, PageHeader, StatusPill } from "../../_components/ui";
+import { DemoNotice, EmptyState, PageHeader } from "../../_components/ui";
 import { SettingsNavigation } from "@/app/_components/route-tabs";
 
 export default async function EntitiesPage({ searchParams }: { searchParams: Promise<{ q?: string }> }) {
@@ -29,18 +30,7 @@ export default async function EntitiesPage({ searchParams }: { searchParams: Pro
         <button className="secondary-button" type="submit">Search</button>
         {query && <Link className="text-link" href="/app/entities">Clear search</Link>}
       </form>
-      {entities.length ? <div className="entity-grid">{entities.map((entity) => (
-        <article className="entity-card" key={entity.id}>
-          <div className="entity-card-heading"><span className="code-chip">{entity.code}</span><StatusPill status={entity.periodState ?? "NO PERIOD"} /></div>
-          <h2>{entity.displayName}</h2><p>{entity.regionCode}, {entity.countryCode}</p>
-          <dl className="stacked-details">
-            <div><dt>Accounting profile</dt><dd>{entity.accountingProfile.replaceAll("_", " ")}</dd></div>
-            <div><dt>Primary ledger</dt><dd>{entity.ledgerCode}</dd></div>
-            <div><dt>Functional currency</dt><dd>{entity.functionalCurrency}</dd></div>
-            <div><dt>Current period</dt><dd>{entity.periodLabel ?? "Not configured"}</dd></div>
-          </dl>
-        </article>
-      ))}</div> : <EmptyState title="No entity found">Try another code or entity name from global search.</EmptyState>}
+      {entities.length ? <EntityRegister entities={entities} /> : <EmptyState title="No entity found">Try another code or entity name from global search.</EmptyState>}
     </div>
   );
 }

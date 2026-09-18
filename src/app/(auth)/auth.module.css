@@ -8,3 +8,23 @@
 .brandStatement{margin:0;color:#fff;font-family:Georgia,serif;font-size:clamp(39px,4vw,58px);font-weight:500;letter-spacing:-.04em;line-height:1.08}.divider{color:#657487}.securityNote{color:#5f6e7e}
 @media(max-width:850px){.authPage{grid-template-columns:1fr}.brandPanel{display:none}.formPanel{padding-top:30px}.mobileBrand{display:block;width:min(470px,100%);margin:0 auto 60px}.backLink{margin-bottom:35px}}
 @media(max-width:540px){.formPanel{display:block;padding:22px 18px 45px}.mobileBrand{margin-bottom:45px}.formCard h1{font-size:38px}.formGrid{grid-template-columns:1fr}.formRow{align-items:flex-start;flex-direction:column;gap:2px}.submitButton,.demoButton{min-height:52px}}
+
+/* Compact authentication retains a readable single task and full-size codes. */
+.authPage { grid-template-columns:minmax(300px,.78fr) minmax(480px,1.22fr); }
+.formPanel { align-content:start; padding:32px 24px; }
+.formCard { width:min(480px,100%); }
+.backLink { margin-bottom:20px; }
+.formCard h1 { font-size:34px; }
+.description { margin-top:10px; line-height:1.55; }
+.formCard>div { margin-top:20px; }
+.form { gap:13px; }
+.formGrid { gap:12px; }
+.form label { gap:4px; }
+.form input:not([type=checkbox]),.form select { min-height:44px; }
+.submitButton,.demoButton { min-height:46px; }
+.divider { margin:14px 0; }
+.policyLinks { gap:8px 18px; margin-top:20px; }
+.afterFormLink { margin-top:14px; }
+.securityNote { font-size:12px; line-height:1.5; }
+.formSection { margin:4px 0 0; font-size:16px; }
+@media(max-width:980px) { .authPage { grid-template-columns:minmax(0,1fr); } .brandPanel { display:none; } .formPanel { padding:20px 18px 32px; } .mobileBrand { display:block; width:min(480px,100%); margin:0 auto 16px; } .formCard h1 { font-size:30px; } .form input:not([type=checkbox]),.form select { font-size:16px; } }

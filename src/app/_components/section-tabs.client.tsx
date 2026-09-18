@@ -1,6 +1,6 @@
 "use client";
 
-import { Children, useId, useRef, useSyncExternalStore, type ReactNode } from "react";
+import { Children, useEffect, useId, useRef, useSyncExternalStore, type ReactNode } from "react";
 import styles from "./workspace-navigation.module.css";
 
 type Section = Readonly<{ id: string; label: string }>;
@@ -27,6 +27,15 @@ export function SectionTabs({ label, sections, children, defaultSection }: {
   const requestedIndex = sections.findIndex((section) => section.id === hash);
   const selectedIndex = requestedIndex >= 0 ? requestedIndex : Math.max(0, sections.findIndex((section) => section.id === defaultSection));
   const panels = Children.toArray(children);
+  useEffect(() => {
+    const button = buttons.current[selectedIndex];
+    const rail = button?.parentElement;
+    if (!button || !rail) return;
+    const item = button.getBoundingClientRect();
+    const bounds = rail.getBoundingClientRect();
+    if (item.left < bounds.left) rail.scrollLeft -= bounds.left - item.left;
+    else if (item.right > bounds.right) rail.scrollLeft += item.right - bounds.right;
+  }, [selectedIndex]);
 
   function activate(index: number, focus = false) {
     const section = sections[index];

@@ -1,8 +1,10 @@
 "use client";
 
+import { CompactDisclosure } from "./compact-disclosure.client";
+
 import Link from "next/link";
 import { resolveSettlementFunding, SETTLEMENT_METHOD_LABELS, type SettlementMethod } from "@/modules/subledger/settlement-funding";
-import { useMemo, useState, useTransition, type FormEvent } from "react";
+import { useMemo, useRef, useState, useTransition, type FormEvent } from "react";
 import { useRouter } from "next/navigation";
 import type {
   SubledgerAccountOptionDto,
@@ -709,6 +711,12 @@ export function ArApWorkspace({
 }>) {
   const router = useRouter();
   const [pending, startTransition] = useTransition();
+  const panelOpener = useRef<HTMLElement | null>(null);
+  function rememberOpener() { if (window.document.activeElement instanceof HTMLElement) panelOpener.current = window.document.activeElement; }
+  function closePanel() {
+    setComposer(null); setDetailDocument(null); setVoidDraft(null);
+    requestAnimationFrame(() => { if (panelOpener.current?.isConnected) panelOpener.current.focus(); });
+  }
   const [busy, setBusy] = useState(false);
   const [composer, setComposer] = useState<"DOCUMENT" | "SETTLEMENT" | null>(null);
   const [documentDraft, setDocumentDraft] = useState<BusinessDraft>(() => defaultDocumentDraft(workspace));
@@ -793,6 +801,7 @@ export function ArApWorkspace({
   }
 
   function openDocument(document?: SubledgerWorkspaceDocumentDto): void {
+    rememberOpener();
     setDocumentDraft(defaultDocumentDraft(workspace, document));
     setComposer("DOCUMENT");
     setVoidDraft(null);
@@ -803,6 +812,7 @@ export function ArApWorkspace({
   }
 
   function openSettlement(partyAccountId?: string, currency?: string): void {
+    rememberOpener();
     setSettlementDraft(defaultSettlementDraft(workspace, partyAccountId, currency));
     setComposer("SETTLEMENT");
     setVoidDraft(null);
@@ -813,6 +823,7 @@ export function ArApWorkspace({
   }
 
   function viewDocument(document: SubledgerWorkspaceDocumentDto): void {
+    rememberOpener();
     setDetailDocument(document);
     setComposer(null);
     setVoidDraft(null);
@@ -1241,19 +1252,19 @@ export function ArApWorkspace({
         <DocumentDetails
           workspace={workspace}
           document={detailDocument}
-          onClose={() => setDetailDocument(null)}
+          onClose={closePanel}
           onEdit={() => openDocument(detailDocument)}
         />
       )}
 
       {composer === "DOCUMENT" && documentEntity && (
-        <section className="panel form-panel" id="subledger-composer" aria-labelledby="document-composer-title">
+        <section className="panel form-panel" id="subledger-composer" tabIndex={-1} aria-labelledby="document-composer-title">
           <div className="panel-heading">
             <div>
               <p className="eyebrow">{documentDraft.editingVersion ? `Draft version ${documentDraft.editingVersion}` : "New source document"}</p>
               <h2 id="document-composer-title">{documentDraft.editingVersion ? "Edit" : "Create"} {businessLabel}</h2>
             </div>
-            <button className="secondary-button compact-button" type="button" onClick={() => setComposer(null)}>Cancel</button>
+            <button className="secondary-button compact-button" type="button" onClick={closePanel}>Cancel</button>
           </div>
           <form className="journal-form subledger-form" onSubmit={(event) => { void saveDocument(event); }}>
             <div className="form-grid form-grid-three">
@@ -1451,17 +1462,17 @@ export function ArApWorkspace({
             </p>
             <div className="form-actions">
               <button className="primary-button" type="submit" disabled={busy || pending}>Save draft</button>
-              <button className="secondary-button" type="button" onClick={() => setComposer(null)}>Cancel</button>
+              <button className="secondary-button" type="button" onClick={closePanel}>Cancel</button>
             </div>
           </form>
         </section>
       )}
 
       {composer === "SETTLEMENT" && settlementEntity && (
-        <section className="panel form-panel" id="subledger-composer" aria-labelledby="settlement-composer-title">
+        <section className="panel form-panel" id="subledger-composer" tabIndex={-1} aria-labelledby="settlement-composer-title">
           <div className="panel-heading">
             <div><p className="eyebrow">Settlement funding</p><h2 id="settlement-composer-title">Record {settlementLabel}</h2></div>
-            <button className="secondary-button compact-button" type="button" onClick={() => setComposer(null)}>Cancel</button>
+            <button className="secondary-button compact-button" type="button" onClick={closePanel}>Cancel</button>
           </div>
           <form className="journal-form subledger-form" onSubmit={(event) => { void saveSettlement(event); }}>
             {workspace.ownerModule === "payables" && <label className="full-field">
@@ -1599,7 +1610,7 @@ export function ArApWorkspace({
             <p className="form-footnote">The {settlementLabel} is fully allocated in one transaction. Any realized FX difference is posted automatically from the immutable invoice carrying rate.</p>
             <div className="form-actions">
               <button className="primary-button" type="submit" disabled={busy || pending || !settlementItems.length || !isPositiveExactAmount(settlementTotal)}>Record and post {settlementLabel}</button>
-              <button className="secondary-button" type="button" onClick={() => setComposer(null)}>Cancel</button>
+              <button className="secondary-button" type="button" onClick={closePanel}>Cancel</button>
             </div>
           </form>
         </section>
@@ -1608,7 +1619,7 @@ export function ArApWorkspace({
       {voidDraft && (() => {
         const entity = currentEntity(workspace, voidDraft.document.snapshot.legalEntityId);
         return entity ? (
-          <section className="panel form-panel void-panel" id="subledger-composer" aria-labelledby="void-title">
+          <section className="panel form-panel void-panel" id="subledger-composer" tabIndex={-1} aria-labelledby="void-title">
             <div className="panel-heading"><div><p className="eyebrow">Append-only correction</p><h2 id="void-title">Void {voidDraft.document.sourceNumber}</h2></div><StatusPill status={voidDraft.document.status} /></div>
             <form className="journal-form" onSubmit={(event) => { void submitVoid(event); }}>
               <p className="currency-warning"><span aria-hidden="true">!</span><span>Voiding never deletes history. The system appends a VOIDED version, a reversing journal, and exact allocation reversals where applicable.</span></p>
@@ -1618,7 +1629,7 @@ export function ArApWorkspace({
                 <label className="full-field"><span>Reversal description</span><input value={voidDraft.description} onChange={(event) => setVoidDraft((draft) => draft ? { ...draft, description: event.target.value } : draft)} maxLength={500} required /></label>
               </div>
               <label className="full-field"><span>Mandatory reason</span><textarea rows={3} minLength={5} maxLength={500} value={voidDraft.reason} onChange={(event) => setVoidDraft((draft) => draft ? { ...draft, reason: event.target.value } : draft)} required /></label>
-              <div className="form-actions"><button className="primary-button danger-button" type="submit" disabled={busy || pending}>Void and reverse</button><button className="secondary-button" type="button" onClick={() => setVoidDraft(null)}>Cancel</button></div>
+              <div className="form-actions"><button className="primary-button danger-button" type="submit" disabled={busy || pending}>Void and reverse</button><button className="secondary-button" type="button" onClick={closePanel}>Cancel</button></div>
             </form>
           </section>
         ) : null;
@@ -1661,23 +1672,6 @@ export function ArApWorkspace({
                 </select>
               </label>
               <label>
-                <span>Currency</span>
-                <select value={registerFilter.currency} onChange={(event) => updateRegisterFilter({ currency: event.target.value })}>
-                  <option value="">All currencies</option>
-                  {workspace.currencies.map((currency) => <option key={currency.code} value={currency.code}>{currency.code}</option>)}
-                </select>
-              </label>
-              </div>
-              <div className={styles.dateFilters}>
-              <label>
-                <span>Date from</span>
-                <input type="date" value={registerFilter.dateFrom} onChange={(event) => updateRegisterFilter({ dateFrom: event.target.value })} />
-              </label>
-              <label>
-                <span>Date to</span>
-                <input type="date" value={registerFilter.dateTo} onChange={(event) => updateRegisterFilter({ dateTo: event.target.value })} />
-              </label>
-              <label>
                 <span>Due state</span>
                 <select value={registerFilter.due} onChange={(event) => updateRegisterFilter({ due: event.target.value as SubledgerDueFilter })}>
                   <option value="ALL">All due states</option>
@@ -1688,9 +1682,30 @@ export function ArApWorkspace({
                   <option value="NOT_APPLICABLE">Drafts and settlements</option>
                 </select>
               </label>
+              </div>
+              <div className={styles.filterActions}>
                 <button className="primary-button" type="submit" disabled={pending}>Apply filters</button>
                 <button className="secondary-button" type="button" onClick={resetRegisterFilter} disabled={pending}>Clear filters</button>
               </div>
+              <CompactDisclosure className={styles.secondaryFilters} summary={`Date and currency filters${registerFilter.dateFrom || registerFilter.dateTo || registerFilter.currency ? ` · ${registerFilter.dateFrom || "Any start"} – ${registerFilter.dateTo || "Any end"} · ${registerFilter.currency || "All currencies"}` : ""}`} defaultOpen={Boolean(registerFilter.dateFrom || registerFilter.dateTo || registerFilter.currency)}>
+                <div className={styles.dateFilters}>
+              <label>
+                <span>Date from</span>
+                <input type="date" value={registerFilter.dateFrom} onChange={(event) => updateRegisterFilter({ dateFrom: event.target.value })} />
+              </label>
+              <label>
+                <span>Date to</span>
+                <input type="date" value={registerFilter.dateTo} onChange={(event) => updateRegisterFilter({ dateTo: event.target.value })} />
+              </label>
+
+              <label>
+                <span>Currency</span>
+                <select value={registerFilter.currency} onChange={(event) => updateRegisterFilter({ currency: event.target.value })}>
+                  <option value="">All currencies</option>
+                  {workspace.currencies.map((currency) => <option key={currency.code} value={currency.code}>{currency.code}</option>)}
+                </select>
+              </label></div>
+              </CompactDisclosure>
             </form>
           </section>
 

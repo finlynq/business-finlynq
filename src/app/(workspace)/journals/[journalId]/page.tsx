@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { CompactDisclosure } from "../../../_components/compact-disclosure.client";
 import { notFound } from "next/navigation";
 import { formatMoney } from "@/kernel/money";
 import { accountKeyDisplayTitle } from "@/modules/ledger/account-key-display";
@@ -45,17 +46,18 @@ export default async function JournalDetailPage({
           </div>
           <StatusPill status={journal.status} />
         </div>
-        <dl className="detail-grid" style={{ padding: "20px" }}>
+        <dl className="detail-grid summary-details">
           <div><dt>Accounting date</dt><dd>{journal.accountingDate}</dd></div>
-          <div><dt>Type</dt><dd>{journal.typeLabel}</dd></div>
-          <div><dt>Type key</dt><dd><code>{journal.typeKey}</code></dd></div>
           <div><dt>Owner module</dt><dd>{journal.ownerModule}</dd></div>
-          <div><dt>Origin / purpose</dt><dd>{journal.origin} · {journal.purpose}</dd></div>
-          <div><dt>Posted at</dt><dd>{journal.postedAt ?? "Not posted"}</dd></div>
           <div><dt>Functional debit</dt><dd className="amount-cell">{money(journal.functionalCurrency, journal.debitFunctional)}</dd></div>
           <div><dt>Functional credit</dt><dd className="amount-cell">{money(journal.functionalCurrency, journal.creditFunctional)}</dd></div>
           <div><dt>Source document</dt><dd>{journal.sourceNumber ?? "Manual journal"}</dd></div>
         </dl>
+        <CompactDisclosure summary="Additional journal metadata" className="inline-disclosure"><dl className="detail-grid summary-details">          <div><dt>Type</dt><dd>{journal.typeLabel}</dd></div>
+          <div><dt>Type key</dt><dd><code>{journal.typeKey}</code></dd></div>
+          <div><dt>Origin / purpose</dt><dd>{journal.origin} · {journal.purpose}</dd></div>
+          <div><dt>Posted at</dt><dd>{journal.postedAt ?? "Not posted"}</dd></div>
+</dl></CompactDisclosure>
       </section>
 
       {journal.lines.length ? (

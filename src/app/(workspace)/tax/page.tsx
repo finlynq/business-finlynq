@@ -1,4 +1,6 @@
 import Link from "next/link";
+import { ExpandableTableRow } from "../../_components/expandable-table-row.client";
+import { CompactDisclosure } from "../../_components/compact-disclosure.client";
 import { formatMoney } from "@/kernel/money";
 import { loadTaxDeterminations } from "@/modules/reporting/tenant-reporting";
 import { loadTaxFilingWorkspace } from "@/modules/tax/filing-workspace";
@@ -56,13 +58,24 @@ export default async function TaxPage({ searchParams }: { searchParams: Promise<
         </DemoNotice>
       )}
 
-      {!reviewOnly && <>
-        <section className="metric-grid" aria-label="Tax filing overview">
-          <article className="metric-card"><span className="metric-signal signal-blue" /><p>Shared templates</p><div><strong>{filingWorkspace.templates.length}</strong></div><span>Reusable across every client; definitions and rules are versioned.</span></article>
-          <article className="metric-card"><span className="metric-signal signal-green" /><p>Mapped client scopes</p><div><strong>{mappedScopes}</strong></div><span>Each company and ledger retains its own immutable mapping history.</span></article>
-          <article className="metric-card"><span className="metric-signal signal-purple" /><p>Filing workpapers</p><div><strong>{filingWorkspace.filings.length}</strong></div><span>Prepared returns and imported historical filing snapshots.</span></article>
-          <article className="metric-card"><span className="metric-signal signal-amber" /><p>Reconciliation review</p><div><strong>{filingReviewCount}</strong></div><span>Workpapers with a reported variance or failed template rule.</span></article>
+      {!reviewOnly && reviewCount > 0 && (
+        <section className="attention-banner" aria-labelledby="tax-review-title">
+          <span className="attention-icon" aria-hidden="true">!</span>
+          <div>
+            <strong id="tax-review-title">{reviewCount} tax decision{reviewCount === 1 ? "" : "s"} require review</strong>
+            <p>Review the underlying source document before posting or period close.</p>
+          </div>
+          <Link href="/app/tax?status=review">Show exceptions <span aria-hidden="true">→</span></Link>
         </section>
+      )}
+
+      {!reviewOnly && <>
+        <dl className="metric-strip" aria-label="Tax filing overview">
+          <div><dt>Shared templates</dt><dd>{filingWorkspace.templates.length}</dd></div>
+          <div><dt>Mapped client scopes</dt><dd>{mappedScopes}</dd></div>
+          <div><dt>Filing workpapers</dt><dd>{filingWorkspace.filings.length}</dd></div>
+          <div><dt>Reconciliation review</dt><dd>{filingReviewCount}</dd></div>
+        </dl>
 
         {view === "prepare" && <TaxFilingWorkspace workspace={filingWorkspace} />}
 
@@ -82,7 +95,7 @@ export default async function TaxPage({ searchParams }: { searchParams: Promise<
                 <div><dt>Fields</dt><dd>{template.definition.fields.length}</dd></div>
                 <div><dt>Rules</dt><dd>{template.definition.validations.length}</dd></div>
               </dl>
-              <p>{template.definition.instructions}</p>
+              <CompactDisclosure summary="Template instructions" className="inline-disclosure"><p>{template.definition.instructions}</p></CompactDisclosure>
               <details className="mapping-details">
                 <summary>Review embedded rules</summary>
                 <ul className="checklist large-checklist">
@@ -115,16 +128,14 @@ export default async function TaxPage({ searchParams }: { searchParams: Promise<
                 const variances = filing.reconciliation.filter((field) => field.status !== "MATCHED");
                 const failedRules = filing.validations.filter((rule) => rule.status === "FAIL");
                 const currency = filingWorkspace.templates.find((template) => template.id === filing.templateId)?.currencyCode ?? "CAD";
-                return <tr key={filing.id}>
+                return <ExpandableTableRow key={filing.id} columns={6} label={`comparison for ${filing.entityCode} ${filing.periodStart}–${filing.periodEnd}`} cells={<>
                   <td><strong>{filing.periodStart} – {filing.periodEnd}</strong><small>{filing.filingType === "PREPARED" ? "Prepared declaration" : `Historical · ${filing.externalReference ?? "No reference"}`}</small></td>
                   <td><strong>{filing.entityCode}</strong><small>{filing.ledgerCode}</small></td>
                   <td><strong>{filing.templateName}</strong><small>Version {filing.templateVersion}</small></td>
                   <td><StatusPill status={filing.status} /></td>
                   <td><strong>{variances.length} field{variances.length === 1 ? "" : "s"}</strong><small>{failedRules.length} rule exception{failedRules.length === 1 ? "" : "s"}</small></td>
-                  <td>
-                    <details className="mapping-details">
-                      <summary>Compare values</summary>
-                      <div className="table-scroll">
+                  </>}>
+                      <div className="table-scroll" tabIndex={0} aria-label={`Workpaper comparison for ${filing.entityCode}`}>
                         <table>
                           <thead><tr><th>Line</th><th>System</th><th>Filed</th><th>Difference</th><th>Status</th></tr></thead>
                           <tbody>{filing.reconciliation.map((field) => <tr key={field.fieldKey}>
@@ -136,9 +147,7 @@ export default async function TaxPage({ searchParams }: { searchParams: Promise<
                           </tr>)}</tbody>
                         </table>
                       </div>
-                    </details>
-                  </td>
-                </tr>;
+                </ExpandableTableRow>;
               })}</tbody>
             </table>
           </div> : <EmptyState title="No filing workpapers yet">Prepare a return or load a historical filing after mapping the template’s account-backed fields.</EmptyState>}
@@ -146,16 +155,7 @@ export default async function TaxPage({ searchParams }: { searchParams: Promise<
         </section>}
       </>}
 
-      {!reviewOnly && reviewCount > 0 && (
-        <section className="attention-banner" aria-labelledby="tax-review-title">
-          <span className="attention-icon" aria-hidden="true">!</span>
-          <div>
-            <strong id="tax-review-title">{reviewCount} tax decision{reviewCount === 1 ? "" : "s"} require review</strong>
-            <p>Review the underlying source document before posting or period close.</p>
-          </div>
-          <Link href="/app/tax?status=review">Show exceptions <span aria-hidden="true">→</span></Link>
-        </section>
-      )}
+
 
       {(view === "transactions" || reviewOnly) && <section className="panel" aria-labelledby="tax-determinations-title">
         <div className="panel-heading">
