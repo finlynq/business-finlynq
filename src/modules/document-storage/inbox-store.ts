@@ -50,11 +50,40 @@ export const processingSchema = z.object({
   destinationId: z.string().optional(),
   reason: z.string().optional(),
   statementImport: statementCompletionSchema.optional(),
+  email: z.object({
+    messageSha256: z.string().regex(/^[a-f0-9]{64}$/),
+    bodySha256: z.string().regex(/^[a-f0-9]{64}$/),
+    from: z.string().max(500).nullable(),
+    subject: z.string().max(500).nullable(),
+    date: z.string().max(200).nullable(),
+    htmlConverted: z.boolean(),
+    bodyTruncated: z.boolean(),
+    attachments: z.array(z.object({
+      index: z.number().int().min(1).max(20),
+      filename: z.string().min(1).max(180),
+      mimeType: z.string().min(1).max(200),
+      byteSize: z.number().int().min(0).max(4 * 1024 * 1024),
+      sha256: z.string().regex(/^[a-f0-9]{64}$/).optional(),
+      disposition: z.enum(["attachment", "inline"]),
+      status: z.enum(["EXTRACTED", "RETRY_REQUIRED", "INLINE_SKIPPED", "DUPLICATE_SKIPPED", "QUARANTINED"]),
+      inboxItemId: z.uuid().optional(),
+      errorCode: z.string().regex(/^STORAGE_[A-Z0-9_]+$/).optional(),
+      reason: z.string().max(500).optional(),
+    }).strict()).max(20),
+  }).strict().optional(),
 });
 export type Processing = z.infer<typeof processingSchema>;
 export async function itemProcessing(client: PoolClient, row: InboxRow): Promise<Processing> {
   return row.processing_ciphertext ? processingSchema.parse(await decryptStorageValue(client, row, "document_inbox_items", "processing_ciphertext", row.processing_ciphertext)) : {};
 }
+
+export const sourceMessageLineageSchema = z.object({
+  messageItemId: z.uuid(),
+  messageSha256: z.string().regex(/^[a-f0-9]{64}$/),
+  attachmentIndex: z.number().int().min(1).max(20),
+  attachmentSha256: z.string().regex(/^[a-f0-9]{64}$/),
+}).strict();
+export type SourceMessageLineage = z.infer<typeof sourceMessageLineageSchema>;
 
 const sourceMetadataSchema = z.object({
   name: z.string().min(1).max(1000),
@@ -64,6 +93,7 @@ const sourceMetadataSchema = z.object({
   reason: z.string().max(500).optional(),
   errorCode: z.string().regex(/^STORAGE_[A-Z0-9_]+$/).optional(),
   routingTarget: z.literal("BANKING_IMPORT_REVIEW").optional(),
+  sourceMessages: z.array(sourceMessageLineageSchema).max(20).optional(),
 }).strict();
 export type InboxSourceMetadata = z.infer<typeof sourceMetadataSchema>;
 
@@ -78,7 +108,40 @@ export async function itemMetadata(client: PoolClient, row: InboxRow) {
     leaseUntil: row.lease_until?.toISOString() ?? null, assetId: row.asset_id, sourceDocumentId: row.source_document_id,
     canonicalName: processing.name ?? null, filingMetadata: processing.metadata ?? null, reason: processing.reason ?? metadata.reason ?? null,
     errorCode: metadata.errorCode ?? null, routingTarget: metadata.routingTarget ?? null,
+    sourceMessages: metadata.sourceMessages ?? [],
     createdAt: row.created_at.toISOString() };
+}
+
+export async function addInboxSourceMessageLineage(
+  client: PoolClient,
+  row: InboxRow,
+  lineageInput: SourceMessageLineage,
+): Promise<InboxRow> {
+  const lineage = sourceMessageLineageSchema.parse(lineageInput);
+  const metadata = await itemSourceMetadata(client, row);
+  const existing = metadata.sourceMessages ?? [];
+  const samePart = existing.find((candidate) => (
+    candidate.messageSha256 === lineage.messageSha256
+    && candidate.attachmentIndex === lineage.attachmentIndex
+  ));
+  if (samePart) {
+    if (samePart.attachmentSha256 !== lineage.attachmentSha256) {
+      throw new StorageError("STORAGE_EML_LINEAGE_CONFLICT", "The extracted attachment lineage conflicts with an earlier retry.");
+    }
+    return row;
+  }
+  const sourceMessages = [...existing, lineage];
+  if (sourceMessages.length > 20) {
+    throw new StorageError("STORAGE_EML_LINEAGE_LIMIT", "This attachment has reached the source-message lineage limit.");
+  }
+  const encrypted = await encryptStorageValue(client, row, "document_inbox_items", "metadata_ciphertext", {
+    ...metadata,
+    sourceMessages,
+  });
+  return (await client.query<InboxRow>(
+    "UPDATE document_inbox_items SET metadata_ciphertext=$3 WHERE organization_id=$1 AND id=$2 RETURNING *",
+    [row.organization_id, row.id, encrypted],
+  )).rows[0];
 }
 export async function loadInboxItem(client: PoolClient, context: TenantTransactionContext, itemId: string, access: "read" | "manage" = "manage") {
   const initial = (await client.query<InboxRow>("SELECT * FROM document_inbox_items WHERE organization_id=$1 AND id=$2", [context.organizationId, z.uuid().parse(itemId)])).rows[0];

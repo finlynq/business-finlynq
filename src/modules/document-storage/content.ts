@@ -9,7 +9,7 @@ export type DocumentPageResult = {
   imageBase64?: string;
   text: string;
   pageCount: number;
-  contentKind?: "DELIMITED_TEXT" | "WORKBOOK";
+  contentKind?: "DELIMITED_TEXT" | "WORKBOOK" | "EMAIL";
   preview?: unknown;
   routingTarget?: "BANKING_IMPORT_REVIEW";
 };
