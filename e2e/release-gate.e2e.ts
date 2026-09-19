@@ -507,3 +507,50 @@ test("mobile navigation traps focus and restores it when dismissed", async ({ pa
   await expect(trigger).toBeFocused();
   expect(errors).toEqual([]);
 });
+
+test("mutation feedback remains visible below the document header on desktop and mobile", async ({ page }) => {
+  const errors = collectBrowserErrors(page);
+  const safeMessage = "The selected account could not be saved. Refresh and retry safely.";
+  await page.route("**/api/accounting/configuration/account-combinations", async (route) => {
+    await route.fulfill({
+      status: 409,
+      contentType: "application/json",
+      body: JSON.stringify({ error: safeMessage, code: "CONFIGURATION_CONFLICT" }),
+    });
+  });
+
+  await page.setViewportSize({ width: 1280, height: 720 });
+  await openDemo(page, "/app/settings/accounting");
+
+  for (const viewport of [{ width: 1280, height: 720 }, { width: 390, height: 600 }]) {
+    await page.setViewportSize(viewport);
+    await page.goto("/app/settings/accounting");
+    await page.getByRole("tab", { name: "Chart of accounts" }).click();
+    await page.getByText("Create an account combination", { exact: true }).click();
+    const createButton = page.getByRole("button", { name: "Create combination" });
+    const form = createButton.locator("xpath=ancestor::form");
+    await createButton.scrollIntoViewIfNeeded();
+    await expect(page.getByRole("heading", { level: 1 })).not.toBeInViewport();
+    const selectedAccount = await form.getByLabel("Natural account").inputValue();
+
+    await createButton.click();
+    const notification = page.getByTestId("mutation-feedback");
+    await expect(notification).toBeVisible();
+    await expect(notification).toHaveAttribute("role", "alert");
+    await expect(notification).toContainText(safeMessage);
+    await expect(notification).toHaveCSS("position", "fixed");
+    const box = await notification.boundingBox();
+    expect(box).not.toBeNull();
+    expect(box!.y).toBeGreaterThanOrEqual(0);
+    expect(box!.y + box!.height).toBeLessThanOrEqual(viewport.height);
+    await expect(form.getByLabel("Natural account")).toHaveValue(selectedAccount);
+
+    await notification.getByRole("button", { name: "Dismiss notification" }).click();
+    await expect(notification).toBeHidden();
+  }
+
+  await revokeDemoSession(page);
+  const expectedConflictErrors = errors.filter((error) => error.includes("409 (Conflict)"));
+  expect(expectedConflictErrors).toHaveLength(2);
+  expect(errors.filter((error) => !error.includes("409 (Conflict)"))).toEqual([]);
+});

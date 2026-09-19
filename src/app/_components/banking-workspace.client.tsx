@@ -1,6 +1,9 @@
 "use client";
 
+import { CompactDisclosure } from "./compact-disclosure.client";
+
 import { useRouter } from "next/navigation";
+import { MutationFeedback } from "@/app/_components/mutation-feedback.client";
 import { useState, type FormEvent } from "react";
 import type { BankingWorkspaceDto } from "@/modules/banking/banking-workspace";
 import { formatExactCurrencyAmount } from "@/modules/banking/exact-money";
@@ -67,9 +70,9 @@ export function parseBankMappingSelection(selection: string): Readonly<{
     : null;
 }
 
-function Feedback({ message, error }: { message: string; error: boolean }) {
+function Feedback({ message, error, onDismiss }: { message: string; error: boolean; onDismiss: () => void }) {
   if (!message) return null;
-  return <p role={error ? "alert" : "status"} className={`${styles.feedback} ${error ? styles.error : ""}`}>{message}</p>;
+  return <MutationFeedback kind={error ? "error" : "success"} message={message} onDismiss={onDismiss} />;
 }
 
 function ConnectionView({ workspace }: { workspace: BankingWorkspaceDto }) {
@@ -154,7 +157,7 @@ function ConnectionView({ workspace }: { workspace: BankingWorkspaceDto }) {
   const hasSimpleFin = workspace.connections.some((connection) => connection.provider === "SIMPLEFIN");
   const canConnect = workspace.feedEnabled && workspace.permissions.connect && !hasSimpleFin;
   return <div className={styles.stack}>
-    <Feedback message={message} error={error} />
+    <Feedback message={message} error={error} onDismiss={() => setMessage("")} />
     {canConnect && <section className="panel" aria-labelledby="simplefin-connect-title">
       <div className="panel-heading"><div><p className="eyebrow">Encrypted provider access</p><h2 id="simplefin-connect-title">Connect SimpleFIN</h2></div></div>
       <form className={styles.form} onSubmit={(event) => { void connect(event); }}>
@@ -175,11 +178,11 @@ function ConnectionView({ workspace }: { workspace: BankingWorkspaceDto }) {
         <div><span>Latest safe error code</span><strong>{connection.lastErrorCode ?? "None"}</strong></div>
       </div>
       {connection.provider === "SIMPLEFIN" && workspace.permissions.sync && <div className="panel-actions"><button className="primary-button" type="button" onClick={() => { void sync(connection.id); }} disabled={busy || connection.status !== "ACTIVE"}>{busy ? "Working…" : "Sync last 90 days"}</button></div>}
-      {connection.provider === "SIMPLEFIN" && workspace.permissions.connect && !workspace.isDemo && <form className={styles.form} onSubmit={(event) => { void reauthorize(event, connection.id); }}>
+      {connection.provider === "SIMPLEFIN" && workspace.permissions.connect && !workspace.isDemo && <CompactDisclosure summary="Manage connection" defaultOpen={connection.status !== "ACTIVE" && connection.status !== "DISABLED"}><form className={styles.form} onSubmit={(event) => { void reauthorize(event, connection.id); }}>
         {workspace.feedEnabled && <label><span>{connection.status === "ACTIVE" ? "Replace credential with a new one-time setup token" : "Reauthorize with a new one-time setup token"}</span><input name="setupToken" type="password" minLength={20} maxLength={4096} required autoComplete="off" spellCheck={false} /></label>}
         <div className={styles.actions}>{workspace.feedEnabled && <button className="secondary-button" disabled={busy}>{connection.status === "ACTIVE" ? "Rotate encrypted credential" : "Reauthorize connection"}</button>}{connection.status !== "DISABLED" && <button className="secondary-button" type="button" disabled={busy} onClick={() => { void disable(connection.id); }}>Disable feed</button>}</div>
         <small>Credential replacement and disabling require a recent authenticator step-up. The provider row, imported evidence, and append-only credential-version record are retained.</small>
-      </form>}
+      </form></CompactDisclosure>}
       {connection.provider === "FILE_IMPORT" && <p className={styles.secretNote}>Created automatically for reviewed document-inbox statement imports. It has no external credential and cannot synchronize a provider.</p>}
     </section>)}
 
@@ -203,7 +206,7 @@ function ConnectionView({ workspace }: { workspace: BankingWorkspaceDto }) {
       </tbody></table></div>
     </section>}
 
-    {workspace.syncRuns.length > 0 && <section className="panel" aria-labelledby="sync-history-title"><div className="panel-heading"><div><p className="eyebrow">Operational evidence</p><h2 id="sync-history-title">Sync history</h2></div></div><div className="table-scroll" tabIndex={0}><table><thead><tr><th>Started</th><th>Status</th><th>Accounts</th><th>Seen</th><th>New versions</th><th>Warnings / error</th></tr></thead><tbody>{workspace.syncRuns.map((run) => <tr key={run.id}><td>{displayDate(run.startedAt)}</td><td><StatusPill status={run.status} /></td><td>{run.accountCount}</td><td>{run.observationCount}</td><td>{run.versionCount}</td><td>{run.errorCode ?? run.warningCount}</td></tr>)}</tbody></table></div></section>}
+    {workspace.syncRuns.length > 0 && <CompactDisclosure summary="Sync history"><section className="panel" aria-labelledby="sync-history-title"><div className="panel-heading"><div><p className="eyebrow">Operational evidence</p><h2 id="sync-history-title">Sync history</h2></div></div><div className="table-scroll" tabIndex={0}><table><thead><tr><th>Started</th><th>Status</th><th>Accounts</th><th>Seen</th><th>New versions</th><th>Warnings / error</th></tr></thead><tbody>{workspace.syncRuns.map((run) => <tr key={run.id}><td>{displayDate(run.startedAt)}</td><td><StatusPill status={run.status} /></td><td>{run.accountCount}</td><td>{run.observationCount}</td><td>{run.versionCount}</td><td>{run.errorCode ?? run.warningCount}</td></tr>)}</tbody></table></div></section></CompactDisclosure>}
   </div>;
 }
 
@@ -299,17 +302,18 @@ function ReconciliationView({ workspace }: { workspace: BankingWorkspaceDto }) {
   }
 
   return <div className={styles.stack}>
-    <Feedback message={message} error={error} />
+    <Feedback message={message} error={error} onDismiss={() => setMessage("")} />
     <div className={styles.callout}><strong>Formal reconciliation boundary.</strong> Sessions snapshot a statement range, balances, company, ledger, and cash-account mapping. Creating a session never creates or posts a journal.</div>
-    {workspace.permissions.reconcilePrepare && mapped.length > 0 && <section className="panel" aria-labelledby="new-reconciliation-title"><div className="panel-heading"><div><p className="eyebrow">Statement control</p><h2 id="new-reconciliation-title">New reconciliation</h2></div></div><form className={styles.form} onSubmit={(event) => { void create(event); }}><div className={styles.gridThree}>
-      <label className={styles.full}><span>Mapped bank account</span><select name="externalAccountId" required defaultValue=""><option value="">Choose an account…</option>{mapped.map((account) => <option value={account.id} key={account.id}>{account.displayName} · {account.entityCode} · {account.currencyCode}</option>)}</select></label>
-      <label><span>Statement start</span><input name="statementStartOn" type="date" required /></label><label><span>Statement end</span><input name="statementEndOn" type="date" required /></label>
-      <label><span>Opening balance</span><input name="openingBalance" inputMode="decimal" pattern="-?\d+(\.\d{1,9})?" required /></label><label><span>Closing balance</span><input name="closingBalance" inputMode="decimal" pattern="-?\d+(\.\d{1,9})?" required /></label>
-    </div><div className={styles.actions}><button className="primary-button" disabled={busy}>{busy ? "Creating…" : "Create draft reconciliation"}</button></div></form></section>}
+
     {!mapped.length && <div className={styles.callout}>Synchronize a connection and map at least one observed bank account before starting a reconciliation.</div>}
     <section className="panel" aria-labelledby="reconciliation-register-title"><div className="panel-heading"><div><p className="eyebrow">Preparer / reviewer record</p><h2 id="reconciliation-register-title">Reconciliation sessions</h2></div><span className="attention-count">{workspace.reconciliations.length}</span></div>
       {workspace.reconciliations.length ? <div className="table-scroll" tabIndex={0}><table><thead><tr><th>Bank account</th><th>Statement range</th><th>Opening</th><th>Closing</th><th>Matches</th><th>Status</th></tr></thead><tbody>{workspace.reconciliations.map((item) => <tr key={item.id} className={workspace.activeReconciliation?.id === item.id ? styles.selectedRow : undefined}><td><strong><a href={`/app/banking?view=reconciliation&reconciliation=${encodeURIComponent(item.id)}`}>{item.accountName}</a></strong><small>Created {displayDate(item.createdAt)}</small></td><td>{item.statementStartOn} – {item.statementEndOn}</td><td className={styles.amount}>{displayAmount(item.openingBalance, item.currencyCode)}</td><td className={styles.amount}>{displayAmount(item.closingBalance, item.currencyCode)}</td><td>{item.matchCount}</td><td><StatusPill status={item.status} />{item.voidReason && <small>{item.voidReason} · {displayDate(item.voidedAt)}</small>}</td></tr>)}</tbody></table></div> : <div className="empty-state"><strong>No reconciliation sessions</strong><p>Create a draft from a mapped account and statement range.</p></div>}
     </section>
+    {workspace.permissions.reconcilePrepare && mapped.length > 0 && <CompactDisclosure summary="New reconciliation" defaultOpen={workspace.reconciliations.length === 0}><section className="panel" aria-labelledby="new-reconciliation-title"><div className="panel-heading"><div><p className="eyebrow">Statement control</p><h2 id="new-reconciliation-title">New reconciliation</h2></div></div><form className={styles.form} onSubmit={(event) => { void create(event); }}><div className={styles.gridThree}>
+      <label className={styles.full}><span>Mapped bank account</span><select name="externalAccountId" required defaultValue=""><option value="">Choose an account…</option>{mapped.map((account) => <option value={account.id} key={account.id}>{account.displayName} · {account.entityCode} · {account.currencyCode}</option>)}</select></label>
+      <label><span>Statement start</span><input name="statementStartOn" type="date" required /></label><label><span>Statement end</span><input name="statementEndOn" type="date" required /></label>
+      <label><span>Opening balance</span><input name="openingBalance" inputMode="decimal" pattern="-?\d+(\.\d{1,9})?" required /></label><label><span>Closing balance</span><input name="closingBalance" inputMode="decimal" pattern="-?\d+(\.\d{1,9})?" required /></label>
+    </div><div className={styles.actions}><button className="primary-button" disabled={busy}>{busy ? "Creating…" : "Create draft reconciliation"}</button></div></form></section></CompactDisclosure>}
     {workspace.activeReconciliation && <section className="panel" aria-labelledby="active-reconciliation-title">
       <div className="panel-heading"><div><p className="eyebrow">Exact balance proof</p><h2 id="active-reconciliation-title">Selected reconciliation</h2></div><StatusPill status={workspace.activeReconciliation.status} /></div>
       <div className={styles.form}>
@@ -410,18 +414,19 @@ function RulesView({ workspace }: { workspace: BankingWorkspaceDto }) {
   }
 
   return <div className={styles.stack}>
-    <Feedback message={message} error={error} />
+    <Feedback message={message} error={error} onDismiss={() => setMessage("")} />
     <div className={styles.callout}><strong>Manual-review suggestions only.</strong> Active rules evaluate newly observed bank versions in priority order and create an encrypted suggestion for a person to review. This release does not turn a suggestion into a GL, AR, AP, or transfer draft, and it never posts accounting.</div>
-    {workspace.permissions.rules && <section className="panel" aria-labelledby="new-bank-rule-title"><div className="panel-heading"><div><p className="eyebrow">Deterministic conditions</p><h2 id="new-bank-rule-title">New categorization rule</h2></div></div><form className={styles.form} onSubmit={(event) => { void create(event); }}><div className={styles.gridThree}>
-      <label><span>Name</span><input name="name" minLength={2} maxLength={100} required /></label><label><span>Priority</span><input name="priority" type="number" min={1} max={10000} defaultValue={100} required /></label><label><span>State</span><select name="state" defaultValue="DRAFT"><option value="DRAFT">Draft</option><option value="ACTIVE">Active</option></select></label>
-      <label><span>Description contains</span><input name="descriptionContains" minLength={2} maxLength={100} /></label><label><span>Direction</span><select name="direction" defaultValue="ANY"><option value="ANY">Any</option><option value="INFLOW">Inflow</option><option value="OUTFLOW">Outflow</option></select></label><label><span>Bank account (required for an account suggestion)</span><select name="externalAccountId" defaultValue=""><option value="">All accounts · no account target</option>{workspace.accounts.map((account) => <option key={account.id} value={account.id}>{account.displayName}</option>)}</select></label>
-      <label><span>Minimum absolute amount</span><input name="minimumAbsoluteAmount" inputMode="decimal" pattern="\d+(\.\d{1,9})?" /></label><label><span>Maximum absolute amount</span><input name="maximumAbsoluteAmount" inputMode="decimal" pattern="\d+(\.\d{1,9})?" /></label><label><span>Merchant category code</span><input name="merchantCategoryCode" maxLength={16} /></label>
-      <label><span>Suggestion kind</span><select name="kind" defaultValue="MANUAL_REVIEW"><option value="MANUAL_REVIEW">Manual review</option></select></label><label><span>Suggested offset account (optional)</span><select name="targetAccountCombinationId" defaultValue=""><option value="">Choose during review</option>{workspace.ruleTargetAccounts.map((account) => <option key={account.id} value={account.id}>{account.entityCode} · {account.accountCode} · {account.accountName} · {account.accountClass.toLowerCase()}</option>)}</select></label><label><span>Review memo</span><input name="memo" maxLength={500} /></label>
-    </div><div className={styles.actions}><button className="primary-button" disabled={busy}>{busy ? "Saving…" : "Save encrypted rule"}</button></div></form></section>}
+
     <section className="panel" aria-labelledby="bank-rules-register-title"><div className="panel-heading"><div><p className="eyebrow">Encrypted rulebook</p><h2 id="bank-rules-register-title">Categorization rules</h2></div><span className="attention-count">{workspace.rules.length}</span></div>
       {workspace.rules.length ? <div className="table-scroll" tabIndex={0}><table><thead><tr><th>Priority / rule</th><th>Condition</th><th>Suggestion</th><th>Immutable state version</th></tr></thead><tbody>{workspace.rules.map((rule) => <tr key={rule.id}><td><strong>{rule.priority} · {rule.name}</strong><small>Version {rule.version} · created {displayDate(rule.createdAt)}</small></td><td>{rule.condition ? [rule.condition.externalAccountId && `account ${bankAccountNames.get(rule.condition.externalAccountId) ?? rule.condition.externalAccountId}`, rule.condition.descriptionContains && `contains “${rule.condition.descriptionContains}”`, rule.condition.direction !== "ANY" && rule.condition.direction.toLowerCase(), rule.condition.minimumAbsoluteAmount && `at least ${rule.condition.minimumAbsoluteAmount}`, rule.condition.maximumAbsoluteAmount && `at most ${rule.condition.maximumAbsoluteAmount}`, rule.condition.merchantCategoryCode && `MCC ${rule.condition.merchantCategoryCode}`].filter(Boolean).join(" · ") || "Bound condition" : "Encrypted data unavailable"}</td><td>{rule.action ? [rule.action.kind.replaceAll("_", " "), rule.action.targetAccountCombinationId && `account ${targetAccountNames.get(rule.action.targetAccountCombinationId) ?? rule.action.targetAccountCombinationId}`, rule.action.memo].filter(Boolean).join(" · ") : "Encrypted data unavailable"}</td><td><div className={styles.statusLine}><StatusPill status={rule.state} />{workspace.permissions.rules && rule.state !== "INACTIVE" && <button type="button" className="secondary-button" disabled={busy} onClick={() => { void versionState(rule.id, "INACTIVE"); }}>Create inactive version</button>}{workspace.permissions.rules && rule.state !== "ACTIVE" && <button type="button" className="secondary-button" disabled={busy} onClick={() => { void versionState(rule.id, "ACTIVE"); }}>Create active version</button>}</div></td></tr>)}</tbody></table></div> : <div className="empty-state"><strong>No categorization rules</strong><p>Add a draft rule, review it, then activate it when its conditions are safe.</p></div>}
       <p className="panel-note">Manual-review suggestions: {workspace.proposalCount}. Suggestions are immutable provider-derived evidence; no accept-to-draft workflow is advertised in this release.</p>
     </section>
+    {workspace.permissions.rules && <CompactDisclosure summary="New categorization rule"><section className="panel" aria-labelledby="new-bank-rule-title"><div className="panel-heading"><div><p className="eyebrow">Deterministic conditions</p><h2 id="new-bank-rule-title">New categorization rule</h2></div></div><form className={styles.form} onSubmit={(event) => { void create(event); }}><div className={styles.gridThree}>
+      <label><span>Name</span><input name="name" minLength={2} maxLength={100} required /></label><label><span>Priority</span><input name="priority" type="number" min={1} max={10000} defaultValue={100} required /></label><label><span>State</span><select name="state" defaultValue="DRAFT"><option value="DRAFT">Draft</option><option value="ACTIVE">Active</option></select></label>
+      <label><span>Description contains</span><input name="descriptionContains" minLength={2} maxLength={100} /></label><label><span>Direction</span><select name="direction" defaultValue="ANY"><option value="ANY">Any</option><option value="INFLOW">Inflow</option><option value="OUTFLOW">Outflow</option></select></label><label><span>Bank account (required for an account suggestion)</span><select name="externalAccountId" defaultValue=""><option value="">All accounts · no account target</option>{workspace.accounts.map((account) => <option key={account.id} value={account.id}>{account.displayName}</option>)}</select></label>
+      <label><span>Minimum absolute amount</span><input name="minimumAbsoluteAmount" inputMode="decimal" pattern="\d+(\.\d{1,9})?" /></label><label><span>Maximum absolute amount</span><input name="maximumAbsoluteAmount" inputMode="decimal" pattern="\d+(\.\d{1,9})?" /></label><label><span>Merchant category code</span><input name="merchantCategoryCode" maxLength={16} /></label>
+      <label><span>Suggestion kind</span><select name="kind" defaultValue="MANUAL_REVIEW"><option value="MANUAL_REVIEW">Manual review</option></select></label><label><span>Suggested offset account (optional)</span><select name="targetAccountCombinationId" defaultValue=""><option value="">Choose during review</option>{workspace.ruleTargetAccounts.map((account) => <option key={account.id} value={account.id}>{account.entityCode} · {account.accountCode} · {account.accountName} · {account.accountClass.toLowerCase()}</option>)}</select></label><label><span>Review memo</span><input name="memo" maxLength={500} /></label>
+    </div><div className={styles.actions}><button className="primary-button" disabled={busy}>{busy ? "Saving…" : "Save encrypted rule"}</button></div></form></section></CompactDisclosure>}
     <section className="panel" aria-labelledby="bank-proposals-title"><div className="panel-heading"><div><p className="eyebrow">Human review queue</p><h2 id="bank-proposals-title">Categorization suggestions</h2></div><span className="attention-count">{workspace.proposalCount}</span></div>
       {workspace.proposals.length ? <div className="table-scroll" tabIndex={0}><table><thead><tr><th>Observed transaction</th><th>Rule</th><th>Suggested review</th><th>Created</th></tr></thead><tbody>{workspace.proposals.map((proposal) => <tr key={proposal.id}><td><strong>{proposal.payee}</strong><small>{proposal.postedOn} · {proposal.accountName} · {displayAmount(proposal.amount, proposal.currencyCode)}</small></td><td>{proposal.ruleName ?? "Rule unavailable"}</td><td>{proposal.action ? [proposal.action.targetAccountCombinationId ? targetAccountNames.get(proposal.action.targetAccountCombinationId) ?? proposal.action.targetAccountCombinationId : "Choose an account during review", proposal.action.memo].filter(Boolean).join(" · ") : "Encrypted suggestion unavailable"}</td><td>{displayDate(proposal.createdAt)}</td></tr>)}</tbody></table></div> : <div className="empty-state"><strong>No suggestions to review</strong><p>Active rules create immutable suggestions only when a newly imported observation matches.</p></div>}
     </section>

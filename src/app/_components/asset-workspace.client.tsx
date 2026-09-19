@@ -1,7 +1,10 @@
 "use client";
 
+import { CompactDisclosure } from "./compact-disclosure.client";
+
 import { useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
+import { MutationFeedback } from "@/app/_components/mutation-feedback.client";
 
 type Category = Readonly<{
   id: string;
@@ -89,7 +92,7 @@ export function AssetWorkspace({ workspace }: {
 }) {
   const router = useRouter();
   const [busy, setBusy] = useState<string | null>(null);
-  const [feedback, setFeedback] = useState<string | null>(null);
+  const [feedback, setFeedback] = useState<Readonly<{ kind: "success" | "error"; message: string }> | null>(null);
   const [selectedLedgerId, setSelectedLedgerId] = useState(
     workspace.categories[0]?.ledgerId ?? workspace.accounts[0]?.ledgerId ?? "",
   );
@@ -118,8 +121,8 @@ export function AssetWorkspace({ workspace }: {
         ...(impairmentAccountCombinationId ? { impairmentAccountCombinationId } : {}),
         ...(disposalAccountCombinationId ? { disposalAccountCombinationId } : {}),
       });
-      setFeedback("Category created."); router.refresh();
-    } catch (error) { setFeedback(error instanceof Error ? error.message : "Category creation failed."); }
+      setFeedback({ kind: "success", message: "Category created." }); router.refresh();
+    } catch (error) { setFeedback({ kind: "error", message: error instanceof Error ? error.message : "Category creation failed." }); }
     finally { setBusy(null); }
   }
 
@@ -146,8 +149,8 @@ export function AssetWorkspace({ workspace }: {
         sourceReference: String(formData.get("sourceReference") || "Manual asset register entry"),
         idempotencyKey: crypto.randomUUID(),
       });
-      setFeedback("Register record and deterministic schedule created."); router.refresh();
-    } catch (error) { setFeedback(error instanceof Error ? error.message : "Asset creation failed."); }
+      setFeedback({ kind: "success", message: "Register record and deterministic schedule created." }); router.refresh();
+    } catch (error) { setFeedback({ kind: "error", message: error instanceof Error ? error.message : "Asset creation failed." }); }
     finally { setBusy(null); }
   }
 
@@ -155,8 +158,8 @@ export function AssetWorkspace({ workspace }: {
     setBusy(id); setFeedback(null);
     try {
       await postJson(`/api/assets/schedules/${encodeURIComponent(id)}/draft`, { idempotencyKey: id });
-      setFeedback("Balanced journal draft created. Review and post it in General ledger."); router.refresh();
-    } catch (error) { setFeedback(error instanceof Error ? error.message : "Schedule journal failed."); }
+      setFeedback({ kind: "success", message: "Balanced journal draft created. Review and post it in General ledger." }); router.refresh();
+    } catch (error) { setFeedback({ kind: "error", message: error instanceof Error ? error.message : "Schedule journal failed." }); }
     finally { setBusy(null); }
   }
 
@@ -172,13 +175,13 @@ export function AssetWorkspace({ workspace }: {
         reason: String(formData.get("reason")),
         idempotencyKey: crypto.randomUUID(),
       });
-      setFeedback("Lifecycle evidence and any required balanced journal draft were created."); router.refresh();
-    } catch (error) { setFeedback(error instanceof Error ? error.message : "Lifecycle update failed."); }
+      setFeedback({ kind: "success", message: "Lifecycle evidence and any required balanced journal draft were created." }); router.refresh();
+    } catch (error) { setFeedback({ kind: "error", message: error instanceof Error ? error.message : "Lifecycle update failed." }); }
     finally { setBusy(null); }
   }
 
   return <>
-    {feedback && <p className="attention-banner" role="status">{feedback}</p>}
+    {feedback && <MutationFeedback {...feedback} onDismiss={() => setFeedback(null)} />}
     <section className="metric-grid" aria-label="Asset register overview">
       {(["TANGIBLE", "INTANGIBLE", "PREPAID"] as const).map((kind) => <article className="metric-card" key={kind}>
         <p>{kind === "TANGIBLE" ? "Tangible assets" : kind === "INTANGIBLE" ? "Intangible assets" : "Prepaid expenses"}</p>
@@ -187,7 +190,7 @@ export function AssetWorkspace({ workspace }: {
       </article>)}
     </section>
 
-    {workspace.canDraftSchedules && workspace.assets.some((asset) => !["DISPOSED", "RETIRED", "TERMINATED"].includes(asset.status)) && <section className="panel" aria-labelledby="asset-lifecycle-title">
+    {workspace.canDraftSchedules && workspace.assets.some((asset) => !["DISPOSED", "RETIRED", "TERMINATED"].includes(asset.status)) && <CompactDisclosure summary="Record a lifecycle event"><section className="panel" aria-labelledby="asset-lifecycle-title">
       <div className="panel-heading"><div><p className="eyebrow">Controlled adjustments</p><h2 id="asset-lifecycle-title">Record a lifecycle event</h2></div></div>
       <form className="settings-form" action={(data) => void submitLifecycle(data)}>
         <label><span>Register record</span><select name="assetId" required>{workspace.assets.filter((asset) => !["DISPOSED", "RETIRED", "TERMINATED"].includes(asset.status)).map((asset) => <option key={asset.id} value={asset.id}>{asset.assetNumber} · {asset.displayName}</option>)}</select></label>
@@ -197,7 +200,7 @@ export function AssetWorkspace({ workspace }: {
         <label><span>Permanent reason</span><input name="reason" required minLength={5} maxLength={500} /></label>
         <button className="primary-button" disabled={busy !== null}>{busy === "lifecycle" ? "Recording…" : "Record lifecycle event"}</button>
       </form>
-    </section>}
+    </section></CompactDisclosure>}
 
     <section className="panel" aria-labelledby="asset-register-title">
       <div className="panel-heading"><div><p className="eyebrow">Register-to-GL roll-forward</p><h2 id="asset-register-title">Asset and prepaid register</h2></div><span className="attention-count">{workspace.assets.length}</span></div>
@@ -243,7 +246,7 @@ export function AssetWorkspace({ workspace }: {
       </table></div> : <p className="panel-note">Indefinite-life intangibles intentionally have no automatic amortization schedule.</p>}
     </section>
 
-    {workspace.canDraftSchedules && workspace.categories.length > 0 && <section className="panel" aria-labelledby="new-asset-title">
+    {workspace.canDraftSchedules && workspace.categories.length > 0 && <CompactDisclosure summary="Create an asset or prepaid"><section className="panel" aria-labelledby="new-asset-title">
       <div className="panel-heading"><div><p className="eyebrow">New register item</p><h2 id="new-asset-title">Create an asset or prepaid</h2></div></div>
       <form className="settings-form" action={(data) => void submitAsset(data)}>
         <label><span>Category</span><select name="categoryId" required>{workspace.categories.map((category) => <option key={category.id} value={category.id}>{category.kind} · {category.code} · {category.displayName}</option>)}</select></label>
@@ -259,9 +262,9 @@ export function AssetWorkspace({ workspace }: {
         <label><span>Source reference</span><input name="sourceReference" maxLength={200} /></label>
         <button className="primary-button" disabled={busy !== null}>{busy === "asset" ? "Creating…" : "Create register record"}</button>
       </form>
-    </section>}
+    </section></CompactDisclosure>}
 
-    {workspace.canManageCategories && workspace.accounts.length > 0 && <section className="panel" aria-labelledby="asset-category-title">
+    {workspace.canManageCategories && workspace.accounts.length > 0 && <CompactDisclosure summary="Configure an asset category"><section className="panel" aria-labelledby="asset-category-title">
       <div className="panel-heading"><div><p className="eyebrow">Account mappings</p><h2 id="asset-category-title">Create a category</h2></div></div>
       <form className="settings-form" action={(data) => void submitCategory(data)}>
         <input type="hidden" name="legalEntityId" value={categoryAccounts[0]?.legalEntityId ?? ""} />
@@ -273,6 +276,6 @@ export function AssetWorkspace({ workspace }: {
         {(["costAccountCombinationId", "contraAccountCombinationId", "expenseAccountCombinationId", "impairmentAccountCombinationId", "disposalAccountCombinationId"] as const).map((name) => <label key={name}><span>{name === "costAccountCombinationId" ? "Cost / prepaid account" : name === "contraAccountCombinationId" ? "Accumulated depreciation / amortization" : name === "expenseAccountCombinationId" ? "Recognition expense account" : name === "impairmentAccountCombinationId" ? "Impairment expense account" : "Disposal expense account"}</span><select name={name} required={["costAccountCombinationId", "expenseAccountCombinationId"].includes(name)}><option value="">Not applicable</option>{categoryAccounts.map((account) => <option key={account.id} value={account.id}>{account.code} · {account.displayName} · {account.class}</option>)}</select></label>)}
         <button className="primary-button" disabled={busy !== null}>{busy === "category" ? "Creating…" : "Create category"}</button>
       </form>
-    </section>}
+    </section></CompactDisclosure>}
   </>;
 }

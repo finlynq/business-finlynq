@@ -65,6 +65,25 @@ describe("remote MCP OAuth protocol", () => {
     }
   });
 
+  it("allows production HTTP only for the isolated loopback Playwright server", () => {
+    expect(() => oauthPublicOrigin(undefined, {
+      NODE_ENV: "production",
+      APP_ORIGIN: "http://127.0.0.1:3000",
+    })).toThrow(/must use HTTPS/);
+    expect(oauthPublicOrigin(undefined, {
+      NODE_ENV: "production",
+      APP_ORIGIN: "http://127.0.0.1:3000",
+      ALLOW_INSECURE_TEST_ORIGIN: "true",
+      BUSINESS_FINLYNQ_TEST_CONTEXT: "playwright",
+    }).origin).toBe("http://127.0.0.1:3000");
+    expect(() => oauthPublicOrigin(undefined, {
+      NODE_ENV: "production",
+      APP_ORIGIN: "http://business.finlynq.com",
+      ALLOW_INSECURE_TEST_ORIGIN: "true",
+      BUSINESS_FINLYNQ_TEST_CONTEXT: "playwright",
+    })).toThrow(/must use HTTPS/);
+  });
+
   it("requires secure redirect URIs except for loopback development clients", () => {
     expect(validateRedirectUri("https://claude.example/callback")).toBe("https://claude.example/callback");
     expect(validateRedirectUri("http://127.0.0.1:8765/callback")).toBe("http://127.0.0.1:8765/callback");

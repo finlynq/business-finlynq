@@ -9,25 +9,32 @@ export type NavigationItem = Readonly<{
   label: string;
   href: string;
   badge?: string;
+  group?: "Daily work" | "Review & close" | "Administration";
 }>;
 
-function isCurrentRoute(pathname: string, href: string): boolean {
-  return href === "/app" ? pathname === "/app" : pathname === href || pathname.startsWith(`${href}/`);
+export function currentNavigationHref(pathname: string, items: readonly NavigationItem[]): string | undefined {
+  return items.filter(({ href }) => href === "/app"
+    ? pathname === href
+    : pathname === href || pathname.startsWith(`${href}/`))
+    .sort((left, right) => right.href.length - left.href.length)[0]?.href;
 }
 
 function NavigationLinks({
   items,
+  allItems,
   onNavigate,
 }: {
   items: readonly NavigationItem[];
+  allItems: readonly NavigationItem[];
   onNavigate?: () => void;
 }) {
   const pathname = usePathname();
+  const activeHref = currentNavigationHref(pathname, allItems);
 
   return (
     <ul className="nav-list">
       {items.map((item) => {
-        const current = isCurrentRoute(pathname, item.href);
+        const current = activeHref === item.href;
         return (
           <li key={item.href}>
             <Link
@@ -56,12 +63,24 @@ export function DesktopNavigation({
 }) {
   return (
     <nav className="desktop-navigation" aria-label="Workspace">
-      <p className="nav-label">Workspace</p>
-      <NavigationLinks items={workspaceItems} />
-      <p className="nav-label nav-label-spaced">Connections</p>
-      <NavigationLinks items={connectionItems} />
+      <NavigationGroups workspaceItems={workspaceItems} connectionItems={connectionItems} />
     </nav>
   );
+}
+
+function NavigationGroups({ workspaceItems, connectionItems, onNavigate }: {
+  workspaceItems: readonly NavigationItem[];
+  connectionItems: readonly NavigationItem[];
+  onNavigate?: () => void;
+}) {
+  const allItems = [...workspaceItems, ...connectionItems];
+  return <>{(["Daily work", "Review & close", "Administration"] as const).map((group) => {
+    const items = allItems.filter((item) => (item.group ?? "Daily work") === group);
+    return items.length > 0 && <div className="nav-group" key={group}>
+      <p className="nav-label">{group}</p>
+      <NavigationLinks items={items} allItems={allItems} onNavigate={onNavigate} />
+    </div>;
+  })}</>;
 }
 
 export function MobileNavigation({
@@ -80,6 +99,8 @@ export function MobileNavigation({
 
   useEffect(() => {
     if (!open) return;
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
     closeRef.current?.focus();
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
@@ -110,7 +131,10 @@ export function MobileNavigation({
       }
     };
     window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      window.removeEventListener("keydown", handleKeyDown);
+    };
   }, [open]);
 
   const close = () => {
@@ -143,10 +167,7 @@ export function MobileNavigation({
               <button ref={closeRef} className="icon-button close-button" type="button" aria-label="Close navigation" onClick={close}>×</button>
             </div>
             <nav aria-label="Mobile workspace">
-              <p className="nav-label">Workspace</p>
-              <NavigationLinks items={workspaceItems} onNavigate={close} />
-              <p className="nav-label nav-label-spaced">Connections</p>
-              <NavigationLinks items={connectionItems} onNavigate={close} />
+              <NavigationGroups workspaceItems={workspaceItems} connectionItems={connectionItems} onNavigate={close} />
             </nav>
           </div>
         </div>

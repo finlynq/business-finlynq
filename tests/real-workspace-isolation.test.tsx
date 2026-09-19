@@ -199,6 +199,7 @@ import InvoicesPage from "@/app/(workspace)/receivables/invoices/page";
 import { GET as trialBalanceCsv } from "@/app/(workspace)/reports/trial-balance.csv/route";
 import TrialBalancePage from "@/app/(workspace)/reports/trial-balance/page";
 import TaxPage from "@/app/(workspace)/tax/page";
+import { CompactDisclosure } from "@/app/_components/compact-disclosure.client";
 import { PartyCreateForm } from "@/app/_components/party-create-form.client";
 import { WorkspaceShell } from "@/app/_components/workspace-shell";
 
@@ -265,7 +266,7 @@ describe("real organization workspace isolation", () => {
       BillsPage({ searchParams: Promise.resolve({}) }),
       InvoicesPage({ searchParams: Promise.resolve({}) }),
       TrialBalancePage({ searchParams: Promise.resolve({}) }),
-      TaxPage({ searchParams: Promise.resolve({}) }),
+      TaxPage({ searchParams: Promise.resolve({ view: "transactions" }) }),
     ]);
     for (const page of pages) {
       const output = serialized(page);
@@ -406,10 +407,17 @@ describe("real organization workspace isolation", () => {
     }]);
     const parties = await PartiesPage({ searchParams: Promise.resolve({}) });
     const children = (parties.props as { children: unknown[] }).children;
-    const form = children.find((child) => (
-      typeof child === "object" && child !== null && "type" in child && child.type === PartyCreateForm
-    )) as { props?: Record<string, unknown> } | undefined;
-    expect(form).toBeDefined();
+    const disclosure = children.find((child) => (
+      typeof child === "object" && child !== null && "type" in child
+        && child.type === CompactDisclosure
+    )) as { props?: { children?: unknown; defaultOpen?: boolean; summary?: unknown } } | undefined;
+    const form = disclosure?.props?.children as {
+      type?: unknown;
+      props?: Record<string, unknown>;
+    } | undefined;
+    expect(disclosure?.props?.summary).toBe("New party");
+    expect(disclosure?.props?.defaultOpen).toBe(true);
+    expect(form?.type).toBe(PartyCreateForm);
     expect(form?.props).not.toHaveProperty("accountOptions");
     expect(mocks.loadPartyAccountCreationOptions).toHaveBeenCalledWith(mocks.principal);
     expect(serialized(parties)).not.toContain("Northstar");
@@ -441,7 +449,12 @@ describe("real organization workspace isolation", () => {
     });
     const searchEntries = findSearchEntries(shell);
     expect(searchEntries.length).toBeGreaterThan(0);
-    for (const entry of demoSearchIndex) expect(searchEntries.map((item) => item.label)).not.toContain(entry.title);
+    for (const entry of demoSearchIndex) {
+      // Generic report names are valid navigation for every organization;
+      // synthetic record names and demo-specific report details are not.
+      if (entry.kind !== "report") expect(searchEntries.map((item) => item.label)).not.toContain(entry.title);
+      expect(serialized(searchEntries)).not.toContain(entry.subtitle);
+    }
 
     const response = await trialBalanceCsv(new NextRequest("http://localhost/app/reports/trial-balance.csv"));
     expect(response.status).toBe(200);

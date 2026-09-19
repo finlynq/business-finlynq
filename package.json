@@ -25,6 +25,7 @@
     "journal-types:generate-seed": "tsx scripts/operations/generate-journal-type-seed.ts --write",
     "journal-types:check-seed": "tsx scripts/operations/generate-journal-type-seed.ts --check",
     "journal-types:verify-db": "tsx scripts/operations/verify-journal-type-registry.ts",
+    "tax-templates:generate-seed": "tsx scripts/operations/generate-tax-filing-template-seed.ts",
     "db:migrate": "drizzle-kit migrate",
     "org:onboard": "tsx scripts/onboard-organization.ts",
     "demo:bootstrap": "tsx scripts/bootstrap-demo.ts",

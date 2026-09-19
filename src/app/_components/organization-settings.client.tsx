@@ -1,8 +1,11 @@
 "use client";
 
+import { CompactDisclosure } from "./compact-disclosure.client";
+
 import { useMemo, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
+import { MutationFeedback } from "@/app/_components/mutation-feedback.client";
 import type {
   OrganizationAdministrationDto,
   OrganizationMemberDto,
@@ -103,14 +106,7 @@ export function OrganizationSettings({ workspace }: { workspace: OrganizationAdm
 
   return (
     <div className="settings-layout">
-      {feedback && (
-        <div
-          className={`validation-message ${feedback.kind === "error" ? "validation-error" : "validation-success"}`}
-          role={feedback.kind === "error" ? "alert" : "status"}
-        >
-          {feedback.message}
-        </div>
-      )}
+      {feedback && <MutationFeedback {...feedback} onDismiss={() => setFeedback(null)} />}
 
       {!workspace.isDemo && !stepUpComplete && (
         <section className="panel form-panel settings-step-up" aria-labelledby="settings-step-up-title">
@@ -134,7 +130,7 @@ export function OrganizationSettings({ workspace }: { workspace: OrganizationAdm
         </section>
       )}
 
-      <section className="panel form-panel" aria-labelledby="organization-profile-title">
+      <CompactDisclosure summary={<>Business profile · {workspace.displayName}</>}><section className="panel form-panel" aria-labelledby="organization-profile-title">
         <div className="panel-heading">
           <span className="eyebrow">Organization</span>
           <h2 id="organization-profile-title">Business profile</h2>
@@ -161,9 +157,9 @@ export function OrganizationSettings({ workspace }: { workspace: OrganizationAdm
             </button>
           </div>
         </form>
-      </section>
+      </section></CompactDisclosure>
 
-      <section className="panel form-panel" aria-labelledby="trusted-browser-policy-title">
+      <CompactDisclosure summary={<>Trusted-browser policy · {workspace.trustedBrowserPolicy.enabled ? `${workspace.trustedBrowserPolicy.durationDays} days` : "Off"}</>}><section className="panel form-panel" aria-labelledby="trusted-browser-policy-title">
         <div className="panel-heading">
           <span className="eyebrow">Sign-in security</span>
           <h2 id="trusted-browser-policy-title">Trusted-browser MFA policy</h2>
@@ -219,10 +215,10 @@ export function OrganizationSettings({ workspace }: { workspace: OrganizationAdm
             </button>
           </div>
         </form>
-      </section>
+      </section></CompactDisclosure>
 
       {workspace.permissions.canManageMembers && (
-        <section className="panel form-panel" aria-labelledby="invite-member-title">
+        <CompactDisclosure summary="Invite a team member"><section className="panel form-panel" aria-labelledby="invite-member-title">
           <div className="panel-heading">
             <span className="eyebrow">Controlled onboarding</span>
             <h2 id="invite-member-title">Invite a team member</h2>
@@ -251,7 +247,7 @@ export function OrganizationSettings({ workspace }: { workspace: OrganizationAdm
             <p className="form-footnote">One email can belong to one organization in this version. Existing identities are rejected without revealing where they are registered.</p>
             <div className="form-actions"><button className="primary-button" type="submit" disabled={busy !== null || !inviteRole}>{busy === "invite" ? "Creating…" : workspace.isDemo ? "Create synthetic invitation" : "Send invitation"}</button></div>
           </form>
-        </section>
+        </section></CompactDisclosure>
       )}
 
       <section className="panel member-access-panel" aria-labelledby="member-access-title">

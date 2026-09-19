@@ -33,10 +33,10 @@
 
 .filters {
   display: grid;
-  grid-template-columns: repeat(6, minmax(130px, 1fr));
-  gap: 12px;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
   align-items: end;
-  padding: 17px;
+  padding: 12px;
   border: 1px solid var(--line);
   border-radius: 10px;
   background: #fff;
@@ -46,16 +46,16 @@
 .filters label {
   min-width: 0;
   display: grid;
-  gap: 6px;
+  gap: 4px;
   color: #42566d;
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 800;
 }
 
 .filters select,
 .filters input {
   width: 100%;
-  min-height: 42px;
+  min-height: 36px;
   padding: 0 10px;
   border: 1px solid #c4d1dc;
   border-radius: 7px;
@@ -71,6 +71,11 @@
   grid-column: span 1;
 }
 
+.advanced { grid-column:1/-1; border-top:1px solid var(--line); }
+.advanced summary { display:list-item; min-height:36px; padding:9px 0; color:var(--accent-dark); cursor:pointer; font-size:12px; font-weight:750; }
+.advanced summary:focus-visible { outline:3px solid #1c83c3; outline-offset:2px; }
+.dimensionGrid { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:12px; padding:8px 0 14px; }
+
 .actions {
   display: flex;
   flex-wrap: wrap;
@@ -81,17 +86,20 @@
   grid-column: 1 / -1;
   margin: -2px 0 0;
   color: var(--muted);
-  font-size: 11px;
+  font-size: 12px;
   line-height: 1.5;
 }
 
 @media (max-width: 1180px) {
-  .filters { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .filters { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 
 @media (max-width: 700px) {
   .navigation { display: grid; grid-template-columns: repeat(2, 1fr); }
-  .filters { grid-template-columns: 1fr; }
-  .account, .hint { grid-column: auto; }
-  .actions { display: grid; grid-template-columns: 1fr; }
+  .account, .hint { grid-column: 1/-1; }
 }
+.rangeField[hidden] { display:none; }
+.hint summary { min-height:36px; padding-block:9px; cursor:pointer; color:var(--accent-dark); }
+.hint p { margin:4px 0 0; }
+@media(pointer:coarse),(max-width:860px) { .filters select,.filters input { min-height:44px; font-size:16px; } .advanced summary,.hint summary { min-height:44px; } }
+@media(max-width:360px) { .filters { grid-template-columns:1fr; } }

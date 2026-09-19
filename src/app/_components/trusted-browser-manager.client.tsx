@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
+import { MutationFeedback } from "@/app/_components/mutation-feedback.client";
 
 export type TrustedBrowserView = Readonly<{
   id: string;
@@ -34,20 +35,20 @@ export function TrustedBrowserManager({
   const router = useRouter();
   const [browsers, setBrowsers] = useState(initialBrowsers);
   const [busy, setBusy] = useState<string | null>(null);
-  const [feedback, setFeedback] = useState("");
+  const [feedback, setFeedback] = useState<Readonly<{ kind: "success" | "error"; message: string }> | null>(null);
 
   async function revoke(browserId: string) {
     setBusy(browserId);
-    setFeedback("");
+    setFeedback(null);
     try {
       const response = await fetch(`/api/auth/trusted-browsers/${encodeURIComponent(browserId)}`, {
         method: "DELETE",
       });
       if (!response.ok) throw new Error(await responseMessage(response));
       setBrowsers((current) => current.filter((browser) => browser.id !== browserId));
-      setFeedback("The trusted browser was revoked. This browser may require MFA at its next login.");
+      setFeedback({ kind: "success", message: "The trusted browser was revoked. This browser may require MFA at its next login." });
     } catch (error) {
-      setFeedback(error instanceof Error ? error.message : "The trusted browser could not be revoked.");
+      setFeedback({ kind: "error", message: error instanceof Error ? error.message : "The trusted browser could not be revoked." });
     } finally {
       setBusy(null);
     }
@@ -55,14 +56,14 @@ export function TrustedBrowserManager({
 
   async function revokeAll() {
     setBusy("all");
-    setFeedback("");
+    setFeedback(null);
     try {
       const response = await fetch("/api/auth/trusted-browsers", { method: "DELETE" });
       if (!response.ok) throw new Error(await responseMessage(response));
       setBrowsers([]);
-      setFeedback("All trusted browsers were revoked.");
+      setFeedback({ kind: "success", message: "All trusted browsers were revoked." });
     } catch (error) {
-      setFeedback(error instanceof Error ? error.message : "Trusted browsers could not be revoked.");
+      setFeedback({ kind: "error", message: error instanceof Error ? error.message : "Trusted browsers could not be revoked." });
     } finally {
       setBusy(null);
     }
@@ -70,20 +71,20 @@ export function TrustedBrowserManager({
 
   async function logoutAll() {
     setBusy("sessions");
-    setFeedback("");
+    setFeedback(null);
     try {
       const response = await fetch("/api/auth/sessions", { method: "DELETE" });
       if (!response.ok) throw new Error(await responseMessage(response));
       router.push("/login");
     } catch (error) {
-      setFeedback(error instanceof Error ? error.message : "Sessions could not be revoked.");
+      setFeedback({ kind: "error", message: error instanceof Error ? error.message : "Sessions could not be revoked." });
       setBusy(null);
     }
   }
 
   return (
     <>
-      {feedback && <div className="validation-message" role="status">{feedback}</div>}
+      {feedback && <MutationFeedback {...feedback} onDismiss={() => setFeedback(null)} />}
       {browsers.length === 0 ? (
         <p className="panel-note">No active trusted browsers. If your organization permits it, the option appears only after your password is accepted and MFA is requested during sign-in.</p>
       ) : (

@@ -114,13 +114,30 @@ export function parseToolOverrides(value: unknown): Record<string, McpToolOverri
   return output;
 }
 
-export function oauthPublicOrigin(requestUrl?: string): URL {
-  const configured = process.env.BUSINESS_FINLYNQ_PUBLIC_URL?.trim() || process.env.APP_ORIGIN?.trim();
+type McpProtocolEnvironment = Readonly<Record<string, string | undefined>>;
+
+function allowsInsecureLoopbackTestOrigin(
+  environment: McpProtocolEnvironment,
+  origin: URL,
+): boolean {
+  return environment.ALLOW_INSECURE_TEST_ORIGIN === "true" &&
+    environment.BUSINESS_FINLYNQ_TEST_CONTEXT === "playwright" &&
+    origin.protocol === "http:" &&
+    (origin.hostname === "127.0.0.1" || origin.hostname === "localhost");
+}
+
+export function oauthPublicOrigin(
+  requestUrl?: string,
+  environment: McpProtocolEnvironment = process.env,
+): URL {
+  const configured = environment.BUSINESS_FINLYNQ_PUBLIC_URL?.trim() ||
+    environment.APP_ORIGIN?.trim();
   const origin = new URL(configured || requestUrl || "http://localhost:3000");
   origin.pathname = "/";
   origin.search = "";
   origin.hash = "";
-  if (process.env.NODE_ENV === "production" && origin.protocol !== "https:") {
+  if (environment.NODE_ENV === "production" && origin.protocol !== "https:" &&
+      !allowsInsecureLoopbackTestOrigin(environment, origin)) {
     throw new Error("BUSINESS_FINLYNQ_PUBLIC_URL must use HTTPS in production");
   }
   if (origin.protocol !== "https:" && !(origin.protocol === "http:" && ["localhost", "127.0.0.1", "[::1]"].includes(origin.hostname))) {

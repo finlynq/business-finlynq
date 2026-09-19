@@ -1,5 +1,6 @@
 export * from "./audit";
 export * from "./evidence";
+export * from "./email";
 export * from "./document-storage";
 export * from "./auth";
 export * from "./assets";

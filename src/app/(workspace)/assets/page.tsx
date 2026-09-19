@@ -10,9 +10,10 @@ export default async function AssetsPage() {
     <PageHeader
       eyebrow="Asset, intangible and prepaid subledgers"
       title="Assets and prepaids"
-      description="Maintain mapped registers, deterministic straight-line schedules, lifecycle evidence, and balanced journal drafts. Posted schedule journals drive the register-to-GL roll-forward."
+      description="Track asset costs, remaining balances and recognition schedules. Compare the register with the ledger, then prepare journals for amounts due."
     />
     {workspace.isDemo && <DemoNotice>Synthetic asset and prepaid records reset nightly. Journal drafts still follow the normal period and posting controls.</DemoNotice>}
     <AssetWorkspace workspace={workspace} />
   </div>;
 }
+export const metadata = { title: "Assets and prepaids" };

@@ -2,6 +2,7 @@
 
 import { useMemo, useState } from "react";
 import Link from "next/link";
+import { MutationFeedback } from "@/app/_components/mutation-feedback.client";
 import type { PeriodControlWorkspaceDto } from "@/modules/ledger/tenant-workspace";
 
 type Period = PeriodControlWorkspaceDto["periods"][number];
@@ -184,7 +185,7 @@ export function PeriodTransitionForm({ workspace }: { workspace: PeriodControlWo
           </label>
           <label>
             <span>Audit reason</span>
-            <textarea value={reason} onChange={(event) => { setReason(event.target.value); changeCommand(); }} rows={4} minLength={20} maxLength={500} disabled={busy} placeholder="Explain why this controlled state change is required." />
+            <textarea value={reason} onChange={(event) => { setReason(event.target.value); changeCommand(); }} rows={3} minLength={20} maxLength={500} disabled={busy} placeholder="Explain why this controlled state change is required." />
           </label>
           {needsStepUp && !stepUpReady && (
             workspace.demoOnly ? (
@@ -203,7 +204,7 @@ export function PeriodTransitionForm({ workspace }: { workspace: PeriodControlWo
           {selected?.state === "SEALED" && <p className="validation-message validation-error">A sealed period is immutable and cannot be reopened by the application.</p>}
           {blockedByDrafts && <p className="validation-message validation-error">{selected?.unpostedJournalCount} unposted journal{selected?.unpostedJournalCount === 1 ? "" : "s"} must be resolved first.</p>}
           {toState === "SEALED" && <p className="validation-message validation-error"><strong>Irreversible action.</strong> Sealing permanently prevents application reopening.</p>}
-          {message && <p className={`validation-message ${message.kind === "success" ? "validation-success" : "validation-error"}`} role={message.kind === "error" ? "alert" : "status"}>{message.text}</p>}
+          {message && <MutationFeedback kind={message.kind} message={message.text} onDismiss={() => setMessage(null)} />}
           <div className="form-actions">
             <button type="submit" className="primary-button" disabled={busy || !toState || availableTargets.length === 0 || blockedByDrafts}>{busy ? "Applying…" : "Apply controlled transition"}</button>
           </div>

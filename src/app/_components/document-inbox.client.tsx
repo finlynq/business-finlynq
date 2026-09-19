@@ -1,5 +1,8 @@
 "use client";
+
+import { CompactDisclosure } from "./compact-disclosure.client";
 import { useState, type FormEvent } from "react";
+import { MutationFeedback } from "@/app/_components/mutation-feedback.client";
 import type { listStorageConnections } from "@/modules/document-storage/connections";
 import type { listDocumentInbox } from "@/modules/document-storage/inbox";
 import type { StorageProvider } from "@/modules/document-storage/model";
@@ -72,13 +75,31 @@ export function DocumentInbox({ initialConnections, initialInbox, entities, perm
     });
   }
   return <>
-    <section className="panel">
+    <section className="panel"><div className="panel-heading"><h2>Documents</h2><button className="secondary-button" disabled={busy} onClick={() => void perform(() => refresh())}>Refresh</button></div>
+      <div className="document-actions">
+        <label>Status <select aria-label="Document status" value={filter} disabled={busy} onChange={(event) => { setFilter(event.target.value); void perform(() => refresh(event.target.value)); }}><option value="">All statuses</option>{Object.entries(statusLabel).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
+        <label>Inbox <select aria-label="Document inbox filter" value={connectionFilter} disabled={busy} onChange={(event) => { setConnectionFilter(event.target.value); void perform(() => refresh(filter, event.target.value)); }}><option value="">All inboxes</option>{connections.map((c) => <option value={c.id} key={c.id}>{c.label}</option>)}</select></label>
+      </div>
+      <div className="table-scroll" tabIndex={0} aria-label="Document inbox; scroll horizontally if needed"><table><thead><tr><th>Document</th><th>Status</th><th>Details</th><th>Action</th></tr></thead><tbody>
+        {inbox.items.map((item) => <tr key={item.id}><td>{item.canonicalName ?? item.filename}<p className="panel-note">{item.canonicalName ? item.filename : `${Math.ceil(item.byteSize / 1024)} KB`}{item.sourcePath !== item.filename ? ` · ${item.sourcePath}` : ""}</p></td><td>{statusLabel[item.status]}{item.leaseUntil && item.status === "CLAIMED" && <p className="panel-note">Claim until {new Date(item.leaseUntil).toLocaleTimeString()}</p>}</td><td>{item.reason ?? (item.sourceDocumentId ? "Linked to an accounting draft" : "")}</td><td>
+          {permissions[item.module] && (item.status === "FILING_FAILED" || item.status === "READY_TO_FILE") && <button className="secondary-button" disabled={busy} onClick={() => void perform(async () => { await request("retry", { itemId: item.id }); await refresh(); setMessage("Document filed."); })}>Retry filing</button>}
+          {item.status === "NEEDS_REVIEW" && <span className="panel-note">Ask your AI client to review this item.</span>}
+        </td></tr>)}
+      </tbody></table></div>
+      {!inbox.items.length && <p>No documents match this view. Add files to a connected inbox and sync it.</p>}
+      {inbox.nextCursor && <button className="secondary-button" disabled={busy} onClick={() => void perform(() => refresh(filter, connectionFilter, inbox.nextCursor!))}>Load more</button>}
+    </section>
+    <CompactDisclosure summary="How document processing works" className="document-workflow"><section className="panel">
       <div className="panel-heading"><div><p className="eyebrow">Processing</p><h2>Use your connected AI client</h2></div></div>
       <p>Ask Codex or ChatGPT: “Sync my FinLynQ document inbox, read each invoice, create the appropriate drafts, and file the originals. Send uncertain items for review.”</p>
       <p className="panel-note">Files stay in your drive. FinLynQ stores attachment details and accounting records. Processing uses your AI client; no AI API key is required here. Filing a document does not post or pay its invoice.</p>
-    </section>
-    {error && <p role="alert" className="panel-note">{error}</p>}{message && <p role="status" className="panel-note">{message}</p>}
-    {permissions.admin && <section className="panel form-panel"><div className="panel-heading"><h2>Connect document storage</h2></div>
+    </section></CompactDisclosure>
+    {error
+      ? <MutationFeedback kind="error" message={error} onDismiss={() => setError("")} />
+      : message
+        ? <MutationFeedback kind="success" message={message} onDismiss={() => setMessage("")} />
+        : null}
+    {permissions.admin && <CompactDisclosure summary="Connect document storage" defaultOpen={initialConnections.length === 0}><section className="panel form-panel"><div className="panel-heading"><h2>Connect document storage</h2></div>
       <form className="close-form" onSubmit={(event) => { void connect(event); }}>
         <label><span>Provider</span><select value={provider} onChange={(event) => setProvider(event.target.value as StorageProvider)}>{providers.map((p) => <option key={p.provider} value={p.provider}>{providerLabel(p.provider)}{!p.configured ? " — unavailable" : ""}</option>)}</select></label>
         <label><span>Company</span><select name="entity" required>{entities.map((entity) => <option key={entity.id} value={entity.id}>{entity.display_name}</option>)}</select></label>
@@ -93,13 +114,13 @@ export function DocumentInbox({ initialConnections, initialInbox, entities, perm
         <button className="primary-button" disabled={busy || !entities.length || !storageAccessPolicy(provider).newConnections || !providers.find((p) => p.provider === provider)?.configured}>Connect {providerLabel(provider)}</button>
         {storageAccessPolicy(provider).newConnections && !providers.find((p) => p.provider === provider)?.configured && <p className="panel-note">FinLynQ’s connection to {providerLabel(provider)} is not enabled yet. Once available, you can sign in with your own account here.</p>}
       </form>
-    </section>}
+    </section></CompactDisclosure>}
     <section className="panel"><div className="panel-heading"><h2>Connected folders</h2></div>
       {!connections.length && <p>No storage connections yet. An organization administrator can connect a drive above.</p>}
       {connections.map((connection) => <div className="document-connection" key={connection.id}>
         <h3>{connection.label} · {providerLabel(connection.provider)}</h3><p>{entities.find((entity) => entity.id === connection.legalEntityId)?.display_name} · {connection.module === "payables" ? "Purchases" : "Sales"} · {connection.active ? "Connected" : "Disconnected"}</p>
         <p className="panel-note">{connection.access.description}</p>
-        {permissions.admin && <label className="document-sharing-consent"><input type="checkbox" checked={Boolean(reconnectConsent[connection.id])} onChange={(event) => setReconnectConsent({ ...reconnectConsent, [connection.id]: event.target.checked })} /><span>When reconnecting, I authorize the access described above and continued sharing with this company’s accounting module. Use the original account; the saved folder locations will be retained.</span></label>}
+
         <div className="document-actions">
           {connection.inboxUrl && <a className="secondary-button" href={connection.inboxUrl} target="_blank" rel="noopener noreferrer">Open inbox folder</a>}
           {connection.archiveUrl && <a className="secondary-button" href={connection.archiveUrl} target="_blank" rel="noopener noreferrer">Open archive</a>}
@@ -107,26 +128,13 @@ export function DocumentInbox({ initialConnections, initialInbox, entities, perm
             <button className="secondary-button" disabled={busy} onClick={() => void perform(async () => { const result = await request("sync", { connectionId: connection.id }); await refresh(); setMessage(result.hasMore ? "More files are available. Sync again to continue." : "Inbox sync complete."); })}>Sync inbox</button>
             <label className="secondary-button">Upload document<input type="file" accept=".pdf,.png,.jpg,.jpeg,.csv,.tsv,.txt,.xls,.xlsx" disabled={busy} onChange={(event) => { const file = event.currentTarget.files?.[0]; event.currentTarget.value = ""; if (file) void upload(connection.id, file); }} /></label>
           </>}
-          {permissions.admin && <>
+
+        </div>{permissions.admin && <CompactDisclosure summary="Manage connection and sharing" defaultOpen={!connection.active}>{permissions.admin && <label className="document-sharing-consent"><input type="checkbox" checked={Boolean(reconnectConsent[connection.id])} onChange={(event) => setReconnectConsent({ ...reconnectConsent, [connection.id]: event.target.checked })} /><span>When reconnecting, I authorize the access described above and continued sharing with this company’s accounting module. Use the original account; the saved folder locations will be retained.</span></label>}<div className="document-actions">{permissions.admin && <>
             <button className="secondary-button" disabled={busy || !reconnectConsent[connection.id] || !providers.find((p) => p.provider === connection.provider)?.configured} onClick={() => void perform(async () => { const result = await request("connect", { provider: connection.provider, legalEntityId: connection.legalEntityId, module: connection.module, label: connection.label, connectionId: connection.id, sharedWithOrganization: true, accessAcknowledged: reconnectConsent[connection.id] }); window.location.assign(result.authorizationUrl); })}>Reconnect</button>
             {connection.active && <button className="secondary-button" disabled={busy} onClick={() => void perform(async () => { await request("disconnect", { connectionId: connection.id }); await refresh(); setMessage("Disconnected. Files remain in the cloud account."); })}>Disconnect</button>}
-          </>}
-        </div><p className="panel-note">Last complete sync: {connection.lastSyncedAt ? new Date(connection.lastSyncedAt).toLocaleString() : "Not yet synced"}</p>
+          </>}</div></CompactDisclosure>}<p className="panel-note">Last complete sync: {connection.lastSyncedAt ? new Date(connection.lastSyncedAt).toLocaleString() : "Not yet synced"}</p>
       </div>)}
     </section>
-    <section className="panel"><div className="panel-heading"><h2>Documents</h2><button className="secondary-button" disabled={busy} onClick={() => void perform(() => refresh())}>Refresh</button></div>
-      <div className="document-actions">
-        <label>Status <select aria-label="Document status" value={filter} disabled={busy} onChange={(event) => { setFilter(event.target.value); void perform(() => refresh(event.target.value)); }}><option value="">All statuses</option>{Object.entries(statusLabel).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
-        <label>Inbox <select aria-label="Document inbox filter" value={connectionFilter} disabled={busy} onChange={(event) => { setConnectionFilter(event.target.value); void perform(() => refresh(filter, event.target.value)); }}><option value="">All inboxes</option>{connections.map((c) => <option value={c.id} key={c.id}>{c.label}</option>)}</select></label>
-      </div>
-      <div className="table-scroll"><table><thead><tr><th>Document</th><th>Status</th><th>Details</th><th>Action</th></tr></thead><tbody>
-        {inbox.items.map((item) => <tr key={item.id}><td>{item.canonicalName ?? item.filename}<p className="panel-note">{item.canonicalName ? item.filename : `${Math.ceil(item.byteSize / 1024)} KB`}{item.sourcePath !== item.filename ? ` · ${item.sourcePath}` : ""}</p></td><td>{statusLabel[item.status]}{item.leaseUntil && item.status === "CLAIMED" && <p className="panel-note">Claim until {new Date(item.leaseUntil).toLocaleTimeString()}</p>}</td><td>{item.reason ?? (item.sourceDocumentId ? "Linked to an accounting draft" : "")}</td><td>
-          {permissions[item.module] && (item.status === "FILING_FAILED" || item.status === "READY_TO_FILE") && <button className="secondary-button" disabled={busy} onClick={() => void perform(async () => { await request("retry", { itemId: item.id }); await refresh(); setMessage("Document filed."); })}>Retry filing</button>}
-          {item.status === "NEEDS_REVIEW" && <span className="panel-note">Ask your AI client to review this item.</span>}
-        </td></tr>)}
-      </tbody></table></div>
-      {!inbox.items.length && <p>No documents match this view. Add files to a connected inbox and sync it.</p>}
-      {inbox.nextCursor && <button className="secondary-button" disabled={busy} onClick={() => void perform(() => refresh(filter, connectionFilter, inbox.nextCursor!))}>Load more</button>}
-    </section>
+
   </>;
 }

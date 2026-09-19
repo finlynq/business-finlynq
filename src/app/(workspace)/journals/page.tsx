@@ -1,4 +1,6 @@
 import Link from "next/link";
+import { ExpandableTableRow } from "../../_components/expandable-table-row.client";
+import { CompactDisclosure } from "../../_components/compact-disclosure.client";
 import { redirect } from "next/navigation";
 import { formatMoney } from "@/kernel/money";
 import { currentPrincipal } from "@/modules/identity/session";
@@ -43,7 +45,7 @@ export default async function JournalsPage({ searchParams }: { searchParams: Pro
       <PageHeader
         eyebrow="General ledger"
         title="Journals"
-        description="Review the debit, credit, and ending posted balance for every booked account. Manual-journal owner controls are audited; source-owned corrections stay in their source module."
+        description="Find journal entries, review debit and credit totals, and follow each entry back to its source. Open an entry for its full posting detail."
         actions={workspace.canDraft ? <Link className="primary-button" href="/app/journals/new">＋ New journal</Link> : undefined}
       />
       {workspace.demoOnly && <DemoNotice>This is one shared writable demo company. Everyone sees changes until the seeded company is restored nightly.</DemoNotice>}
@@ -71,33 +73,15 @@ export default async function JournalsPage({ searchParams }: { searchParams: Pro
                 const sourceHref = sourceModuleHref(journal);
                 const reversalPeriods = workspace.reversalPeriods.filter((period) => period.ledgerId === journal.ledgerId);
                 return (
-                  <tr key={journal.id}>
+                  <ExpandableTableRow key={journal.id} columns={8} label={`account postings for ${journal.number}`} cells={<>
                     <td><Link className="text-link compact-button" href={`/app/journals/${journal.id}`}>{journal.number}</Link><small>{journal.accountingDate} · {journal.entityCode}</small></td>
                     <td><strong>{journal.description}</strong><small>{journal.typeKey}{journal.reversalOfNumber ? ` · reverses ${journal.reversalOfNumber}` : ""}{journal.reversedByNumber ? ` · reversed by ${journal.reversedByNumber}` : ""}</small></td>
-                    <td>{journal.accountPostings?.length ? (
-                      <div className={styles.postingList}>
-                        {journal.accountPostings.map((posting) => (
-                          <div className={styles.posting} key={posting.canonicalKey}>
-                            <code title={accountKeyDisplayTitle(posting.displaySegments)}>{posting.displayKey}</code>
-                            <dl className={styles.postingAmounts}>
-                              <div><dt>Debit</dt><dd>{formatAmount(journal.currency, posting.debitFunctional)}</dd></div>
-                              <div><dt>Credit</dt><dd>{formatAmount(journal.currency, posting.creditFunctional)}</dd></div>
-                              <div><dt>Ending balance{posting.endingSide === "ZERO" ? "" : ` · ${posting.endingSide.toLowerCase()}`}</dt><dd>{formatAmount(journal.currency, posting.endingBalanceFunctional)}</dd></div>
-                            </dl>
-                          </div>
-                        ))}
-                      </div>
-                    ) : journal.accountKeys?.length ? journal.accountKeys.map((key) => (
-                      <small key={key.canonicalKey}>
-                        <code title={accountKeyDisplayTitle(key.displaySegments)}>{key.displayKey}</code>
-                      </small>
-                    )) : <span className="subtle-label">No lines</span>}</td>
+                    <td>{journal.accountPostings?.length ?? journal.accountKeys?.length ?? 0} account postings</td>
                     <td>{journal.ownerModule}</td>
                     <td className="amount-cell">{formatAmount(journal.currency, journal.debitFunctional ?? journal.amount)}</td>
                     <td className="amount-cell">{formatAmount(journal.currency, journal.creditFunctional ?? journal.amount)}</td>
                     <td><StatusPill status={journal.reversedByNumber ? "REVERSED" : journal.status} /></td>
-                    <td>
-                      <div className={styles.actions}>
+                    </>} actions={<div className={styles.actions}>
                         <Link className="text-link compact-button" href={`/app/journals/${journal.id}`}>View journal entry</Link>
                         {journal.canPost && journal.expectedContentHash && (
                           <JournalRegisterAction
@@ -108,7 +92,7 @@ export default async function JournalsPage({ searchParams }: { searchParams: Pro
                             action={{ kind: "post", expectedContentHash: journal.expectedContentHash }}
                           />
                         )}
-                        {journal.canReverse && reversalPeriods.length > 0 && (
+                        {(journal.canReverse || journal.canUnpost || journal.canDelete) && <CompactDisclosure summary="Corrections" className="inline-disclosure">                        {journal.canReverse && reversalPeriods.length > 0 && (
                           <JournalRegisterAction
                             key={`${journal.id}:reverse`}
                             journalId={journal.id}
@@ -135,13 +119,29 @@ export default async function JournalsPage({ searchParams }: { searchParams: Pro
                             requiresMfaStepUp={workspace.requiresMfaStepUp}
                           />
                         )}
+</CompactDisclosure>}
                         {sourceHref && (
                           <Link className="text-link compact-button" href={sourceHref}>Open {journal.ownerModule === "receivables" ? "AR" : "AP"} source</Link>
                         )}
                         {journal.reversedByNumber && <span className="subtle-label">Reversal posted</span>}
+                      </div>}><div className="posting-evidence">{journal.accountPostings?.length ? (
+                      <div className={styles.postingList}>
+                        {journal.accountPostings.map((posting) => (
+                          <div className={styles.posting} key={posting.canonicalKey}>
+                            <code title={accountKeyDisplayTitle(posting.displaySegments)}>{posting.displayKey}</code>
+                            <dl className={styles.postingAmounts}>
+                              <div><dt>Debit</dt><dd>{formatAmount(journal.currency, posting.debitFunctional)}</dd></div>
+                              <div><dt>Credit</dt><dd>{formatAmount(journal.currency, posting.creditFunctional)}</dd></div>
+                              <div><dt>Ending balance{posting.endingSide === "ZERO" ? "" : ` · ${posting.endingSide.toLowerCase()}`}</dt><dd>{formatAmount(journal.currency, posting.endingBalanceFunctional)}</dd></div>
+                            </dl>
+                          </div>
+                        ))}
                       </div>
-                    </td>
-                  </tr>
+                    ) : journal.accountKeys?.length ? journal.accountKeys.map((key) => (
+                      <small key={key.canonicalKey}>
+                        <code title={accountKeyDisplayTitle(key.displaySegments)}>{key.displayKey}</code>
+                      </small>
+                    )) : <span className="subtle-label">No lines</span>}</div></ExpandableTableRow>
                 );
               })}</tbody>
             </table>
@@ -158,3 +158,4 @@ export default async function JournalsPage({ searchParams }: { searchParams: Pro
     </div>
   );
 }
+export const metadata = { title: "Journals" };

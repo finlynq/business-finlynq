@@ -16,6 +16,8 @@ const capabilities = [
   { key: "AR", title: "Receivables", text: "Customer accounts, invoices, open items, tax decisions, and traceable subledger events." },
   { key: "AP", title: "Payables", text: "Supplier bills, due-date visibility, control accounts, and a shared party address book." },
   { key: "TX", title: "Modular tax", text: "Versioned jurisdiction packs designed first for Ontario and Washington, without hardwiring one country." },
+  { key: "BK", title: "Banking", text: "Connected feeds, statement imports and reconciliation against posted cash activity." },
+  { key: "AS", title: "Assets & prepaids", text: "Asset registers, recognition schedules and reconciliation back to the general ledger." },
 ] as const;
 
 export default function MarketingHomePage() {
@@ -39,7 +41,7 @@ export default function MarketingHomePage() {
               <ul className={styles.trustList} aria-label="Product principles">
                 <li>U.S. & Canada foundation</li><li>Multicurrency by design</li><li>Audit-first</li><li>AGPL open source</li>
               </ul>
-              <p className={styles.demoNote}>Each browser receives an isolated synthetic business for the day. Try the accounting workflows, return after logout if needed, and expect the seeded setup to return nightly.</p>
+              <p className={styles.demoNote}>Explore one shared synthetic business. Changes are visible to other visitors and reset nightly. Use sample information only.</p>
             </div>
             <div className={styles.heroPreview}><ProductPreview /></div>
           </div>
@@ -49,7 +51,7 @@ export default function MarketingHomePage() {
           <div className={styles.sectionIntro}>
             <p className={styles.kicker}>One accounting core</p>
             <h2 id="capability-title">A clean foundation, expanded in modules.</h2>
-            <p>Start with the workflows a small business needs today. Add inventory, projects, manufacturing, insurance, or other vertical modules without redesigning the ledger.</p>
+            <p>Follow everyday work from invoices and bills through banking, asset schedules, tax review and financial reports.</p>
           </div>
           <div className={styles.capabilityGrid}>
             {capabilities.map((item) => <article key={item.key}><span>{item.key}</span><h3>{item.title}</h3><p>{item.text}</p></article>)}
@@ -98,7 +100,7 @@ export default function MarketingHomePage() {
             <p className={styles.kicker}>AI with the same permission boundary</p>
             <h2 id="ai-title">Useful automation. Governed access.</h2>
           </div>
-          <p>Business Finlynq is being designed for future MCP access without creating a second security model. No public MCP endpoint is active in this preview. When enabled, reads and draft proposals will remain bounded by the user’s organization permissions, while posting, period close, and key administration stay explicit privileges.</p>
+          <p>Connect a compatible AI client through your organization’s AI & MCP settings. Choose its access to daily work and accounting setup, review write confirmations, and revoke a connection at any time. Every action stays subject to your role and accounting controls. External connections are disabled in the shared demo. <Link href="/docs/remote-mcp">Read the connection guide →</Link></p>
           <div className={styles.scopeStrip}><span>Read</span><span>Draft</span><span>Validate</span><span className={styles.lockedScope}>Post · privileged</span></div>
         </section>
 
@@ -118,7 +120,7 @@ export default function MarketingHomePage() {
         <section className={styles.finalCta} aria-labelledby="final-title">
           <p className={styles.kicker}>See the control model in context</p>
           <h2 id="final-title">Walk through a focused synthetic business.</h2>
-          <p>No registration and no credentials to type. Sessions last up to one hour with a 15-minute idle limit; the same browser can reopen its private synthetic business until the nightly reset.</p>
+          <p>No registration and no credentials to type. Explore the shared demo with sample data; sessions last up to one hour with a 15-minute idle limit, and changes reset nightly.</p>
           <div><Link href="/try-demo?next=/app" prefetch={false}>Open the live demo <span aria-hidden="true">→</span></Link><Link href="/signup">Create account</Link><Link href="/login">Sign in</Link></div>
         </section>
       </main>

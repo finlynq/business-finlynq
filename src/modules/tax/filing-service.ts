@@ -104,7 +104,7 @@ async function withAuthorizedTaxWrite<T>(input: Readonly<{
   requestId: string;
   permission: Permission;
   reason: string;
-  sourceSurface?: "API" | "IMPORT";
+  sourceSurface?: "API" | "IMPORT" | "MCP";
 }>, work: (client: PoolClient) => Promise<T>): Promise<T> {
   const context = mutationContext(input.principal, input.requestId, {
     reason: input.reason,
@@ -196,15 +196,22 @@ function normalizedMappings(command: z.output<typeof saveTaxAccountMappingsSchem
 export async function saveTaxAccountMappings(input: Readonly<{
   principal: SessionPrincipal;
   requestId: string;
+  sourceSurface?: "API" | "MCP";
 }> & SaveTaxAccountMappingsInput): Promise<Readonly<{
   mappingSetId: string;
   version: number;
   idempotentReplay: boolean;
 }>> {
   assertWritableTaxSession(input.principal);
-  const { principal: _principal, requestId: _requestId, ...unparsedCommand } = input;
+  const {
+    principal: _principal,
+    requestId: _requestId,
+    sourceSurface: _sourceSurface,
+    ...unparsedCommand
+  } = input;
   void _principal;
   void _requestId;
+  void _sourceSurface;
   const command = saveTaxAccountMappingsSchema.parse(unparsedCommand);
   const mappings = normalizedMappings(command);
   const commandHash = createCommandFingerprint("tax.mapping-set.create", {
@@ -218,6 +225,7 @@ export async function saveTaxAccountMappings(input: Readonly<{
     requestId: input.requestId,
     permission: PERMISSIONS.manageTaxMappings,
     reason: command.reason,
+    sourceSurface: input.sourceSurface,
   }, async (client) => {
     const replay = await client.query<{ id: string; version: number; command_hash: string }>(
       `SELECT id, version, command_hash
@@ -382,6 +390,7 @@ async function calculateMappedValues(input: Readonly<{
 export async function createTaxFiling(input: Readonly<{
   principal: SessionPrincipal;
   requestId: string;
+  sourceSurface?: "API" | "MCP";
 }> & CreateTaxFilingInput): Promise<Readonly<{
   filingId: string;
   status: "READY" | "MATCHED" | "REVIEW_REQUIRED";
@@ -390,9 +399,15 @@ export async function createTaxFiling(input: Readonly<{
   idempotentReplay: boolean;
 }>> {
   assertWritableTaxSession(input.principal);
-  const { principal: _principal, requestId: _requestId, ...unparsedCommand } = input;
+  const {
+    principal: _principal,
+    requestId: _requestId,
+    sourceSurface: _sourceSurface,
+    ...unparsedCommand
+  } = input;
   void _principal;
   void _requestId;
+  void _sourceSurface;
   const command = createTaxFilingSchema.parse(unparsedCommand);
   const commandHash = createCommandFingerprint("tax.filing.create", {
     ...command,
@@ -407,7 +422,8 @@ export async function createTaxFiling(input: Readonly<{
     requestId: input.requestId,
     permission: PERMISSIONS.prepareTaxFilings,
     reason,
-    sourceSurface: command.filingType === "HISTORICAL_IMPORT" ? "IMPORT" : "API",
+    sourceSurface: input.sourceSurface
+      ?? (command.filingType === "HISTORICAL_IMPORT" ? "IMPORT" : "API"),
   }, async (client) => {
     const replay = await client.query<{
       id: string;
@@ -475,6 +491,16 @@ export async function createTaxFiling(input: Readonly<{
       periodStart: command.periodStart,
       periodEnd: command.periodEnd,
     });
+    const mappedManualFields = Object.keys(command.manualValues).filter((field) => (
+      Object.hasOwn(mappedValues, field)
+    ));
+    if (mappedManualFields.length > 0) {
+      throw new TaxFilingError(
+        "Remove manual values for fields supplied by account mappings.",
+        400,
+        "MAPPED_MANUAL_CONFLICT",
+      );
+    }
     const initial = evaluateTaxFilingTemplate({
       definition,
       currency: ledger.currency,

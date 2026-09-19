@@ -3,7 +3,12 @@ import { logRouteFailure } from "@/app/api/_shared/route-failure-log";
 import { requestIdFor } from "@/observability/request-correlation";
 import { observeRouteHandler } from "@/observability/request-observability";
 import { consumeRateLimit, issueDemoSession } from "@/modules/identity/auth-store";
-import { configuredAppOrigin, isSpeculativeNavigation, requestFingerprints } from "@/modules/identity/request-security";
+import {
+  allowsInsecureLoopbackTestOrigin,
+  configuredAppOrigin,
+  isSpeculativeNavigation,
+  requestFingerprints,
+} from "@/modules/identity/request-security";
 import { safeAppPath } from "@/modules/identity/safe-redirect";
 import {
   createOpaqueToken,
@@ -32,8 +37,12 @@ async function get(request: NextRequest) {
     if (existing?.sessionMode === "real") return NextResponse.redirect(new URL("/app", configuredAppOrigin()), 303);
     if (existing?.sessionMode === "demo") return NextResponse.redirect(new URL(safeAppPath(request.nextUrl.searchParams.get("next")), configuredAppOrigin()), 303);
     const { ipHash, userAgentHash } = requestFingerprints(request);
+    // The release suite intentionally creates several independent browsers.
+    // Its exact marker pair is accepted only on loopback and never enters a
+    // deployed environment, so production keeps the public per-IP ceiling.
+    const ipLimit = allowsInsecureLoopbackTestOrigin(process.env, configuredAppOrigin()) ? 60 : 10;
     const [rate, globalRate] = await Promise.all([
-      consumeRateLimit("demo-login-ip-minute", ipHash, 10, 60),
+      consumeRateLimit("demo-login-ip-minute", ipHash, ipLimit, 60),
       consumeRateLimit("demo-login-global-minute", identityLookupHash("shared-public-demo-login"), 60, 60),
     ]);
     if (!rate.allowed || !globalRate.allowed) {

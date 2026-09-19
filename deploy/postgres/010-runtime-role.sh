@@ -266,7 +266,12 @@ BEGIN
     'bank_draft_proposals', 'mcp_oauth_clients', 'mcp_connections',
     'mcp_oauth_codes', 'mcp_access_tokens', 'mcp_refresh_tokens',
     'mcp_approvals', 'mcp_tool_executions',
-    'document_storage_connections', 'document_storage_oauth', 'document_inbox_items'
+    'document_storage_connections', 'document_storage_oauth', 'document_inbox_items',
+    'email_ingestion_aliases', 'inbound_email_messages', 'inbound_email_attachments',
+    'email_booking_rules', 'email_booking_evaluations', 'email_delivery_settings',
+    'payment_instruction_profiles', 'customer_delivery_preferences',
+    'sales_invoice_pdf_artifacts', 'invoice_delivery_attempts', 'invoice_delivery_events',
+    'email_operation_events'
   ] LOOP
     IF to_regclass(format('public.%I', selected_name)) IS NOT NULL THEN
       EXECUTE format('GRANT SELECT ON TABLE public.%I TO business_finlynq_app', selected_name);
@@ -284,7 +289,10 @@ BEGIN
     'mcp_access_tokens', 'mcp_refresh_tokens', 'mcp_approvals',
     'mcp_tool_executions',
     'document_storage_connections', 'document_storage_oauth', 'document_inbox_items',
-    'asset_register', 'asset_schedule_entries'
+    'asset_register', 'asset_schedule_entries',
+    'email_ingestion_aliases', 'inbound_email_messages', 'inbound_email_attachments',
+    'email_booking_evaluations', 'email_delivery_settings', 'payment_instruction_profiles',
+    'customer_delivery_preferences', 'invoice_delivery_attempts', 'email_operation_events'
   ] LOOP
     IF to_regclass(format('public.%I', selected_name)) IS NOT NULL THEN
       EXECUTE format('GRANT INSERT, UPDATE ON TABLE public.%I TO business_finlynq_app', selected_name);
@@ -302,7 +310,8 @@ BEGIN
     'bank_observations', 'bank_observation_versions', 'bank_balance_anchors',
     'bank_statement_imports', 'bank_statement_import_rows',
     'bank_reconciliation_voids', 'bank_match_allocations', 'bank_match_allocation_voids', 'bank_rules',
-    'bank_rule_runs', 'bank_draft_proposals', 'mcp_oauth_clients'
+    'bank_rule_runs', 'bank_draft_proposals', 'mcp_oauth_clients',
+    'email_booking_rules', 'sales_invoice_pdf_artifacts', 'invoice_delivery_events'
   ] LOOP
     IF to_regclass(format('public.%I', selected_name)) IS NOT NULL THEN
       EXECUTE format('GRANT INSERT ON TABLE public.%I TO business_finlynq_app', selected_name);
@@ -323,6 +332,8 @@ BEGIN
     'app.current_organization_id()',
     'app.current_actor_id()',
     'app.current_actor_has_permission(text)',
+    'app.resolve_inbound_email_alias(text)',
+    'app.resolve_outbound_email_attempt(text)',
     'app.mcp_user_is_active(uuid)',
     'app.segment_value_is_valid(uuid,uuid,text,date)',
     'app.currency_minor_units(text)',

@@ -1,6 +1,5 @@
-import Link from "next/link";
 import { BankingWorkspace } from "@/app/_components/banking-workspace.client";
-import styles from "@/app/_components/banking-workspace.module.css";
+import { RouteTabs } from "@/app/_components/route-tabs";
 import { DemoNotice, PageHeader } from "@/app/_components/ui";
 import { loadBankingWorkspace } from "@/modules/banking/banking-workspace";
 import { requireWorkspacePrincipal } from "@/modules/workspace/access";
@@ -20,14 +19,15 @@ export default async function BankingPage({ searchParams }: {
     <PageHeader
       eyebrow="Bank feeds and reconciliation"
       title="Banking"
-      description="Import provider observations without treating them as books, map each account explicitly, reconcile against posted cash lines, and let rules produce encrypted manual-review suggestions without posting."
+      description="Connect bank feeds, review transactions and reconcile statement balances with your posted cash activity."
     />
     {workspace.isDemo && <DemoNotice>External credentials and live provider calls are disabled in the public demo. Synthetic observations reset nightly; mapping, matching, reconciliation, and immutable rule-version controls remain writable.</DemoNotice>}
-    <nav className={styles.tabs} aria-label="Banking views">
-      <Link href="/app/banking" data-active={view === "connections"}>Connections & transactions</Link>
-      <Link href="/app/banking?view=reconciliation" data-active={view === "reconciliation"}>Reconciliation</Link>
-      <Link href="/app/banking?view=rules" data-active={view === "rules"}>Categorization rules</Link>
-    </nav>
+    <RouteTabs label="Banking views" active={view} tabs={[
+      { key: "connections", label: "Connections & transactions", href: "/app/banking" },
+      { key: "reconciliation", label: "Reconciliation", href: "/app/banking?view=reconciliation" },
+      { key: "rules", label: "Categorization rules", href: "/app/banking?view=rules" },
+    ]} />
     <BankingWorkspace workspace={workspace} view={view} />
   </div>;
 }
+export const metadata = { title: "Banking" };

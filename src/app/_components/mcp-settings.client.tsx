@@ -3,6 +3,7 @@
 import { useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
+import { MutationFeedback } from "@/app/_components/mutation-feedback.client";
 import type { McpConnectionSettings } from "@/modules/mcp/connection-policy";
 import type { McpAccessMode } from "@/modules/mcp/protocol";
 import type { PendingMcpApproval } from "@/modules/mcp/settings-store";
@@ -124,15 +125,9 @@ export function McpSettings({
 
   return (
     <div className="settings-layout">
-      {feedback && <div className={`validation-message ${feedback.kind === "error" ? "validation-error" : "validation-success"}`} role={feedback.kind === "error" ? "alert" : "status"}>{feedback.message}</div>}
+      {feedback && <MutationFeedback {...feedback} onDismiss={() => setFeedback(null)} />}
 
-      <section className="panel form-panel" aria-labelledby="mcp-endpoint-title">
-        <div className="panel-heading"><div><p className="eyebrow">Remote endpoint</p><h2 id="mcp-endpoint-title">Connect an MCP client</h2><p>Use OAuth 2.1 with PKCE. FinLynQ never asks the agent for a password, API key, bank credential, or signing secret.</p></div></div>
-        <div className="close-form">
-          <label className="full-field"><span>MCP server URL</span><input readOnly value={endpoint} onFocus={(event) => event.currentTarget.select()} /></label>
-          <p className="form-footnote">Request daily scopes for routine accounting and setup scopes only when the agent must maintain master data. New write-capable connections start in confirmation mode.</p>
-        </div>
-      </section>
+
 
       {enabled && mfaEnrollmentState !== "ENABLED" && (
         <section className="panel form-panel" aria-labelledby="mcp-mfa-enrollment-title">
@@ -161,6 +156,14 @@ export function McpSettings({
           <div className="table-scroll" tabIndex={0}><table><thead><tr><th>Client</th><th>Action</th><th>Arguments</th><th>Expires</th><th>Decision</th></tr></thead><tbody>{approvals.map((approval) => <tr key={approval.id}><td>{approval.clientName}</td><td><code>{approval.toolName}</code></td><td><code>{JSON.stringify(approval.argumentsSummary)}</code></td><td>{displayTime(approval.expiresAt)}</td><td><div className="member-action-list"><button className="primary-button compact-button" type="button" disabled={busy !== null} onClick={() => void decide(approval, "APPROVED")}>Approve once</button><button className="text-danger-button" type="button" disabled={busy !== null} onClick={() => void decide(approval, "REJECTED")}>Reject</button></div></td></tr>)}</tbody></table></div>
         </section>
       )}
+
+      <section className="panel" aria-labelledby="mcp-endpoint-title">
+        <div className="panel-heading"><div><p className="eyebrow">Remote endpoint</p><h2 id="mcp-endpoint-title">Connect an MCP client</h2><p>Use OAuth 2.1 with PKCE. FinLynQ never asks the agent for a password, API key, bank credential, or signing secret.</p></div></div>
+        <div className="compact-summary">
+          <label className="full-field"><span>MCP server URL</span><input readOnly value={endpoint} onFocus={(event) => event.currentTarget.select()} /></label>
+          <p className="form-footnote">Request daily scopes for routine accounting and setup scopes only when the agent must maintain master data. New write-capable connections start in confirmation mode.</p>
+        </div>
+      </section>
 
       <section className="panel" aria-labelledby="mcp-connections-title">
         <div className="panel-heading"><div><p className="eyebrow">Your delegated access</p><h2 id="mcp-connections-title">Connected clients</h2><p>Effective tools are recalculated from your live role permissions on every MCP request.</p></div><span className="attention-count">{connections.length}</span></div>

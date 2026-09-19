@@ -1,8 +1,13 @@
 "use client";
 
+import { CompactDisclosure } from "./compact-disclosure.client";
+
+import { SectionTabs } from "./section-tabs.client";
+
 import { useMemo, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
+import { MutationFeedback } from "@/app/_components/mutation-feedback.client";
 import {
   accountSegmentKeys,
   type AccountSegmentKey,
@@ -454,20 +459,30 @@ export function AccountingSettings({
 
   return (
     <div className="settings-layout">
-      {feedback && (
-        <div className={`validation-message ${feedback.kind === "error" ? "validation-error" : "validation-success"}`} role={feedback.kind === "error" ? "alert" : "status"}>
-          {feedback.message}
-        </div>
-      )}
+      {feedback && <MutationFeedback {...feedback} onDismiss={() => setFeedback(null)} />}
 
       {!isDemo && !stepUpComplete && (
-        <section className="panel form-panel" aria-labelledby="accounting-step-up-title">
-          <div className="panel-heading"><span className="eyebrow">Security check</span><h2 id="accounting-step-up-title">Verify before changing accounting setup</h2><p>Entity, posting policy, currency, rate, and chart-dimension changes require a fresh authenticator check.</p></div>
+        <section className="panel compact-summary" aria-labelledby="accounting-step-up-title">
+          <div><strong id="accounting-step-up-title">Security check required</strong><p className="subtle-label">Accounting setup changes require a fresh authenticator check.</p></div>
           <label className="full-field"><span>Six-digit authenticator code</span><input value={otp} onChange={(event) => setOtp(event.target.value.replace(/\D/g, "").slice(0, 6))} inputMode="numeric" autoComplete="one-time-code" pattern="[0-9]{6}" maxLength={6} /></label>
           <p className="form-footnote">Need to add or restart an authenticator? <Link href="/app/account#mfa-enrollment">Open Account &amp; security</Link>.</p>
         </section>
       )}
 
+      {(configuration.canManageSettings || configuration.canManageSegments || configuration.canManagePostingPolicy) && (
+        <section className="panel compact-summary" aria-labelledby="configuration-audit-title">
+          <strong id="configuration-audit-title">Reason for changes</strong>
+          <div className="audit-reason-field"><label className="full-field"><span>Audit reason</span><input value={reason} onChange={(event) => setReason(event.target.value)} minLength={8} maxLength={500} required /><small>This reason is recorded with each accounting configuration change.</small></label></div>
+        </section>
+      )}
+
+      <SectionTabs label="Accounting configuration sections" sections={[
+        { id: "legal-entities", label: "Entities & ledgers" },
+        { id: "account-segments", label: "Chart of accounts" },
+        { id: "reporting-hierarchies", label: "Reporting hierarchies" },
+        { id: "currencies", label: "Currencies & rates" },
+        { id: "tax-packs", label: "Tax registrations" },
+      ]}>
       <section className="panel form-panel" id="legal-entities" aria-labelledby="legal-entity-configuration-title">
         <div className="panel-heading"><span className="eyebrow">Multi-company foundation</span><h2 id="legal-entity-configuration-title">Legal entities & primary ledgers</h2><p>Each company receives an isolated primary ledger, monthly fiscal periods, base chart, posting policy, and functional currency. Tax automation outside Ontario and Washington is held for review.</p></div>
         <div className="table-scroll" tabIndex={0} aria-label="Configured legal entities">
@@ -478,7 +493,7 @@ export function AccountingSettings({
           );})}</tbody></table>
         </div>
         {configuration.canManageSettings && (
-          <form className="close-form" onSubmit={(event) => {
+          <CompactDisclosure summary="Add a legal entity" defaultOpen={configuration.entities.length === 0}><form className="close-form" onSubmit={(event) => {
             event.preventDefault();
             void mutate("entity", "/api/accounting/configuration/entities", "POST", {
               code: entityCode,
@@ -492,7 +507,7 @@ export function AccountingSettings({
               reason,
             }, `${entityCode} and its primary ledger were created.`);
           }}>
-            <h3>Add a legal entity</h3>
+
             <div className="form-grid form-grid-three">
               <label><span>Entity code</span><input value={entityCode} onChange={(event) => setEntityCode(event.target.value.toUpperCase().replace(/[^A-Z0-9_-]/g, "").slice(0, 16))} pattern="[A-Z0-9][A-Z0-9_-]{0,15}" required /></label>
               <label><span>Legal name</span><input value={entityName} onChange={(event) => setEntityName(event.target.value)} minLength={2} maxLength={200} required /></label>
@@ -504,14 +519,14 @@ export function AccountingSettings({
               <label><span>Manual journals</span><select value={postingMode} onChange={(event) => setPostingMode(event.target.value as typeof postingMode)}><option value="AUTO_POST">Auto-post when authorized</option><option value="REVIEW_REQUIRED">Require approval</option></select></label>
             </div>
             <div className="form-actions"><button className="primary-button" type="submit" disabled={busy !== null}>{busy === "entity" ? "Creating…" : "Create entity"}</button></div>
-          </form>
+          </form></CompactDisclosure>
         )}
       </section>
 
       <section className="panel form-panel" id="account-segments" aria-labelledby="account-segments-title">
         <div className="panel-heading"><span className="eyebrow">Chart dimensions</span><h2 id="account-segments-title">Account segments</h2><p>Entity and Account are always present. Optional values remain null internally and render as 0000. Custom 1–8 can be named and hidden; once used, their identity is protected.</p></div>
         {configuration.canManageSegments && editableAccount && (
-          <form className="close-form" onSubmit={(event) => {
+          <CompactDisclosure summary="Update a natural account"><form className="close-form" onSubmit={(event) => {
             event.preventDefault();
             void mutate("gl-account", "/api/accounting/configuration/gl-accounts", "PATCH", {
               accountId: editableAccount.id,
@@ -530,7 +545,7 @@ export function AccountingSettings({
               reason,
             }, `${editableAccount.entityCode}.${editableAccount.code} validity was updated without replacing its combinations.`);
           }}>
-            <h3>Update a natural account</h3>
+
             <p className="panel-note">Moving the start date earlier expands availability without changing account or combination IDs. A later date is blocked when earlier journals or bank mappings depend on the account.</p>
             <div className="form-grid form-grid-three">
               <label><span>Account</span><select value={editableAccount.id} onChange={(event) => {
@@ -550,7 +565,7 @@ export function AccountingSettings({
               <label className="checkbox-row"><input type="checkbox" checked={accountActive} onChange={(event) => setAccountActive(event.target.checked)} /><span>Active</span></label>
             </div>
             <div className="form-actions"><button className="primary-button" type="submit" disabled={busy !== null}>{busy === "gl-account" ? "Saving…" : "Save account"}</button></div>
-          </form>
+          </form></CompactDisclosure>
         )}
         <div className="table-scroll" tabIndex={0} aria-label="Account segment configuration">
           <table><thead><tr><th>Key</th><th>Display name</th><th>Lifecycle</th><th>Values</th><th>Incomplete combinations</th><th>Visible</th><th>Required</th><th>Action</th></tr></thead><tbody>{configuration.segments.map((segment) => {
@@ -574,7 +589,7 @@ export function AccountingSettings({
         <p className="panel-note">Required status stays unavailable until every active account combination contains that segment. Replace only an unused combination below; posted identities remain immutable.</p>
 
         {configuration.canManageSegments && selectedValueSegment && (
-          <form className="close-form" onSubmit={(event) => {
+          <CompactDisclosure summary="Add a segment value"><form className="close-form" onSubmit={(event) => {
             event.preventDefault();
             void mutate("segment-value", "/api/accounting/configuration/segment-values", "POST", {
               definitionKey: selectedValueSegment.key,
@@ -585,7 +600,7 @@ export function AccountingSettings({
               reason,
             }, `${segmentValueCode} was added to ${selectedValueSegment.displayName}.`);
           }}>
-            <h3>Add a segment value</h3>
+
             <p className="panel-note">Codes are permanent identities after use. <code>0000</code> is reserved for the rendered “not used” value.</p>
             <div className="form-grid form-grid-three">
               <label><span>Segment</span><select value={selectedValueSegment.key} onChange={(event) => setSegmentValueKey(event.target.value as AccountSegmentKey)}>{activeSegments.map((segment) => <option key={segment.id} value={segment.key}>{segment.displayName} ({segment.key})</option>)}</select></label>
@@ -595,7 +610,7 @@ export function AccountingSettings({
               <label><span>Valid to (optional)</span><input type="date" value={segmentValueValidTo} onChange={(event) => setSegmentValueValidTo(event.target.value)} min={segmentValueValidFrom} /></label>
             </div>
             <div className="form-actions"><button className="primary-button" type="submit" disabled={busy !== null || segmentValueCode === "0000"}>{busy === "segment-value" ? "Adding…" : "Add segment value"}</button></div>
-          </form>
+          </form></CompactDisclosure>
         )}
 
         <div className="table-scroll" tabIndex={0} aria-label="Configured segment values">
@@ -605,7 +620,7 @@ export function AccountingSettings({
         </div>
 
         {configuration.canManageSegments && combinationEntity && combinationAccount && (
-          <form className="close-form" onSubmit={(event) => {
+          <CompactDisclosure summary="Create an account combination"><form className="close-form" onSubmit={(event) => {
             event.preventDefault();
             void mutate("account-combination", "/api/accounting/configuration/account-combinations", "POST", {
               legalEntityId: combinationEntity.id,
@@ -626,7 +641,7 @@ export function AccountingSettings({
               reason,
             }, `The ${combinationEntity.code}.${combinationAccount.code} account combination is active.`);
           }}>
-            <h3>Create an account combination</h3>
+
             <p className="panel-note">Choose a value only from its exact segment. Existing posted combinations are preserved; the optional replacement list contains unused identities only.</p>
             <div className="form-grid form-grid-three">
               <label><span>Legal entity</span><select value={combinationEntity.id} onChange={(event) => {
@@ -642,7 +657,7 @@ export function AccountingSettings({
               <label className="full-field"><span>Replace an unused combination (optional)</span><select value={replacesCombinationId} onChange={(event) => setReplacesCombinationId(event.target.value)}><option value="">Do not replace an existing combination</option>{replacementCandidates.map((combination) => <option key={combination.id} value={combination.id}>{combination.displayKey} — {combination.accountName}</option>)}</select></label>
             </div>
             <div className="form-actions"><button className="primary-button" type="submit" disabled={busy !== null}>{busy === "account-combination" ? "Creating…" : "Create combination"}</button></div>
-          </form>
+          </form></CompactDisclosure>
         )}
 
         <div className="table-scroll" tabIndex={0} aria-label="Account combinations">
@@ -661,7 +676,7 @@ export function AccountingSettings({
         </div>
 
         {configuration.canManageSegments && (
-          <form className="close-form" onSubmit={(event) => {
+          <CompactDisclosure summary="Create a hierarchy draft"><form className="close-form" onSubmit={(event) => {
             event.preventDefault();
             const ledgerId = hierarchyDimension === "account" ? hierarchyLedgerId : null;
             const nodes = defaultHierarchyNodes(hierarchyDimension, ledgerId, configuration);
@@ -687,7 +702,7 @@ export function AccountingSettings({
               }
             });
           }}>
-            <h3>Create a hierarchy draft</h3>
+
             <p className="panel-note">The initial draft includes every current active member. Natural accounts start below Assets, Liabilities, Equity, Revenue, and Expenses so reports remain useful before further grouping.</p>
             <div className="form-grid form-grid-three">
               <label><span>Dimension</span><select value={hierarchyDimension} onChange={(event) => setHierarchyDimension(event.target.value as AccountingHierarchyDimensionKey)}>{accountingHierarchyDimensionKeys.map((key) => <option key={key} value={key}>{hierarchyDimensionLabels[key]}</option>)}</select></label>
@@ -696,7 +711,7 @@ export function AccountingSettings({
               <label><span>Display name</span><input value={hierarchyName} onChange={(event) => setHierarchyName(event.target.value)} minLength={2} maxLength={160} required /></label>
             </div>
             <div className="form-actions"><button className="primary-button" type="submit" disabled={busy !== null || (hierarchyDimension === "account" && !hierarchyLedgerId)}>{busy === "hierarchy-create" ? "Creating…" : "Create draft"}</button></div>
-          </form>
+          </form></CompactDisclosure>
         )}
 
         <div className="table-scroll" tabIndex={0} aria-label="Reporting hierarchy versions">
@@ -828,7 +843,7 @@ export function AccountingSettings({
         <div className="currency-toggle-grid">{configuration.currencies.map((currency) => (
           <label className="currency-toggle" key={currency.code}><input type="checkbox" checked={currency.enabled} disabled={!configuration.canManageSettings || currency.functional || busy !== null} onChange={(event) => void mutate(`currency-${currency.code}`, "/api/accounting/configuration/currencies", "PATCH", { currencyCode: currency.code, enabled: event.target.checked, reason }, `${currency.code} was ${event.target.checked ? "enabled" : "disabled"}.`)} /><span><strong>{currency.code}</strong><small>{currency.minorUnits} decimal places{currency.functional ? " · functional currency" : ""}</small></span></label>
         ))}</div>
-        <div className="close-form" aria-labelledby="fx-provider-policy-title">
+        <CompactDisclosure summary={<>FX provider policy · {fxProviderLabels[configuration.fxProviderPolicy.providerMode]} · v{configuration.fxProviderPolicy.version}</>}><div className="close-form" aria-labelledby="fx-provider-policy-title">
           <h3 id="fx-provider-policy-title">FX provider policy</h3>
           <p className="panel-note">
             <strong>Current:</strong> {fxProviderLabels[configuration.fxProviderPolicy.providerMode]} · version {configuration.fxProviderPolicy.version}
@@ -943,9 +958,9 @@ export function AccountingSettings({
               </div>
             </form>
           )}
-        </div>
+        </div></CompactDisclosure>
         {configuration.canManageSettings && enabledCurrencies.length >= 2 && (
-          <form className="close-form" onSubmit={(event) => {
+          <CompactDisclosure summary="Record an exchange-rate snapshot"><form className="close-form" onSubmit={(event) => {
             event.preventDefault();
             void mutate("rate", "/api/accounting/configuration/rates", "POST", {
               sourceCurrency: rateSource,
@@ -956,7 +971,7 @@ export function AccountingSettings({
               reason,
             }, `The ${rateSource}/${rateTarget} rate was recorded without overwriting prior evidence.`);
           }}>
-            <h3>Record an exchange-rate snapshot</h3>
+
             <div className="form-grid form-grid-three">
               <label><span>Source currency</span><select value={rateSource} onChange={(event) => setRateSource(event.target.value)}>{enabledCurrencies.map((currency) => <option key={currency.code} value={currency.code}>{currency.code}</option>)}</select></label>
               <label><span>Target currency</span><select value={rateTarget} onChange={(event) => setRateTarget(event.target.value)}>{enabledCurrencies.map((currency) => <option key={currency.code} value={currency.code}>{currency.code}</option>)}</select></label>
@@ -965,7 +980,7 @@ export function AccountingSettings({
               <label><span>Rate source</span><input value={rateProvider} onChange={(event) => setRateProvider(event.target.value)} minLength={2} maxLength={100} required /></label>
             </div>
             <div className="form-actions"><button className="primary-button" type="submit" disabled={busy !== null || rateSource === rateTarget}>{busy === "rate" ? "Recording…" : "Record rate"}</button></div>
-          </form>
+          </form></CompactDisclosure>
         )}
         <div className="table-scroll" tabIndex={0} aria-label="Exchange rate history">
           <table><thead><tr><th>Pair</th><th>Rate</th><th>Effective</th><th>Source</th></tr></thead><tbody>{configuration.rates.length ? configuration.rates.map((entry) => (
@@ -989,7 +1004,7 @@ export function AccountingSettings({
           )) : <tr><td colSpan={6}>No tax registration has been configured. Documents remain in manual tax review.</td></tr>}</tbody></table>
         </div>
         {configuration.canManageSettings && (
-          <form className="close-form" onSubmit={(event) => {
+          <CompactDisclosure summary="Add an effective-dated tax configuration"><form className="close-form" onSubmit={(event) => {
             event.preventDefault();
             void mutate("tax-registration", "/api/accounting/configuration/tax-registrations", "POST", {
               legalEntityId: taxEntityId,
@@ -1005,7 +1020,7 @@ export function AccountingSettings({
               reason,
             }, "The effective-dated tax registration was added; earlier rows were preserved.");
           }}>
-            <h3>Add an effective-dated tax configuration</h3>
+
             <p className="panel-note">Enter sourcing facts explicitly. The system never fills Seattle or location code 1726 from the entity address. The current Washington pack automates only an explicit US-WA / Seattle / 1726 combination; every other combination stays in manual review.</p>
             <div className="form-grid form-grid-three">
               <label><span>Legal entity</span><select value={taxEntityId} onChange={(event) => setTaxEntityId(event.target.value)} required>{configuration.entities.map((entity) => <option key={entity.id} value={entity.id}>{entity.code} — {entity.displayName}</option>)}</select></label>
@@ -1020,19 +1035,16 @@ export function AccountingSettings({
               <label className="full-field"><span>Configuration evidence</span><input value={taxEvidence} onChange={(event) => setTaxEvidence(event.target.value)} minLength={8} maxLength={1000} placeholder="Authority lookup, working paper, or configuration ticket" required /></label>
             </div>
             <div className="form-actions"><button className="primary-button" type="submit" disabled={busy !== null || !taxEntityId || !taxPackKey}>{busy === "tax-registration" ? "Recording…" : "Add tax configuration"}</button></div>
-          </form>
+          </form></CompactDisclosure>
         )}
-        <h3>Installed tax-pack versions</h3>
+        <CompactDisclosure summary="Installed tax-pack versions">
         <div className="table-scroll" tabIndex={0} aria-label="Installed tax pack versions"><table><thead><tr><th>Pack</th><th>Version</th><th>Effective from</th><th>Effective to</th></tr></thead><tbody>{configuration.taxPacks.map((pack) => <tr key={`${pack.key}-${pack.version}`}><td>{pack.key}</td><td>{pack.version}</td><td>{pack.effectiveFrom}</td><td>{pack.effectiveTo ?? "Current"}</td></tr>)}</tbody></table></div>
+        </CompactDisclosure>
         <p className="panel-note"><strong>Supported automation:</strong> Ontario HST and the currently installed Seattle Washington sales/use-tax version. Every other jurisdiction uses <code>generic.unsupported</code> or a manual-review decision; the system never assumes a zero rate.</p>
       </section>
 
-      {(configuration.canManageSettings || configuration.canManageSegments || configuration.canManagePostingPolicy) && (
-        <section className="panel form-panel" aria-labelledby="configuration-audit-title">
-          <div className="panel-heading"><span className="eyebrow">Audit context</span><h2 id="configuration-audit-title">Reason for changes</h2></div>
-          <label className="full-field"><span>Audit reason</span><input value={reason} onChange={(event) => setReason(event.target.value)} minLength={8} maxLength={500} required /></label>
-        </section>
-      )}
+      </SectionTabs>
+
     </div>
   );
 }

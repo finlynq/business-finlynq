@@ -18,7 +18,12 @@ export type ConnectionRow = {
   oauth_state_hash: string | null;
 };
 export function realStorageContext(context: TenantTransactionContext) {
-  if (context.sessionMode === "demo" || /demo/i.test(context.authMethod) || !context.sessionId) throw new StorageError("STORAGE_REAL_ACCOUNT", "Cloud storage requires a signed-in real account.");
+  const trustedInboundWorker = context.sourceSurface === "WORKER"
+    && context.authMethod === "resend-webhook"
+    && !context.sessionId;
+  if (context.sessionMode === "demo" || /demo/i.test(context.authMethod) || (!context.sessionId && !trustedInboundWorker)) {
+    throw new StorageError("STORAGE_REAL_ACCOUNT", "Cloud storage requires a signed-in real account or the verified inbound-email worker.");
+  }
 }
 export async function assertStorageWrite(client: PoolClient, context: TenantTransactionContext) {
   realStorageContext(context); assertTenantWritesEnabled(context); await assertWritableOrganization(client, context);

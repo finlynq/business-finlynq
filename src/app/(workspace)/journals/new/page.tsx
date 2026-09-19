@@ -41,3 +41,4 @@ export default async function NewJournalPage() {
     </div>
   );
 }
+export const metadata = { title: "Create a manual journal" };

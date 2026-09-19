@@ -24,6 +24,11 @@ const rendered = execFileSync(
 const configuration = JSON.parse(rendered);
 const services = configuration.services ?? {};
 const providerSecret = "business_finlynq_resend_api_key";
+const accountingEmailSecrets = [
+  "business_finlynq_accounting_resend_api_key",
+  "business_finlynq_accounting_email_inbound_webhook_secret",
+  "business_finlynq_accounting_email_outbound_webhook_secret",
+];
 const turnstileSecret = "business_finlynq_turnstile_secret_key";
 const documentSecrets = ["business_finlynq_document_google_secret", "business_finlynq_document_microsoft_secret"];
 const appDatabaseSecret = "business_finlynq_app_db_password";
@@ -38,6 +43,7 @@ const containedInitialSecretNames = [
   "business_finlynq_oidc_client_secret",
   "business_finlynq_oidc_identity_map",
   providerSecret,
+  ...accountingEmailSecrets,
   turnstileSecret,
   "business_finlynq_rclone_config",
   backupReceiverPrivateKeySecret,
@@ -85,6 +91,13 @@ if (providerSecretConsumers.join(",") !== "auth_email_worker") {
   fail(`Resend secret consumers must be only auth_email_worker; found ${providerSecretConsumers.join(",") || "none"}`);
 }
 
+for (const secret of accountingEmailSecrets) {
+  const consumers = Object.entries(services)
+    .filter(([, service]) => secretSources(service).includes(secret))
+    .map(([name]) => name);
+  if (consumers.join(",") !== "app") fail(`${secret} must be mounted only by app`);
+}
+
 const turnstileSecretConsumers = Object.entries(services)
   .filter(([, service]) => secretSources(service).includes(turnstileSecret))
   .map(([name]) => name)
@@ -104,6 +117,20 @@ for (const [name, service] of Object.entries(services)) {
   if (name !== "auth_email_worker" && providerEnvironmentKeys.length > 0) {
     fail(`${name} contains provider credential environment configuration`);
   }
+}
+
+if (services.app?.environment?.ACCOUNTING_EMAIL_RESEND_API_KEY
+  || services.app?.environment?.ACCOUNTING_EMAIL_INBOUND_WEBHOOK_SECRET
+  || services.app?.environment?.ACCOUNTING_EMAIL_OUTBOUND_WEBHOOK_SECRET) {
+  fail("app exposes accounting email provider credentials inline");
+}
+if (services.app?.environment?.ACCOUNTING_EMAIL_RESEND_API_KEY_FILE
+    !== "/run/secrets/business_finlynq_accounting_resend_api_key"
+  || services.app?.environment?.ACCOUNTING_EMAIL_INBOUND_WEBHOOK_SECRET_FILE
+    !== "/run/secrets/business_finlynq_accounting_email_inbound_webhook_secret"
+  || services.app?.environment?.ACCOUNTING_EMAIL_OUTBOUND_WEBHOOK_SECRET_FILE
+    !== "/run/secrets/business_finlynq_accounting_email_outbound_webhook_secret") {
+  fail("app accounting email provider secret paths are not fixed mounts");
 }
 
 const worker = services.auth_email_worker;
