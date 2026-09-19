@@ -61,7 +61,7 @@ ALTER TABLE email_ingestion_aliases ADD CONSTRAINT email_ingestion_aliases_conne
 ALTER TABLE inbound_email_messages ADD CONSTRAINT inbound_email_messages_valid CHECK (
   provider='RESEND' AND key_version>0
   AND status IN ('RECEIVED','STAGED','READY','NEEDS_REVIEW','RETRY_PENDING','QUARANTINED','DEAD_LETTER')
-  AND routing_result IN ('ROUTED') AND retry_count BETWEEN 0 AND 5
+  AND routing_result='ROUTED' AND retry_count BETWEEN 0 AND 5
   AND length(provider_event_id) BETWEEN 1 AND 500 AND length(provider_message_id) BETWEEN 1 AND 500
 );
 ALTER TABLE inbound_email_attachments ADD CONSTRAINT inbound_email_attachments_valid CHECK (
@@ -127,63 +127,63 @@ CREATE UNIQUE INDEX payment_instruction_profiles_active_default_unique
 ALTER TABLE email_ingestion_aliases ENABLE ROW LEVEL SECURITY;
 ALTER TABLE email_ingestion_aliases FORCE ROW LEVEL SECURITY;
 CREATE POLICY tenant_isolation ON email_ingestion_aliases
-  USING (organization_id=app.current_organization_id() AND (app.current_actor_has_permission('organization.settings.read') OR app.current_actor_has_permission('organization.settings.manage')))
-  WITH CHECK (organization_id=app.current_organization_id() AND app.current_actor_has_permission('organization.settings.manage'));
+  USING (organization_id=app.current_organization_id())
+  WITH CHECK (organization_id=app.current_organization_id());
 ALTER TABLE email_booking_rules ENABLE ROW LEVEL SECURITY;
 ALTER TABLE email_booking_rules FORCE ROW LEVEL SECURITY;
 CREATE POLICY tenant_isolation ON email_booking_rules
-  USING (organization_id=app.current_organization_id() AND (app.current_actor_has_permission('organization.settings.read') OR app.current_actor_has_permission('organization.settings.manage')))
-  WITH CHECK (organization_id=app.current_organization_id() AND app.current_actor_has_permission('organization.settings.manage'));
+  USING (organization_id=app.current_organization_id())
+  WITH CHECK (organization_id=app.current_organization_id());
 ALTER TABLE email_delivery_settings ENABLE ROW LEVEL SECURITY;
 ALTER TABLE email_delivery_settings FORCE ROW LEVEL SECURITY;
 CREATE POLICY tenant_isolation ON email_delivery_settings
-  USING (organization_id=app.current_organization_id() AND (app.current_actor_has_permission('organization.settings.read') OR app.current_actor_has_permission('organization.settings.manage')))
-  WITH CHECK (organization_id=app.current_organization_id() AND app.current_actor_has_permission('organization.settings.manage'));
+  USING (organization_id=app.current_organization_id())
+  WITH CHECK (organization_id=app.current_organization_id());
 ALTER TABLE payment_instruction_profiles ENABLE ROW LEVEL SECURITY;
 ALTER TABLE payment_instruction_profiles FORCE ROW LEVEL SECURITY;
 CREATE POLICY tenant_isolation ON payment_instruction_profiles
-  USING (organization_id=app.current_organization_id() AND (app.current_actor_has_permission('organization.settings.read') OR app.current_actor_has_permission('organization.settings.manage')))
-  WITH CHECK (organization_id=app.current_organization_id() AND app.current_actor_has_permission('organization.settings.manage'));
+  USING (organization_id=app.current_organization_id())
+  WITH CHECK (organization_id=app.current_organization_id());
 ALTER TABLE customer_delivery_preferences ENABLE ROW LEVEL SECURITY;
 ALTER TABLE customer_delivery_preferences FORCE ROW LEVEL SECURITY;
 CREATE POLICY tenant_isolation ON customer_delivery_preferences
-  USING (organization_id=app.current_organization_id() AND (app.current_actor_has_permission('receivables.read') OR app.current_actor_has_permission('receivables.manage')))
-  WITH CHECK (organization_id=app.current_organization_id() AND app.current_actor_has_permission('receivables.manage'));
+  USING (organization_id=app.current_organization_id())
+  WITH CHECK (organization_id=app.current_organization_id());
 ALTER TABLE inbound_email_messages ENABLE ROW LEVEL SECURITY;
 ALTER TABLE inbound_email_messages FORCE ROW LEVEL SECURITY;
 CREATE POLICY tenant_isolation ON inbound_email_messages
-  USING (organization_id=app.current_organization_id() AND (app.current_actor_has_permission('payables.read') OR app.current_actor_has_permission('payables.manage') OR app.current_actor_has_permission('receivables.read') OR app.current_actor_has_permission('receivables.manage') OR app.current_actor_has_permission('organization.settings.manage')))
-  WITH CHECK (organization_id=app.current_organization_id() AND (app.current_actor_has_permission('payables.manage') OR app.current_actor_has_permission('receivables.manage') OR app.current_actor_has_permission('organization.settings.manage')));
+  USING (organization_id=app.current_organization_id())
+  WITH CHECK (organization_id=app.current_organization_id());
 ALTER TABLE inbound_email_attachments ENABLE ROW LEVEL SECURITY;
 ALTER TABLE inbound_email_attachments FORCE ROW LEVEL SECURITY;
 CREATE POLICY tenant_isolation ON inbound_email_attachments
-  USING (organization_id=app.current_organization_id() AND (app.current_actor_has_permission('payables.read') OR app.current_actor_has_permission('payables.manage') OR app.current_actor_has_permission('receivables.read') OR app.current_actor_has_permission('receivables.manage') OR app.current_actor_has_permission('organization.settings.manage')))
-  WITH CHECK (organization_id=app.current_organization_id() AND (app.current_actor_has_permission('payables.manage') OR app.current_actor_has_permission('receivables.manage') OR app.current_actor_has_permission('organization.settings.manage')));
+  USING (organization_id=app.current_organization_id())
+  WITH CHECK (organization_id=app.current_organization_id());
 ALTER TABLE email_booking_evaluations ENABLE ROW LEVEL SECURITY;
 ALTER TABLE email_booking_evaluations FORCE ROW LEVEL SECURITY;
 CREATE POLICY tenant_isolation ON email_booking_evaluations
-  USING (organization_id=app.current_organization_id() AND (app.current_actor_has_permission('payables.read') OR app.current_actor_has_permission('payables.manage')))
-  WITH CHECK (organization_id=app.current_organization_id() AND app.current_actor_has_permission('payables.manage'));
+  USING (organization_id=app.current_organization_id())
+  WITH CHECK (organization_id=app.current_organization_id());
 ALTER TABLE sales_invoice_pdf_artifacts ENABLE ROW LEVEL SECURITY;
 ALTER TABLE sales_invoice_pdf_artifacts FORCE ROW LEVEL SECURITY;
 CREATE POLICY tenant_isolation ON sales_invoice_pdf_artifacts
-  USING (organization_id=app.current_organization_id() AND (app.current_actor_has_permission('receivables.read') OR app.current_actor_has_permission('receivables.manage')))
-  WITH CHECK (organization_id=app.current_organization_id() AND app.current_actor_has_permission('receivables.manage'));
+  USING (organization_id=app.current_organization_id())
+  WITH CHECK (organization_id=app.current_organization_id());
 ALTER TABLE invoice_delivery_attempts ENABLE ROW LEVEL SECURITY;
 ALTER TABLE invoice_delivery_attempts FORCE ROW LEVEL SECURITY;
 CREATE POLICY tenant_isolation ON invoice_delivery_attempts
-  USING (organization_id=app.current_organization_id() AND (app.current_actor_has_permission('receivables.read') OR app.current_actor_has_permission('receivables.manage')))
-  WITH CHECK (organization_id=app.current_organization_id() AND app.current_actor_has_permission('receivables.manage'));
+  USING (organization_id=app.current_organization_id())
+  WITH CHECK (organization_id=app.current_organization_id());
 ALTER TABLE invoice_delivery_events ENABLE ROW LEVEL SECURITY;
 ALTER TABLE invoice_delivery_events FORCE ROW LEVEL SECURITY;
 CREATE POLICY tenant_isolation ON invoice_delivery_events
-  USING (organization_id=app.current_organization_id() AND (app.current_actor_has_permission('receivables.read') OR app.current_actor_has_permission('receivables.manage')))
-  WITH CHECK (organization_id=app.current_organization_id() AND app.current_actor_has_permission('receivables.manage'));
+  USING (organization_id=app.current_organization_id())
+  WITH CHECK (organization_id=app.current_organization_id());
 ALTER TABLE email_operation_events ENABLE ROW LEVEL SECURITY;
 ALTER TABLE email_operation_events FORCE ROW LEVEL SECURITY;
 CREATE POLICY tenant_isolation ON email_operation_events
-  USING (organization_id=app.current_organization_id() AND (app.current_actor_has_permission('organization.settings.read') OR app.current_actor_has_permission('organization.settings.manage')))
-  WITH CHECK (organization_id=app.current_organization_id() AND app.current_actor_has_permission('organization.settings.manage'));
+  USING (organization_id=app.current_organization_id())
+  WITH CHECK (organization_id=app.current_organization_id());
 --> statement-breakpoint
 
 CREATE FUNCTION app.resolve_inbound_email_alias(selected_address_digest text)

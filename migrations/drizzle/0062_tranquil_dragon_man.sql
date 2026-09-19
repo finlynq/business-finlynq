@@ -231,4 +231,4 @@ CREATE INDEX "invoice_delivery_events_attempt_idx" ON "invoice_delivery_events" 
 CREATE UNIQUE INDEX "payment_instruction_profiles_name_version_unique" ON "payment_instruction_profiles" USING btree ("organization_id","legal_entity_id","currency_code","name","version");--> statement-breakpoint
 CREATE UNIQUE INDEX "payment_instruction_profiles_idempotency_unique" ON "payment_instruction_profiles" USING btree ("organization_id","idempotency_key");--> statement-breakpoint
 CREATE INDEX "payment_instruction_profiles_lookup_idx" ON "payment_instruction_profiles" USING btree ("organization_id","legal_entity_id","currency_code","active");--> statement-breakpoint
-CREATE UNIQUE INDEX "sales_invoice_pdf_artifacts_source_unique" ON "sales_invoice_pdf_artifacts" USING btree ("organization_id","source_document_id","source_version","source_content_hash","template_version","preview");
+CREATE UNIQUE INDEX "sales_invoice_pdf_artifacts_source_unique_v1" ON "sales_invoice_pdf_artifacts" USING btree ("organization_id","source_document_id","source_version","source_content_hash","template_version","preview");
