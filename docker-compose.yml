@@ -499,6 +499,11 @@ services:
       AUTH_EMAIL_PROVIDER: ${AUTH_EMAIL_PROVIDER:-resend}
       AUTH_EMAIL_FROM: ${AUTH_EMAIL_FROM:-}
       AUTH_EMAIL_REPLY_TO: ${AUTH_EMAIL_REPLY_TO:-}
+      ACCOUNTING_EMAIL_RESEND_API_KEY_FILE: /run/secrets/business_finlynq_accounting_resend_api_key
+      ACCOUNTING_EMAIL_INBOUND_WEBHOOK_SECRET_FILE: /run/secrets/business_finlynq_accounting_email_inbound_webhook_secret
+      ACCOUNTING_EMAIL_OUTBOUND_WEBHOOK_SECRET_FILE: /run/secrets/business_finlynq_accounting_email_outbound_webhook_secret
+      BUSINESS_FINLYNQ_INBOUND_EMAIL_DOMAIN: ${BUSINESS_FINLYNQ_INBOUND_EMAIL_DOMAIN:-}
+      BUSINESS_FINLYNQ_OUTBOUND_EMAIL_DOMAIN: ${BUSINESS_FINLYNQ_OUTBOUND_EMAIL_DOMAIN:-}
       BUSINESS_WRITES_ENABLED: ${BUSINESS_WRITES_ENABLED:-false}
       EVIDENCE_SCANNER_HOST: evidence_scanner
       EVIDENCE_SCANNER_PORT: "3310"
@@ -522,6 +527,9 @@ services:
       - business_finlynq_turnstile_secret_key
       - business_finlynq_document_google_secret
       - business_finlynq_document_microsoft_secret
+      - business_finlynq_accounting_resend_api_key
+      - business_finlynq_accounting_email_inbound_webhook_secret
+      - business_finlynq_accounting_email_outbound_webhook_secret
     group_add:
       - ${BUSINESS_FINLYNQ_SECRET_GID:?set BUSINESS_FINLYNQ_SECRET_GID}
     depends_on:
@@ -1527,6 +1535,12 @@ secrets:
     file: ${IDENTITY_SECRET_FILE:?set IDENTITY_SECRET_FILE}
   business_finlynq_resend_api_key:
     file: ${AUTH_RESEND_API_KEY_FILE:-./deploy/backup/not-configured}
+  business_finlynq_accounting_resend_api_key:
+    file: ${ACCOUNTING_EMAIL_RESEND_API_KEY_FILE:-./deploy/backup/not-configured}
+  business_finlynq_accounting_email_inbound_webhook_secret:
+    file: ${ACCOUNTING_EMAIL_INBOUND_WEBHOOK_SECRET_FILE:-./deploy/backup/not-configured}
+  business_finlynq_accounting_email_outbound_webhook_secret:
+    file: ${ACCOUNTING_EMAIL_OUTBOUND_WEBHOOK_SECRET_FILE:-./deploy/backup/not-configured}
   business_finlynq_turnstile_secret_key:
     file: ${TURNSTILE_SECRET_KEY_FILE:-./deploy/backup/not-configured}
   business_finlynq_auth_worker_db_password:
