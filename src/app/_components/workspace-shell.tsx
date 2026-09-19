@@ -19,6 +19,7 @@ const workspaceItems: readonly NavigationItem[] = [
   { abbreviation: "BK", label: "Banking", href: "/app/banking" },
   { abbreviation: "AS", label: "Assets & prepaids", href: "/app/assets" },
   { abbreviation: "DC", label: "Documents", href: "/app/settings/documents" },
+  { abbreviation: "EM", label: "Email automation", href: "/app/settings/email" },
   { abbreviation: "RP", label: "Reports", href: "/app/reports", group: "Review & close" },
   { abbreviation: "TX", label: "Tax", href: "/app/tax", group: "Review & close" },
   { abbreviation: "CT", label: "Period close", href: "/app/controls/period-close", group: "Review & close" },
@@ -44,6 +45,7 @@ function createSearchIndex(includeDemoRecords: boolean): readonly SearchEntry[] 
     { label: "Profit & loss", detail: "Report · financial performance", href: "/app/reports/profit-and-loss", keywords: "income revenue expenses earnings" },
     { label: "Account inquiry", detail: "Report · transaction detail", href: "/app/reports/account-inquiry", keywords: "GL journal activity" },
     { label: "Accounting configuration", detail: "Settings · entities, accounts and currencies", href: "/app/settings/accounting", keywords: "chart dimensions tax packs exchange rates hierarchies" },
+    { label: "Email automation", detail: "Settings · invoice ingest and delivery operations", href: "/app/settings/email", keywords: "email invoices resend quarantine payment profiles delivery" },
     { label: "Account & security", detail: "Your profile and authentication", href: "/app/account", keywords: "MFA authenticator trusted browsers" },
     { label: "MCP connection guide", detail: "Help · connect an AI client", href: "/docs/remote-mcp", keywords: "documentation OAuth integration" },
   );

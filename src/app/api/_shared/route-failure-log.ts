@@ -34,6 +34,7 @@ export type RouteFailureOperation =
 
 export type ObservedRouteOperation = RouteFailureOperation
   | "accounting-mutation"
+  | "accounting-email-webhook"
   | "service-liveness"
   | "document-evidence-download"
   | "document-storage"

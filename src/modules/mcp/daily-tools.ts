@@ -62,6 +62,7 @@ import {
 } from "@/modules/banking/banking-service";
 import { mcpMutationContext } from "./oauth-store";
 import { mutationContext } from "@/modules/workspace/write-policy";
+import { attemptAutomaticInvoiceDelivery } from "@/modules/email/outbound";
 import { defineMcpTool, type McpToolDefinition, type McpToolRuntime } from "./tool-types";
 
 const emptySchema = z.object({}).strict();
@@ -183,11 +184,13 @@ function issueDocumentTool(input: Readonly<{
     title: input.title,
     description: input.description,
     inputSchema: issueDocumentInput,
-    invoke: (args, runtime) => issueBusinessDocument({
-      context: mcpMutationContext(runtime.principal, runtime.requestId, `Issue ${input.kind.toLowerCase()}`),
-      ...args,
-      kind: input.kind,
-    }),
+    invoke: async (args, runtime) => {
+      const context = mcpMutationContext(runtime.principal, runtime.requestId, `Issue ${input.kind.toLowerCase()}`);
+      const issued = await issueBusinessDocument({ context, ...args, kind: input.kind });
+      if (input.kind !== "SALES_INVOICE") return issued;
+      const automaticDelivery = await attemptAutomaticInvoiceDelivery(context, issued.document);
+      return { ...issued, automaticDelivery };
+    },
   });
 }
 

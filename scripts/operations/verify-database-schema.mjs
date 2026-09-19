@@ -72,6 +72,11 @@ const runtimeSelectRelations = [
   "mcp_connections", "mcp_oauth_codes", "mcp_access_tokens",
   "mcp_refresh_tokens", "mcp_approvals", "mcp_tool_executions",
   "document_storage_connections", "document_storage_oauth", "document_inbox_items",
+  "email_ingestion_aliases", "inbound_email_messages", "inbound_email_attachments",
+  "email_booking_rules", "email_booking_evaluations", "email_delivery_settings",
+  "payment_instruction_profiles", "customer_delivery_preferences",
+  "sales_invoice_pdf_artifacts", "invoice_delivery_attempts", "invoice_delivery_events",
+  "email_operation_events",
 ];
 const runtimeInsertUpdateRelations = [
   "journal_entries", "journal_lines", "parties", "party_addresses",
@@ -82,6 +87,9 @@ const runtimeInsertUpdateRelations = [
   "mcp_tool_executions",
   "document_storage_connections", "document_storage_oauth", "document_inbox_items",
   "asset_register", "asset_schedule_entries",
+  "email_ingestion_aliases", "inbound_email_messages", "inbound_email_attachments",
+  "email_booking_evaluations", "email_delivery_settings", "payment_instruction_profiles",
+  "customer_delivery_preferences", "invoice_delivery_attempts", "email_operation_events",
 ];
 const runtimeInsertRelations = [
   "journal_approvals", "journal_entry_relations", "source_documents", "document_evidence_assets",
@@ -95,6 +103,7 @@ const runtimeInsertRelations = [
   "bank_reconciliation_voids", "bank_match_allocations",
   "bank_match_allocation_voids", "bank_rules", "bank_rule_runs",
   "bank_draft_proposals", "mcp_oauth_clients",
+  "email_booking_rules", "sales_invoice_pdf_artifacts", "invoice_delivery_events",
 ];
 const runtimeExecuteFunctions = [
   "public.digest(bytea, text)",
@@ -102,6 +111,8 @@ const runtimeExecuteFunctions = [
   "app.current_organization_id()",
   "app.current_actor_id()",
   "app.current_actor_has_permission(text)",
+  "app.resolve_inbound_email_alias(text)",
+  "app.resolve_outbound_email_attempt(text)",
   "app.mcp_user_is_active(uuid)",
   "app.segment_value_is_valid(uuid, uuid, text, date)",
   "app.currency_minor_units(text)",
