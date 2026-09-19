@@ -7,6 +7,7 @@ import { listUserMcpConnections } from "@/modules/mcp/connection-policy";
 import { mcpResourceUrl } from "@/modules/mcp/protocol";
 import { listPendingMcpApprovals } from "@/modules/mcp/settings-store";
 import { requireWorkspacePrincipal } from "@/modules/workspace/access";
+import { SettingsNavigation } from "@/app/_components/route-tabs";
 
 export const dynamic = "force-dynamic";
 
@@ -27,8 +28,9 @@ export default async function McpSettingsPage() {
         eyebrow="Secure agent access"
         title="AI & MCP connections"
         description="Connect Claude, ChatGPT, or another standards-compatible client over HTTPS. Every request is restricted to your current organization membership and live role permissions."
-        actions={<><Link className="secondary-button" href="/app/settings/documents">Document inbox</Link><Link className="secondary-button" href="/app/settings">Organization settings</Link></>}
+        actions={<Link className="secondary-button" href="/docs/remote-mcp">Connection guide</Link>}
       />
+      <SettingsNavigation active="mcp" />
       {!realUser && <DemoNotice>Remote OAuth connections are disabled in the public demo.</DemoNotice>}
       <McpSettings
         endpoint={mcpResourceUrl().href}
@@ -48,3 +50,4 @@ export default async function McpSettingsPage() {
     </div>
   );
 }
+export const metadata = { title: "AI & MCP connections" };

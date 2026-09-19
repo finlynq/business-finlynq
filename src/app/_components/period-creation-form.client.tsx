@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useRef, useState } from "react";
 import { useRouter } from "next/navigation";
+import { MutationFeedback } from "@/app/_components/mutation-feedback.client";
 import type { FiscalPeriodCreationResult } from "@/modules/ledger/accounting-configuration";
 import type { PeriodControlWorkspaceDto } from "@/modules/ledger/tenant-workspace";
 
@@ -138,7 +139,7 @@ export function PeriodCreationForm({
             <small>Need an authenticator? <Link href="/app/account#mfa-enrollment">Open Account &amp; security</Link>.</small>
           </label>}
           {workspace.demoOnly && <p className="validation-message">These changes affect the shared public demo and are reset nightly.</p>}
-          {message && <p role={message.kind === "error" ? "alert" : "status"} className={`validation-message ${message.kind === "success" ? "validation-success" : "validation-error"}`}>{message.text}</p>}
+          {message && <MutationFeedback kind={message.kind} message={message.text} onDismiss={() => setMessage(null)} />}
           {conflicts.length > 0 && <ul aria-label="Conflicting periods">{conflicts.map((conflict) => (
             <li key={conflict.periodId}>{conflict.label}: {conflict.startsOn} – {conflict.endsOn} ({conflict.rejectionCode === "OVERLAPPING_PERIOD" ? "overlapping dates" : "incompatible definition"})</li>
           ))}</ul>}

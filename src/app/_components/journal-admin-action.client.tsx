@@ -2,6 +2,7 @@
 
 import { useRouter } from "next/navigation";
 import { useState } from "react";
+import { MutationFeedback } from "@/app/_components/mutation-feedback.client";
 import styles from "./journal-register-action.module.css";
 
 type Result = Readonly<{ error?: unknown; status?: unknown; idempotentReplay?: unknown }>;
@@ -116,7 +117,7 @@ export function JournalAdminAction({
             <input type="checkbox" checked={confirmed} onChange={(event) => setConfirmed(event.target.checked)} disabled={busy} />
             <span>I understand this is an owner accounting control and the action is permanently audited.</span>
           </label>
-          {message && <p className={`${styles.feedback} ${message.kind === "success" ? styles.success : styles.error}`} role={message.kind === "error" ? "alert" : "status"}>{message.text}</p>}
+          {message && <MutationFeedback kind={message.kind} message={message.text} onDismiss={() => setMessage(null)} />}
           <button type="submit" className={`primary-button compact-button ${styles.submit}`} disabled={busy || !confirmed}>
             {busy ? "Working…" : needsMfa ? "Verify and continue" : kind === "unpost" ? "Confirm unpost" : "Confirm deletion"}
           </button>

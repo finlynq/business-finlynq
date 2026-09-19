@@ -22,9 +22,10 @@ import {
 import { mcpResourceUrl } from "./protocol";
 import { SETUP_MCP_TOOLS } from "./setup-tools";
 import { SHARED_MCP_TOOLS } from "./shared-tools";
+import { EMAIL_MCP_TOOLS } from "./email-tools";
 import { registerMcpTools } from "./tool-types";
 
-const allTools = [...SHARED_MCP_TOOLS, ...DAILY_MCP_TOOLS, ...ASSET_MCP_TOOLS, ...INBOX_MCP_TOOLS, ...STATEMENT_MCP_TOOLS, ...SETUP_MCP_TOOLS];
+const allTools = [...SHARED_MCP_TOOLS, ...DAILY_MCP_TOOLS, ...ASSET_MCP_TOOLS, ...INBOX_MCP_TOOLS, ...STATEMENT_MCP_TOOLS, ...SETUP_MCP_TOOLS, ...EMAIL_MCP_TOOLS];
 
 function principalFromAuthInfo(authInfo: AuthInfo | undefined): McpConnectionPrincipal {
   const value = authInfo?.extra?.finlynqPrincipal;

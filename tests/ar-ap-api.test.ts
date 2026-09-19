@@ -88,6 +88,12 @@ vi.mock("@/modules/subledger/ar-ap-service", () => ({
   voidIssuedBusinessDocument: mocks.voidDocument,
   voidSettlementAndReverseAllocations: mocks.voidSettlement,
 }));
+vi.mock("@/modules/email/outbound", () => ({
+  attemptAutomaticInvoiceDelivery: vi.fn(async () => ({
+    status: "SKIPPED",
+    reason: "AUTOMATIC_DELIVERY_NOT_ENABLED",
+  })),
+}));
 
 import {
   PATCH as editInvoiceDraft,

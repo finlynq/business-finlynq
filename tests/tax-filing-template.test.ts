@@ -41,6 +41,32 @@ describe("generic tax filing templates", () => {
       .toMatchObject({ status: "PASS", actual: "0.13" });
   });
 
+  it("uses optional account mappings for manual input fields and reports their source", () => {
+    const result = evaluateTaxFilingTemplate({
+      definition: canadaGstHstTemplate,
+      currency: "CAD",
+      mappedValues: {
+        line_101: "10000",
+        line_103: "1300",
+        line_104: "25",
+        line_106: "650",
+      },
+      manualValues: { line_107: "5" },
+      reportedValues: { line_104: "25", line_107: "5" },
+    });
+
+    expect(result.calculatedValues).toMatchObject({
+      line_104: "25.00",
+      line_105: "1325.00",
+      line_107: "5.00",
+      line_108: "655.00",
+    });
+    expect(result.reconciliation.find((field) => field.fieldKey === "line_104"))
+      .toMatchObject({ source: "MAPPED_ACCOUNTS", status: "MATCHED" });
+    expect(result.reconciliation.find((field) => field.fieldKey === "line_107"))
+      .toMatchObject({ source: "MANUAL_INPUT", status: "MATCHED" });
+  });
+
   it("reconciles reported fields with exact decimal tolerance and flags missing values", () => {
     const base = evaluateTaxFilingTemplate({
       definition: canadaGstHstTemplate,
@@ -114,5 +140,18 @@ describe("generic tax filing templates", () => {
       currency: "CAD",
       mappedValues: { unknown_line: "1.00" },
     })).toThrow(/Unknown tax template field/);
+  });
+
+  it("rejects mapped formula fields and manual values outside manual fields", () => {
+    expect(() => evaluateTaxFilingTemplate({
+      definition: canadaGstHstTemplate,
+      currency: "CAD",
+      mappedValues: { line_105: "1" },
+    })).toThrow(/does not accept mapped values/);
+    expect(() => evaluateTaxFilingTemplate({
+      definition: canadaGstHstTemplate,
+      currency: "CAD",
+      manualValues: { line_101: "1" },
+    })).toThrow(/does not accept manual values/);
   });
 });

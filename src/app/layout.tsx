@@ -1,6 +1,7 @@
 import type { Metadata, Viewport } from "next";
 import { connection } from "next/server";
 import "./globals.css";
+import "./compact.css";
 
 export const metadata: Metadata = {
   metadataBase: new URL("https://business.finlynq.com"),

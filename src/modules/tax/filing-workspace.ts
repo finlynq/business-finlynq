@@ -97,6 +97,25 @@ export type TaxFilingWorkspaceDto = Readonly<{
   canPrepareFilings: boolean;
 }>;
 
+type TaxFilingSummaryRow = Readonly<{
+  id: string;
+  legal_entity_id: string;
+  entity_code: string;
+  ledger_code: string;
+  template_id: string;
+  template_name: string;
+  template_version: number;
+  filing_type: "PREPARED" | "HISTORICAL_IMPORT";
+  status: "READY" | "MATCHED" | "REVIEW_REQUIRED";
+  period_start: string;
+  period_end: string;
+  external_reference: string | null;
+  source_file_name: string | null;
+  reconciliation_snapshot: unknown;
+  validation_snapshot: unknown;
+  created_at: string;
+}>;
+
 const reconciliationArraySchema = z.array(z.object({
   fieldKey: z.string(),
   code: z.string(),
@@ -133,6 +152,7 @@ function readContext(principal: SessionPrincipal): TenantTransactionContext {
 
 export async function loadTaxFilingWorkspace(
   principal: SessionPrincipal,
+  options: Readonly<{ includeFilings?: boolean }> = {},
 ): Promise<TaxFilingWorkspaceDto> {
   return withWorkspaceTenantRead(readContext(principal), "/app/tax", async (client) => {
     await assertActorHasActivePermission(client, {
@@ -300,25 +320,10 @@ export async function loadTaxFilingWorkspace(
       createdAt: row.created_at,
     }));
 
-    const filingResult = await client.query<{
-      id: string;
-      legal_entity_id: string;
-      entity_code: string;
-      ledger_code: string;
-      template_id: string;
-      template_name: string;
-      template_version: number;
-      filing_type: "PREPARED" | "HISTORICAL_IMPORT";
-      status: "READY" | "MATCHED" | "REVIEW_REQUIRED";
-      period_start: string;
-      period_end: string;
-      external_reference: string | null;
-      source_file_name: string | null;
-      reconciliation_snapshot: unknown;
-      validation_snapshot: unknown;
-      created_at: string;
-    }>(
-      `SELECT filing.id, filing.legal_entity_id, entity.code AS entity_code,
+    const filingRows = options.includeFilings === false
+      ? []
+      : (await client.query<TaxFilingSummaryRow>(
+        `SELECT filing.id, filing.legal_entity_id, entity.code AS entity_code,
          ledger.code AS ledger_code, filing.template_id,
          template.name AS template_name, template.version AS template_version,
          filing.filing_type, filing.status, filing.period_start::text,
@@ -336,9 +341,9 @@ export async function loadTaxFilingWorkspace(
        WHERE filing.organization_id = $1
        ORDER BY filing.created_at DESC, filing.id DESC
        LIMIT 50`,
-      [principal.organizationId],
-    );
-    const filings = filingResult.rows.map<TaxFilingSummaryDto>((row) => ({
+        [principal.organizationId],
+      )).rows;
+    const filings = filingRows.map<TaxFilingSummaryDto>((row) => ({
       id: row.id,
       legalEntityId: row.legal_entity_id,
       entityCode: row.entity_code,

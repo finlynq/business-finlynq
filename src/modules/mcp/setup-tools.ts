@@ -51,6 +51,11 @@ import {
   configureOrganizationFxProviderPolicy,
   organizationFxProviderPolicyConfigurationSchema,
 } from "@/modules/fx/provider-policy";
+import {
+  saveTaxAccountMappings,
+  saveTaxAccountMappingsSchema,
+} from "@/modules/tax/filing-service";
+import { loadTaxFilingWorkspace } from "@/modules/tax/filing-workspace";
 
 const emptySchema = z.object({}).strict();
 const accountingConfigurationContextSchema = z.object({
@@ -92,6 +97,16 @@ export const SETUP_MCP_TOOLS: readonly McpToolDefinition[] = [
     invoke: (args, runtime) => loadAccountingConfiguration(
       runtime.sessionPrincipal,
       args.accountingDate,
+    ),
+  }),
+  defineMcpTool({
+    policy: { name: "finlynq_setup_get_tax_filing_configuration", group: "SETUP", access: "READ", permission: PERMISSIONS.readTax },
+    title: "Get tax filing configuration",
+    description: "Return reviewed shared filing templates, eligible company ledgers and accounts, and the latest client mapping versions. Use these stable IDs before appending a mapping version; filing workpaper history remains on the Daily tool.",
+    inputSchema: emptySchema,
+    invoke: (_args, runtime) => loadTaxFilingWorkspace(
+      runtime.sessionPrincipal,
+      { includeFilings: false },
     ),
   }),
   defineMcpTool({
@@ -224,6 +239,19 @@ export const SETUP_MCP_TOOLS: readonly McpToolDefinition[] = [
     description: "Create an encrypted date-effective entity tax registration with jurisdiction and evidence. This configures tax determination; it does not file tax returns.",
     inputSchema: taxRegistrationConfigurationSchema,
     invoke: (args, runtime) => configureTaxRegistration({ principal: runtime.sessionPrincipal, requestId: runtime.requestId, ...args }),
+  }),
+  defineMcpTool({
+    policy: { name: "finlynq_setup_save_tax_account_mappings", group: "SETUP", access: "WRITE", permission: PERMISSIONS.manageTaxMappings },
+    title: "Save tax filing account mappings",
+    description: "Append an immutable client mapping version from reviewed tax-template fields to active, postable, non-control ledger accounts. Call the tax filing configuration tool first for template, ledger, field, and account IDs.",
+    inputSchema: saveTaxAccountMappingsSchema,
+    idempotent: true,
+    invoke: (args, runtime) => saveTaxAccountMappings({
+      principal: runtime.sessionPrincipal,
+      requestId: runtime.requestId,
+      sourceSurface: "MCP",
+      ...args,
+    }),
   }),
   defineMcpTool({
     policy: { name: "finlynq_setup_create_legal_entity", group: "SETUP", access: "WRITE", permission: PERMISSIONS.manageOrganizationSettings },

@@ -1,7 +1,7 @@
 .postingList {
   display: grid;
   gap: 10px;
-  min-width: 310px;
+  min-width: 0;
   margin: 0;
 }
 
@@ -36,7 +36,7 @@
 
 .postingAmounts dt {
   color: #63758a;
-  font-size: 9px;
+  font-size: 12px;
   font-weight: 850;
   letter-spacing: .06em;
   text-transform: uppercase;
@@ -45,24 +45,27 @@
 .postingAmounts dd {
   margin: 0;
   font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
-  font-size: 11px;
+  font-size: 13px;
   font-weight: 750;
   white-space: nowrap;
 }
 
 .actions {
-  display: grid;
-  justify-items: start;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
   gap: 7px;
   min-width: 145px;
 }
 
 .actions a {
-  min-height: 32px;
+  min-height: 36px;
 }
 
 @media (max-width: 760px) {
   .postingAmounts {
-    grid-template-columns: 1fr;
+    grid-template-columns: repeat(3, minmax(100px, 1fr));
   }
 }
+
+@media(pointer:coarse),(max-width:860px) { .actions a { min-height:44px; } }

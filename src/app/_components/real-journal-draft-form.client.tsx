@@ -1,6 +1,7 @@
 "use client";
 
 import { useId, useMemo, useState } from "react";
+import { MutationFeedback } from "@/app/_components/mutation-feedback.client";
 import { exact } from "@/kernel/money";
 import type { ManualJournalOptionsDto } from "@/modules/ledger/tenant-workspace";
 
@@ -262,7 +263,7 @@ export function RealJournalDraftForm({
                 ))}
               </select>
             </label>
-            <label>
+            <label className="memo-field">
               <span>Memo</span>
               <input type="text" maxLength={500} value={line.memo} onChange={(event) => updateLine(line.id, "memo", event.target.value)} placeholder="Optional" />
             </label>
@@ -284,11 +285,7 @@ export function RealJournalDraftForm({
         <span>Difference <strong>{formatAmount(totals.debit.minus(totals.credit).abs(), currency)}</strong></span>
       </div>
 
-      {message && (
-        <p className={`validation-message ${message.kind === "success" ? "validation-success" : "validation-error"}`} role={message.kind === "error" ? "alert" : "status"}>
-          <strong>{message.kind === "success" ? "Saved." : "Not saved."}</strong> {message.text}
-        </p>
-      )}
+      {message && <MutationFeedback kind={message.kind} message={message.text} onDismiss={() => setMessage(null)} />}
       <div className="form-actions">
         <button type="submit" className="primary-button" disabled={options.readOnly || busy || entity.periods.length === 0 || validAccounts.length < 2}>
           {busy ? "Saving…" : "Save journal"}

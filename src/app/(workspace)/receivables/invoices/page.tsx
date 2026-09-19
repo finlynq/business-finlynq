@@ -35,12 +35,12 @@ export default async function InvoicesPage({
       <PageHeader
         eyebrow="Accounts receivable"
         title="Sales invoices & receipts"
-        description="Draft service invoices, determine tax, post immutable AR journals, allocate receipts, and correct mistakes by voiding at the source."
+        description="Create customer invoices, track amounts due and record receipts. Open a document to review its lines, tax and supporting evidence."
         actions={<Link className="secondary-button" href="/app/parties">Manage customers</Link>}
       />
       {workspace.demoOnly && (
         <DemoNotice>
-          This is your private writable demo business. Create, issue, allocate, and void transactions freely; the same browser can return after logout or session expiry, and the seeded company is restored nightly.
+          This is one shared writable demo company. Every visitor can see changes until the seeded company is restored nightly. Use synthetic information only.
         </DemoNotice>
       )}
       {!ready ? (
@@ -53,3 +53,4 @@ export default async function InvoicesPage({
     </div>
   );
 }
+export const metadata = { title: "Sales invoices & receipts" };

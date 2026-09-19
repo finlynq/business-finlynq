@@ -162,6 +162,7 @@ export function SignupForm({
           <label><span>Your name</span><input name="displayName" autoComplete="name" required minLength={2} maxLength={120} /></label>
           <label><span>{authentication === "microsoft" ? "Contact email" : "Work email"}</span><input name="email" type="email" autoComplete="email" inputMode="email" required maxLength={254} /><small>{authentication === "microsoft" ? "Verified separately for security notices and recovery; it does not have to match the Microsoft address." : "Used to verify and recover your account."}</small></label>
         </div>
+        <h2 className={styles.formSection}>Business and legal entity</h2>
         <label><span>Business name</span><input name="organizationName" autoComplete="organization" required minLength={2} maxLength={200} /><small>Enter at least 2 characters.</small></label>
         <label><span>Legal entity name</span><input name="entityName" autoComplete="organization" required minLength={2} maxLength={200} /><small>Enter the legal name registered for this entity.</small></label>
         <div className={styles.formGrid}>
@@ -183,6 +184,7 @@ export function SignupForm({
           <label><span>Functional currency</span><select value={functionalCurrency} onChange={(event) => setFunctionalCurrency(event.target.value)}>{supportedCurrencies.map((currency) => <option key={currency} value={currency}>{currency}</option>)}</select><small>Immutable for this ledger after its first posting.</small></label>
           <label><span>Accounting framework</span><select value={accountingProfile} onChange={(event) => setAccountingProfile(event.target.value as SignupAccountingProfile)}>{SIGNUP_ACCOUNTING_PROFILES.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select><small>Choose the framework used by this entity.</small></label>
         </div>
+        <h2 className={styles.formSection}>Posting policy</h2>
         <label><span>Manual journal posting</span><select name="manualPostingMode" defaultValue="AUTO_POST"><option value="AUTO_POST">Auto-post for simpler workflows</option><option value="REVIEW_REQUIRED">Require review before posting</option></select><small>Posting permissions still apply in either mode.</small></label>
         <label className={styles.checkboxLabel}><input name="termsAccepted" type="checkbox" required /><span>I agree to the <Link href="/terms" target="_blank">terms</Link> and acknowledge the <Link href="/privacy" target="_blank">privacy notice</Link>.</span></label>
         {challenge.enabled && <div ref={challengeContainer} className={styles.challenge} aria-label="Signup verification" />}

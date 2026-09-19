@@ -1,7 +1,12 @@
 "use client";
 
+import { CompactDisclosure } from "./compact-disclosure.client";
+
+import { SectionTabs } from "./section-tabs.client";
+
 import { useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
+import { MutationFeedback } from "@/app/_components/mutation-feedback.client";
 import type { TaxFilingField, TaxMappingBalanceBasis } from "@/modules/tax/filing-template";
 import type { TaxFilingWorkspaceDto } from "@/modules/tax/filing-workspace";
 import styles from "./tax-filing-workspace.module.css";
@@ -35,7 +40,7 @@ function mappingSelections(
   );
   const accounts: Record<string, string[]> = {};
   const bases: Record<string, TaxMappingBalanceBasis> = {};
-  for (const field of template?.definition.fields.filter((candidate) => candidate.kind === "ACCOUNT") ?? []) {
+  for (const field of template?.definition.fields.filter((candidate) => candidate.allowAccountMapping) ?? []) {
     const fieldMappings = mappings.filter((mapping) => mapping.fieldKey === field.key);
     accounts[field.key] = fieldMappings.map((mapping) => mapping.glAccountId);
     bases[field.key] = fieldMappings[0]?.balanceBasis ?? field.defaultBalanceBasis ?? "NET_DEBIT";
@@ -134,6 +139,7 @@ export function TaxFilingWorkspace({ workspace }: { workspace: TaxFilingWorkspac
     () => initialSelections.bases,
   );
   const [mappingReason, setMappingReason] = useState("");
+  const [mappingQuery, setMappingQuery] = useState("");
   const [mappingFeedback, setMappingFeedback] = useState<Feedback | null>(null);
   const [mappingBusy, setMappingBusy] = useState(false);
   const mappingCommand = useRef(idempotencyCommand());
@@ -151,9 +157,13 @@ export function TaxFilingWorkspace({ workspace }: { workspace: TaxFilingWorkspac
 
   const template = currentTemplate(workspace, templateId);
   const ledger = currentLedger(workspace, ledgerId);
-  const accountFields = useMemo(
-    () => template?.definition.fields.filter((field) => field.kind === "ACCOUNT") ?? [],
+  const mappingFields = useMemo(
+    () => template?.definition.fields.filter((field) => field.allowAccountMapping) ?? [],
     [template],
+  );
+  const requiredMappingFields = useMemo(
+    () => mappingFields.filter((field) => field.kind === "ACCOUNT" && field.required),
+    [mappingFields],
   );
   const manualFields = useMemo(
     () => template?.definition.fields.filter((field) => field.kind === "MANUAL") ?? [],
@@ -192,7 +202,7 @@ export function TaxFilingWorkspace({ workspace }: { workspace: TaxFilingWorkspac
   const saveMappings = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (!template || !ledger || mappingBusy) return;
-    const mappings = accountFields.flatMap((field) => (accountSelections[field.key] ?? []).map((glAccountId) => ({
+    const mappings = mappingFields.flatMap((field) => (accountSelections[field.key] ?? []).map((glAccountId) => ({
       fieldKey: field.key,
       glAccountId,
       balanceBasis: basisSelections[field.key] ?? field.defaultBalanceBasis ?? "NET_DEBIT",
@@ -299,11 +309,13 @@ export function TaxFilingWorkspace({ workspace }: { workspace: TaxFilingWorkspac
     return <p className="validation-message validation-error">Configure an active ledger and install a tax template before using filing reconciliation.</p>;
   }
 
-  const mappingReady = accountFields.filter((field) => field.required)
+  const mappingReady = requiredMappingFields
     .every((field) => (accountSelections[field.key] ?? []).length > 0);
+  const visibleFeedback = filingFeedback ?? mappingFeedback;
 
   return (
     <div className={styles.workspace}>
+      {visibleFeedback && <MutationFeedback {...visibleFeedback} onDismiss={() => { setMappingFeedback(null); setFilingFeedback(null); }} />}
       <section className={styles.scopeBar} aria-label="Tax filing scope">
         <label><span>Template</span>
           <select value={templateId} onChange={(event) => selectTemplate(event.target.value)}>
@@ -325,19 +337,26 @@ export function TaxFilingWorkspace({ workspace }: { workspace: TaxFilingWorkspac
         </div>
       </section>
 
-      <div className="equal-columns dashboard-columns">
+      <SectionTabs label="Tax preparation sections" defaultSection="tax-workpaper" sections={[
+        { id: "tax-mappings", label: "Account mappings" },
+        { id: "tax-workpaper", label: "Prepare or reconcile" },
+      ]}>
         <section className="panel form-panel" aria-labelledby="tax-mapping-title">
           <div className="panel-heading">
             <div>
               <p className="eyebrow">Client-specific setup</p>
               <h2 id="tax-mapping-title">Map template fields</h2>
-              <p>Choose one or more accounts per field. Saving creates a new immutable mapping version.</p>
+              <p>Choose one or more accounts for any input field. Optional fields remain manually editable when they are not mapped.</p>
             </div>
           </div>
           <form className="close-form" onSubmit={(event) => { void saveMappings(event); }}>
+            <label className="full-field"><span>Find a template field</span><input type="search" value={mappingQuery} onChange={(event) => setMappingQuery(event.target.value)} placeholder="Line code or field name" /><small>Filtering only changes the fields shown. Saving keeps mappings for every field.</small></label>
             <div className={styles.mappingList}>
-              {accountFields.map((field) => <fieldset key={field.key} className={styles.mappingField}>
-                <legend><span className="code-chip">{field.code}</span> {field.label}{field.required ? " *" : ""}</legend>
+              {mappingFields.filter((field) => `${field.code} ${field.label} ${field.description}`.toLocaleLowerCase().includes(mappingQuery.trim().toLocaleLowerCase())).map((field) => <CompactDisclosure key={field.key} defaultOpen={field.kind === "ACCOUNT" && field.required && !(accountSelections[field.key]?.length)} summary={<>
+                <span className="code-chip">{field.code}</span> {field.label}{field.kind === "ACCOUNT" && field.required ? " · required" : " · optional"}
+                <span className={styles.mappingSummary}>{(accountSelections[field.key] ?? []).map((id) => ledgerAccounts.find((account) => account.id === id)?.code ?? id).join(", ") || "No ledger mapping"} · {balanceBasisLabels[basisSelections[field.key] ?? field.defaultBalanceBasis ?? "NET_DEBIT"]}</span>
+              </>}><fieldset className={styles.mappingField}>
+                <legend><span className="code-chip">{field.code}</span> {field.label}{field.kind === "ACCOUNT" && field.required ? " *" : " · optional"}</legend>
                 <p>{field.description}</p>
                 <label><span>Ledger accounts</span>
                   <select
@@ -345,10 +364,24 @@ export function TaxFilingWorkspace({ workspace }: { workspace: TaxFilingWorkspac
                     size={Math.min(5, Math.max(3, ledgerAccounts.length))}
                     value={accountSelections[field.key] ?? []}
                     disabled={!workspace.canManageMappings || mappingBusy}
-                    onChange={(event) => setAccountSelections((current) => ({
-                      ...current,
-                      [field.key]: Array.from(event.currentTarget.selectedOptions, (option) => option.value),
-                    }))}
+                    onChange={(event) => {
+                      const selectedAccountIds = Array.from(
+                        event.currentTarget.selectedOptions,
+                        (option) => option.value,
+                      );
+                      setAccountSelections((current) => ({
+                        ...current,
+                        [field.key]: selectedAccountIds,
+                      }));
+                      if (selectedAccountIds.length > 0 && field.kind === "MANUAL") {
+                        setManualValues((current) => {
+                          if (!Object.hasOwn(current, field.key)) return current;
+                          const next = { ...current };
+                          delete next[field.key];
+                          return next;
+                        });
+                      }
+                    }}
                   >
                     {ledgerAccounts.map((account) => <option key={account.id} value={account.id}>{account.code} · {account.displayName} · {account.accountClass}</option>)}
                   </select>
@@ -358,21 +391,23 @@ export function TaxFilingWorkspace({ workspace }: { workspace: TaxFilingWorkspac
                   <select
                     value={basisSelections[field.key] ?? field.defaultBalanceBasis ?? "NET_DEBIT"}
                     disabled={!workspace.canManageMappings || mappingBusy}
-                    onChange={(event) => setBasisSelections((current) => ({
-                      ...current,
-                      [field.key]: event.target.value as TaxMappingBalanceBasis,
-                    }))}
+                    onChange={(event) => {
+                      const balanceBasis = event.currentTarget.value as TaxMappingBalanceBasis;
+                      setBasisSelections((current) => ({
+                        ...current,
+                        [field.key]: balanceBasis,
+                      }));
+                    }}
                   >
                     {Object.entries(balanceBasisLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
                   </select>
                 </label>
-              </fieldset>)}
+              </fieldset></CompactDisclosure>)}
             </div>
             <label><span>Change reason</span>
               <textarea value={mappingReason} minLength={8} maxLength={500} required disabled={!workspace.canManageMappings || mappingBusy} onChange={(event) => setMappingReason(event.target.value)} placeholder="Why does this account mapping apply to this client?" />
             </label>
             {!workspace.canManageMappings && <p className="validation-message">Your role can view tax workpapers but cannot change client mappings.</p>}
-            {mappingFeedback && <p role={mappingFeedback.kind === "error" ? "alert" : "status"} className={`validation-message ${mappingFeedback.kind === "error" ? "validation-error" : "validation-success"}`}>{mappingFeedback.message}</p>}
             <div className="form-actions">
               <button className="primary-button" type="submit" disabled={!workspace.canManageMappings || mappingBusy || !mappingReady}>{mappingBusy ? "Saving…" : "Save mapping version"}</button>
             </div>
@@ -398,14 +433,21 @@ export function TaxFilingWorkspace({ workspace }: { workspace: TaxFilingWorkspac
               <label><span>Currency</span><input value={template.currencyCode} readOnly /></label>
             </div>
 
-            {manualFields.length > 0 && <fieldset className={styles.valueGroup}>
+            {manualFields.length > 0 && <CompactDisclosure summary={`Manual return adjustments · ${manualFields.filter((field) => manualValues[field.key]?.trim()).length} entered`} attention={manualFields.some((field) => Boolean(manualValues[field.key]?.trim()))}><fieldset className={styles.valueGroup}>
               <legend>Manual return adjustments</legend>
-              <p>Enter supported adjustments not derived from mapped ledger accounts. Leave unused lines at zero.</p>
-              <div className={styles.valueGrid}>{manualFields.map((field) => <label key={field.key}>
-                <span><span className="code-chip">{field.code}</span> {field.label}</span>
-                <input inputMode="decimal" value={manualValues[field.key] ?? ""} placeholder="0.00" disabled={filingBusy} onChange={(event) => setManualValues((current) => ({ ...current, [field.key]: event.target.value }))} />
-              </label>)}</div>
-            </fieldset>}
+              <p>Enter supported values only for fields without ledger mappings. Mapped fields are calculated automatically; unused fields remain zero.</p>
+              <div className={styles.valueGrid}>{manualFields.map((field) => {
+                const mappedAccountCount = accountSelections[field.key]?.length ?? 0;
+                return <label key={field.key}>
+                  <span><span className="code-chip">{field.code}</span> {field.label}</span>
+                  <input inputMode="decimal" value={manualValues[field.key] ?? ""} placeholder={mappedAccountCount > 0 ? "Mapped from ledger" : "0.00"} disabled={filingBusy || mappedAccountCount > 0} onChange={(event) => {
+                    const value = event.currentTarget.value;
+                    setManualValues((current) => ({ ...current, [field.key]: value }));
+                  }} />
+                  {mappedAccountCount > 0 && <small>{mappedAccountCount} mapped ledger account{mappedAccountCount === 1 ? "" : "s"}; manual entry is disabled.</small>}
+                </label>;
+              })}</div>
+            </fieldset></CompactDisclosure>}
 
             {filingType === "HISTORICAL_IMPORT" && <>
               <div className="form-grid form-grid-three">
@@ -418,20 +460,23 @@ export function TaxFilingWorkspace({ workspace }: { workspace: TaxFilingWorkspac
                 <p>Imported values remain editable for review. Field keys and CRA line codes are both accepted in CSV files.</p>
                 <div className={styles.valueGrid}>{template.definition.fields.filter((field) => field.reconcile).map((field) => <label key={field.key}>
                   <span><span className="code-chip">{field.code}</span> {field.label}</span>
-                  <input inputMode="decimal" value={reportedValues[field.key] ?? ""} placeholder="Not reported" disabled={filingBusy} onChange={(event) => setReportedValues((current) => ({ ...current, [field.key]: event.target.value }))} />
+                  <input inputMode="decimal" value={reportedValues[field.key] ?? ""} placeholder="Not reported" disabled={filingBusy} onChange={(event) => {
+                    const value = event.currentTarget.value;
+                    setReportedValues((current) => ({ ...current, [field.key]: value }));
+                  }} />
                 </label>)}</div>
               </fieldset>
             </>}
 
             <p className="form-footnote">Calculations use posted journal lines in the selected date range and mapping version. The resulting workpaper is immutable and does not submit data to {template.authority}.</p>
+            {!mappingReady && <p className="validation-message validation-error">Map the required fields in the Account mappings tab before preparing a return.</p>}
             {!workspace.canPrepareFilings && <p className="validation-message">Your role can view tax workpapers but cannot prepare or import filings.</p>}
-            {filingFeedback && <p role={filingFeedback.kind === "error" ? "alert" : "status"} className={`validation-message ${filingFeedback.kind === "error" ? "validation-error" : "validation-success"}`}>{filingFeedback.message}</p>}
             <div className="form-actions">
               <button className="primary-button" type="submit" disabled={!workspace.canPrepareFilings || filingBusy || !mappingReady}>{filingBusy ? "Calculating…" : filingType === "PREPARED" ? "Prepare return" : "Reconcile historical filing"}</button>
             </div>
           </form>
         </section>
-      </div>
+      </SectionTabs>
     </div>
   );
 }

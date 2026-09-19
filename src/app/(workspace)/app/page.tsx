@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { EntityRegister } from "../../_components/entity-register";
 import { formatMoney } from "@/kernel/money";
 import {
   loadAccountingOverview,
@@ -6,7 +7,8 @@ import {
 } from "@/modules/reporting/tenant-reporting";
 import { requireWorkspacePrincipal } from "@/modules/workspace/access";
 import { currentWorkspaceEntityContext } from "@/modules/workspace/entity-context";
-import { DemoNotice, EmptyState, PageHeader, StatusPill } from "../../_components/ui";
+import { DemoNotice, EmptyState, PageHeader } from "../../_components/ui";
+import styles from "@/app/_components/workspace-navigation.module.css";
 
 function displayAmount(currency: string, amount: string): string {
   return formatMoney(amount, currency);
@@ -149,29 +151,23 @@ export default async function OverviewPage({
         )}
       </section>
 
+      {metrics.length > 0 && <section aria-labelledby="workspace-shortcuts-title">
+        <h2 id="workspace-shortcuts-title" className="sr-only">Common tasks</h2>
+        <div className={styles.quickLinks}>
+          {overview.access.receivables && <Link href="/app/receivables/invoices">Review customer invoices <span aria-hidden="true">→</span></Link>}
+          {overview.access.payables && <Link href="/app/payables/bills">Review supplier bills <span aria-hidden="true">→</span></Link>}
+          {overview.access.ledger && <Link href="/app/reports">Run an accounting report <span aria-hidden="true">→</span></Link>}
+          {overview.access.tax && <Link href="/app/tax">Prepare a tax return <span aria-hidden="true">→</span></Link>}
+        </div>
+      </section>}
+
       {overview.access.ledger && <section aria-labelledby="entities-title">
         <div className="section-heading">
           <div><p className="eyebrow">Legal entities</p><h2 id="entities-title">Primary ledgers</h2></div>
           <Link className="text-link" href="/app/entities">View entities</Link>
         </div>
         {entities.length ? (
-          <div className="entity-grid">
-            {entities.map((entity) => (
-              <article className="entity-card" key={entity.id}>
-                <div className="entity-card-heading">
-                  <span className="code-chip">{entity.code}</span>
-                  <StatusPill status={entity.periodState ?? "NO PERIOD"} />
-                </div>
-                <h3>{entity.displayName}</h3>
-                <p>{entity.regionCode}, {entity.countryCode} · {entity.accountingProfile.replaceAll("_", " ")}</p>
-                <dl className="stacked-details">
-                  <div><dt>Primary ledger</dt><dd>{entity.ledgerCode}</dd></div>
-                  <div><dt>Functional currency</dt><dd>{entity.functionalCurrency}</dd></div>
-                  <div><dt>Current period</dt><dd>{entity.periodLabel ?? "Not configured"}</dd></div>
-                </dl>
-              </article>
-            ))}
-          </div>
+          <EntityRegister entities={entities} />
         ) : (
           <EmptyState title="No legal entities configured">
             Add an active legal entity and primary ledger to begin accounting.
@@ -179,42 +175,12 @@ export default async function OverviewPage({
         )}
       </section>}
 
-      {overview.access.ledger && <div className="dashboard-columns equal-columns">
-        <section className="panel" aria-labelledby="journal-workflow-title">
-          <div className="panel-heading">
-            <div><p className="eyebrow">Immutable ledger</p><h2 id="journal-workflow-title">Journal workflow</h2></div>
-            <Link className="text-link" href="/app/journals">View journals</Link>
-          </div>
-          <div style={{ padding: "18px 20px 0" }}>
-            <dl className="detail-grid">
-              <div><dt>Posted</dt><dd>{overview.postedJournalCount}</dd></div>
-              <div><dt>Awaiting posting</dt><dd>{overview.unpostedJournalCount}</dd></div>
-              <div><dt>Total active workflow</dt><dd>{overview.postedJournalCount + overview.unpostedJournalCount}</dd></div>
-            </dl>
-          </div>
-          <p className="panel-note"><strong>Corrections preserve history.</strong> Posted source entries are corrected through their owning module.</p>
-        </section>
-
-        <section className="panel" aria-labelledby="period-control-title">
-          <div className="panel-heading">
-            <div><p className="eyebrow">Period control</p><h2 id="period-control-title">Entity ledger states</h2></div>
-            <Link className="text-link" href="/app/controls/period-close">Open controls</Link>
-          </div>
-          {entities.length ? (
-            <ul className="checklist" aria-label="Period state by legal entity">
-              {entities.map((entity) => (
-                <li key={entity.id}>
-                  <span className={entity.periodState === "OPEN" ? "check-open" : "check-done"} aria-hidden="true">·</span>
-                  <div><strong>{entity.code} · {entity.periodLabel ?? "No period"}</strong><small>{entity.ledgerCode} · {entity.functionalCurrency}</small></div>
-                  <StatusPill status={entity.periodState ?? "NOT CONFIGURED"} />
-                </li>
-              ))}
-            </ul>
-          ) : (
-            <p className="panel-note">No primary ledger period is configured.</p>
-          )}
-        </section>
+      {overview.access.ledger && <div className="compact-summary panel">
+        <p><strong>Corrections preserve history.</strong> Posted source entries are corrected through their owning module.</p>
+        <Link className="text-link" href="/app/journals">View journals</Link>
+        <Link className="text-link" href="/app/controls/period-close">Open period controls</Link>
       </div>}
     </div>
   );
 }
+export const metadata = { title: "Accounting overview" };

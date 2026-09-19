@@ -112,15 +112,23 @@ const baseJournal = {
 function elements(node: ReactNode): ReactElement[] {
   if (Array.isArray(node)) return node.flatMap(elements);
   if (!isValidElement(node)) return [];
-  const element = node as ReactElement<{ children?: ReactNode }>;
-  return [element, ...elements(element.props.children)];
+  const element = node as ReactElement<{ children?: ReactNode; cells?: ReactNode; actions?: ReactNode }>;
+  return [element, ...elements(element.props.children), ...elements(element.props.cells), ...elements(element.props.actions)];
 }
 
 function textContent(node: ReactNode): string {
   if (typeof node === "string" || typeof node === "number") return String(node);
   if (Array.isArray(node)) return node.map(textContent).join(" ");
   if (!isValidElement(node)) return "";
-  return textContent((node as ReactElement<{ children?: ReactNode }>).props.children);
+  const element = node as ReactElement<{
+    children?: ReactNode;
+    cells?: ReactNode;
+    actions?: ReactNode;
+  }>;
+  return [element.props.children, element.props.cells, element.props.actions]
+    .filter((value) => value !== undefined)
+    .map(textContent)
+    .join(" ");
 }
 
 beforeEach(() => {

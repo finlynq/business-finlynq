@@ -64,9 +64,9 @@ describe("CI predecessor-upgrade and restore verification", () => {
     );
   });
 
-  it("replays exactly 0000-0024 before preserving a tenant sentinel through 0058", () => {
+  it("replays exactly 0000-0024 before preserving a tenant sentinel through 0064", () => {
     expect(migrationJournal.entries.map((entry) => entry.idx)).toEqual(
-      Array.from({ length: 59 }, (_, index) => index),
+      Array.from({ length: 65 }, (_, index) => index),
     );
     expect(migrationJournal.entries.find((entry) => entry.idx === 25)?.tag).toBe(
       "0025_tenant_rls_completion",
@@ -156,6 +156,24 @@ describe("CI predecessor-upgrade and restore verification", () => {
     expect(migrationJournal.entries.find((entry) => entry.idx === 58)?.tag).toBe(
       "0058_asset_register_idempotency",
     );
+    expect(migrationJournal.entries.find((entry) => entry.idx === 59)?.tag).toBe(
+      "0059_publish_canada_t2_template",
+    );
+    expect(migrationJournal.entries.find((entry) => entry.idx === 60)?.tag).toBe(
+      "0060_publish_canada_gst_hst_mapping_v2",
+    );
+    expect(migrationJournal.entries.find((entry) => entry.idx === 61)?.tag).toBe(
+      "0061_publish_canada_t2_mapping_v2",
+    );
+    expect(migrationJournal.entries.find((entry) => entry.idx === 62)?.tag).toBe(
+      "0062_tranquil_dragon_man",
+    );
+    expect(migrationJournal.entries.find((entry) => entry.idx === 63)?.tag).toBe(
+      "0063_illegal_jocasta",
+    );
+    expect(migrationJournal.entries.find((entry) => entry.idx === 64)?.tag).toBe(
+      "0064_slim_living_lightning",
+    );
     expect(tenantPolicyMigration).toContain("ALTER TABLE public.%I FORCE ROW LEVEL SECURITY");
     expect(tenantPolicyMigration).toContain("auth_sessions");
     expect(lifecycleScript).toContain("migration_prefix <= 24");
@@ -178,9 +196,9 @@ describe("CI predecessor-upgrade and restore verification", () => {
     expect(lifecycleScript).toContain(
       'run_migrations "$predecessor_database" "$repository_root/migrations/drizzle"',
     );
-    expect(lifecycleScript).toContain('[[ "$upgraded_count" == "59" ]]');
+    expect(lifecycleScript).toContain('[[ "$upgraded_count" == "65" ]]');
     expect(lifecycleScript).toContain(
-      "tenant sentinel was not preserved through migrations 0025 through 0058",
+      "tenant sentinel was not preserved through migrations 0025 through 0064",
     );
     expect(lifecycleScript).toContain("ci.predecessor-audit-after-upgrade");
     expect(lifecycleScript).toContain(

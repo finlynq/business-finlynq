@@ -2,6 +2,7 @@
 
 import { useRouter } from "next/navigation";
 import { useState } from "react";
+import { MutationFeedback } from "@/app/_components/mutation-feedback.client";
 
 type PartySaveResult = Readonly<{
   party: Readonly<{ id: string; partyNumber: string; displayName: string }>;
@@ -148,7 +149,7 @@ export function PartyCreateForm() {
             </div>
           </fieldset>
         )}
-        {message && <p className={`validation-message ${message.kind === "success" ? "validation-success" : "validation-error"}`} role={message.kind === "error" ? "alert" : "status"}>{message.text}</p>}
+        {message && <MutationFeedback kind={message.kind} message={message.text} onDismiss={() => setMessage(null)} />}
         <p className="form-footnote">This creates one shared party and encrypted address master. Entity, ledger, currency, and control-account settings are added later as accounting roles; they never duplicate the party.</p>
         <div className="form-actions"><button type="submit" className="primary-button" disabled={busy}>{busy ? "Saving…" : "Create shared party"}</button></div>
       </form>

@@ -86,3 +86,4 @@ export default async function AccountInquiryPage({ searchParams }: { searchParam
     </div>
   );
 }
+export const metadata = { title: "Account inquiry" };
