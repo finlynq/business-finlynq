@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { Pool, type PoolClient } from "pg";
 import { closeDatabasePool } from "@/db/transaction";
 import { DEMO_MEMBERSHIP_ID, DEMO_ORGANIZATION_ID, DEMO_USER_ID } from "@/modules/demo/constants";
@@ -41,10 +41,14 @@ runDatabaseTests("asset register PostgreSQL controls", () => {
   }
 
   beforeAll(async () => {
+    vi.stubEnv("BUSINESS_WRITES_ENABLED", "true");
     await resetSharedDemoOrganization(owner, { mode: "nightly" });
   }, 300_000);
 
-  afterAll(async () => Promise.all([owner.end(), app.end(), closeDatabasePool()]));
+  afterAll(async () => {
+    vi.unstubAllEnvs();
+    await Promise.all([owner.end(), app.end(), closeDatabasePool()]);
+  });
 
   it("exposes a complete tenant-scoped tangible, intangible, and prepaid register", async () => {
     const result = await withContext(DEMO_USER_ID, (client) => client.query<{

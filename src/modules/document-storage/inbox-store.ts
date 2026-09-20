@@ -167,6 +167,7 @@ export async function recordInboxProcessingAttempt(
     errorCode?: string;
     safeMessage?: string;
   }>,
+  updates: Readonly<{ processingCiphertext?: string }> = {},
 ): Promise<InboxRow> {
   const metadata = await itemSourceMetadata(client, row);
   if (attempt.outcome === "SUCCEEDED" && isEmlInboxItem(row, metadata) && metadata.errorCode) {
@@ -195,7 +196,13 @@ export async function recordInboxProcessingAttempt(
   );
 
   if (attempt.outcome === "SUCCEEDED") {
-    if (!isEmlInboxItem(row, metadata) || metadata.errorCode === undefined) return row;
+    if (!isEmlInboxItem(row, metadata) || metadata.errorCode === undefined) {
+      if (updates.processingCiphertext === undefined) return row;
+      return (await client.query<InboxRow>(
+        "UPDATE document_inbox_items SET processing_ciphertext=$3 WHERE organization_id=$1 AND id=$2 RETURNING *",
+        [context.organizationId, row.id, updates.processingCiphertext],
+      )).rows[0];
+    }
     const preserved: InboxSourceMetadata = { ...metadata };
     delete preserved.errorCode;
     delete preserved.reason;
@@ -207,8 +214,11 @@ export async function recordInboxProcessingAttempt(
       preserved,
     );
     return (await client.query<InboxRow>(
-      "UPDATE document_inbox_items SET metadata_ciphertext=$3 WHERE organization_id=$1 AND id=$2 RETURNING *",
-      [context.organizationId, row.id, ciphertext],
+      `UPDATE document_inbox_items
+       SET metadata_ciphertext=$3,
+           processing_ciphertext=coalesce($4, processing_ciphertext)
+       WHERE organization_id=$1 AND id=$2 RETURNING *`,
+      [context.organizationId, row.id, ciphertext, updates.processingCiphertext ?? null],
     )).rows[0];
   }
 
