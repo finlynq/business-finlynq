@@ -1,11 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
 import { z } from "zod";
-import { DAILY_MCP_TOOLS } from "@/modules/mcp/daily-tools";
-import { INBOX_MCP_TOOLS } from "@/modules/mcp/inbox-tools";
-import { SETUP_MCP_TOOLS } from "@/modules/mcp/setup-tools";
-import { SHARED_MCP_TOOLS } from "@/modules/mcp/shared-tools";
+import { PERMISSIONS } from "@/modules/identity/permissions";
 import { dynamic } from "@/app/mcp/route";
-import { handleMcpRequest, MCP_TOOL_CATALOG_REVISION } from "@/modules/mcp/server";
+import { isMcpToolVisible, type McpAuthorizationSnapshot } from "@/modules/mcp/connection-policy";
+import { MCP_OAUTH_SCOPES } from "@/modules/mcp/protocol";
+import { ALL_MCP_TOOLS, handleMcpRequest, MCP_TOOL_CATALOG_REVISION } from "@/modules/mcp/server";
 
 vi.mock("@modelcontextprotocol/server", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@modelcontextprotocol/server")>();
@@ -24,12 +23,7 @@ vi.mock("@modelcontextprotocol/server", async (importOriginal) => {
   };
 });
 
-const allTools = [
-  ...SHARED_MCP_TOOLS,
-  ...DAILY_MCP_TOOLS,
-  ...INBOX_MCP_TOOLS,
-  ...SETUP_MCP_TOOLS,
-];
+const allTools = [...ALL_MCP_TOOLS];
 
 type AdvertisedJsonSchema = Readonly<{
   properties?: Record<string, Record<string, unknown>>;
@@ -307,6 +301,86 @@ describe("remote MCP advertised tool catalog", () => {
     const proposal = advertisedSchema("finlynq_daily_get_bank_accounting_proposal");
     expect(proposal.tool.policy).toMatchObject({ access: "READ", permission: "banking.read" });
     expect(proposal.schema.required).toEqual(["proposalId"]);
+  });
+
+  it("advertises every coordinated workflow through the actual fully authorized registry", () => {
+    const snapshot: McpAuthorizationSnapshot = {
+      principal: {
+        connectionId: "10000000-0000-4000-8000-000000000001",
+        organizationId: "10000000-0000-4000-8000-000000000002",
+        userId: "10000000-0000-4000-8000-000000000003",
+        membershipId: "10000000-0000-4000-8000-000000000004",
+        organizationName: "Catalog contract",
+        roleLabel: "Owner",
+        clientId: "catalog-contract-client",
+        clientName: "Catalog contract client",
+        scopes: Object.values(MCP_OAUTH_SCOPES),
+        resource: "https://business.finlynq.com/mcp",
+        dailyMode: "ALLOW_WRITES",
+        setupMode: "ALLOW_WRITES",
+        toolOverrides: {},
+        tokenExpiresAt: new Date("2099-01-01T00:00:00.000Z"),
+        organizationWritesEnabled: true,
+      },
+      permissions: new Set(Object.values(PERMISSIONS)),
+      dailyMode: "ALLOW_WRITES",
+      setupMode: "ALLOW_WRITES",
+      toolOverrides: {},
+      directWriteSessionId: "10000000-0000-4000-8000-000000000005",
+      directWriteStepUpExpiresAt: new Date("2099-01-01T00:00:00.000Z"),
+      connectionVersion: 4,
+    };
+    const advertised = new Set(allTools
+      .filter((tool) => isMcpToolVisible(snapshot, tool.policy))
+      .map((tool) => tool.policy.name));
+
+    for (const name of [
+      "finlynq_daily_preview_bank_account_cutover",
+      "finlynq_daily_commit_bank_account_cutover",
+      "finlynq_daily_list_bank_account_cutover_versions",
+      "finlynq_daily_revise_bank_account_cutover",
+      "finlynq_daily_deactivate_bank_account_cutover",
+      "finlynq_daily_list_bank_accounting_proposals",
+      "finlynq_daily_get_bank_accounting_proposal",
+      "finlynq_daily_prepare_bank_accounting_proposal",
+      "finlynq_daily_decide_bank_accounting_proposal",
+      "finlynq_daily_commit_bank_accounting_proposal",
+      "finlynq_daily_get_tax_filing_workspace",
+      "finlynq_daily_create_tax_filing_workpaper",
+      "finlynq_daily_list_tax_filing_workpapers",
+      "finlynq_daily_preview_tax_filing_export",
+      "finlynq_daily_export_tax_filing_workpaper",
+      "finlynq_daily_asset_tax_workspace",
+      "finlynq_daily_propose_asset_tax_classification",
+      "finlynq_daily_save_asset_tax_classification",
+      "finlynq_daily_preview_asset_tax_schedule",
+      "finlynq_daily_create_asset_tax_schedule",
+      "finlynq_daily_attach_asset_tax_adjustment",
+      "finlynq_setup_list_tax_account_mapping_versions",
+      "finlynq_setup_preview_tax_account_mappings",
+      "finlynq_setup_save_tax_account_mappings",
+      "finlynq_setup_deactivate_tax_account_mappings",
+      "finlynq_setup_list_asset_category_versions",
+      "finlynq_setup_preview_asset_category",
+      "finlynq_setup_create_asset_category",
+      "finlynq_setup_revise_asset_category",
+      "finlynq_setup_deactivate_asset_category",
+    ]) {
+      expect(advertised.has(name), `${name} must be visible to a fully authorized fresh connection`).toBe(true);
+    }
+
+    const categoryCreate = advertisedSchema("finlynq_setup_create_asset_category");
+    expect(categoryCreate.schema.required).toEqual(expect.arrayContaining([
+      "effectiveFrom",
+      "reason",
+      "idempotencyKey",
+    ]));
+    const cutoverCommit = advertisedSchema("finlynq_daily_commit_bank_account_cutover");
+    expect(cutoverCommit.schema.required).toEqual(expect.arrayContaining([
+      "expectedVersion",
+      "confirmationHash",
+      "idempotencyKey",
+    ]));
   });
 
   it("forces dynamic MCP responses and prevents shared or protocol-crossing catalog caches", async () => {

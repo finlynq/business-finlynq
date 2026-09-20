@@ -2,6 +2,7 @@ import {
   boolean,
   date,
   foreignKey,
+  index,
   integer,
   numeric,
   pgEnum,
@@ -174,6 +175,7 @@ export const documentSettlementAllocations = pgTable(
     settlementFxRate: numeric("settlement_fx_rate", { precision: 38, scale: 18 }).notNull(),
     fxRateSource: text("fx_rate_source").notNull(),
     fxRateEffectiveAt: timestamp("fx_rate_effective_at", { withTimezone: true }).notNull(),
+    effectiveOn: date("effective_on").notNull(),
     idempotencyKey: text("idempotency_key").notNull(),
     commandHash: text("command_hash").notNull(),
     createdBy: uuid("created_by").notNull(),
@@ -181,6 +183,7 @@ export const documentSettlementAllocations = pgTable(
   },
   (table) => [
     uniqueIndex("document_settlement_allocations_org_id_unique").on(table.organizationId, table.id),
+    index("document_settlement_allocations_org_item_effective_idx").on(table.organizationId, table.openItemId, table.effectiveOn),
     uniqueIndex("document_settlement_allocations_org_idempotency_unique").on(
       table.organizationId,
       table.idempotencyKey,
@@ -221,6 +224,7 @@ export const openItemVoidEvents = pgTable(
       .references(() => ledgers.id, { onDelete: "restrict" }),
     openItemId: uuid("open_item_id").notNull(),
     voidSourceDocumentId: uuid("void_source_document_id").notNull(),
+    effectiveOn: date("effective_on").notNull(),
     reason: text("reason").notNull(),
     idempotencyKey: text("idempotency_key").notNull(),
     commandHash: text("command_hash").notNull(),
@@ -229,6 +233,7 @@ export const openItemVoidEvents = pgTable(
   },
   (table) => [
     uniqueIndex("open_item_void_events_org_id_unique").on(table.organizationId, table.id),
+    index("open_item_void_events_org_item_effective_idx").on(table.organizationId, table.openItemId, table.effectiveOn),
     uniqueIndex("open_item_void_events_item_unique").on(table.openItemId),
     uniqueIndex("open_item_void_events_org_idempotency_unique").on(
       table.organizationId,

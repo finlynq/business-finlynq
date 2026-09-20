@@ -111,6 +111,14 @@ export async function listPayableOpenItems(
              AND current.source_type = issued_source.source_type
              AND current.source_number = issued_source.source_number
              AND current.legal_entity_id = issued_source.legal_entity_id
+             AND ($8::date IS NULL OR coalesce(
+               (SELECT historical_void.effective_on
+                FROM open_item_void_events historical_void
+                WHERE historical_void.organization_id = current.organization_id
+                  AND historical_void.void_source_document_id = current.id),
+               nullif(current.snapshot->>'accountingDate', '')::date,
+               nullif(current.snapshot->>'documentDate', '')::date
+             ) <= $8::date)
            ORDER BY current.version DESC, current.created_at DESC, current.id DESC
            LIMIT 1
          ) current_source ON true
@@ -121,12 +129,12 @@ export async function listPayableOpenItems(
            FROM document_settlement_allocations selected
            WHERE selected.organization_id = item.organization_id
              AND selected.open_item_id = item.id
-             AND ($8::date IS NULL OR selected.created_at::date <= $8::date)
+             AND ($8::date IS NULL OR selected.effective_on <= $8::date)
          ) allocation ON true
          LEFT JOIN open_item_void_events void_event
-           ON void_event.organization_id = item.organization_id
+          ON void_event.organization_id = item.organization_id
           AND void_event.open_item_id = item.id
-          AND ($8::date IS NULL OR void_event.created_at::date <= $8::date)
+          AND ($8::date IS NULL OR void_event.effective_on <= $8::date)
          WHERE item.organization_id = $1
            AND ($2::uuid IS NULL OR issued_source.legal_entity_id = $2::uuid)
            AND ($3::uuid IS NULL OR item.ledger_id = $3::uuid)
@@ -134,7 +142,10 @@ export async function listPayableOpenItems(
            AND ($5::uuid IS NULL OR current_source.id = $5::uuid OR issued_source.id = $5::uuid)
            AND ($6::text IS NULL OR issued_source.source_number = $6::text)
            AND ($7::text IS NULL OR item.transaction_currency = $7::text)
-           AND ($8::date IS NULL OR item.created_at::date <= $8::date)
+           AND ($8::date IS NULL OR coalesce(
+             nullif(issued_source.snapshot->>'accountingDate', '')::date,
+             nullif(issued_source.snapshot->>'documentDate', '')::date
+           ) <= $8::date)
        )
        SELECT * FROM payable_items
        WHERE settlement_status = ANY($9::text[])

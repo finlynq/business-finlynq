@@ -86,7 +86,12 @@ type CategoryRow = Readonly<{
   functional_currency: string;
 }>;
 
-async function loadCategory(client: PoolClient, organizationId: string, categoryId: string): Promise<CategoryRow> {
+async function loadCategory(
+  client: PoolClient,
+  organizationId: string,
+  categoryId: string,
+  allowInactive = false,
+): Promise<CategoryRow> {
   const result = await client.query<CategoryRow>(
     `SELECT category.id, category.category_key, category.version, category.active,
        category.supersedes_category_id, category.effective_from::text, category.reason,
@@ -100,13 +105,14 @@ async function loadCategory(client: PoolClient, organizationId: string, category
      JOIN ledgers ledger
        ON ledger.organization_id = category.organization_id
       AND ledger.id = category.ledger_id AND ledger.active
-     WHERE category.organization_id = $1 AND category.id = $2 AND category.active
+     WHERE category.organization_id = $1 AND category.id = $2
+       AND ($3::boolean OR category.active)
        AND NOT EXISTS (
          SELECT 1 FROM asset_categories successor
          WHERE successor.organization_id = category.organization_id
            AND successor.supersedes_category_id = category.id
        )`,
-    [organizationId, categoryId],
+    [organizationId, categoryId, allowInactive],
   );
   const category = result.rows[0];
   if (!category) throw new AssetServiceError("The asset category is unavailable.", 404, "ASSET_CATEGORY_NOT_FOUND");
@@ -280,7 +286,7 @@ export async function reviseAssetCategory(input: Readonly<{ context: TenantTrans
       }
       return { categoryId: row.id, categoryKey: row.category_key, version: row.version, active: row.active, idempotentReplay: true };
     }
-    const current = await loadCategory(client, input.context.organizationId, parsedCommand.categoryId);
+    const current = await loadCategory(client, input.context.organizationId, parsedCommand.categoryId, true);
     if (current.version !== parsedCommand.expectedVersion) throw new AssetServiceError("The category version is stale. Reload its current immutable version.", 409, "ASSET_CATEGORY_VERSION_CONFLICT");
     if (parsed.effectiveFrom <= current.effective_from) {
       throw new AssetServiceError("A category revision must become effective after the current version.", 400, "ASSET_CATEGORY_EFFECTIVE_DATE_INVALID");
@@ -477,7 +483,7 @@ async function scheduleDraftFacts(client: PoolClient, organizationId: string, sc
      WHERE schedule.organization_id = $1 AND schedule.id = $2
        AND asset.status IN ('ACTIVE', 'IMPAIRED')
        AND period.state IN ('OPEN', 'ADJUSTMENT_ONLY')
-     FOR SHARE OF schedule, asset, category, ledger, period`,
+     FOR UPDATE OF schedule`,
     [organizationId, scheduleEntryId],
   );
   const facts = result.rows[0];
@@ -490,51 +496,50 @@ export async function generateAssetScheduleJournal(input: Readonly<{
   scheduleEntryId: string;
   idempotencyKey: string;
 }>) {
-  const facts = await withAssetWrite({ context: input.context, permission: PERMISSIONS.draftJournal }, (client) =>
-    scheduleDraftFacts(client, input.context.organizationId, input.scheduleEntryId));
-  if (facts.journal_entry_id) {
-    return { journalId: facts.journal_entry_id, scheduleEntryId: facts.schedule_id, idempotentReplay: true };
-  }
-  const creditAccount = facts.kind === "PREPAID"
-    ? facts.cost_account_combination_id
-    : facts.contra_account_combination_id;
-  if (!creditAccount) throw new AssetServiceError("The category is missing its contra account.", 409, "ASSET_CATEGORY_INCOMPLETE");
-  const amount = quantizeMoney(facts.amount, facts.functional_currency).toFixed();
-  const journal = await createManualJournal({
-    context: input.context,
-    ledgerId: facts.ledger_id,
-    legalEntityId: facts.legal_entity_id,
-    periodId: facts.period_id,
-    accountingDate: facts.due_on,
-    purpose: "ADJUSTING",
-    origin: input.context.sourceSurface === "MCP" ? "MCP" : "API",
-    description: `${facts.kind === "PREPAID" ? "Prepaid recognition" : facts.kind === "TANGIBLE" ? "Depreciation" : "Amortization"} · ${facts.asset_number} · ${facts.asset_name}`,
-    idempotencyKey: `asset-schedule:${facts.schedule_id}:${input.idempotencyKey}`,
-    lines: [{
-      accountCombinationId: facts.expense_account_combination_id,
-      debitFunctional: amount,
-      creditFunctional: "0",
-      transactionCurrency: facts.functional_currency,
-      debitTransaction: amount,
-      creditTransaction: "0",
-      fxRate: "1",
-      fxRateSource: "FUNCTIONAL_CURRENCY",
-      fxRateEffectiveAt: `${facts.due_on}T12:00:00.000Z`,
-      memo: `${facts.asset_number} schedule recognition`,
-    }, {
-      accountCombinationId: creditAccount,
-      debitFunctional: "0",
-      creditFunctional: amount,
-      transactionCurrency: facts.functional_currency,
-      debitTransaction: "0",
-      creditTransaction: amount,
-      fxRate: "1",
-      fxRateSource: "FUNCTIONAL_CURRENCY",
-      fxRateEffectiveAt: `${facts.due_on}T12:00:00.000Z`,
-      memo: `${facts.asset_number} schedule recognition`,
-    }],
-  });
-  await withAssetWrite({ context: input.context, permission: PERMISSIONS.draftJournal }, async (client) => {
+  return withAssetWrite({ context: input.context, permission: PERMISSIONS.draftJournal }, async (client) => {
+    const facts = await scheduleDraftFacts(client, input.context.organizationId, input.scheduleEntryId);
+    if (facts.journal_entry_id) {
+      return { journalId: facts.journal_entry_id, scheduleEntryId: facts.schedule_id, idempotentReplay: true };
+    }
+    const creditAccount = facts.kind === "PREPAID"
+      ? facts.cost_account_combination_id
+      : facts.contra_account_combination_id;
+    if (!creditAccount) throw new AssetServiceError("The category is missing its contra account.", 409, "ASSET_CATEGORY_INCOMPLETE");
+    const amount = quantizeMoney(facts.amount, facts.functional_currency).toFixed();
+    const journal = await createManualJournal({
+      context: input.context,
+      ledgerId: facts.ledger_id,
+      legalEntityId: facts.legal_entity_id,
+      periodId: facts.period_id,
+      accountingDate: facts.due_on,
+      purpose: "ADJUSTING",
+      origin: input.context.sourceSurface === "MCP" ? "MCP" : "API",
+      description: `${facts.kind === "PREPAID" ? "Prepaid recognition" : facts.kind === "TANGIBLE" ? "Depreciation" : "Amortization"} · ${facts.asset_number} · ${facts.asset_name}`,
+      idempotencyKey: `asset-schedule:${facts.schedule_id}:${input.idempotencyKey}`,
+      lines: [{
+        accountCombinationId: facts.expense_account_combination_id,
+        debitFunctional: amount,
+        creditFunctional: "0",
+        transactionCurrency: facts.functional_currency,
+        debitTransaction: amount,
+        creditTransaction: "0",
+        fxRate: "1",
+        fxRateSource: "FUNCTIONAL_CURRENCY",
+        fxRateEffectiveAt: `${facts.due_on}T12:00:00.000Z`,
+        memo: `${facts.asset_number} schedule recognition`,
+      }, {
+        accountCombinationId: creditAccount,
+        debitFunctional: "0",
+        creditFunctional: amount,
+        transactionCurrency: facts.functional_currency,
+        debitTransaction: "0",
+        creditTransaction: amount,
+        fxRate: "1",
+        fxRateSource: "FUNCTIONAL_CURRENCY",
+        fxRateEffectiveAt: `${facts.due_on}T12:00:00.000Z`,
+        memo: `${facts.asset_number} schedule recognition`,
+      }],
+    }, client);
     await client.query(
       `UPDATE asset_schedule_entries SET status = 'DRAFTED', journal_entry_id = $3,
          version = version + 1
@@ -556,8 +561,8 @@ export async function generateAssetScheduleJournal(input: Readonly<{
         JSON.stringify({ scheduleEntryId: facts.schedule_id }), journal.journalId,
         input.context.actorId],
     );
+    return { journalId: journal.journalId, scheduleEntryId: facts.schedule_id, idempotentReplay: journal.idempotentReplay };
   });
-  return { journalId: journal.journalId, scheduleEntryId: facts.schedule_id, idempotentReplay: journal.idempotentReplay };
 }
 
 type AssetAdjustmentFacts = Readonly<{
@@ -795,6 +800,55 @@ function readContext(principal: SessionPrincipal): TenantTransactionContext {
     authMethod: transactionAuthMethod(principal),
     sourceSurface: "UI",
   };
+}
+
+export async function listAssetCategoryVersions(
+  principal: SessionPrincipal,
+  filter: Readonly<{ categoryKey?: string; ledgerId?: string; code?: string }>,
+) {
+  return withWorkspaceTenantRead(readContext(principal), "/app/assets", async (client) => {
+    await assertActorHasActivePermission(client, {
+      organizationId: principal.organizationId,
+      actorId: principal.userId,
+      permission: PERMISSIONS.manageOrganizationSettings,
+    });
+    const result = await client.query(
+      `SELECT category.id, category.category_key AS "categoryKey",
+         category.legal_entity_id AS "legalEntityId", category.ledger_id AS "ledgerId",
+         category.kind, category.code, category.display_name AS "displayName",
+         category.cost_account_combination_id AS "costAccountCombinationId",
+         category.contra_account_combination_id AS "contraAccountCombinationId",
+         category.expense_account_combination_id AS "expenseAccountCombinationId",
+         category.impairment_account_combination_id AS "impairmentAccountCombinationId",
+         category.disposal_account_combination_id AS "disposalAccountCombinationId",
+         category.active, category.version,
+         category.supersedes_category_id AS "supersedesCategoryId",
+         category.effective_from::text AS "effectiveFrom", category.reason,
+         category.created_by AS "createdBy", category.created_at::text AS "createdAt",
+         NOT EXISTS (
+           SELECT 1 FROM asset_categories successor
+           WHERE successor.organization_id=category.organization_id
+             AND successor.supersedes_category_id=category.id
+         ) AS current,
+         (SELECT count(*)::int FROM asset_register asset
+          WHERE asset.organization_id=category.organization_id
+            AND asset.category_id=category.id) AS "dependentAssetCount",
+         (SELECT count(*)::int FROM asset_schedule_entries schedule
+          JOIN asset_register asset ON asset.organization_id=schedule.organization_id
+            AND asset.id=schedule.asset_id
+          WHERE asset.organization_id=category.organization_id
+            AND asset.category_id=category.id) AS "dependentScheduleCount"
+       FROM asset_categories category
+       WHERE category.organization_id=$1
+         AND ($2::uuid IS NULL OR category.category_key=$2::uuid)
+         AND ($3::uuid IS NULL OR category.ledger_id=$3::uuid)
+         AND ($4::text IS NULL OR category.code=$4::text)
+       ORDER BY category.category_key, category.version`,
+      [principal.organizationId, filter.categoryKey ?? null, filter.ledgerId ?? null,
+        filter.code?.trim().toUpperCase() || null],
+    );
+    return { categories: result.rows };
+  });
 }
 
 export async function loadAssetWorkspace(principal: SessionPrincipal) {

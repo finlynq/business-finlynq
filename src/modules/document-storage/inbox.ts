@@ -253,6 +253,7 @@ export async function readInboxDocument(context: TenantTransactionContext, input
           operation: "READ_EML",
           outcome: "FAILED",
           errorCode: error.code,
+          safeMessage: "Email processing failed. Renew the claim and retry the read after correcting the source.",
         });
       }).catch(() => undefined);
     }

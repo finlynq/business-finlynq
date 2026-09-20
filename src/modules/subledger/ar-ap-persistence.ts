@@ -485,12 +485,12 @@ export async function insertSettlementAllocations(
        transaction_currency, transaction_amount, carrying_functional_amount,
        settlement_functional_amount, realized_fx_functional,
        settlement_fx_rate, fx_rate_source, fx_rate_effective_at,
-       idempotency_key, command_hash, created_by
+       idempotency_key, command_hash, created_by, effective_on
      )
      SELECT input.id, $1, $2, $3, input.open_item_id, 'APPLY', NULL,
        $4, input.transaction_amount, input.carrying_functional_amount,
        input.settlement_functional_amount, input.realized_fx_functional,
-       $5, $6, $7, input.idempotency_key, $8, $9
+       $5, $6, $7, input.idempotency_key, $8, $9, $17::date
      FROM unnest(
        $10::uuid[], $11::uuid[], $12::numeric[], $13::numeric[],
        $14::numeric[], $15::numeric[], $16::text[]
@@ -516,6 +516,7 @@ export async function insertSettlementAllocations(
       input.allocations.map((allocation) => allocation.settlementFunctionalAmount),
       input.allocations.map((allocation) => allocation.realizedFxFunctional),
       input.allocations.map((_, index) => `${input.baseIdempotencyKey}:${index + 1}`),
+      input.snapshot.settlementDate,
     ],
   );
   const persistedIds = new Set(result.rows.map((row) => row.id));
@@ -714,6 +715,7 @@ export async function insertExactAllocationReversals(
     context: TenantTransactionContext;
     ledgerId: string;
     voidSourceDocumentId: string;
+    effectiveOn: string;
     originals: readonly SettlementAllocationRow[];
     baseIdempotencyKey: string;
     commandHash: string;
@@ -732,14 +734,14 @@ export async function insertExactAllocationReversals(
        transaction_currency, transaction_amount, carrying_functional_amount,
        settlement_functional_amount, realized_fx_functional,
        settlement_fx_rate, fx_rate_source, fx_rate_effective_at,
-       idempotency_key, command_hash, created_by
+       idempotency_key, command_hash, created_by, effective_on
      )
      SELECT input.id, $1, $2, $3, input.open_item_id, 'REVERSAL',
        input.reverses_allocation_id, input.transaction_currency,
        input.transaction_amount, input.carrying_functional_amount,
        input.settlement_functional_amount, input.realized_fx_functional,
        input.settlement_fx_rate, input.fx_rate_source, input.fx_rate_effective_at,
-       input.idempotency_key, $4, $5
+       input.idempotency_key, $4, $5, $18::date
      FROM unnest(
        $6::uuid[], $7::uuid[], $8::uuid[], $9::text[], $10::numeric[],
        $11::numeric[], $12::numeric[], $13::numeric[], $14::numeric[],
@@ -769,6 +771,7 @@ export async function insertExactAllocationReversals(
       input.originals.map((original) => original.fx_rate_source),
       effectiveAt,
       input.originals.map((_, index) => `${input.baseIdempotencyKey}:${index + 1}`),
+      input.effectiveOn,
     ],
   );
   const persistedIds = new Set(result.rows.map((row) => row.id));

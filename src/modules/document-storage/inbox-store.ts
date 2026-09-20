@@ -103,11 +103,13 @@ export async function itemSourceMetadata(client: PoolClient, row: InboxRow): Pro
 export async function itemMetadata(client: PoolClient, row: InboxRow) {
   const metadata = await itemSourceMetadata(client, row);
   const processing = await itemProcessing(client, row);
+  const successfulEmailProcessing = isEmlInboxItem(row, metadata) && processing.email !== undefined;
   return { id: row.id, connectionId: row.connection_id, module: row.owner_module, filename: metadata.name,
     sourcePath: metadata.sourcePath ?? metadata.name, mimeType: row.mime_type, byteSize: Number(row.byte_size), status: row.status, sha256: row.sha256,
     leaseUntil: row.lease_until?.toISOString() ?? null, assetId: row.asset_id, sourceDocumentId: row.source_document_id,
-    canonicalName: processing.name ?? null, filingMetadata: processing.metadata ?? null, reason: processing.reason ?? metadata.reason ?? null,
-    errorCode: metadata.errorCode ?? null, routingTarget: metadata.routingTarget ?? null,
+    canonicalName: processing.name ?? null, filingMetadata: processing.metadata ?? null,
+    reason: processing.reason ?? (successfulEmailProcessing ? null : metadata.reason ?? null),
+    errorCode: successfulEmailProcessing ? null : metadata.errorCode ?? null, routingTarget: metadata.routingTarget ?? null,
     sourceMessages: metadata.sourceMessages ?? [],
     createdAt: row.created_at.toISOString() };
 }
@@ -117,6 +119,7 @@ export type InboxProcessingAttempt = Readonly<{
   operation: string;
   outcome: "SUCCEEDED" | "FAILED";
   errorCode: string | null;
+  safeMessage: string | null;
   correlationId: string;
   createdBy: string;
   createdAt: string;
@@ -133,9 +136,10 @@ export async function listInboxProcessingAttempts(
 ): Promise<InboxProcessingAttempt[]> {
   const result = await client.query<{
     id: string; operation: string; outcome: "SUCCEEDED" | "FAILED"; error_code: string | null;
+    safe_message: string | null;
     correlation_id: string; created_by: string; created_at: Date;
   }>(
-    `SELECT id, operation, outcome, error_code, correlation_id, created_by, created_at
+    `SELECT id, operation, outcome, error_code, safe_message, correlation_id, created_by, created_at
      FROM document_inbox_processing_attempts
      WHERE organization_id=$1 AND inbox_item_id=$2
      ORDER BY created_at DESC, id DESC LIMIT 20`,
@@ -146,6 +150,7 @@ export async function listInboxProcessingAttempts(
     operation: attempt.operation,
     outcome: attempt.outcome,
     errorCode: attempt.error_code,
+    safeMessage: attempt.safe_message,
     correlationId: attempt.correlation_id,
     createdBy: attempt.created_by,
     createdAt: attempt.created_at.toISOString(),
@@ -160,18 +165,35 @@ export async function recordInboxProcessingAttempt(
     operation: "READ_EML";
     outcome: "SUCCEEDED" | "FAILED";
     errorCode?: string;
+    safeMessage?: string;
   }>,
 ): Promise<InboxRow> {
+  const metadata = await itemSourceMetadata(client, row);
+  if (attempt.outcome === "SUCCEEDED" && isEmlInboxItem(row, metadata) && metadata.errorCode) {
+    await client.query(
+      `INSERT INTO document_inbox_processing_attempts(
+         id, organization_id, inbox_item_id, operation, outcome, error_code,
+         safe_message, correlation_id, created_by, created_at
+       ) SELECT $1,$2,$3,$4,'FAILED',$5,$6,$7,$8,$9
+       WHERE NOT EXISTS (
+         SELECT 1 FROM document_inbox_processing_attempts
+         WHERE organization_id=$2 AND inbox_item_id=$3 AND operation=$4
+           AND outcome='FAILED' AND error_code=$5
+       )`,
+      [randomUUID(), context.organizationId, row.id, attempt.operation, metadata.errorCode,
+        metadata.reason ?? "Legacy email processing failure", `legacy:${row.id}:${metadata.errorCode}`,
+        context.actorId, row.updated_at],
+    );
+  }
   await client.query(
     `INSERT INTO document_inbox_processing_attempts(
        id, organization_id, inbox_item_id, operation, outcome, error_code,
-       correlation_id, created_by
-     ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+       safe_message, correlation_id, created_by
+     ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
     [randomUUID(), context.organizationId, row.id, attempt.operation, attempt.outcome,
-      attempt.errorCode ?? null, context.requestId, context.actorId],
+      attempt.errorCode ?? null, attempt.safeMessage ?? null, context.requestId, context.actorId],
   );
 
-  const metadata = await itemSourceMetadata(client, row);
   if (attempt.outcome === "SUCCEEDED") {
     if (!isEmlInboxItem(row, metadata) || metadata.errorCode === undefined) return row;
     const preserved: InboxSourceMetadata = { ...metadata };

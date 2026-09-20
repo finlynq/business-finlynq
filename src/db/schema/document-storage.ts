@@ -52,6 +52,7 @@ export const documentInboxProcessingAttempts = pgTable("document_inbox_processin
   operation: text("operation").notNull(),
   outcome: text("outcome").notNull(),
   errorCode: text("error_code"),
+  safeMessage: text("safe_message"),
   correlationId: text("correlation_id").notNull(),
   createdBy: uuid("created_by").notNull(),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),

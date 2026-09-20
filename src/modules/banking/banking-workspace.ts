@@ -19,6 +19,13 @@ import {
   type BankRuleCondition,
 } from "./banking-service";
 
+export function unmatchedReconciliationLedgerLines<T extends Readonly<{
+  amount: string;
+  allocated: string;
+}>>(rows: readonly T[]): T[] {
+  return rows.filter((row) => !new Decimal(row.amount).abs().equals(row.allocated));
+}
+
 export type BankingWorkspaceDto = Readonly<{
   isDemo: boolean;
   feedEnabled: boolean;
@@ -538,6 +545,16 @@ export async function loadBankingWorkspace(
                    AND cutover.reconciliation_session_id=$2
                    AND cutover.predecessor_account_combination_id=line.account_combination_id
                    AND journal.accounting_date <= cutover.effective_on
+                   AND cutover.state='ACTIVE'
+                   AND NOT EXISTS (SELECT 1 FROM bank_account_cutovers later_active
+                     WHERE later_active.organization_id=cutover.organization_id
+                       AND later_active.lineage_id=cutover.lineage_id
+                       AND later_active.state='ACTIVE' AND later_active.version>cutover.version)
+                   AND NOT EXISTS (SELECT 1 FROM bank_account_cutovers deactivation
+                     WHERE deactivation.organization_id=cutover.organization_id
+                       AND deactivation.lineage_id=cutover.lineage_id
+                       AND deactivation.state='INACTIVE' AND deactivation.version>cutover.version
+                       AND deactivation.lifecycle_effective_on <= journal.accounting_date)
                )
              )
              AND line.transaction_currency = $5
@@ -547,6 +564,16 @@ export async function loadBankingWorkspace(
                WHERE migration_cutover.organization_id=$1
                  AND migration_cutover.reconciliation_session_id=$2
                  AND migration_cutover.migration_journal_line_ids ? line.id::text
+                 AND migration_cutover.state='ACTIVE'
+                 AND NOT EXISTS (SELECT 1 FROM bank_account_cutovers later_active
+                   WHERE later_active.organization_id=migration_cutover.organization_id
+                     AND later_active.lineage_id=migration_cutover.lineage_id
+                     AND later_active.state='ACTIVE' AND later_active.version>migration_cutover.version)
+                 AND NOT EXISTS (SELECT 1 FROM bank_account_cutovers deactivation
+                   WHERE deactivation.organization_id=migration_cutover.organization_id
+                     AND deactivation.lineage_id=migration_cutover.lineage_id
+                     AND deactivation.state='INACTIVE' AND deactivation.version>migration_cutover.version
+                     AND deactivation.lifecycle_effective_on <= journal.accounting_date)
              )
            GROUP BY line.id, journal.id
            ORDER BY journal.accounting_date, journal.id, line.line_number`,
@@ -752,16 +779,15 @@ export async function loadBankingWorkspace(
             remaining: amount.abs().minus(allocated).toFixed(9),
           };
         });
+        const unmatchedLineRows = unmatchedReconciliationLedgerLines(lineRows);
         const observationTotal = observationRows.reduce((total, row) => total.plus(row.amount), new Decimal(0));
         const observationAmountById = new Map(observationRows.map((row) => [row.versionId, new Decimal(row.amount)]));
         const lineAmountById = new Map(lineRows.map((row) => [row.lineId, new Decimal(row.amount)]));
-        let invalidAllocationCount = 0;
         const ledgerTotal = reconciliationAllocationsResult.rows.reduce((total, allocation) => {
           const observationAmount = observationAmountById.get(allocation.observation_version_id);
           const lineAmount = lineAmountById.get(allocation.journal_line_id);
           if (!observationAmount || !lineAmount || lineAmount.isZero()
             || observationAmount.isPositive() !== lineAmount.isPositive()) {
-            invalidAllocationCount += 1;
             return total;
           }
           const allocated = new Decimal(allocation.allocated_amount);
@@ -796,12 +822,12 @@ export async function loadBankingWorkspace(
           unmatchedObservationCount: finalized ? 0 : reconciliationObservationsResult.rows.filter((row) => (
             !new Decimal(row.amount).abs().equals(row.session_allocated)
           )).length,
-          unmatchedLedgerLineCount: finalized ? 0 : invalidAllocationCount,
+          unmatchedLedgerLineCount: finalized ? 0 : unmatchedLineRows.length,
           matchHash: finalized ? selectedReconciliation.finalized_match_hash ?? liveMatchHash : liveMatchHash,
           voidReason: selectedReconciliation.void_reason,
           voidedAt: selectedReconciliation.voided_at,
           observations: observationRows,
-          ledgerLines: lineRows,
+          ledgerLines: finalized ? [] : unmatchedLineRows,
           allocations: reconciliationAllocationsResult.rows.map((row) => ({
             id: row.id,
             observationVersionId: row.observation_version_id,

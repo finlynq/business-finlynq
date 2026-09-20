@@ -352,9 +352,32 @@ run("cloud inbox PostgreSQL lifecycle", () => {
     expect(extracted.sha256).toBe(checksum);
     expect(cloud.uploads).toBe(uploadCount + 1);
 
+    await withTenantTransaction(requestContext(), async (client) => {
+      const row = (await client.query(
+        "SELECT * FROM document_inbox_items WHERE organization_id=$1 AND id=$2",
+        [ids.org, source.id],
+      )).rows[0];
+      const stale = await encryptStorageValue(client, row, "document_inbox_items", "metadata_ciphertext", {
+        name: "Name search receipt.eml",
+        errorCode: "STORAGE_EXTENSION_UNSUPPORTED",
+        reason: "Legacy unsupported-extension result",
+      });
+      await client.query(
+        "UPDATE document_inbox_items SET metadata_ciphertext=$3 WHERE organization_id=$1 AND id=$2",
+        [ids.org, source.id, stale],
+      );
+    });
+    const selfHealedListing = (await listDocumentInbox(requestContext())).items.find((item) => item.id === source.id);
+    expect(selfHealedListing).toMatchObject({ errorCode: null, reason: null });
+
     const replay = await readInboxDocument(requestContext(), { itemId: source.id, claimId: claim });
     const replayPreview = replay.preview as { attachments: Array<{ status: string; inboxItemId?: string }> };
     expect(replayPreview.attachments[0]).toMatchObject({ status: "EXTRACTED", inboxItemId: extracted.inboxItemId });
+    expect((replay as { processingAttempts: Array<{ outcome: string; errorCode: string | null; safeMessage: string | null }> }).processingAttempts)
+      .toEqual(expect.arrayContaining([
+        expect.objectContaining({ outcome: "FAILED", errorCode: "STORAGE_EXTENSION_UNSUPPORTED", safeMessage: "Legacy unsupported-extension result" }),
+        expect.objectContaining({ outcome: "SUCCEEDED", errorCode: null, safeMessage: null }),
+      ]));
     expect(cloud.uploads).toBe(uploadCount + 1);
     const extractedItem = (await listDocumentInbox(requestContext())).items.find((item) => item.id === extracted.inboxItemId);
     expect(extractedItem?.sourceMessages).toEqual([expect.objectContaining({
