@@ -20,11 +20,13 @@ export const inboxUploadMimeTypeSchema = z.enum([
   "application/msexcel",
   "application/x-msexcel",
   "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  "message/rfc822",
   "application/zip",
   "application/octet-stream",
 ]);
+export type InboxUploadMimeType = z.infer<typeof inboxUploadMimeTypeSchema>;
 
-export type InboxDocumentFormat = "PDF" | "PNG" | "JPEG" | "CSV" | "TSV" | "TEXT" | "XLS" | "XLSX";
+export type InboxDocumentFormat = "PDF" | "PNG" | "JPEG" | "CSV" | "TSV" | "TEXT" | "XLS" | "XLSX" | "EML";
 export type InboxFileSupport =
   | { supported: true; format: InboxDocumentFormat; canonicalMimeType: string }
   | { supported: false; code: string; reason: string };
@@ -43,6 +45,7 @@ const FORMAT_BY_EXTENSION: Record<string, {
   txt: { format: "TEXT", canonicalMimeType: "text/plain", mimeTypes: new Set(["text/plain", "application/octet-stream"]) },
   xls: { format: "XLS", canonicalMimeType: "application/vnd.ms-excel", mimeTypes: new Set(["application/vnd.ms-excel", "application/msexcel", "application/x-msexcel", "application/octet-stream"]) },
   xlsx: { format: "XLSX", canonicalMimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", mimeTypes: new Set(["application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "application/vnd.ms-excel", "application/zip", "application/octet-stream"]) },
+  eml: { format: "EML", canonicalMimeType: "message/rfc822", mimeTypes: new Set(["message/rfc822", "application/octet-stream", "text/plain"]) },
 };
 
 function extension(filename: string) {
@@ -69,7 +72,7 @@ export function classifyInboxFile(file: Pick<CloudFile, "folder" | "shortcut" | 
   }
   const definition = FORMAT_BY_EXTENSION[extension(file.name)];
   if (!definition) {
-    return { supported: false, code: "STORAGE_EXTENSION_UNSUPPORTED", reason: "Use PDF, PNG, JPEG, CSV, TSV, TXT, XLS, or XLSX files of up to 2 MiB." };
+    return { supported: false, code: "STORAGE_EXTENSION_UNSUPPORTED", reason: "Use PDF, PNG, JPEG, CSV, TSV, TXT, XLS, XLSX, or EML files of up to 2 MiB." };
   }
   const mimeType = normalizedMimeType(file.mimeType);
   if (!definition.mimeTypes.has(mimeType)) {
@@ -201,6 +204,15 @@ export function validateInboxDocumentBytes(filename: string, mimeType: string, b
   if (support.format === "XLSX") {
     preflightXlsx(bytes);
     preflightWorkbook(bytes);
+  }
+  else if (support.format === "EML") {
+    const headerEnd = bytes.indexOf(Buffer.from("\r\n\r\n"));
+    const alternateHeaderEnd = bytes.indexOf(Buffer.from("\n\n"));
+    const end = headerEnd >= 0 ? headerEnd : alternateHeaderEnd;
+    const header = end >= 0 ? bytes.subarray(0, end) : Buffer.alloc(0);
+    if (end < 1 || end > 64 * 1024 || header.includes(0) || !/^[!-9;-~]+:/m.test(header.toString("latin1"))) {
+      throw new StorageError("STORAGE_EML_MALFORMED", "The EML file does not contain a complete, safe RFC 5322 header block.");
+    }
   }
   else if (["CSV", "TSV", "TEXT"].includes(support.format)) decodeStructuredText(bytes);
   else {

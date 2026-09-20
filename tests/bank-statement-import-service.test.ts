@@ -24,7 +24,7 @@ vi.mock("@/security/organization-encryption", () => ({
   serializeEncryptedField: mocks.serializeEncryptedField,
 }));
 
-import { importBankStatementInTransaction } from "@/modules/banking/statement-import-service";
+import { importBankStatementInTransaction, normalizeStatementImportDatabaseError } from "@/modules/banking/statement-import-service";
 
 const organizationId = "10000000-0000-4000-8000-000000000001";
 const actorId = "10000000-0000-4000-8000-000000000002";
@@ -82,6 +82,17 @@ describe("bank statement import service", () => {
     vi.clearAllMocks();
     mocks.actorHasActivePermission.mockResolvedValue(true);
     mocks.loadActiveOrganizationKey.mockResolvedValue({ keyVersion: 1, dek: Buffer.alloc(32, 7) });
+  });
+
+  it.each([
+    ["42501", "STATEMENT_IMPORT_AUTHORIZATION_REJECTED"],
+    ["23503", "STATEMENT_IMPORT_LINEAGE_REJECTED"],
+    ["23514", "STATEMENT_IMPORT_INTEGRITY_REJECTED"],
+    ["23505", "STATEMENT_IMPORT_STATE_CONFLICT"],
+  ])("maps PostgreSQL %s to a safe statement-import category", (databaseCode, expectedCode) => {
+    const normalized = normalizeStatementImportDatabaseError(Object.assign(new Error("sensitive SQL details"), { code: databaseCode }));
+    expect(normalized).toMatchObject({ code: expectedCode });
+    expect(normalized.message).not.toContain("sensitive SQL details");
   });
 
   it("fails before database mutation when either required organization permission is absent", async () => {
@@ -348,5 +359,122 @@ describe("bank statement import service", () => {
     expect(rowInsert?.[1]?.[4]).not.toBe(previewBankStatementExtraction(extraction).rows[0]?.fingerprint);
     expect(statements.some((statement) => statement.includes("INSERT INTO bank_reconciliation_sessions"))).toBe(true);
     expect(statements.some((statement) => statement.includes("journal_entries") || statement.includes("journal_lines"))).toBe(false);
+    const mappingValidation = statements.find((statement) => statement.includes("FROM account_combinations combination"));
+    expect(mappingValidation).not.toContain("FOR SHARE");
+  });
+
+  it.each([
+    {
+      label: "RBC Mastercard 6256",
+      accountKind: "CREDIT_CARD" as const,
+      balanceConvention: "POSITIVE_AMOUNT_OWED" as const,
+      combination: combinationId,
+      count: 53,
+      closingBalance: "16.39",
+      smallAmount: "0.01",
+      finalAmount: "15.87",
+      direction: "DECREASE" as const,
+      sourceKind: "PURCHASE" as const,
+    },
+    {
+      label: "RBC Current Account",
+      accountKind: "CASH" as const,
+      balanceConvention: "SIGNED_ACCOUNT_BALANCE" as const,
+      combination: combinationId,
+      count: 38,
+      closingBalance: "35.05",
+      smallAmount: "0.05",
+      finalAmount: "33.20",
+      direction: "INCREASE" as const,
+      sourceKind: "DEPOSIT" as const,
+    },
+  ])("imports the exact balanced $label row count through CREATE_OR_REUSE_ACCOUNT", async (scenario) => {
+    const productionExtraction = {
+      extractionVersion: "finlynq.statement.v1" as const,
+      institution: "Royal Bank of Canada",
+      maskedAccount: scenario.accountKind === "CASH" ? "Current Account" : "****6256",
+      accountKind: scenario.accountKind,
+      currency: "CAD",
+      statementStartOn: scenario.accountKind === "CASH" ? "2025-01-30" : "2025-02-10",
+      statementEndOn: "2026-07-21",
+      balanceConvention: scenario.balanceConvention,
+      openingBalance: "0.00",
+      closingBalance: scenario.closingBalance,
+      rows: Array.from({ length: scenario.count }, (_, index) => ({
+        rowNumber: index + 1,
+        postedOn: "2026-07-01",
+        direction: scenario.direction,
+        sourceKind: scenario.sourceKind,
+        amount: index === scenario.count - 1 ? scenario.finalAmount : scenario.smallAmount,
+        reference: `RBC-${index + 1}`,
+      })),
+    };
+    const preview = previewBankStatementExtraction(productionExtraction);
+    expect(preview).toMatchObject({ readyToImport: true, includedRowCount: scenario.count, movementDifference: "0.000000000" });
+
+    let connection = connectionId;
+    let external = externalAccountId;
+    let observationLookup = 0;
+    const query = vi.fn(async (statement: string, parameters?: readonly unknown[]) => {
+      if (statement.includes("FROM account_combinations combination")) return { rows: [{ allowed: true }] };
+      if (statement.includes("pg_advisory_xact_lock")) return { rows: [] };
+      if (statement.includes("FROM bank_statement_imports")) return { rows: [] };
+      if (statement.includes("FROM bank_connections") && statement.includes("provider = 'FILE_IMPORT'")) return { rows: [] };
+      if (statement.includes("INSERT INTO bank_connections(")) {
+        connection = String(parameters?.[0]);
+        return { rows: [] };
+      }
+      if (statement.includes("provider_account_id_hash = $3")) return { rows: [] };
+      if (statement.includes("INSERT INTO bank_external_accounts(")) {
+        external = String(parameters?.[0]);
+        return { rows: [] };
+      }
+      if (statement.includes("FROM bank_external_accounts external") && statement.includes("external.id = $2")) {
+        return { rows: [{
+          id: external,
+          connection_id: connection,
+          credential_version: 1,
+          active: true,
+          account_kind: scenario.accountKind,
+          currency_code: "CAD",
+          legal_entity_id: legalEntityId,
+          ledger_id: ledgerId,
+          cash_account_combination_id: scenario.combination,
+        }] };
+      }
+      if (statement.includes("FROM bank_reconciliation_sessions")) return { rows: [] };
+      if (statement.includes("FROM bank_sync_runs")) return { rows: [] };
+      if (statement.includes("SELECT id FROM bank_observations")) {
+        observationLookup += 1;
+        return { rows: observationLookup % 2 === 1 ? [] : [{ id: observationId }] };
+      }
+      if (statement.includes("FROM bank_observation_versions") && statement.includes("content_hash")) return { rows: [] };
+      if (statement.includes("coalesce(max(version_number)")) return { rows: [{ next_version: 1 }] };
+      if (statement.includes("SELECT source.id AS source_version_id")) return { rows: [] };
+      return { rows: [] };
+    });
+
+    const result = await importBankStatementInTransaction(
+      { query } as unknown as PoolClient,
+      command({
+        extraction: productionExtraction,
+        previewHash: preview.previewHash,
+        mapping: {
+          mode: "CREATE_OR_REUSE_ACCOUNT",
+          legalEntityId,
+          ledgerId,
+          accountCombinationId: scenario.combination,
+        },
+      }),
+    );
+    const statements = query.mock.calls.map(([statement]) => String(statement));
+    expect(result).toMatchObject({ importedRowCount: scenario.count, duplicateRowCount: 0 });
+    expect(statements.filter((statement) => statement.includes("INSERT INTO bank_observations"))).toHaveLength(scenario.count);
+    expect(statements.filter((statement) => statement.includes("INSERT INTO bank_statement_import_rows"))).toHaveLength(scenario.count);
+    expect(statements.filter((statement) => statement.includes("INSERT INTO bank_connections("))).toHaveLength(1);
+    expect(statements.filter((statement) => statement.includes("INSERT INTO bank_external_accounts("))).toHaveLength(1);
+    expect(statements.filter((statement) => statement.includes("INSERT INTO bank_reconciliation_sessions"))).toHaveLength(1);
+    expect(statements.some((statement) => statement.includes("journal_entries") || statement.includes("journal_lines"))).toBe(false);
+    expect(statements.find((statement) => statement.includes("FROM account_combinations combination"))).not.toContain("FOR SHARE");
   });
 });
