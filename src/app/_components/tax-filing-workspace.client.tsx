@@ -212,6 +212,11 @@ export function TaxFilingWorkspace({ workspace }: { workspace: TaxFilingWorkspac
       legalEntityId: ledger.legalEntityId,
       ledgerId: ledger.ledgerId,
       templateId: template.id,
+      expectedTemplateVersion: template.version,
+      expectedMappingVersion: workspace.mappingVersions.find(
+        (mapping) => mapping.ledgerId === ledger.ledgerId && mapping.templateId === template.id,
+      )?.mappingVersion ?? 0,
+      effectiveFrom: new Date().toISOString().slice(0, 10),
       mappings,
       reason: mappingReason.trim(),
     };

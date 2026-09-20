@@ -24,10 +24,14 @@ import {
   calculateAssetSchedule,
   createAssetCategorySchema,
   createAssetRecordSchema,
+  deactivateAssetCategorySchema,
   finiteScheduleEnd,
+  reviseAssetCategorySchema,
   type AssetAdjustmentInput,
   type CreateAssetCategoryInput,
   type CreateAssetRecordInput,
+  type DeactivateAssetCategoryInput,
+  type ReviseAssetCategoryInput,
 } from "./model";
 
 export class AssetServiceError extends Error {
@@ -63,6 +67,12 @@ async function withAssetWrite<T>(input: Readonly<{
 
 type CategoryRow = Readonly<{
   id: string;
+  category_key: string;
+  version: number;
+  active: boolean;
+  supersedes_category_id: string | null;
+  effective_from: string;
+  reason: string;
   legal_entity_id: string;
   ledger_id: string;
   kind: "TANGIBLE" | "INTANGIBLE" | "PREPAID";
@@ -78,7 +88,9 @@ type CategoryRow = Readonly<{
 
 async function loadCategory(client: PoolClient, organizationId: string, categoryId: string): Promise<CategoryRow> {
   const result = await client.query<CategoryRow>(
-    `SELECT category.id, category.legal_entity_id, category.ledger_id,
+    `SELECT category.id, category.category_key, category.version, category.active,
+       category.supersedes_category_id, category.effective_from::text, category.reason,
+       category.legal_entity_id, category.ledger_id,
        category.kind, category.code, category.display_name,
        category.cost_account_combination_id, category.contra_account_combination_id,
        category.expense_account_combination_id,
@@ -89,12 +101,102 @@ async function loadCategory(client: PoolClient, organizationId: string, category
        ON ledger.organization_id = category.organization_id
       AND ledger.id = category.ledger_id AND ledger.active
      WHERE category.organization_id = $1 AND category.id = $2 AND category.active
-     FOR SHARE OF category, ledger`,
+       AND NOT EXISTS (
+         SELECT 1 FROM asset_categories successor
+         WHERE successor.organization_id = category.organization_id
+           AND successor.supersedes_category_id = category.id
+       )`,
     [organizationId, categoryId],
   );
   const category = result.rows[0];
   if (!category) throw new AssetServiceError("The asset category is unavailable.", 404, "ASSET_CATEGORY_NOT_FOUND");
   return category;
+}
+
+async function validateCategoryMappings(
+  client: PoolClient,
+  organizationId: string,
+  parsed: ReturnType<typeof createAssetCategorySchema.parse>,
+): Promise<void> {
+  const ids = [
+    parsed.costAccountCombinationId,
+    parsed.expenseAccountCombinationId,
+    parsed.contraAccountCombinationId,
+    parsed.impairmentAccountCombinationId,
+    parsed.disposalAccountCombinationId,
+  ].filter((value): value is string => Boolean(value));
+  const accounts = await client.query<{ id: string; class: string }>(
+    `SELECT combination.id, account.class::text
+     FROM account_combinations combination
+     JOIN gl_accounts account
+       ON account.organization_id = combination.organization_id
+      AND account.ledger_id = combination.ledger_id
+      AND account.id = combination.account_id
+     WHERE combination.organization_id = $1
+       AND combination.entity_id = $2 AND combination.ledger_id = $3
+       AND combination.id = ANY($4::uuid[])
+       AND combination.active AND account.active AND account.postable
+       AND account.control_kind = 'NONE'`,
+    [organizationId, parsed.legalEntityId, parsed.ledgerId, ids],
+  );
+  if (accounts.rows.length !== new Set(ids).size) {
+    throw new AssetServiceError("Every category mapping must use an active non-control account in the selected company ledger.", 400, "ASSET_ACCOUNT_MAPPING_INVALID");
+  }
+  const classes = new Map(accounts.rows.map((row) => [row.id, row.class]));
+  if (classes.get(parsed.costAccountCombinationId) !== "ASSET" ||
+      parsed.contraAccountCombinationId && classes.get(parsed.contraAccountCombinationId) !== "ASSET" ||
+      classes.get(parsed.expenseAccountCombinationId) !== "EXPENSE" ||
+      parsed.impairmentAccountCombinationId && classes.get(parsed.impairmentAccountCombinationId) !== "EXPENSE" ||
+      parsed.disposalAccountCombinationId && classes.get(parsed.disposalAccountCombinationId) !== "EXPENSE") {
+    throw new AssetServiceError("Cost and contra mappings must be asset accounts; expense, impairment, and disposal mappings must be expense accounts.", 400, "ASSET_ACCOUNT_CLASS_INVALID");
+  }
+}
+
+function categorySemanticsMatch(row: CategoryRow, parsed: ReturnType<typeof createAssetCategorySchema.parse>): boolean {
+  return row.legal_entity_id === parsed.legalEntityId && row.ledger_id === parsed.ledgerId &&
+    row.kind === parsed.kind && row.code === parsed.code && row.display_name === parsed.displayName &&
+    row.cost_account_combination_id === parsed.costAccountCombinationId &&
+    row.contra_account_combination_id === (parsed.contraAccountCombinationId ?? null) &&
+    row.expense_account_combination_id === parsed.expenseAccountCombinationId &&
+    row.impairment_account_combination_id === (parsed.impairmentAccountCombinationId ?? null) &&
+    row.disposal_account_combination_id === (parsed.disposalAccountCombinationId ?? null);
+}
+
+async function insertCategoryVersion(input: Readonly<{
+  client: PoolClient;
+  context: TenantTransactionContext;
+  parsed: ReturnType<typeof createAssetCategorySchema.parse>;
+  categoryKey: string;
+  version: number;
+  active: boolean;
+  supersedesCategoryId: string | null;
+}>) {
+  const categoryId = randomUUID();
+  const fingerprint = commandHash({
+    ...input.parsed,
+    idempotencyKey: undefined,
+    categoryKey: input.categoryKey,
+    version: input.version,
+    active: input.active,
+    supersedesCategoryId: input.supersedesCategoryId,
+  });
+  await input.client.query(
+    `INSERT INTO asset_categories(
+       id, organization_id, legal_entity_id, ledger_id, kind, category_key, code,
+       display_name, cost_account_combination_id, contra_account_combination_id,
+       expense_account_combination_id, impairment_account_combination_id,
+       disposal_account_combination_id, active, version, supersedes_category_id,
+       effective_from, reason, idempotency_key, command_hash, created_by
+     ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)`,
+    [categoryId, input.context.organizationId, input.parsed.legalEntityId, input.parsed.ledgerId,
+      input.parsed.kind, input.categoryKey, input.parsed.code, input.parsed.displayName,
+      input.parsed.costAccountCombinationId, input.parsed.contraAccountCombinationId ?? null,
+      input.parsed.expenseAccountCombinationId, input.parsed.impairmentAccountCombinationId ?? null,
+      input.parsed.disposalAccountCombinationId ?? null, input.active, input.version,
+      input.supersedesCategoryId, input.parsed.effectiveFrom, input.parsed.reason,
+      input.parsed.idempotencyKey, fingerprint, input.context.actorId],
+  );
+  return { categoryId, categoryKey: input.categoryKey, version: input.version, active: input.active };
 }
 
 export async function createAssetCategory(input: Readonly<{
@@ -104,60 +206,139 @@ export async function createAssetCategory(input: Readonly<{
   void _context;
   const parsed = createAssetCategorySchema.parse(unparsed);
   return withAssetWrite({ context: input.context, permission: PERMISSIONS.manageOrganizationSettings }, async (client) => {
-    const ids = [
-      parsed.costAccountCombinationId,
-      parsed.expenseAccountCombinationId,
-      parsed.contraAccountCombinationId,
-      parsed.impairmentAccountCombinationId,
-      parsed.disposalAccountCombinationId,
-    ].filter((value): value is string => Boolean(value));
-    const accounts = await client.query<{ id: string; class: string }>(
-      `SELECT combination.id, account.class::text
-       FROM account_combinations combination
-       JOIN gl_accounts account
-         ON account.organization_id = combination.organization_id
-        AND account.ledger_id = combination.ledger_id
-        AND account.id = combination.account_id
-       WHERE combination.organization_id = $1
-         AND combination.entity_id = $2 AND combination.ledger_id = $3
-         AND combination.id = ANY($4::uuid[])
-         AND combination.active AND account.active AND account.postable
-         AND account.control_kind = 'NONE'`,
-      [input.context.organizationId, parsed.legalEntityId, parsed.ledgerId, ids],
+    const replay = await client.query<CategoryRow>(
+      `SELECT category.*, ledger.functional_currency FROM asset_categories category
+       JOIN ledgers ledger ON ledger.organization_id=category.organization_id AND ledger.id=category.ledger_id
+       WHERE category.organization_id = $1 AND category.idempotency_key = $2`,
+      [input.context.organizationId, parsed.idempotencyKey],
     );
-    if (accounts.rows.length !== new Set(ids).size) {
-      throw new AssetServiceError("Every category mapping must use an active non-control account in the selected company ledger.", 400, "ASSET_ACCOUNT_MAPPING_INVALID");
+    if (replay.rows[0]) {
+      const row = replay.rows[0];
+      if (row.version !== 1 || !row.active || row.supersedes_category_id !== null ||
+          row.effective_from !== parsed.effectiveFrom || row.reason !== parsed.reason ||
+          !categorySemanticsMatch(row, parsed)) {
+        throw new AssetServiceError("This category idempotency key was already used for different facts.", 409, "ASSET_IDEMPOTENCY_CONFLICT");
+      }
+      return { categoryId: row.id, categoryKey: row.category_key, version: row.version, active: row.active, idempotentReplay: true };
     }
-    const classes = new Map(accounts.rows.map((row) => [row.id, row.class]));
-    if (classes.get(parsed.costAccountCombinationId) !== "ASSET" ||
-        parsed.contraAccountCombinationId && classes.get(parsed.contraAccountCombinationId) !== "ASSET" ||
-        classes.get(parsed.expenseAccountCombinationId) !== "EXPENSE" ||
-        parsed.impairmentAccountCombinationId && classes.get(parsed.impairmentAccountCombinationId) !== "EXPENSE" ||
-        parsed.disposalAccountCombinationId && classes.get(parsed.disposalAccountCombinationId) !== "EXPENSE") {
-      throw new AssetServiceError("Cost and contra mappings must be asset accounts; expense, impairment, and disposal mappings must be expense accounts.", 400, "ASSET_ACCOUNT_CLASS_INVALID");
-    }
-
-    const existing = await client.query<{ id: string; version: number }>(
-      `SELECT id, version FROM asset_categories
-       WHERE organization_id = $1 AND ledger_id = $2 AND code = $3`,
+    const existing = await client.query<CategoryRow>(
+      `SELECT category.*, ledger.functional_currency
+       FROM asset_categories category
+       JOIN ledgers ledger ON ledger.organization_id = category.organization_id AND ledger.id = category.ledger_id
+       WHERE category.organization_id = $1 AND category.ledger_id = $2 AND category.code = $3
+         AND NOT EXISTS (SELECT 1 FROM asset_categories successor
+           WHERE successor.organization_id = category.organization_id AND successor.supersedes_category_id = category.id)
+       ORDER BY category.version DESC LIMIT 1`,
       [input.context.organizationId, parsed.ledgerId, parsed.code],
     );
-    if (existing.rows[0]) return { categoryId: existing.rows[0].id, version: existing.rows[0].version, idempotentReplay: true };
-    const categoryId = randomUUID();
-    await client.query(
-      `INSERT INTO asset_categories(
-         id, organization_id, legal_entity_id, ledger_id, kind, code,
-         display_name, cost_account_combination_id, contra_account_combination_id,
-         expense_account_combination_id, impairment_account_combination_id,
-         disposal_account_combination_id, created_by
-       ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
-      [categoryId, input.context.organizationId, parsed.legalEntityId, parsed.ledgerId,
-        parsed.kind, parsed.code, parsed.displayName, parsed.costAccountCombinationId,
-        parsed.contraAccountCombinationId ?? null, parsed.expenseAccountCombinationId,
-        parsed.impairmentAccountCombinationId ?? null, parsed.disposalAccountCombinationId ?? null,
-        input.context.actorId],
+    if (existing.rows[0]) {
+      if (existing.rows[0].active && categorySemanticsMatch(existing.rows[0], parsed)) {
+        return { categoryId: existing.rows[0].id, categoryKey: existing.rows[0].category_key, version: existing.rows[0].version, active: true, idempotentReplay: true };
+      }
+      throw new AssetServiceError("This category code already has different current semantics. Revise its exact current version instead.", 409, "ASSET_CATEGORY_CODE_CONFLICT");
+    }
+    await validateCategoryMappings(client, input.context.organizationId, parsed);
+    return { ...await insertCategoryVersion({ client, context: input.context, parsed, categoryKey: randomUUID(), version: 1, active: true, supersedesCategoryId: null }), idempotentReplay: false };
+  });
+}
+
+export async function previewAssetCategory(input: Readonly<{ context: TenantTransactionContext }> & CreateAssetCategoryInput) {
+  const { context: _context, ...unparsed } = input;
+  void _context;
+  const parsed = createAssetCategorySchema.parse(unparsed);
+  return withAssetWrite({ context: input.context, permission: PERMISSIONS.manageOrganizationSettings }, async (client) => {
+    await validateCategoryMappings(client, input.context.organizationId, parsed);
+    const current = await client.query<{ id: string; version: number; active: boolean }>(
+      `SELECT category.id, category.version, category.active FROM asset_categories category
+       WHERE category.organization_id=$1 AND category.ledger_id=$2 AND category.code=$3
+         AND NOT EXISTS (SELECT 1 FROM asset_categories successor WHERE successor.organization_id=category.organization_id AND successor.supersedes_category_id=category.id)
+       ORDER BY category.version DESC LIMIT 1`,
+      [input.context.organizationId, parsed.ledgerId, parsed.code],
     );
-    return { categoryId, version: 1, idempotentReplay: false };
+    return { valid: true, current: current.rows[0] ?? null, proposed: parsed, writesPerformed: false };
+  });
+}
+
+export async function reviseAssetCategory(input: Readonly<{ context: TenantTransactionContext }> & ReviseAssetCategoryInput) {
+  const { context: _context, categoryId, expectedVersion, ...unparsed } = input;
+  void _context;
+  const parsedCommand = reviseAssetCategorySchema.parse({ categoryId, expectedVersion, ...unparsed });
+  const parsed = createAssetCategorySchema.parse(unparsed);
+  return withAssetWrite({ context: input.context, permission: PERMISSIONS.manageOrganizationSettings }, async (client) => {
+    const replay = await client.query<CategoryRow>(
+      `SELECT category.*, ledger.functional_currency FROM asset_categories category
+       JOIN ledgers ledger ON ledger.organization_id=category.organization_id AND ledger.id=category.ledger_id
+       WHERE category.organization_id=$1 AND category.idempotency_key=$2`,
+      [input.context.organizationId, parsed.idempotencyKey],
+    );
+    if (replay.rows[0]) {
+      const row = replay.rows[0];
+      if (!row.active || row.supersedes_category_id !== parsedCommand.categoryId ||
+          row.version !== parsedCommand.expectedVersion + 1 || row.effective_from !== parsed.effectiveFrom ||
+          row.reason !== parsed.reason || !categorySemanticsMatch(row, parsed)) {
+        throw new AssetServiceError("This category idempotency key was already used for different revision facts.", 409, "ASSET_IDEMPOTENCY_CONFLICT");
+      }
+      return { categoryId: row.id, categoryKey: row.category_key, version: row.version, active: row.active, idempotentReplay: true };
+    }
+    const current = await loadCategory(client, input.context.organizationId, parsedCommand.categoryId);
+    if (current.version !== parsedCommand.expectedVersion) throw new AssetServiceError("The category version is stale. Reload its current immutable version.", 409, "ASSET_CATEGORY_VERSION_CONFLICT");
+    if (parsed.effectiveFrom <= current.effective_from) {
+      throw new AssetServiceError("A category revision must become effective after the current version.", 400, "ASSET_CATEGORY_EFFECTIVE_DATE_INVALID");
+    }
+    if (current.ledger_id !== parsed.ledgerId || current.legal_entity_id !== parsed.legalEntityId || current.code !== parsed.code || current.kind !== parsed.kind) {
+      throw new AssetServiceError("Category identity, company, ledger, code, and kind cannot change during revision.", 400, "ASSET_CATEGORY_IDENTITY_IMMUTABLE");
+    }
+    await validateCategoryMappings(client, input.context.organizationId, parsed);
+    return { ...await insertCategoryVersion({ client, context: input.context, parsed, categoryKey: current.category_key, version: current.version + 1, active: true, supersedesCategoryId: current.id }), idempotentReplay: false };
+  });
+}
+
+export async function deactivateAssetCategory(input: Readonly<{ context: TenantTransactionContext }> & DeactivateAssetCategoryInput) {
+  const { context: _context, ...unparsed } = input;
+  void _context;
+  const command = deactivateAssetCategorySchema.parse(unparsed);
+  return withAssetWrite({ context: input.context, permission: PERMISSIONS.manageOrganizationSettings }, async (client) => {
+    const replay = await client.query<CategoryRow>(
+      `SELECT category.*, ledger.functional_currency FROM asset_categories category
+       JOIN ledgers ledger ON ledger.organization_id=category.organization_id AND ledger.id=category.ledger_id
+       WHERE category.organization_id=$1 AND category.idempotency_key=$2`,
+      [input.context.organizationId, command.idempotencyKey],
+    );
+    if (replay.rows[0]) {
+      const row = replay.rows[0];
+      if (row.active || row.supersedes_category_id !== command.categoryId ||
+          row.version !== command.expectedVersion + 1 || row.effective_from !== command.effectiveFrom ||
+          row.reason !== command.reason) {
+        throw new AssetServiceError("This category idempotency key was already used for different deactivation facts.", 409, "ASSET_IDEMPOTENCY_CONFLICT");
+      }
+      return { categoryId: row.id, categoryKey: row.category_key, version: row.version, active: false, idempotentReplay: true };
+    }
+    const current = await loadCategory(client, input.context.organizationId, command.categoryId);
+    if (current.version !== command.expectedVersion) throw new AssetServiceError("The category version is stale. Reload its current immutable version.", 409, "ASSET_CATEGORY_VERSION_CONFLICT");
+    if (command.effectiveFrom <= current.effective_from) {
+      throw new AssetServiceError("A category deactivation must become effective after the current version.", 400, "ASSET_CATEGORY_EFFECTIVE_DATE_INVALID");
+    }
+    const parsed = createAssetCategorySchema.parse({
+      legalEntityId: current.legal_entity_id, ledgerId: current.ledger_id, kind: current.kind,
+      code: current.code, displayName: current.display_name,
+      costAccountCombinationId: current.cost_account_combination_id,
+      ...(current.contra_account_combination_id ? { contraAccountCombinationId: current.contra_account_combination_id } : {}),
+      expenseAccountCombinationId: current.expense_account_combination_id,
+      ...(current.impairment_account_combination_id ? { impairmentAccountCombinationId: current.impairment_account_combination_id } : {}),
+      ...(current.disposal_account_combination_id ? { disposalAccountCombinationId: current.disposal_account_combination_id } : {}),
+      effectiveFrom: command.effectiveFrom, reason: command.reason, idempotencyKey: command.idempotencyKey,
+    });
+    const dependency = await client.query<{ asset_count: number; schedule_count: number }>(
+      `SELECT count(DISTINCT asset.id)::int AS asset_count, count(schedule.id)::int AS schedule_count
+       FROM asset_register asset
+       JOIN asset_categories category
+         ON category.organization_id=asset.organization_id AND category.id=asset.category_id
+       LEFT JOIN asset_schedule_entries schedule
+         ON schedule.organization_id=asset.organization_id AND schedule.asset_id=asset.id
+       WHERE asset.organization_id=$1 AND category.category_key=$2`,
+      [input.context.organizationId, current.category_key],
+    );
+    return { ...await insertCategoryVersion({ client, context: input.context, parsed, categoryKey: current.category_key, version: current.version + 1, active: false, supersedesCategoryId: current.id }), dependencies: dependency.rows[0] ?? { asset_count: 0, schedule_count: 0 }, idempotentReplay: false };
   });
 }
 
@@ -181,6 +362,9 @@ export async function createAssetRecord(input: Readonly<{
       return { assetId: replay.rows[0].id, idempotentReplay: true };
     }
     const category = await loadCategory(client, input.context.organizationId, parsed.categoryId);
+    if (category.effective_from > parsed.inServiceOn) {
+      throw new AssetServiceError("The category version is not effective on the asset in-service date.", 400, "ASSET_CATEGORY_NOT_EFFECTIVE");
+    }
     if (parsed.classification === "INDEFINITE_LIFE" && category.kind !== "INTANGIBLE") {
       throw new AssetServiceError("Only intangible assets can be classified as indefinite-life.", 400, "ASSET_CLASSIFICATION_INVALID");
     }
@@ -627,10 +811,15 @@ export async function loadAssetWorkspace(principal: SessionPrincipal) {
       ])
       : [false, false];
     const [categories, assets, schedules, accounts, reconciliation] = await Promise.all([
-      client.query(`SELECT id, legal_entity_id AS "legalEntityId", ledger_id AS "ledgerId", kind,
+      client.query(`SELECT id, category_key AS "categoryKey", legal_entity_id AS "legalEntityId", ledger_id AS "ledgerId", kind,
           code, display_name AS "displayName", cost_account_combination_id AS "costAccountCombinationId",
           contra_account_combination_id AS "contraAccountCombinationId",
-          expense_account_combination_id AS "expenseAccountCombinationId", active, version
+          expense_account_combination_id AS "expenseAccountCombinationId", active, version,
+          supersedes_category_id AS "supersedesCategoryId", effective_from::text AS "effectiveFrom",
+          reason, created_at::text AS "createdAt",
+          NOT EXISTS (SELECT 1 FROM asset_categories successor
+            WHERE successor.organization_id=asset_categories.organization_id
+              AND successor.supersedes_category_id=asset_categories.id) AS current
         FROM asset_categories WHERE organization_id = $1 ORDER BY kind, code`, [principal.organizationId]),
       client.query(`SELECT asset.id, asset.asset_number AS "assetNumber", asset.display_name AS "displayName",
           asset.kind, asset.classification, asset.status, asset.acquisition_date::text AS "acquisitionDate",

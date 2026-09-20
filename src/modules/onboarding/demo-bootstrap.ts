@@ -1338,16 +1338,24 @@ async function seedDemoAssetData(
     if (!cost || (category.contraAccount && !contra) || !expense || !impairment) {
       throw new Error(`Demo asset category ${category.code} has incomplete account mappings`);
     }
+    const idempotencyKey = `demo-asset-category:${category.key}`;
+    const commandHash = createHash("sha256").update(idempotencyKey).digest("hex");
     await client.query(
       `INSERT INTO asset_categories(
-         id, organization_id, legal_entity_id, ledger_id, kind, code,
+         id, organization_id, legal_entity_id, ledger_id, kind, category_key, code,
          display_name, cost_account_combination_id, contra_account_combination_id,
          expense_account_combination_id, impairment_account_combination_id,
-         disposal_account_combination_id, created_by, created_at, updated_at
-       ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$11,$12,$13,$13)`,
+         disposal_account_combination_id, active, version, supersedes_category_id,
+         effective_from, reason, idempotency_key, command_hash,
+         created_by, created_at, updated_at
+       ) VALUES (
+         $1,$2,$3,$4,$5,$1,$6,$7,$8,$9,$10,$11,$11,
+         true,1,NULL,'1900-01-01','Deterministic demo baseline category',$12,$13,$14,$15,$15
+       )`,
       [id, identity.organizationId, category.foundation.legalEntityId,
         category.foundation.ledgerId, category.kind, category.code, category.displayName,
-        cost, contra, expense, impairment, identity.userId, BASELINE_TIMESTAMP],
+        cost, contra, expense, impairment, idempotencyKey, commandHash,
+        identity.userId, BASELINE_TIMESTAMP],
     );
     categoryIds.set(category.key, id);
   }

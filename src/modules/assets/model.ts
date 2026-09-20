@@ -19,11 +19,27 @@ export const createAssetCategorySchema = z.object({
   expenseAccountCombinationId: z.uuid(),
   impairmentAccountCombinationId: z.uuid().optional(),
   disposalAccountCombinationId: z.uuid().optional(),
+  effectiveFrom: z.iso.date(),
+  reason: z.string().trim().min(8).max(500),
+  idempotencyKey: z.string().trim().min(1).max(180),
 }).strict().superRefine((value, context) => {
   if (value.kind !== "PREPAID" && !value.contraAccountCombinationId) {
     context.addIssue({ code: "custom", path: ["contraAccountCombinationId"], message: "Tangible and intangible categories require an accumulated depreciation or amortization account" });
   }
 });
+
+export const reviseAssetCategorySchema = createAssetCategorySchema.safeExtend({
+  categoryId: z.uuid(),
+  expectedVersion: z.number().int().min(1),
+}).strict();
+
+export const deactivateAssetCategorySchema = z.object({
+  categoryId: z.uuid(),
+  expectedVersion: z.number().int().min(1),
+  effectiveFrom: z.iso.date(),
+  reason: z.string().trim().min(8).max(500),
+  idempotencyKey: z.string().trim().min(1).max(180),
+}).strict();
 
 export const createAssetRecordSchema = z.object({
   categoryId: z.uuid(),
@@ -67,6 +83,8 @@ export const assetAdjustmentSchema = z.object({
 
 export type AssetKind = z.infer<typeof assetKindSchema>;
 export type CreateAssetCategoryInput = z.input<typeof createAssetCategorySchema>;
+export type ReviseAssetCategoryInput = z.input<typeof reviseAssetCategorySchema>;
+export type DeactivateAssetCategoryInput = z.input<typeof deactivateAssetCategorySchema>;
 export type CreateAssetRecordInput = z.input<typeof createAssetRecordSchema>;
 export type AssetAdjustmentInput = z.input<typeof assetAdjustmentSchema>;
 export type AssetScheduleLine = Readonly<{
