@@ -330,8 +330,8 @@ run("cloud inbox PostgreSQL lifecycle", () => {
       "",
       "<p>Receipt total: CAD 13.39</p><script>notReturned()</script>",
       `--${boundary}`,
-      "Content-Type: image/png; name=receipt.png",
-      "Content-Disposition: attachment; filename=receipt.png",
+      "Content-Type: image/png; name=eml-extracted-receipt.png",
+      "Content-Disposition: attachment; filename=eml-extracted-receipt.png",
       "Content-Transfer-Encoding: base64",
       "",
       png.toString("base64"),
@@ -348,7 +348,7 @@ run("cloud inbox PostgreSQL lifecycle", () => {
     expect(first.text).not.toContain("notReturned");
     const firstPreview = first.preview as { attachments: Array<{ filename: string; status: string; sha256?: string; inboxItemId?: string }> };
     const extracted = firstPreview.attachments[0];
-    expect(extracted).toMatchObject({ filename: "receipt.png", status: "EXTRACTED" });
+    expect(extracted).toMatchObject({ filename: "eml-extracted-receipt.png", status: "EXTRACTED" });
     expect(extracted.sha256).toBe(checksum);
     expect(cloud.uploads).toBe(uploadCount + 1);
 
@@ -584,13 +584,14 @@ run("cloud inbox PostgreSQL lifecycle", () => {
     await expect(withTenantTransaction(requestContext(), (client) => client.query("DELETE FROM document_inbox_items WHERE id=$1", [item.id]))).rejects.toThrow();
   });
   it("recovers an uploaded original after a lost response without another upload or persisted bytes", async () => {
+    const uploadCount = cloud.uploads;
     const command = { connectionId: ids.connection, filename: "upload.png", mimeType: "image/png" as const, byteSize: png.length, sha256: checksum, contentBase64: png.toString("base64"), idempotencyKey: randomUUID() };
     cloud.uploadFailsOnce = true;
     await expect(uploadInboxDocument(requestContext(), command)).rejects.toThrow(/lost upload/);
     const saved = await uploadInboxDocument(requestContext(), command);
     expect(saved.item.filename).toBe("upload.png"); expect(saved.item.status).toBe("PENDING");
     expect((await uploadInboxDocument(requestContext(), command)).idempotentReplay).toBe(true);
-    expect(cloud.uploads).toBe(1);
+    expect(cloud.uploads).toBe(uploadCount + 1);
     await expect(uploadInboxDocument(requestContext(), { ...command, filename: "different.png" })).rejects.toThrow(/different file/);
     const record = (await owner.query("SELECT metadata_ciphertext,upload_hash FROM document_inbox_items WHERE id=$1", [saved.item.id])).rows[0];
     expect(record.metadata_ciphertext).not.toContain(command.contentBase64); expect(record.upload_hash).toMatch(/^[a-f0-9]{64}$/);

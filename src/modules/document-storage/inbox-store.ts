@@ -121,11 +121,12 @@ export async function addInboxSourceMessageLineage(
   const metadata = await itemSourceMetadata(client, row);
   const existing = metadata.sourceMessages ?? [];
   const samePart = existing.find((candidate) => (
-    candidate.messageSha256 === lineage.messageSha256
+    candidate.messageItemId === lineage.messageItemId
     && candidate.attachmentIndex === lineage.attachmentIndex
   ));
   if (samePart) {
-    if (samePart.attachmentSha256 !== lineage.attachmentSha256) {
+    if (samePart.messageSha256 !== lineage.messageSha256
+      || samePart.attachmentSha256 !== lineage.attachmentSha256) {
       throw new StorageError("STORAGE_EML_LINEAGE_CONFLICT", "The extracted attachment lineage conflicts with an earlier retry.");
     }
     return row;

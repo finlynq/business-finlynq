@@ -114,7 +114,7 @@ runDatabaseTests("bank statement import migration PostgreSQL controls", () => {
         [ids.role, ids.organizationA],
       );
       await client.query(
-        "INSERT INTO role_permissions(organization_id,role_id,permission_key) VALUES ($1,$2,'banking.reconcile.prepare')",
+        "INSERT INTO role_permissions(organization_id,role_id,permission_key) SELECT $1,$2,unnest(ARRAY['banking.sync','banking.reconcile.prepare'])",
         [ids.organizationA, ids.role],
       );
       await client.query(
