@@ -132,10 +132,16 @@ runDatabaseTests("asset register PostgreSQL controls", () => {
       [DEMO_ORGANIZATION_ID],
     )).rows[0];
     expect(schedule).toBeDefined();
+    const demoTokenHash = randomUUID().replaceAll("-", "").repeat(2);
+    const demoSession = (await owner.query<{ session_id: string }>(
+      "SELECT session_id FROM app.auth_issue_demo_session($1,$2,$3,$4,$5,$6)",
+      [demoTokenHash, null, null, "b".repeat(64), "c".repeat(64), randomUUID()],
+    )).rows[0];
+    expect(demoSession).toBeDefined();
     const context = {
       organizationId: DEMO_ORGANIZATION_ID,
       actorId: DEMO_USER_ID,
-      sessionId: randomUUID(),
+      sessionId: demoSession!.session_id,
       sessionMode: "demo" as const,
       requestId: `asset-journal:${randomUUID()}`,
       authMethod: "demo-link",
