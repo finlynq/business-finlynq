@@ -281,16 +281,29 @@ runDatabaseTests("bank statement import migration PostgreSQL controls", () => {
   });
 
   it("rejects a statement row before foreign-key evaluation when either permission is absent", async () => {
-    await expect(asOrganization(ids.organizationA, async (client) => {
-      await client.query(
-        `INSERT INTO bank_statement_import_rows(
-           organization_id, statement_import_id, source_row_number,
-           row_fingerprint, disposition, observation_version_id,
-           row_ciphertext, key_version
-         ) VALUES ($1,$2,1,$3,'EXCLUDED',NULL,repeat('x',60),1)`,
-        [ids.organizationA, ids.importA, "e".repeat(64)],
+    for (const permission of ["banking.sync", "banking.reconcile.prepare"]) {
+      await owner.query(
+        "DELETE FROM role_permissions WHERE organization_id=$1 AND role_id=$2 AND permission_key=$3",
+        [ids.organizationA, ids.role, permission],
       );
-    })).rejects.toMatchObject({ code: "42501" });
+      try {
+        await expect(asOrganization(ids.organizationA, async (client) => {
+          await client.query(
+            `INSERT INTO bank_statement_import_rows(
+               organization_id, statement_import_id, source_row_number,
+               row_fingerprint, disposition, observation_version_id,
+               row_ciphertext, key_version
+             ) VALUES ($1,$2,1,$3,'EXCLUDED',NULL,repeat('x',60),1)`,
+            [ids.organizationA, ids.importA, "e".repeat(64)],
+          );
+        })).rejects.toMatchObject({ code: "42501" });
+      } finally {
+        await owner.query(
+          "INSERT INTO role_permissions(organization_id,role_id,permission_key) VALUES ($1,$2,$3)",
+          [ids.organizationA, ids.role, permission],
+        );
+      }
+    }
   });
 
   it("lets the runtime role create an authorized mapped FILE_IMPORT account", async () => {

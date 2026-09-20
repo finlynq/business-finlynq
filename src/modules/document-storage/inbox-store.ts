@@ -179,7 +179,12 @@ export async function discoverFile(client: PoolClient, context: TenantTransactio
     const previous = await itemSourceMetadata(client, existing);
     const preserveUploadedName = Boolean(existing.upload_key);
     const comparable = preserveUploadedName
-      ? { ...nextMetadata, name: previous.name, sourcePath: previous.sourcePath ?? previous.name }
+      ? {
+          ...nextMetadata,
+          name: previous.name,
+          sourcePath: previous.sourcePath ?? previous.name,
+          ...(previous.sourceMessages ? { sourceMessages: previous.sourceMessages } : {}),
+        }
       : nextMetadata;
     if (existing.content_version === file.version
       && existing.mime_type === (support.supported ? support.canonicalMimeType : file.mimeType)
