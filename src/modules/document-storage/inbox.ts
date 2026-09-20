@@ -198,13 +198,11 @@ async function readInboxDocumentAttempt(
             ...previous,
             email,
           });
-          const updated = (await client.query<InboxRow>(
-            "UPDATE document_inbox_items SET processing_ciphertext=$3 WHERE organization_id=$1 AND id=$2 RETURNING *",
-            [context.organizationId, row.id, stored],
-          )).rows[0];
-          const cleared = await recordInboxProcessingAttempt(client, context, updated, {
+          const cleared = await recordInboxProcessingAttempt(client, context, row, {
             operation: "READ_EML",
             outcome: "SUCCEEDED",
+          }, {
+            processingCiphertext: stored,
           });
           return {
             item: await itemMetadata(client, cleared),
@@ -253,6 +251,7 @@ export async function readInboxDocument(context: TenantTransactionContext, input
           operation: "READ_EML",
           outcome: "FAILED",
           errorCode: error.code,
+          safeMessage: "Email processing failed. Renew the claim and retry the read after correcting the source.",
         });
       }).catch(() => undefined);
     }
