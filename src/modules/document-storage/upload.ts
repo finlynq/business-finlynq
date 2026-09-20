@@ -41,7 +41,7 @@ export async function uploadInboxDocument(context: TenantTransactionContext, inp
           if (existing.sha256 !== command.sha256 || existing.mimeType !== decoded.canonicalMimeType || file.size !== command.byteSize) throw new StorageError("STORAGE_UPLOAD_CONFLICT", "The cloud inbox already contains different content for this upload key.");
         } finally { existing.bytes.fill(0); }
       } else {
-        const extension = { PDF: "pdf", PNG: "png", JPEG: "jpg", CSV: "csv", TSV: "tsv", TEXT: "txt", XLS: "xls", XLSX: "xlsx" }[decoded.format];
+        const extension = { PDF: "pdf", PNG: "png", JPEG: "jpg", CSV: "csv", TSV: "tsv", TEXT: "txt", XLS: "xls", XLSX: "xlsx", EML: "eml" }[decoded.format];
         file = await drive.upload(location.inboxId, `${stem}.${extension}`, decoded.canonicalMimeType, bytes);
       }
       assertDirectChild(file, location.inboxId);

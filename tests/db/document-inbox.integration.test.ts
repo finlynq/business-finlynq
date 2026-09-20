@@ -279,6 +279,7 @@ run("cloud inbox PostgreSQL lifecycle", () => {
       "text/plain",
       "application/vnd.ms-excel",
       "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      "message/rfc822",
     ];
     const insertProbe = `INSERT INTO document_evidence_assets
       (id,organization_id,owner_module,filename_ciphertext,content_ciphertext,storage_backend,
@@ -309,12 +310,83 @@ run("cloud inbox PostgreSQL lifecycle", () => {
           ids.org, randomUUID(), mimeType, ids.actor, randomUUID(), assetId,
         ])).rejects.toMatchObject({
           code: "23514",
-          constraint: "document_evidence_assets_metadata_check_v2",
+          constraint: "document_evidence_assets_metadata_check_v3",
         });
         await client.query("ROLLBACK TO SAVEPOINT unsafe_evidence_mime_probe");
         await client.query("RELEASE SAVEPOINT unsafe_evidence_mime_probe");
       }
     });
+  });
+  it("extracts EML attachments exactly once with source lineage and preserves the original", async () => {
+    const boundary = "finlynq-eml-test";
+    const eml = Buffer.from([
+      "From: CGI Receipts <billing@example.test>",
+      "Subject: Name search receipt",
+      "Date: Fri, 18 Sep 2026 12:30:00 +0000",
+      `Content-Type: multipart/mixed; boundary=${boundary}`,
+      "",
+      `--${boundary}`,
+      "Content-Type: text/html; charset=utf-8",
+      "",
+      "<p>Receipt total: CAD 13.39</p><script>notReturned()</script>",
+      `--${boundary}`,
+      "Content-Type: image/png; name=eml-extracted-receipt.png",
+      "Content-Disposition: attachment; filename=eml-extracted-receipt.png",
+      "Content-Transfer-Encoding: base64",
+      "",
+      png.toString("base64"),
+      `--${boundary}--`,
+      "",
+    ].join("\r\n"));
+    const uploadCount = cloud.uploads;
+    const source = await discoverDocument("Name search receipt.eml", "application/octet-stream", eml);
+    const claim = randomUUID();
+    await claimInboxDocument(requestContext(), { itemId: source.id, claimId: claim });
+    const first = await readInboxDocument(requestContext(), { itemId: source.id, claimId: claim });
+    expect(first).toMatchObject({ contentKind: "EMAIL", mimeType: "message/rfc822", pageCount: 1 });
+    expect(first.text).toContain("Receipt total: CAD 13.39");
+    expect(first.text).not.toContain("notReturned");
+    const firstPreview = first.preview as { attachments: Array<{ filename: string; status: string; sha256?: string; inboxItemId?: string }> };
+    const extracted = firstPreview.attachments[0];
+    expect(extracted).toMatchObject({ filename: "eml-extracted-receipt.png", status: "EXTRACTED" });
+    expect(extracted.sha256).toBe(checksum);
+    expect(cloud.uploads).toBe(uploadCount + 1);
+
+    const replay = await readInboxDocument(requestContext(), { itemId: source.id, claimId: claim });
+    const replayPreview = replay.preview as { attachments: Array<{ status: string; inboxItemId?: string }> };
+    expect(replayPreview.attachments[0]).toMatchObject({ status: "EXTRACTED", inboxItemId: extracted.inboxItemId });
+    expect(cloud.uploads).toBe(uploadCount + 1);
+    const extractedItem = (await listDocumentInbox(requestContext())).items.find((item) => item.id === extracted.inboxItemId);
+    expect(extractedItem?.sourceMessages).toEqual([expect.objectContaining({
+      messageItemId: source.id,
+      attachmentIndex: 1,
+      attachmentSha256: checksum,
+    })]);
+
+    const duplicateSource = await discoverDocument("Duplicate name search receipt.eml", "message/rfc822", eml);
+    const duplicateClaim = randomUUID();
+    await claimInboxDocument(requestContext(), { itemId: duplicateSource.id, claimId: duplicateClaim });
+    const duplicateRead = await readInboxDocument(requestContext(), { itemId: duplicateSource.id, claimId: duplicateClaim });
+    const duplicatePreview = duplicateRead.preview as { attachments: Array<{ inboxItemId?: string }> };
+    expect(duplicatePreview.attachments[0]?.inboxItemId).toBe(extracted.inboxItemId);
+    expect(cloud.uploads).toBe(uploadCount + 1);
+    const sharedAttachment = (await listDocumentInbox(requestContext())).items.find((item) => item.id === extracted.inboxItemId);
+    expect(sharedAttachment?.sourceMessages).toHaveLength(2);
+
+    const saved = await completeInboxDocument(requestContext(), {
+      itemId: source.id,
+      claimId: claim,
+      sha256: first.sha256,
+      metadata: { documentType: "OTHER", documentDate: "2026-09-18", counterparty: "CGI Receipts" },
+      action: { type: "ARCHIVE_ONLY" },
+      reason: "Preserve the original email after reviewing its receipt attachment",
+    });
+    expect(saved.item).toMatchObject({ status: "FILED", mimeType: "message/rfc822" });
+    expect(saved.item.canonicalName).toMatch(/\.eml$/);
+    expect((await owner.query(
+      "SELECT mime_type FROM document_evidence_assets WHERE organization_id=$1 AND id=$2",
+      [ids.org, saved.item.assetId],
+    )).rows).toEqual([{ mime_type: "message/rfc822" }]);
   });
   it("downloads an exact bank-statement evidence link through real PostgreSQL tenant SQL", async () => {
     // The banking migration suite proves the deferred lineage trigger separately.
@@ -512,13 +584,14 @@ run("cloud inbox PostgreSQL lifecycle", () => {
     await expect(withTenantTransaction(requestContext(), (client) => client.query("DELETE FROM document_inbox_items WHERE id=$1", [item.id]))).rejects.toThrow();
   });
   it("recovers an uploaded original after a lost response without another upload or persisted bytes", async () => {
+    const uploadCount = cloud.uploads;
     const command = { connectionId: ids.connection, filename: "upload.png", mimeType: "image/png" as const, byteSize: png.length, sha256: checksum, contentBase64: png.toString("base64"), idempotencyKey: randomUUID() };
     cloud.uploadFailsOnce = true;
     await expect(uploadInboxDocument(requestContext(), command)).rejects.toThrow(/lost upload/);
     const saved = await uploadInboxDocument(requestContext(), command);
     expect(saved.item.filename).toBe("upload.png"); expect(saved.item.status).toBe("PENDING");
     expect((await uploadInboxDocument(requestContext(), command)).idempotentReplay).toBe(true);
-    expect(cloud.uploads).toBe(1);
+    expect(cloud.uploads).toBe(uploadCount + 1);
     await expect(uploadInboxDocument(requestContext(), { ...command, filename: "different.png" })).rejects.toThrow(/different file/);
     const record = (await owner.query("SELECT metadata_ciphertext,upload_hash FROM document_inbox_items WHERE id=$1", [saved.item.id])).rows[0];
     expect(record.metadata_ciphertext).not.toContain(command.contentBase64); expect(record.upload_hash).toMatch(/^[a-f0-9]{64}$/);
