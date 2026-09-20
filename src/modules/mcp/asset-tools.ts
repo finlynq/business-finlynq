@@ -13,6 +13,7 @@ import {
   createAssetRecord,
   deactivateAssetCategory,
   generateAssetScheduleJournal,
+  listAssetCategoryVersions,
   loadAssetWorkspace,
   previewAssetCategory,
   recordAssetAdjustment,
@@ -88,6 +89,17 @@ export const ASSET_MCP_TOOLS: readonly McpToolDefinition[] = [
     invoke: (_args, runtime) => loadAssetWorkspace(runtime.sessionPrincipal),
   }),
   defineMcpTool({
+    policy: { name: "finlynq_setup_list_asset_category_versions", group: "SETUP", access: "READ", permission: PERMISSIONS.manageOrganizationSettings },
+    title: "List asset category version history",
+    description: "Return current and historical immutable category versions by stable category key, ledger, or code, including effective dates, account mappings, dependency counts, and change reasons. No configuration is changed.",
+    inputSchema: z.object({
+      categoryKey: z.uuid().optional(),
+      ledgerId: z.uuid().optional(),
+      code: z.string().trim().toUpperCase().regex(/^[A-Z0-9][A-Z0-9_-]{1,29}$/).optional(),
+    }).strict(),
+    invoke: (args, runtime) => listAssetCategoryVersions(runtime.sessionPrincipal, args),
+  }),
+  defineMcpTool({
     policy: { name: "finlynq_setup_preview_asset_category", group: "SETUP", access: "READ", permission: PERMISSIONS.manageOrganizationSettings },
     title: "Preview asset category configuration",
     description: "Validate exact tenant-owned ledger/account mappings and show any current category version without writing configuration.",
@@ -111,7 +123,7 @@ export const ASSET_MCP_TOOLS: readonly McpToolDefinition[] = [
   defineMcpTool({
     policy: { name: "finlynq_setup_revise_asset_category", group: "SETUP", access: "WRITE", permission: PERMISSIONS.manageOrganizationSettings },
     title: "Revise an asset category",
-    description: "Append an immutable category version using the exact current version. Existing assets retain their captured category version and posted history.",
+    description: "Append an immutable active category version using the exact current version, including controlled reactivation of an inactive lineage. Existing assets retain their captured category version and posted history.",
     inputSchema: reviseAssetCategorySchema,
     idempotent: true,
     invoke: (args, runtime) => reviseAssetCategory({

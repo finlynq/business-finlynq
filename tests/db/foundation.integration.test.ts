@@ -1810,9 +1810,9 @@ runDatabaseTests("PostgreSQL accounting controls", () => {
            allocation_type, transaction_currency, transaction_amount,
            carrying_functional_amount, settlement_functional_amount,
            realized_fx_functional, settlement_fx_rate, fx_rate_source,
-           fx_rate_effective_at, idempotency_key, command_hash, created_by
+           fx_rate_effective_at, effective_on, idempotency_key, command_hash, created_by
          ) VALUES ($1, $2, $3, $4, $5, 'APPLY', 'USD', 10, 12.99, 13.50,
-           0.51, 1.35, 'TEST_RATE', '2026-08-27T12:00:00Z', 'alloc-invalid', $6, $7)`,
+           0.51, 1.35, 'TEST_RATE', '2026-08-27T12:00:00Z', '2026-08-27', 'alloc-invalid', $6, $7)`,
         [fixture.allocationA, ids.orgA, ids.ledger, fixture.paymentSource, fixture.itemA, "5".repeat(64), ids.actor],
       );
     })).rejects.toThrow(/carrying amount/i);
@@ -1827,12 +1827,12 @@ runDatabaseTests("PostgreSQL accounting controls", () => {
            allocation_type, transaction_currency, transaction_amount,
            carrying_functional_amount, settlement_functional_amount,
            realized_fx_functional, settlement_fx_rate, fx_rate_source,
-           fx_rate_effective_at, idempotency_key, command_hash, created_by
+           fx_rate_effective_at, effective_on, idempotency_key, command_hash, created_by
          ) VALUES
            ($1, $3, $4, $5, $6, 'APPLY', 'USD', 40, 52, 54, 2, 1.35,
-             'TEST_RATE', '2026-08-27T12:00:00Z', 'alloc-valid-a', $7, $8),
+             'TEST_RATE', '2026-08-27T12:00:00Z', '2026-08-27', 'alloc-valid-a', $7, $8),
            ($2, $3, $4, $5, $9, 'APPLY', 'USD', 20, 26, 27, 1, 1.35,
-             'TEST_RATE', '2026-08-27T12:00:00Z', 'alloc-valid-b', $7, $8)`,
+             'TEST_RATE', '2026-08-27T12:00:00Z', '2026-08-27', 'alloc-valid-b', $7, $8)`,
         [
           fixture.allocationA,
           fixture.allocationB,
@@ -1855,9 +1855,9 @@ runDatabaseTests("PostgreSQL accounting controls", () => {
            allocation_type, transaction_currency, transaction_amount,
            carrying_functional_amount, settlement_functional_amount,
            realized_fx_functional, settlement_fx_rate, fx_rate_source,
-           fx_rate_effective_at, idempotency_key, command_hash, created_by
+           fx_rate_effective_at, effective_on, idempotency_key, command_hash, created_by
          ) VALUES ($1, $2, $3, $4, 'APPLY', 'USD', 10, 12.99, 13.50,
-           0.51, 1.35, 'TEST_RATE', '2026-08-27T12:00:00Z', 'alloc-invalid-prior', $5, $6)`,
+           0.51, 1.35, 'TEST_RATE', '2026-08-27T12:00:00Z', '2026-08-27', 'alloc-invalid-prior', $5, $6)`,
         [ids.orgA, ids.ledger, fixture.paymentSource, fixture.itemA, "7".repeat(64), ids.actor],
       );
     })).rejects.toThrow(/carrying amount/i);
@@ -1872,12 +1872,12 @@ runDatabaseTests("PostgreSQL accounting controls", () => {
            allocation_type, reverses_allocation_id, transaction_currency,
            transaction_amount, carrying_functional_amount, settlement_functional_amount,
            realized_fx_functional, settlement_fx_rate, fx_rate_source,
-           fx_rate_effective_at, idempotency_key, command_hash, created_by
+           fx_rate_effective_at, effective_on, idempotency_key, command_hash, created_by
          ) VALUES
            ($1, $3, $4, $5, $6, 'REVERSAL', $7, 'USD', 40, 52, 54, 2, 1.35,
-             'TEST_RATE', '2026-08-27T12:00:00Z', 'alloc-reverse-a', $8, $9),
+             'TEST_RATE', '2026-08-27T12:00:00Z', '2026-08-28', 'alloc-reverse-a', $8, $9),
            ($2, $3, $4, $5, $10, 'REVERSAL', $11, 'USD', 20, 26, 27, 1, 1.35,
-             'TEST_RATE', '2026-08-27T12:00:00Z', 'alloc-reverse-b', $8, $9)`,
+             'TEST_RATE', '2026-08-27T12:00:00Z', '2026-08-28', 'alloc-reverse-b', $8, $9)`,
         [
           fixture.reversalA,
           fixture.reversalB,

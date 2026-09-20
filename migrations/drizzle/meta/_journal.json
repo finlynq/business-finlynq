@@ -484,6 +484,20 @@
       "when": 1789912085143,
       "tag": "0068_cca_rule_evidence_and_tax_basis",
       "breakpoints": true
+    },
+    {
+      "idx": 69,
+      "version": "7",
+      "when": 1789933824441,
+      "tag": "0069_ticket_49_59_hardening",
+      "breakpoints": true
+    },
+    {
+      "idx": 70,
+      "version": "7",
+      "when": 1789933933029,
+      "tag": "0070_open_item_effective_indexes",
+      "breakpoints": true
     }
   ]
 }

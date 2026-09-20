@@ -1449,6 +1449,16 @@ async function reconciliationProof(
                AND cutover.reconciliation_session_id=$3
                AND cutover.predecessor_account_combination_id=line.account_combination_id
                AND journal.accounting_date <= cutover.effective_on
+               AND cutover.state='ACTIVE'
+               AND NOT EXISTS (SELECT 1 FROM bank_account_cutovers later_active
+                 WHERE later_active.organization_id=cutover.organization_id
+                   AND later_active.lineage_id=cutover.lineage_id
+                   AND later_active.state='ACTIVE' AND later_active.version>cutover.version)
+               AND NOT EXISTS (SELECT 1 FROM bank_account_cutovers deactivation
+                 WHERE deactivation.organization_id=cutover.organization_id
+                   AND deactivation.lineage_id=cutover.lineage_id
+                   AND deactivation.state='INACTIVE' AND deactivation.version>cutover.version
+                   AND deactivation.lifecycle_effective_on <= journal.accounting_date)
            )
          )
          AND line.transaction_currency = $6
@@ -1458,6 +1468,16 @@ async function reconciliationProof(
            WHERE migration_cutover.organization_id=$1
              AND migration_cutover.reconciliation_session_id=$3
              AND migration_cutover.migration_journal_line_ids ? line.id::text
+             AND migration_cutover.state='ACTIVE'
+             AND NOT EXISTS (SELECT 1 FROM bank_account_cutovers later_active
+               WHERE later_active.organization_id=migration_cutover.organization_id
+                 AND later_active.lineage_id=migration_cutover.lineage_id
+                 AND later_active.state='ACTIVE' AND later_active.version>migration_cutover.version)
+             AND NOT EXISTS (SELECT 1 FROM bank_account_cutovers deactivation
+               WHERE deactivation.organization_id=migration_cutover.organization_id
+                 AND deactivation.lineage_id=migration_cutover.lineage_id
+                 AND deactivation.state='INACTIVE' AND deactivation.version>migration_cutover.version
+                 AND deactivation.lifecycle_effective_on <= journal.accounting_date)
          )
      ), active_allocation AS (
        SELECT allocation.id, allocation.observation_version_id,
@@ -1685,6 +1705,16 @@ export async function createBankMatchAllocation(input: Readonly<{
                  AND cutover.reconciliation_session_id=$9
                  AND cutover.predecessor_account_combination_id=line.account_combination_id
                  AND journal.accounting_date <= cutover.effective_on
+                 AND cutover.state='ACTIVE'
+                 AND NOT EXISTS (SELECT 1 FROM bank_account_cutovers later_active
+                   WHERE later_active.organization_id=cutover.organization_id
+                     AND later_active.lineage_id=cutover.lineage_id
+                     AND later_active.state='ACTIVE' AND later_active.version>cutover.version)
+                 AND NOT EXISTS (SELECT 1 FROM bank_account_cutovers deactivation
+                   WHERE deactivation.organization_id=cutover.organization_id
+                     AND deactivation.lineage_id=cutover.lineage_id
+                     AND deactivation.state='INACTIVE' AND deactivation.version>cutover.version
+                     AND deactivation.lifecycle_effective_on <= journal.accounting_date)
              )
            )
            AND line.transaction_currency = $6
@@ -1694,6 +1724,16 @@ export async function createBankMatchAllocation(input: Readonly<{
              WHERE migration_cutover.organization_id=$1
                AND migration_cutover.reconciliation_session_id=$9
                AND migration_cutover.migration_journal_line_ids ? line.id::text
+               AND migration_cutover.state='ACTIVE'
+               AND NOT EXISTS (SELECT 1 FROM bank_account_cutovers later_active
+                 WHERE later_active.organization_id=migration_cutover.organization_id
+                   AND later_active.lineage_id=migration_cutover.lineage_id
+                   AND later_active.state='ACTIVE' AND later_active.version>migration_cutover.version)
+               AND NOT EXISTS (SELECT 1 FROM bank_account_cutovers deactivation
+                 WHERE deactivation.organization_id=migration_cutover.organization_id
+                   AND deactivation.lineage_id=migration_cutover.lineage_id
+                   AND deactivation.state='INACTIVE' AND deactivation.version>migration_cutover.version
+                   AND deactivation.lifecycle_effective_on <= journal.accounting_date)
            )
        )
        SELECT observation.amount::text AS observation_amount, line.amount::text AS line_amount,

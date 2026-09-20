@@ -152,14 +152,17 @@ describe("tax filing workpaper export", () => {
       filingId,
       format: "JSON",
       expectedContentHash: first.contentHash,
+      allowDraftWithWarnings: true,
     });
     const csv = await exportTaxFilingWorkpaper(principal, {
       filingId,
       format: "CSV",
       expectedContentHash: first.contentHash,
+      allowDraftWithWarnings: true,
     });
     expect(json.contentHash).toBe(first.contentHash);
     expect(csv.contentHash).toBe(first.contentHash);
+    expect(json.exportId).toHaveLength(64);
     const decoded = Buffer.from(json.contentBase64, "base64").toString("utf8");
     expect(decoded).toContain('"mappedLedgerBalances"');
     expect(decoded).toContain('"registrations"');

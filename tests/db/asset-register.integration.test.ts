@@ -1,10 +1,10 @@
 import { randomUUID } from "node:crypto";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { Pool, type PoolClient } from "pg";
 import { closeDatabasePool } from "@/db/transaction";
 import { DEMO_MEMBERSHIP_ID, DEMO_ORGANIZATION_ID, DEMO_USER_ID } from "@/modules/demo/constants";
 import type { SessionPrincipal } from "@/modules/identity/session";
-import { loadAssetWorkspace } from "@/modules/assets/service";
+import { generateAssetScheduleJournal, loadAssetWorkspace } from "@/modules/assets/service";
 import { resetSharedDemoOrganization } from "@/modules/onboarding/demo-bootstrap";
 
 const ownerUrl = process.env.TEST_DATABASE_URL;
@@ -41,10 +41,14 @@ runDatabaseTests("asset register PostgreSQL controls", () => {
   }
 
   beforeAll(async () => {
+    vi.stubEnv("DEMO_WRITES_ENABLED", "true");
     await resetSharedDemoOrganization(owner, { mode: "nightly" });
   }, 300_000);
 
-  afterAll(async () => Promise.all([owner.end(), app.end(), closeDatabasePool()]));
+  afterAll(async () => {
+    vi.unstubAllEnvs();
+    await Promise.all([owner.end(), app.end(), closeDatabasePool()]);
+  });
 
   it("exposes a complete tenant-scoped tangible, intangible, and prepaid register", async () => {
     const result = await withContext(DEMO_USER_ID, (client) => client.query<{
@@ -103,6 +107,87 @@ runDatabaseTests("asset register PostgreSQL controls", () => {
       [DEMO_ORGANIZATION_ID, selected.id, selected.in_service_on,
         JSON.stringify({ reason: "Unauthorized transfer" }), randomUUID()],
     ))).rejects.toMatchObject({ code: "42501" });
+  });
+
+  it("creates and links one asset schedule journal atomically through the app role", async () => {
+    const schedule = (await owner.query<{
+      id: string; expense_account_id: string; credit_account_id: string; amount: string;
+    }>(
+      `SELECT schedule.id,
+         category.expense_account_combination_id AS expense_account_id,
+         CASE WHEN asset.kind='PREPAID' THEN category.cost_account_combination_id
+           ELSE category.contra_account_combination_id END AS credit_account_id,
+         schedule.amount::text
+       FROM asset_schedule_entries schedule
+       JOIN asset_register asset ON asset.organization_id=schedule.organization_id
+         AND asset.id=schedule.asset_id AND asset.status IN ('ACTIVE','IMPAIRED')
+       JOIN asset_categories category ON category.organization_id=asset.organization_id
+         AND category.id=asset.category_id
+       JOIN fiscal_periods period ON period.organization_id=asset.organization_id
+         AND period.ledger_id=asset.ledger_id
+         AND schedule.due_on BETWEEN period.starts_on AND period.ends_on
+         AND period.state IN ('OPEN','ADJUSTMENT_ONLY')
+       WHERE schedule.organization_id=$1 AND schedule.status='DUE'
+       ORDER BY schedule.due_on, schedule.id LIMIT 1`,
+      [DEMO_ORGANIZATION_ID],
+    )).rows[0];
+    expect(schedule).toBeDefined();
+    const demoTokenHash = randomUUID().replaceAll("-", "").repeat(2);
+    const demoSession = (await owner.query<{ session_id: string }>(
+      "SELECT session_id FROM app.auth_issue_demo_session($1,$2,$3,$4,$5,$6)",
+      [demoTokenHash, null, null, "b".repeat(64), "c".repeat(64), randomUUID()],
+    )).rows[0];
+    expect(demoSession).toBeDefined();
+    const context = {
+      organizationId: DEMO_ORGANIZATION_ID,
+      actorId: DEMO_USER_ID,
+      sessionId: demoSession!.session_id,
+      sessionMode: "demo" as const,
+      requestId: `asset-journal:${randomUUID()}`,
+      authMethod: "demo-link",
+      sourceSurface: "MCP" as const,
+      reason: "Verify atomic asset schedule journal generation",
+      demoWriteAuthorized: true,
+    };
+    const idempotencyKey = `asset-db-test:${randomUUID()}`;
+    const created = await generateAssetScheduleJournal({ context, scheduleEntryId: schedule!.id, idempotencyKey });
+    const replay = await generateAssetScheduleJournal({
+      context: { ...context, requestId: `asset-journal-replay:${randomUUID()}` },
+      scheduleEntryId: schedule!.id,
+      idempotencyKey,
+    });
+    expect(replay).toMatchObject({ journalId: created.journalId, scheduleEntryId: schedule!.id, idempotentReplay: true });
+
+    const persisted = await owner.query<{
+      status: string; journal_entry_id: string; journal_count: number;
+      debit_account_id: string; credit_account_id: string; debit: string; credit: string;
+    }>(
+      `SELECT schedule.status, schedule.journal_entry_id,
+         (SELECT count(*)::int FROM journal_entries counted
+          WHERE counted.organization_id=schedule.organization_id
+            AND counted.idempotency_key=$3) AS journal_count,
+         max(line.account_combination_id::text) FILTER (WHERE line.debit_transaction > 0) AS debit_account_id,
+         max(line.account_combination_id::text) FILTER (WHERE line.credit_transaction > 0) AS credit_account_id,
+         sum(line.debit_transaction)::text AS debit,
+         sum(line.credit_transaction)::text AS credit
+       FROM asset_schedule_entries schedule
+       JOIN journal_entries journal ON journal.organization_id=schedule.organization_id
+         AND journal.id=schedule.journal_entry_id
+       JOIN journal_lines line ON line.organization_id=journal.organization_id
+         AND line.journal_entry_id=journal.id
+       WHERE schedule.organization_id=$1 AND schedule.id=$2
+       GROUP BY schedule.id`,
+      [DEMO_ORGANIZATION_ID, schedule!.id, `asset-schedule:${schedule!.id}:${idempotencyKey}`],
+    );
+    expect(persisted.rows[0]).toMatchObject({
+      status: "DRAFTED",
+      journal_entry_id: created.journalId,
+      journal_count: 1,
+      debit_account_id: schedule!.expense_account_id,
+      credit_account_id: schedule!.credit_account_id,
+      debit: schedule!.amount,
+      credit: schedule!.amount,
+    });
   });
 
   it("does not reveal the register without the matching tenant context", async () => {
