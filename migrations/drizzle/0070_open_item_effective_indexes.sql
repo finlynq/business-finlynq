@@ -5,6 +5,12 @@ ALTER TABLE open_item_void_events ADD COLUMN effective_on date;
 ALTER TABLE document_inbox_processing_attempts ADD COLUMN safe_message text;
 --> statement-breakpoint
 
+ALTER TABLE document_settlement_allocations
+  DISABLE TRIGGER document_settlement_allocations_append_only;
+--> statement-breakpoint
+ALTER TABLE open_item_void_events
+  DISABLE TRIGGER open_item_void_events_append_only;
+--> statement-breakpoint
 UPDATE document_settlement_allocations allocation
 SET effective_on = coalesce(
   CASE WHEN allocation.allocation_type = 'REVERSAL' THEN (
@@ -42,6 +48,12 @@ SET effective_on = coalesce(
   ),
   void_event.created_at::date
 );
+--> statement-breakpoint
+ALTER TABLE document_settlement_allocations
+  ENABLE TRIGGER document_settlement_allocations_append_only;
+--> statement-breakpoint
+ALTER TABLE open_item_void_events
+  ENABLE TRIGGER open_item_void_events_append_only;
 --> statement-breakpoint
 ALTER TABLE document_settlement_allocations ALTER COLUMN effective_on SET NOT NULL;
 --> statement-breakpoint
