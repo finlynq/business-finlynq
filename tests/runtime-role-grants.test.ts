@@ -39,6 +39,18 @@ describe("runtime role reconciliation contract", () => {
     ]) expect(script).toContain(`'${table}'`);
   });
 
+  it("grants the coordinated workflow tables read and append access only", () => {
+    for (const table of [
+      "document_inbox_processing_attempts",
+      "asset_tax_classifications",
+      "asset_tax_schedules",
+      "bank_account_cutovers",
+      "bank_accounting_proposals",
+      "tax_filing_asset_adjustments",
+    ]) expect(script).toContain(`'${table}'`);
+    expect(script).not.toMatch(/GRANT\s+(?:UPDATE|DELETE)[^;]*(?:document_inbox_processing_attempts|asset_tax_classifications|asset_tax_schedules|bank_account_cutovers|bank_accounting_proposals|tax_filing_asset_adjustments)/i);
+  });
+
   it("revokes inherited function execution and restores only reviewed app APIs", () => {
     expect(script).toContain("REVOKE EXECUTE ON ALL FUNCTIONS IN SCHEMA app FROM PUBLIC");
     expect(script).toContain("app.auth_email_delivery_readiness(integer)");

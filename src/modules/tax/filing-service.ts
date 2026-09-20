@@ -39,12 +39,28 @@ export const saveTaxAccountMappingsSchema = z.object({
   legalEntityId: z.uuid(),
   ledgerId: z.uuid(),
   templateId: z.uuid(),
+  expectedTemplateVersion: z.number().int().min(1),
+  expectedMappingVersion: z.number().int().min(0),
+  effectiveFrom: z.iso.date(),
+  effectiveTo: z.iso.date().optional(),
   mappings: z.array(z.object({
     fieldKey: fieldKeySchema,
     glAccountId: z.uuid(),
     balanceBasis: z.enum(["DEBITS", "CREDITS", "NET_DEBIT", "NET_CREDIT", "ABSOLUTE_NET"]),
     multiplier: decimalSchema.refine((value) => !exact(value).isZero() && exact(value).abs().lessThanOrEqualTo(1000)),
   }).strict()).min(1).max(500),
+  reason: z.string().trim().min(8).max(500),
+  idempotencyKey: idempotencyKeySchema,
+}).strict().superRefine((value, context) => {
+  if (value.effectiveTo && value.effectiveTo < value.effectiveFrom) {
+    context.addIssue({ code: "custom", path: ["effectiveTo"], message: "The mapping effective end cannot precede its start" });
+  }
+});
+
+export const deactivateTaxAccountMappingsSchema = z.object({
+  mappingSetId: z.uuid(),
+  expectedMappingVersion: z.number().int().min(1),
+  effectiveFrom: z.iso.date(),
   reason: z.string().trim().min(8).max(500),
   idempotencyKey: idempotencyKeySchema,
 }).strict();
@@ -80,6 +96,7 @@ export const createTaxFilingSchema = z.object({
 }));
 
 export type SaveTaxAccountMappingsInput = z.input<typeof saveTaxAccountMappingsSchema>;
+export type DeactivateTaxAccountMappingsInput = z.input<typeof deactivateTaxAccountMappingsSchema>;
 export type CreateTaxFilingInput = z.input<typeof createTaxFilingSchema>;
 
 export class TaxFilingError extends Error {
@@ -229,7 +246,7 @@ export async function saveTaxAccountMappings(input: Readonly<{
   }, async (client) => {
     const replay = await client.query<{ id: string; version: number; command_hash: string }>(
       `SELECT id, version, command_hash
-       FROM tax_account_mapping_sets
+       FROM tax_account_mapping_sets mapping
        WHERE organization_id = $1 AND idempotency_key = $2`,
       [input.principal.organizationId, command.idempotencyKey],
     );
@@ -244,12 +261,30 @@ export async function saveTaxAccountMappings(input: Readonly<{
       loadTemplate(client, command.templateId),
       assertEntityLedger(client, input.principal.organizationId, command.legalEntityId, command.ledgerId),
     ]);
+    if (template.version !== command.expectedTemplateVersion) {
+      throw new TaxFilingError("The filing template version is stale. Reload the reviewed template before saving mappings.", 409, "TEMPLATE_VERSION_CONFLICT");
+    }
     if (template.currency_code !== ledger.currency) {
       throw new TaxFilingError(
         `This template reports in ${template.currency_code}; choose a ${template.currency_code} functional-currency ledger.`,
         400,
         "TEMPLATE_CURRENCY_MISMATCH",
       );
+    }
+    if (template.template_key === "ca.gst-hst.return") {
+      const registration = (await client.query(
+        `SELECT 1 FROM entity_tax_registrations registration
+         WHERE registration.organization_id=$1
+           AND registration.legal_entity_id=$2
+           AND registration.regime_key LIKE 'ca.%.hst'
+           AND registration.valid_from <= $3::date
+           AND (registration.valid_to IS NULL OR registration.valid_to >= $3::date)
+         LIMIT 1`,
+        [input.principal.organizationId, command.legalEntityId, command.effectiveFrom],
+      )).rows[0];
+      if (!registration) {
+        throw new TaxFilingError("An effective Canadian HST registration is required for this mapping date.", 400, "TAX_REGISTRATION_CONTEXT_INVALID");
+      }
     }
 
     const definition = taxFilingTemplateDefinitionSchema.parse(template.definition);
@@ -287,19 +322,32 @@ export async function saveTaxAccountMappings(input: Readonly<{
        )`,
       [input.principal.organizationId, command.ledgerId, command.templateId],
     );
-    const versionResult = await client.query<{ version: number }>(
-      `SELECT coalesce(max(version), 0)::integer + 1 AS version
-       FROM tax_account_mapping_sets
-       WHERE organization_id = $1 AND ledger_id = $2 AND template_id = $3`,
+    const currentResult = await client.query<{ id: string; version: number; state: string; effective_from: string }>(
+      `SELECT mapping.id, mapping.version, mapping.state, mapping.effective_from::text
+       FROM tax_account_mapping_sets mapping
+       WHERE mapping.organization_id = $1 AND mapping.ledger_id = $2 AND mapping.template_id = $3
+         AND NOT EXISTS (SELECT 1 FROM tax_account_mapping_sets successor
+           WHERE successor.organization_id=mapping.organization_id
+             AND successor.supersedes_mapping_set_id=mapping.id)
+       ORDER BY mapping.version DESC LIMIT 1`,
       [input.principal.organizationId, command.ledgerId, command.templateId],
     );
-    const version = versionResult.rows[0]?.version ?? 1;
+    const current = currentResult.rows[0];
+    const currentVersion = current?.version ?? 0;
+    if (currentVersion !== command.expectedMappingVersion) {
+      throw new TaxFilingError("The mapping version is stale. Reload and compare the current immutable version.", 409, "MAPPING_VERSION_CONFLICT");
+    }
+    if (current && command.effectiveFrom <= current.effective_from) {
+      throw new TaxFilingError("A mapping revision must become effective after the current version.", 400, "MAPPING_EFFECTIVE_DATE_INVALID");
+    }
+    const version = currentVersion + 1;
     const mappingSetId = randomUUID();
     await client.query(
       `INSERT INTO tax_account_mapping_sets (
          id, organization_id, legal_entity_id, ledger_id, template_id, version,
+         state, effective_from, effective_to, supersedes_mapping_set_id,
          reason, idempotency_key, command_hash, created_by
-       ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+       ) VALUES ($1,$2,$3,$4,$5,$6,'ACTIVE',$7,$8,$9,$10,$11,$12,$13)`,
       [
         mappingSetId,
         input.principal.organizationId,
@@ -307,6 +355,9 @@ export async function saveTaxAccountMappings(input: Readonly<{
         command.ledgerId,
         command.templateId,
         version,
+        command.effectiveFrom,
+        command.effectiveTo ?? null,
+        current?.id ?? null,
         command.reason,
         command.idempotencyKey,
         commandHash,
@@ -335,6 +386,70 @@ export async function saveTaxAccountMappings(input: Readonly<{
       ],
     );
     return { mappingSetId, version, idempotentReplay: false };
+  });
+}
+
+export async function deactivateTaxAccountMappings(input: Readonly<{
+  principal: SessionPrincipal;
+  requestId: string;
+  sourceSurface?: "API" | "MCP";
+}> & DeactivateTaxAccountMappingsInput) {
+  assertWritableTaxSession(input.principal);
+  const { principal: _principal, requestId: _requestId, sourceSurface: _sourceSurface, ...raw } = input;
+  void _principal; void _requestId; void _sourceSurface;
+  const command = deactivateTaxAccountMappingsSchema.parse(raw);
+  const commandHash = createCommandFingerprint("tax.mapping-set.deactivate", { ...command, idempotencyKey: undefined });
+  return withAuthorizedTaxWrite({
+    principal: input.principal,
+    requestId: input.requestId,
+    permission: PERMISSIONS.manageTaxMappings,
+    reason: command.reason,
+    sourceSurface: input.sourceSurface,
+  }, async (client) => {
+    await client.query(
+      "SELECT pg_advisory_xact_lock(hashtextextended('business-finlynq:tax-mapping-version:' || $1::text || ':' || $2::text, 0))",
+      [input.principal.organizationId, command.mappingSetId],
+    );
+    const replay = (await client.query<{ id: string; version: number; command_hash: string }>(
+      `SELECT id, version, command_hash FROM tax_account_mapping_sets WHERE organization_id=$1 AND idempotency_key=$2`,
+      [input.principal.organizationId, command.idempotencyKey],
+    )).rows[0];
+    if (replay) {
+      if (replay.command_hash !== commandHash) throw new TaxFilingError("The mapping idempotency key was already used for another request.", 409, "IDEMPOTENCY_CONFLICT");
+      return { mappingSetId: replay.id, version: replay.version, state: "INACTIVE" as const, idempotentReplay: true };
+    }
+    const current = (await client.query<{
+      id: string; legal_entity_id: string; ledger_id: string; template_id: string;
+      version: number; state: string; effective_from: string;
+    }>(
+      `SELECT mapping.id, mapping.legal_entity_id, mapping.ledger_id, mapping.template_id,
+         mapping.version, mapping.state, mapping.effective_from::text
+       FROM tax_account_mapping_sets mapping
+       WHERE mapping.organization_id=$1 AND mapping.id=$2
+         AND NOT EXISTS (SELECT 1 FROM tax_account_mapping_sets successor
+           WHERE successor.organization_id=mapping.organization_id AND successor.supersedes_mapping_set_id=mapping.id)`,
+      [input.principal.organizationId, command.mappingSetId],
+    )).rows[0];
+    if (!current || current.version !== command.expectedMappingVersion || current.state !== "ACTIVE") {
+      throw new TaxFilingError("Choose the exact current active mapping version before deactivation.", 409, "MAPPING_VERSION_CONFLICT");
+    }
+    if (command.effectiveFrom <= current.effective_from) {
+      throw new TaxFilingError("A mapping deactivation must become effective after the active version.", 400, "MAPPING_EFFECTIVE_DATE_INVALID");
+    }
+    const mappingSetId = randomUUID();
+    const version = current.version + 1;
+    await client.query(
+      `INSERT INTO tax_account_mapping_sets(
+         id, organization_id, legal_entity_id, ledger_id, template_id, version,
+         state, effective_from, effective_to, supersedes_mapping_set_id,
+         reason, idempotency_key, command_hash, created_by
+       ) VALUES ($1,$2,$3,$4,$5,$6,'INACTIVE',$7,NULL,$8,$9,$10,$11,$12)`,
+      [mappingSetId, input.principal.organizationId, current.legal_entity_id,
+        current.ledger_id, current.template_id, version, command.effectiveFrom,
+        current.id, command.reason, command.idempotencyKey, commandHash,
+        input.principal.userId],
+    );
+    return { mappingSetId, version, state: "INACTIVE" as const, idempotentReplay: false };
   });
 }
 
@@ -470,15 +585,21 @@ export async function createTaxFiling(input: Readonly<{
     }
 
     const mappingResult = await client.query<{ id: string; version: number }>(
-      `SELECT id, version
-       FROM tax_account_mapping_sets
-       WHERE organization_id = $1
-         AND legal_entity_id = $2
-         AND ledger_id = $3
-         AND template_id = $4
-       ORDER BY version DESC
-       LIMIT 1`,
-      [input.principal.organizationId, command.legalEntityId, command.ledgerId, command.templateId],
+      `SELECT effective.id, effective.version
+       FROM (
+         SELECT mapping.id, mapping.version, mapping.state, mapping.effective_to
+         FROM tax_account_mapping_sets mapping
+         WHERE mapping.organization_id = $1
+           AND mapping.legal_entity_id = $2
+           AND mapping.ledger_id = $3
+           AND mapping.template_id = $4
+           AND mapping.effective_from <= $5::date
+         ORDER BY mapping.version DESC
+         LIMIT 1
+       ) effective
+       WHERE effective.state = 'ACTIVE'
+         AND (effective.effective_to IS NULL OR effective.effective_to >= $5::date)`,
+      [input.principal.organizationId, command.legalEntityId, command.ledgerId, command.templateId, command.periodEnd],
     );
     const mappingSet = mappingResult.rows[0];
     if (!mappingSet) {

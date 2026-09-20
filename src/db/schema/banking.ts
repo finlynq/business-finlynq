@@ -5,6 +5,7 @@ import {
   foreignKey,
   index,
   integer,
+  jsonb,
   numeric,
   pgTable,
   text,
@@ -14,7 +15,7 @@ import {
 } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 import { organizations } from "./identity";
-import { journalLines } from "./journals";
+import { journalEntries, journalLines } from "./journals";
 import {
   accountCombinations,
   currencyDefinitions,
@@ -492,5 +493,73 @@ export const bankDraftProposals = pgTable(
     index("bank_draft_proposals_org_created_idx").on(table.organizationId, table.createdAt.desc()),
     foreignKey({ columns: [table.organizationId, table.observationVersionId], foreignColumns: [bankObservationVersions.organizationId, bankObservationVersions.id], name: "bank_draft_proposals_org_observation_version_fk" }).onDelete("restrict"),
     foreignKey({ columns: [table.organizationId, table.ruleId], foreignColumns: [bankRules.organizationId, bankRules.id], name: "bank_draft_proposals_org_rule_fk" }).onDelete("restrict"),
+  ],
+);
+
+/** Explicit, date-effective predecessor-account declarations for migrated accounts. */
+export const bankAccountCutovers = pgTable(
+  "bank_account_cutovers",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    organizationId: uuid("organization_id").notNull().references(() => organizations.id, { onDelete: "restrict" }),
+    reconciliationSessionId: uuid("reconciliation_session_id").notNull(),
+    predecessorAccountCombinationId: uuid("predecessor_account_combination_id").notNull(),
+    successorAccountCombinationId: uuid("successor_account_combination_id").notNull(),
+    effectiveOn: date("effective_on").notNull(),
+    migrationJournalLineIds: jsonb("migration_journal_line_ids").notNull().default([]),
+    proofSnapshot: jsonb("proof_snapshot").notNull(),
+    confirmationHash: text("confirmation_hash").notNull(),
+    reason: text("reason").notNull(),
+    idempotencyKey: text("idempotency_key").notNull(),
+    commandHash: text("command_hash").notNull(),
+    createdBy: uuid("created_by").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("bank_account_cutovers_org_id_unique").on(table.organizationId, table.id),
+    uniqueIndex("bank_account_cutovers_reconciliation_unique").on(table.reconciliationSessionId),
+    uniqueIndex("bank_account_cutovers_org_idempotency_unique").on(table.organizationId, table.idempotencyKey),
+    check("bank_account_cutovers_hash_check", sql.raw("confirmation_hash ~ '^[a-f0-9]{64}$' AND command_hash ~ '^[a-f0-9]{64}$'")),
+    check("bank_account_cutovers_reason_check", sql.raw("char_length(btrim(reason)) BETWEEN 8 AND 500")),
+    check("bank_account_cutovers_lines_check", sql.raw("jsonb_typeof(migration_journal_line_ids) = 'array'")),
+    foreignKey({ columns: [table.organizationId, table.reconciliationSessionId], foreignColumns: [bankReconciliationSessions.organizationId, bankReconciliationSessions.id], name: "bank_account_cutovers_org_reconciliation_fk" }).onDelete("restrict"),
+    foreignKey({ columns: [table.organizationId, table.predecessorAccountCombinationId], foreignColumns: [accountCombinations.organizationId, accountCombinations.id], name: "bank_account_cutovers_org_predecessor_fk" }).onDelete("restrict"),
+    foreignKey({ columns: [table.organizationId, table.successorAccountCombinationId], foreignColumns: [accountCombinations.organizationId, accountCombinations.id], name: "bank_account_cutovers_org_successor_fk" }).onDelete("restrict"),
+  ],
+);
+
+/** Append-only proposal states; posting remains an independent authorized workflow. */
+export const bankAccountingProposals = pgTable(
+  "bank_accounting_proposals",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    organizationId: uuid("organization_id").notNull().references(() => organizations.id, { onDelete: "restrict" }),
+    observationVersionId: uuid("observation_version_id").notNull(),
+    version: integer("version").notNull(),
+    status: text("status").notNull(),
+    proposalSnapshot: jsonb("proposal_snapshot").notNull(),
+    proposalHash: text("proposal_hash").notNull(),
+    supersedesProposalId: uuid("supersedes_proposal_id"),
+    journalEntryId: uuid("journal_entry_id"),
+    reason: text("reason").notNull(),
+    idempotencyKey: text("idempotency_key").notNull(),
+    commandHash: text("command_hash").notNull(),
+    createdBy: uuid("created_by").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("bank_accounting_proposals_org_id_unique").on(table.organizationId, table.id),
+    uniqueIndex("bank_accounting_proposals_observation_version_unique").on(table.observationVersionId, table.version),
+    uniqueIndex("bank_accounting_proposals_org_idempotency_unique").on(table.organizationId, table.idempotencyKey),
+    uniqueIndex("bank_accounting_proposals_org_supersedes_unique").on(table.organizationId, table.supersedesProposalId),
+    index("bank_accounting_proposals_org_status_idx").on(table.organizationId, table.status, table.createdAt.desc()),
+    check("bank_accounting_proposals_version_check", sql.raw("version > 0")),
+    check("bank_accounting_proposals_status_check", sql.raw("status IN ('PREPARED', 'REVIEWED', 'REJECTED', 'COMMITTED')")),
+    check("bank_accounting_proposals_snapshot_check", sql.raw("jsonb_typeof(proposal_snapshot) = 'object'")),
+    check("bank_accounting_proposals_hash_check", sql.raw("proposal_hash ~ '^[a-f0-9]{64}$' AND command_hash ~ '^[a-f0-9]{64}$'")),
+    check("bank_accounting_proposals_reason_check", sql.raw("char_length(btrim(reason)) BETWEEN 8 AND 500")),
+    foreignKey({ columns: [table.organizationId, table.observationVersionId], foreignColumns: [bankObservationVersions.organizationId, bankObservationVersions.id], name: "bank_accounting_proposals_org_observation_fk" }).onDelete("restrict"),
+    foreignKey({ columns: [table.organizationId, table.journalEntryId], foreignColumns: [journalEntries.organizationId, journalEntries.id], name: "bank_accounting_proposals_org_journal_fk" }).onDelete("restrict"),
+    foreignKey({ columns: [table.organizationId, table.supersedesProposalId], foreignColumns: [table.organizationId, table.id], name: "bank_accounting_proposals_org_supersedes_fk" }).onDelete("restrict"),
   ],
 );

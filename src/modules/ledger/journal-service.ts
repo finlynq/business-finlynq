@@ -1,6 +1,7 @@
 import "server-only";
 
 import { createHash, randomUUID } from "node:crypto";
+import type { PoolClient } from "pg";
 import { z } from "zod";
 import { withTenantTransaction, type TenantTransactionContext } from "@/db/transaction";
 import {
@@ -141,11 +142,12 @@ function resultFromRow(row: JournalResultRow, idempotentReplay: boolean, autoPos
 
 export async function createManualJournal(
   unparsedCommand: CreateManualJournalCommand,
+  transactionClient?: PoolClient,
 ): Promise<JournalCommandResult> {
   assertTenantWritesEnabled(unparsedCommand.context);
   const command = draftSchema.parse(unparsedCommand);
 
-  return withTenantTransaction(unparsedCommand.context, async (client) => {
+  const createInTransaction = async (client: PoolClient): Promise<JournalCommandResult> => {
     await assertWritableOrganization(client, unparsedCommand.context);
     await assertActorHasActivePermission(client, {
       organizationId: unparsedCommand.context.organizationId,
@@ -341,7 +343,10 @@ export async function createManualJournal(
     }
 
     return resultFromRow(inserted.rows[0], false, false);
-  });
+  };
+  return transactionClient
+    ? createInTransaction(transactionClient)
+    : withTenantTransaction(unparsedCommand.context, createInTransaction);
 }
 
 export async function reversePostedJournal(
