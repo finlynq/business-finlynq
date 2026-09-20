@@ -41,7 +41,7 @@ runDatabaseTests("asset register PostgreSQL controls", () => {
   }
 
   beforeAll(async () => {
-    vi.stubEnv("BUSINESS_WRITES_ENABLED", "true");
+    vi.stubEnv("DEMO_WRITES_ENABLED", "true");
     await resetSharedDemoOrganization(owner, { mode: "nightly" });
   }, 300_000);
 
@@ -135,11 +135,13 @@ runDatabaseTests("asset register PostgreSQL controls", () => {
     const context = {
       organizationId: DEMO_ORGANIZATION_ID,
       actorId: DEMO_USER_ID,
-      sessionMode: "real" as const,
+      sessionId: randomUUID(),
+      sessionMode: "demo" as const,
       requestId: `asset-journal:${randomUUID()}`,
-      authMethod: "TEST",
+      authMethod: "demo-link",
       sourceSurface: "MCP" as const,
       reason: "Verify atomic asset schedule journal generation",
+      demoWriteAuthorized: true,
     };
     const idempotencyKey = `asset-db-test:${randomUUID()}`;
     const created = await generateAssetScheduleJournal({ context, scheduleEntryId: schedule!.id, idempotencyKey });

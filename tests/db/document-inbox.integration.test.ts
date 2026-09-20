@@ -8,6 +8,7 @@ import { encryptStorageValue } from "@/modules/document-storage/store";
 import { claimInboxDocument, completeInboxDocument, listDocumentInbox, readInboxDocument, retryDocumentFiling, reviewInboxDocument, syncDocumentInbox } from "@/modules/document-storage/inbox";
 import { downloadBankStatementEvidence, downloadDocumentEvidence } from "@/modules/subledger/evidence-service";
 import { uploadInboxDocument } from "@/modules/document-storage/upload";
+import { itemSourceMetadata } from "@/modules/document-storage/inbox-store";
 import { disconnectStorage, finishStorageConnection, listStorageConnections, startStorageConnection } from "@/modules/document-storage/connections";
 import type { SessionPrincipal } from "@/modules/identity/session";
 import { exchangeStorageToken, StorageError, type CloudFile } from "@/modules/document-storage/provider";
@@ -357,8 +358,9 @@ run("cloud inbox PostgreSQL lifecycle", () => {
         "SELECT * FROM document_inbox_items WHERE organization_id=$1 AND id=$2",
         [ids.org, source.id],
       )).rows[0];
+      const metadata = await itemSourceMetadata(client, row);
       const stale = await encryptStorageValue(client, row, "document_inbox_items", "metadata_ciphertext", {
-        name: "Name search receipt.eml",
+        ...metadata,
         errorCode: "STORAGE_EXTENSION_UNSUPPORTED",
         reason: "Legacy unsupported-extension result",
       });
