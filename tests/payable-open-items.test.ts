@@ -98,7 +98,10 @@ describe("payable open-item lookup", () => {
     expect(mocks.assertPermission).toHaveBeenCalledWith(expect.anything(), context, "payables.read");
     expect(mocks.query.mock.calls[0]?.[0]).toContain("item.organization_id = $1");
     expect(mocks.query.mock.calls[0]?.[0]).toContain("current_source.id = $5::uuid OR issued_source.id = $5::uuid");
-    expect(mocks.query.mock.calls[0]?.[0]).toContain("selected.created_at::date <= $8::date");
+    expect(mocks.query.mock.calls[0]?.[0]).toContain("selected.effective_on <= $8::date");
+    expect(mocks.query.mock.calls[0]?.[0]).toContain("void_event.effective_on <= $8::date");
+    expect(mocks.query.mock.calls[0]?.[0]).toContain("issued_source.snapshot->>'accountingDate'");
+    expect(mocks.query.mock.calls[0]?.[0]).not.toContain("item.created_at::date <= $8::date");
     expect(mocks.query.mock.calls[0]?.[1]).toEqual([
       ids.organization,
       ids.entity,

@@ -48,7 +48,18 @@ import {
   voidSettlementSchema,
 } from "@/modules/subledger/document-model";
 import { loadBankingWorkspace } from "@/modules/banking/banking-workspace";
-import { bankCutoverCommitSchema, bankCutoverPreviewSchema, commitBankAccountCutover, previewBankAccountCutover } from "@/modules/banking/cutover-service";
+import {
+  bankCutoverCommitSchema,
+  bankCutoverDeactivationSchema,
+  bankCutoverListSchema,
+  bankCutoverPreviewSchema,
+  bankCutoverRevisionSchema,
+  commitBankAccountCutover,
+  deactivateBankAccountCutover,
+  listBankAccountCutovers,
+  previewBankAccountCutover,
+  reviseBankAccountCutover,
+} from "@/modules/banking/cutover-service";
 import {
   commitBankAccountingProposal,
   commitBankAccountingProposalSchema,
@@ -546,6 +557,30 @@ export const DAILY_MCP_TOOLS: readonly McpToolDefinition[] = [
     inputSchema: bankCutoverCommitSchema,
     idempotent: true,
     invoke: (args, runtime) => commitBankAccountCutover({ principal: runtime.sessionPrincipal, requestId: runtime.requestId, ...args }),
+  }),
+  defineMcpTool({
+    policy: { name: "finlynq_daily_list_bank_account_cutover_versions", group: "DAILY", access: "READ", permission: PERMISSIONS.readBanking },
+    title: "List bank-account cutover history",
+    description: "Return current and historical append-only predecessor mappings and their exact proof snapshots, migration-line identifiers, confirmation hashes, effective dates, states, and reasons. Posted journals and allocations are never changed.",
+    inputSchema: bankCutoverListSchema,
+    invoke: (args, runtime) => listBankAccountCutovers({ principal: runtime.sessionPrincipal, requestId: runtime.requestId, ...args }),
+  }),
+  defineMcpTool({
+    policy: { name: "finlynq_daily_revise_bank_account_cutover", group: "DAILY", access: "WRITE", permission: PERMISSIONS.prepareBankReconciliation },
+    title: "Revise a bank-account cutover mapping",
+    description: "Append an idempotent active cutover version from the exact current version and deterministic preview hash. Revalidates every gross observation, predecessor line, migration line, and account boundary without rewriting posted history or existing allocations.",
+    inputSchema: bankCutoverRevisionSchema,
+    idempotent: true,
+    invoke: (args, runtime) => reviseBankAccountCutover({ principal: runtime.sessionPrincipal, requestId: runtime.requestId, ...args }),
+  }),
+  defineMcpTool({
+    policy: { name: "finlynq_daily_deactivate_bank_account_cutover", group: "DAILY", access: "WRITE", permission: PERMISSIONS.prepareBankReconciliation },
+    title: "Deactivate a bank-account cutover prospectively",
+    description: "Append an inactive lifecycle version from the exact current version and a prospective date. Historical proof, posted journals, and existing reconciliation allocations remain immutable and queryable.",
+    inputSchema: bankCutoverDeactivationSchema,
+    destructive: true,
+    idempotent: true,
+    invoke: (args, runtime) => deactivateBankAccountCutover({ principal: runtime.sessionPrincipal, requestId: runtime.requestId, ...args }),
   }),
   defineMcpTool({
     policy: { name: "finlynq_daily_list_bank_accounting_proposals", group: "DAILY", access: "READ", permission: PERMISSIONS.readBanking },

@@ -172,9 +172,9 @@ export async function voidIssuedBusinessDocument(
     const voidEvent = await client.query<{ id: string }>(
       `INSERT INTO open_item_void_events (
          id, organization_id, ledger_id, open_item_id,
-         void_source_document_id, reason, idempotency_key,
+         void_source_document_id, effective_on, reason, idempotency_key,
          command_hash, created_by
-       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+       ) VALUES ($1, $2, $3, $4, $5, $6::date, $7, $8, $9, $10)
        RETURNING id`,
       [
         voidEventId,
@@ -182,6 +182,7 @@ export async function voidIssuedBusinessDocument(
         snapshot.ledgerId,
         openItemId,
         voidSource.id,
+        command.accountingDate,
         command.reason,
         idempotencyKey,
         fingerprints.current,
@@ -294,6 +295,7 @@ export async function voidSettlementAndReverseAllocations(
       context: unparsedCommand.context,
       ledgerId: snapshot.ledgerId,
       voidSourceDocumentId: voidSource.id,
+      effectiveOn: command.accountingDate,
       originals: originalAllocations,
       baseIdempotencyKey: idempotencyKey,
       commandHash: fingerprints.current,

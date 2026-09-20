@@ -56,6 +56,14 @@ function principalFromAuthInfo(authInfo: AuthInfo | undefined): McpConnectionPri
   return value as McpConnectionPrincipal;
 }
 
+function withCatalogHeaders(response: Response): Response {
+  const headers = new Headers(response.headers);
+  headers.set("cache-control", "private, no-store");
+  headers.set("vary", "Authorization, MCP-Protocol-Version");
+  headers.set("x-finlynq-mcp-catalog-revision", MCP_TOOL_CATALOG_REVISION);
+  return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
+}
+
 const handler = createMcpHandler(async (context) => {
   const principal = principalFromAuthInfo(context.authInfo);
   const snapshot = await loadMcpAuthorizationSnapshot(principal);
@@ -100,7 +108,7 @@ export async function handleMcpRequest(request: Request): Promise<Response> {
     },
   });
   const authorization = await gate(request);
-  if (authorization instanceof Response) return authorization;
+  if (authorization instanceof Response) return withCatalogHeaders(authorization);
   let boundedRequest = request;
   if (request.method === "POST") {
     try {
@@ -110,14 +118,9 @@ export async function handleMcpRequest(request: Request): Promise<Response> {
       boundedRequest = new Request(request.url, { method: "POST", headers, body: JSON.stringify(body), signal: request.signal });
     } catch (error) {
       if (!(error instanceof MutationBodyError)) throw error;
-      return Response.json({ jsonrpc: "2.0", id: null, error: { code: -32600, message: error.message } },
-        { status: error.status, headers: { "Cache-Control": "private, no-store" } });
+      return withCatalogHeaders(Response.json({ jsonrpc: "2.0", id: null, error: { code: -32600, message: error.message } },
+        { status: error.status }));
     }
   }
-  const response = await handler.fetch(boundedRequest, { authInfo: authorization });
-  const headers = new Headers(response.headers);
-  headers.set("cache-control", "private, no-store");
-  headers.set("vary", "Authorization, MCP-Protocol-Version");
-  headers.set("x-finlynq-mcp-catalog-revision", MCP_TOOL_CATALOG_REVISION);
-  return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
+  return withCatalogHeaders(await handler.fetch(boundedRequest, { authInfo: authorization }));
 }

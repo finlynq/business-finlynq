@@ -11,6 +11,7 @@ export const taxFilingExportSchema = z.object({
   filingId: z.uuid(),
   format: z.enum(["JSON", "CSV"]).default("JSON"),
   expectedContentHash: z.string().regex(/^[a-f0-9]{64}$/).optional(),
+  allowDraftWithWarnings: z.boolean().default(false),
 }).strict();
 
 export const taxFilingExportPreviewSchema = z.object({ filingId: z.uuid() }).strict();
@@ -305,6 +306,12 @@ export async function exportTaxFilingWorkpaper(
   if (command.expectedContentHash && command.expectedContentHash !== contentHash) {
     throw Object.assign(new Error("The workpaper content changed since export preview. Preview the exact immutable version again."), { code: "TAX_EXPORT_HASH_CONFLICT" });
   }
+  if (payload.unresolvedVarianceCount > 0 && !command.allowDraftWithWarnings) {
+    throw Object.assign(
+      new Error("The workpaper has unresolved reconciliation variances. Set allowDraftWithWarnings only for an explicitly marked review draft."),
+      { code: "TAX_EXPORT_RECONCILIATION_INCOMPLETE" },
+    );
+  }
   const body = command.format === "JSON" ? logical : packageCsv(payload);
   if (Buffer.byteLength(body) > MAX_EXPORT_BYTES) {
     throw Object.assign(
@@ -313,6 +320,9 @@ export async function exportTaxFilingWorkpaper(
     );
   }
   return {
+    exportId: createHash("sha256")
+      .update(`tax-workpaper-export:${command.filingId}:1:${command.format}:${contentHash}`, "utf8")
+      .digest("hex"),
     filingId: command.filingId,
     workpaperVersion: 1,
     format: command.format,
