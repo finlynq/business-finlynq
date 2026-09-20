@@ -1433,29 +1433,46 @@ async function reconciliationProof(
        FROM latest_observation
        WHERE posted_on BETWEEN $4::date AND $5::date
          AND currency_code = $6
+     ), in_period_ledger_line AS (
+       SELECT line.id, line.debit_transaction - line.credit_transaction AS amount
+       FROM journal_lines line
+       JOIN journal_entries journal
+         ON journal.organization_id = line.organization_id
+        AND journal.id = line.journal_entry_id
+        AND journal.status = 'POSTED'
+       WHERE line.organization_id = $1
+         AND (
+           line.account_combination_id = $7
+           OR EXISTS (
+             SELECT 1 FROM bank_account_cutovers cutover
+             WHERE cutover.organization_id=$1
+               AND cutover.reconciliation_session_id=$3
+               AND cutover.predecessor_account_combination_id=line.account_combination_id
+               AND journal.accounting_date <= cutover.effective_on
+           )
+         )
+         AND line.transaction_currency = $6
+         AND journal.accounting_date BETWEEN $4::date AND $5::date
+         AND NOT EXISTS (
+           SELECT 1 FROM bank_account_cutovers migration_cutover
+           WHERE migration_cutover.organization_id=$1
+             AND migration_cutover.reconciliation_session_id=$3
+             AND migration_cutover.migration_journal_line_ids ? line.id::text
+         )
      ), active_allocation AS (
        SELECT allocation.id, allocation.observation_version_id,
          allocation.journal_line_id, allocation.allocated_amount,
          observation.id AS current_observation_id,
          observation.amount AS observation_amount,
          observation.status AS observation_status,
-         journal.id AS posted_journal_id,
-         line.debit_transaction - line.credit_transaction AS journal_amount
+         line.id AS posted_journal_id,
+         line.amount AS journal_amount
        FROM bank_match_allocations allocation
        LEFT JOIN bank_match_allocation_voids void
          ON void.organization_id = allocation.organization_id AND void.allocation_id = allocation.id
        LEFT JOIN in_period_observation observation
          ON observation.id = allocation.observation_version_id
-       LEFT JOIN journal_lines line
-         ON line.organization_id = allocation.organization_id
-        AND line.id = allocation.journal_line_id
-        AND line.account_combination_id = $7
-        AND line.transaction_currency = $6
-       LEFT JOIN journal_entries journal
-         ON journal.organization_id = line.organization_id
-        AND journal.id = line.journal_entry_id
-        AND journal.status = 'POSTED'
-        AND journal.accounting_date BETWEEN $4::date AND $5::date
+       LEFT JOIN in_period_ledger_line line ON line.id = allocation.journal_line_id
        WHERE allocation.organization_id = $1
          AND allocation.reconciliation_session_id = $3
          AND void.id IS NULL
@@ -1463,27 +1480,41 @@ async function reconciliationProof(
        SELECT allocation.observation_version_id, sum(allocation.allocated_amount) AS allocated
        FROM active_allocation allocation
        GROUP BY allocation.observation_version_id
+     ), ledger_allocated AS (
+       SELECT allocation.journal_line_id, sum(allocation.allocated_amount) AS allocated
+       FROM bank_match_allocations allocation
+       JOIN bank_reconciliation_sessions allocated_session
+         ON allocated_session.organization_id = allocation.organization_id
+        AND allocated_session.id = allocation.reconciliation_session_id
+        AND allocated_session.status <> 'VOIDED'
+       LEFT JOIN bank_match_allocation_voids void
+         ON void.organization_id = allocation.organization_id
+        AND void.allocation_id = allocation.id
+       WHERE allocation.organization_id = $1 AND void.id IS NULL
+       GROUP BY allocation.journal_line_id
+     ), invalid_active_allocation AS (
+       SELECT allocation.id
+       FROM active_allocation allocation
+       WHERE allocation.current_observation_id IS NULL
+         OR allocation.observation_status <> 'POSTED'
+         OR allocation.posted_journal_id IS NULL
+         OR NOT (
+           allocation.journal_amount <> 0
+           AND sign(allocation.observation_amount) = sign(allocation.journal_amount)
+           AND (allocation.journal_amount > 0 OR allocation.journal_amount < 0)
+         )
      )
      SELECT
        coalesce((SELECT sum(amount) FROM in_period_observation WHERE status = 'POSTED'), 0)::text AS observation_total,
-       coalesce((SELECT sum(CASE WHEN allocation.journal_amount > 0
-           THEN allocation.allocated_amount ELSE -allocation.allocated_amount END)
-         FROM active_allocation allocation
-         WHERE allocation.current_observation_id IS NOT NULL
-           AND allocation.observation_status = 'POSTED'
-           AND allocation.posted_journal_id IS NOT NULL
-           AND allocation.journal_amount <> 0
-           AND sign(allocation.observation_amount) = sign(allocation.journal_amount)), 0)::text AS ledger_total,
+       coalesce((SELECT sum(amount) FROM in_period_ledger_line), 0)::text AS ledger_total,
        (SELECT count(*)::int FROM in_period_observation observation
          LEFT JOIN observation_allocated allocated ON allocated.observation_version_id = observation.id
          WHERE observation.status = 'POSTED'
            AND abs(observation.amount) <> coalesce(allocated.allocated, 0)) AS unmatched_observation_count,
-       (SELECT count(*)::int FROM active_allocation allocation
-         WHERE allocation.current_observation_id IS NULL
-           OR allocation.observation_status <> 'POSTED'
-           OR allocation.posted_journal_id IS NULL
-           OR allocation.journal_amount = 0
-           OR sign(allocation.observation_amount) <> sign(allocation.journal_amount)) AS unmatched_ledger_line_count,
+       ((SELECT count(*) FROM in_period_ledger_line line
+         LEFT JOIN ledger_allocated allocated ON allocated.journal_line_id = line.id
+         WHERE abs(line.amount) <> coalesce(allocated.allocated, 0))
+        + (SELECT count(*) FROM invalid_active_allocation))::int AS unmatched_ledger_line_count,
        (SELECT count(*)::int FROM active_allocation) AS active_match_count`,
     [organizationId, session.external_account_id, session.id, session.statement_start_on,
       session.statement_end_on, session.currency_code, session.cash_account_combination_id],
@@ -1603,8 +1634,7 @@ export async function createBankMatchAllocation(input: Readonly<{
     const existing = await client.query<{ id: string; command_hash: string }>(
       `SELECT id, command_hash
        FROM bank_match_allocations
-       WHERE organization_id = $1 AND reconciliation_session_id = $2 AND idempotency_key = $3
-       FOR SHARE`,
+       WHERE organization_id = $1 AND reconciliation_session_id = $2 AND idempotency_key = $3`,
       [input.principal.organizationId, session.id, idempotencyKey],
     );
     if (existing.rows[0]) {
@@ -1647,9 +1677,24 @@ export async function createBankMatchAllocation(input: Readonly<{
            ON journal.organization_id = line.organization_id
           AND journal.id = line.journal_entry_id AND journal.status = 'POSTED'
          WHERE line.organization_id = $1 AND line.id = $7
-           AND line.account_combination_id = $8
+           AND (
+             line.account_combination_id = $8
+             OR EXISTS (
+               SELECT 1 FROM bank_account_cutovers cutover
+               WHERE cutover.organization_id=$1
+                 AND cutover.reconciliation_session_id=$9
+                 AND cutover.predecessor_account_combination_id=line.account_combination_id
+                 AND journal.accounting_date <= cutover.effective_on
+             )
+           )
            AND line.transaction_currency = $6
            AND journal.accounting_date BETWEEN $4::date AND $5::date
+           AND NOT EXISTS (
+             SELECT 1 FROM bank_account_cutovers migration_cutover
+             WHERE migration_cutover.organization_id=$1
+               AND migration_cutover.reconciliation_session_id=$9
+               AND migration_cutover.migration_journal_line_ids ? line.id::text
+           )
        )
        SELECT observation.amount::text AS observation_amount, line.amount::text AS line_amount,
          coalesce((SELECT sum(allocation.allocated_amount)
@@ -1675,7 +1720,7 @@ export async function createBankMatchAllocation(input: Readonly<{
        FROM selected_observation observation CROSS JOIN selected_line line`,
       [input.principal.organizationId, input.observationVersionId,
         session.external_account_id, session.statement_start_on, session.statement_end_on,
-        session.currency_code, input.journalLineId, session.cash_account_combination_id],
+        session.currency_code, input.journalLineId, session.cash_account_combination_id, session.id],
     );
     const selected = pair.rows[0];
     if (!selected) throw new BankingServiceError("Choose a current bank observation and posted cash line inside this statement range.", 400, "INVALID_MATCH_PAIR");
@@ -1703,8 +1748,7 @@ export async function createBankMatchAllocation(input: Readonly<{
     if (!inserted.rows[0]) {
       const conflict = await client.query<{ id: string; command_hash: string }>(
         `SELECT id, command_hash FROM bank_match_allocations
-         WHERE organization_id = $1 AND reconciliation_session_id = $2 AND idempotency_key = $3
-         FOR SHARE`,
+         WHERE organization_id = $1 AND reconciliation_session_id = $2 AND idempotency_key = $3`,
         [input.principal.organizationId, session.id, idempotencyKey],
       );
       if (conflict.rows[0]) {

@@ -15,6 +15,7 @@ import {
 import { sql } from "drizzle-orm";
 import { organizations } from "./identity";
 import { currencyDefinitions, glAccounts, legalEntities, ledgers } from "./ledger";
+import { assetTaxSchedules } from "./assets";
 
 export const taxPackVersions = pgTable(
   "tax_pack_versions",
@@ -156,6 +157,10 @@ export const taxAccountMappingSets = pgTable(
       .notNull()
       .references(() => taxFilingTemplates.id, { onDelete: "restrict" }),
     version: integer("version").notNull(),
+    state: text("state").notNull().default("ACTIVE"),
+    effectiveFrom: date("effective_from").notNull(),
+    effectiveTo: date("effective_to"),
+    supersedesMappingSetId: uuid("supersedes_mapping_set_id"),
     reason: text("reason").notNull(),
     idempotencyKey: text("idempotency_key").notNull(),
     commandHash: text("command_hash").notNull(),
@@ -174,6 +179,10 @@ export const taxAccountMappingSets = pgTable(
       table.organizationId,
       table.idempotencyKey,
     ),
+    uniqueIndex("tax_account_mapping_sets_org_supersedes_unique").on(
+      table.organizationId,
+      table.supersedesMappingSetId,
+    ),
     index("tax_account_mapping_sets_active_lookup").on(
       table.organizationId,
       table.ledgerId,
@@ -190,7 +199,14 @@ export const taxAccountMappingSets = pgTable(
       foreignColumns: [ledgers.organizationId, ledgers.id],
       name: "tax_account_mapping_sets_org_ledger_fk",
     }).onDelete("restrict"),
+    foreignKey({
+      columns: [table.organizationId, table.supersedesMappingSetId],
+      foreignColumns: [table.organizationId, table.id],
+      name: "tax_account_mapping_sets_org_supersedes_fk",
+    }).onDelete("restrict"),
     check("tax_account_mapping_sets_version_check", sql`${table.version} > 0`),
+    check("tax_account_mapping_sets_state_check", sql`${table.state} IN ('ACTIVE', 'INACTIVE')`),
+    check("tax_account_mapping_sets_effective_check", sql`${table.effectiveTo} IS NULL OR ${table.effectiveTo} >= ${table.effectiveFrom}`),
     check(
       "tax_account_mapping_sets_reason_check",
       sql`char_length(btrim(${table.reason})) BETWEEN 8 AND 500`,
@@ -327,5 +343,32 @@ export const taxFilings = pgTable(
           AND ${table.reportedValues} <> '{}')`,
     ),
     check("tax_filings_hash_check", sql`${table.commandHash} ~ '^[a-f0-9]{64}$'`),
+  ],
+);
+
+/** Reviewed, immutable book-to-tax adjustments attached to one filing workpaper. */
+export const taxFilingAssetAdjustments = pgTable(
+  "tax_filing_asset_adjustments",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    organizationId: uuid("organization_id").notNull().references(() => organizations.id, { onDelete: "restrict" }),
+    filingId: uuid("filing_id").notNull(),
+    assetTaxScheduleId: uuid("asset_tax_schedule_id").notNull(),
+    adjustmentSnapshot: jsonb("adjustment_snapshot").notNull(),
+    reason: text("reason").notNull(),
+    idempotencyKey: text("idempotency_key").notNull(),
+    commandHash: text("command_hash").notNull(),
+    createdBy: uuid("created_by").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("tax_filing_asset_adjustments_org_id_unique").on(table.organizationId, table.id),
+    uniqueIndex("tax_filing_asset_adjustments_filing_schedule_unique").on(table.filingId, table.assetTaxScheduleId),
+    uniqueIndex("tax_filing_asset_adjustments_org_idempotency_unique").on(table.organizationId, table.idempotencyKey),
+    check("tax_filing_asset_adjustments_snapshot_check", sql`jsonb_typeof(${table.adjustmentSnapshot}) = 'object'`),
+    check("tax_filing_asset_adjustments_reason_check", sql`char_length(btrim(${table.reason})) BETWEEN 8 AND 500`),
+    check("tax_filing_asset_adjustments_hash_check", sql`${table.commandHash} ~ '^[a-f0-9]{64}$'`),
+    foreignKey({ columns: [table.organizationId, table.filingId], foreignColumns: [taxFilings.organizationId, taxFilings.id], name: "tax_filing_asset_adjustments_org_filing_fk" }).onDelete("restrict"),
+    foreignKey({ columns: [table.organizationId, table.assetTaxScheduleId], foreignColumns: [assetTaxSchedules.organizationId, assetTaxSchedules.id], name: "tax_filing_asset_adjustments_org_schedule_fk" }).onDelete("restrict"),
   ],
 );

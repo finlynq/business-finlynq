@@ -463,6 +463,27 @@
       "when": 1789857881108,
       "tag": "0065_statement_import_eml_hardening",
       "breakpoints": true
+    },
+    {
+      "idx": 66,
+      "version": "7",
+      "when": 1789911487885,
+      "tag": "0066_coordinated_accounting_agent_workflows",
+      "breakpoints": true
+    },
+    {
+      "idx": 67,
+      "version": "7",
+      "when": 1789911588163,
+      "tag": "0067_accounting_workflow_lineage_constraints",
+      "breakpoints": true
+    },
+    {
+      "idx": 68,
+      "version": "7",
+      "when": 1789912085143,
+      "tag": "0068_cca_rule_evidence_and_tax_basis",
+      "breakpoints": true
     }
   ]
 }

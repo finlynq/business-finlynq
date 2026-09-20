@@ -5,7 +5,7 @@ import { INBOX_MCP_TOOLS } from "@/modules/mcp/inbox-tools";
 import { SETUP_MCP_TOOLS } from "@/modules/mcp/setup-tools";
 import { SHARED_MCP_TOOLS } from "@/modules/mcp/shared-tools";
 import { dynamic } from "@/app/mcp/route";
-import { handleMcpRequest } from "@/modules/mcp/server";
+import { handleMcpRequest, MCP_TOOL_CATALOG_REVISION } from "@/modules/mcp/server";
 
 vi.mock("@modelcontextprotocol/server", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@modelcontextprotocol/server")>();
@@ -276,6 +276,39 @@ describe("remote MCP advertised tool catalog", () => {
     expect(tool.description).toContain("Open and partially settled items are returned by default");
   });
 
+  it("advertises the tax filing and effective-dated mapping workflows", () => {
+    for (const name of [
+      "finlynq_daily_get_tax_filing_workspace",
+      "finlynq_daily_create_tax_filing_workpaper",
+      "finlynq_daily_list_tax_filing_workpapers",
+      "finlynq_daily_preview_tax_filing_export",
+      "finlynq_daily_export_tax_filing_workpaper",
+      "finlynq_setup_list_tax_account_mapping_versions",
+      "finlynq_setup_preview_tax_account_mappings",
+      "finlynq_setup_save_tax_account_mappings",
+      "finlynq_setup_deactivate_tax_account_mappings",
+    ]) {
+      expect(allTools.some((tool) => tool.policy.name === name), name).toBe(true);
+    }
+    const save = advertisedSchema("finlynq_setup_save_tax_account_mappings");
+    expect(save.schema.required).toEqual(expect.arrayContaining([
+      "expectedTemplateVersion",
+      "expectedMappingVersion",
+      "effectiveFrom",
+      "reason",
+      "idempotencyKey",
+    ]));
+    const exported = advertisedSchema("finlynq_daily_export_tax_filing_workpaper");
+    expect(exported.tool.policy).toMatchObject({ access: "READ", permission: "tax.read" });
+    expect(exported.schema.required).toContain("filingId");
+    expect(exported.schema.required).not.toContain("expectedContentHash");
+    expect(exported.tool.description).toContain("excludes ciphertext");
+
+    const proposal = advertisedSchema("finlynq_daily_get_bank_accounting_proposal");
+    expect(proposal.tool.policy).toMatchObject({ access: "READ", permission: "banking.read" });
+    expect(proposal.schema.required).toEqual(["proposalId"]);
+  });
+
   it("forces dynamic MCP responses and prevents shared or protocol-crossing catalog caches", async () => {
     expect(dynamic).toBe("force-dynamic");
 
@@ -284,5 +317,7 @@ describe("remote MCP advertised tool catalog", () => {
     }));
     expect(response.headers.get("cache-control")).toBe("private, no-store");
     expect(response.headers.get("vary")).toBe("Authorization, MCP-Protocol-Version");
+    expect(response.headers.get("x-finlynq-mcp-catalog-revision")).toBe(MCP_TOOL_CATALOG_REVISION);
+    expect(MCP_TOOL_CATALOG_REVISION).toMatch(/^[a-f0-9]{64}$/);
   });
 });

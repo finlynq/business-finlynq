@@ -112,6 +112,98 @@ export async function itemMetadata(client: PoolClient, row: InboxRow) {
     createdAt: row.created_at.toISOString() };
 }
 
+export type InboxProcessingAttempt = Readonly<{
+  id: string;
+  operation: string;
+  outcome: "SUCCEEDED" | "FAILED";
+  errorCode: string | null;
+  correlationId: string;
+  createdBy: string;
+  createdAt: string;
+}>;
+
+function isEmlInboxItem(row: InboxRow, metadata: InboxSourceMetadata): boolean {
+  return row.mime_type === "message/rfc822" || metadata.name.toLowerCase().endsWith(".eml");
+}
+
+export async function listInboxProcessingAttempts(
+  client: PoolClient,
+  organizationId: string,
+  inboxItemId: string,
+): Promise<InboxProcessingAttempt[]> {
+  const result = await client.query<{
+    id: string; operation: string; outcome: "SUCCEEDED" | "FAILED"; error_code: string | null;
+    correlation_id: string; created_by: string; created_at: Date;
+  }>(
+    `SELECT id, operation, outcome, error_code, correlation_id, created_by, created_at
+     FROM document_inbox_processing_attempts
+     WHERE organization_id=$1 AND inbox_item_id=$2
+     ORDER BY created_at DESC, id DESC LIMIT 20`,
+    [organizationId, inboxItemId],
+  );
+  return result.rows.map((attempt) => ({
+    id: attempt.id,
+    operation: attempt.operation,
+    outcome: attempt.outcome,
+    errorCode: attempt.error_code,
+    correlationId: attempt.correlation_id,
+    createdBy: attempt.created_by,
+    createdAt: attempt.created_at.toISOString(),
+  }));
+}
+
+export async function recordInboxProcessingAttempt(
+  client: PoolClient,
+  context: TenantTransactionContext,
+  row: InboxRow,
+  attempt: Readonly<{
+    operation: "READ_EML";
+    outcome: "SUCCEEDED" | "FAILED";
+    errorCode?: string;
+  }>,
+): Promise<InboxRow> {
+  await client.query(
+    `INSERT INTO document_inbox_processing_attempts(
+       id, organization_id, inbox_item_id, operation, outcome, error_code,
+       correlation_id, created_by
+     ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+    [randomUUID(), context.organizationId, row.id, attempt.operation, attempt.outcome,
+      attempt.errorCode ?? null, context.requestId, context.actorId],
+  );
+
+  const metadata = await itemSourceMetadata(client, row);
+  if (attempt.outcome === "SUCCEEDED") {
+    if (!isEmlInboxItem(row, metadata) || metadata.errorCode === undefined) return row;
+    const preserved: InboxSourceMetadata = { ...metadata };
+    delete preserved.errorCode;
+    delete preserved.reason;
+    const ciphertext = await encryptStorageValue(
+      client,
+      row,
+      "document_inbox_items",
+      "metadata_ciphertext",
+      preserved,
+    );
+    return (await client.query<InboxRow>(
+      "UPDATE document_inbox_items SET metadata_ciphertext=$3 WHERE organization_id=$1 AND id=$2 RETURNING *",
+      [context.organizationId, row.id, ciphertext],
+    )).rows[0];
+  }
+
+  if (!isEmlInboxItem(row, metadata) || !attempt.errorCode?.startsWith("STORAGE_")) return row;
+  const ciphertext = await encryptStorageValue(
+    client,
+    row,
+    "document_inbox_items",
+    "metadata_ciphertext",
+    { ...metadata, errorCode: attempt.errorCode, reason: "Email processing failed. Renew the claim and retry the read after correcting the source." },
+  );
+  return (await client.query<InboxRow>(
+    "UPDATE document_inbox_items SET metadata_ciphertext=$3 WHERE organization_id=$1 AND id=$2 RETURNING *",
+    [context.organizationId, row.id, ciphertext],
+  )).rows[0];
+}
+
 export async function addInboxSourceMessageLineage(
   client: PoolClient,
   row: InboxRow,

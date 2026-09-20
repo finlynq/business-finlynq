@@ -50,6 +50,9 @@ describe("tax filing MCP lifecycle", () => {
       legalEntityId: ids.entity,
       ledgerId: ids.ledger,
       templateId: ids.template,
+      expectedTemplateVersion: 1,
+      expectedMappingVersion: 0,
+      effectiveFrom: "2026-09-20",
       mappings: [{
         fieldKey: "line_101",
         glAccountId: ids.account,

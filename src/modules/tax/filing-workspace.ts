@@ -18,6 +18,7 @@ import {
   type TaxFilingValidationResult,
   type TaxMappingBalanceBasis,
 } from "./filing-template";
+import { saveTaxAccountMappingsSchema } from "./filing-service";
 
 export type TaxFilingTemplateDto = Readonly<{
   id: string;
@@ -68,6 +69,15 @@ export type TaxAccountMappingDto = Readonly<{
   createdAt: string;
 }>;
 
+export type TaxAccountMappingVersionDto = Readonly<{
+  mappingSetId: string;
+  ledgerId: string;
+  templateId: string;
+  mappingVersion: number;
+  state: "ACTIVE" | "INACTIVE";
+  effectiveFrom: string;
+}>;
+
 export type TaxFilingSummaryDto = Readonly<{
   id: string;
   legalEntityId: string;
@@ -92,6 +102,7 @@ export type TaxFilingWorkspaceDto = Readonly<{
   ledgers: readonly TaxLedgerDto[];
   accounts: readonly TaxAccountDto[];
   mappings: readonly TaxAccountMappingDto[];
+  mappingVersions: readonly TaxAccountMappingVersionDto[];
   filings: readonly TaxFilingSummaryDto[];
   canManageMappings: boolean;
   canPrepareFilings: boolean;
@@ -286,8 +297,11 @@ export async function loadTaxFilingWorkspace(
       `WITH latest AS (
          SELECT DISTINCT ON (ledger_id, template_id)
            id, legal_entity_id, ledger_id, template_id, version, reason, created_at
-         FROM tax_account_mapping_sets
-         WHERE organization_id = $1
+       FROM tax_account_mapping_sets
+         WHERE organization_id = $1 AND state = 'ACTIVE'
+           AND NOT EXISTS (SELECT 1 FROM tax_account_mapping_sets successor
+             WHERE successor.organization_id=tax_account_mapping_sets.organization_id
+               AND successor.supersedes_mapping_set_id=tax_account_mapping_sets.id)
          ORDER BY ledger_id, template_id, version DESC
        )
        SELECT latest.id AS mapping_set_id, latest.version AS mapping_version,
@@ -318,6 +332,28 @@ export async function loadTaxFilingWorkspace(
       multiplier: row.multiplier,
       reason: row.reason,
       createdAt: row.created_at,
+    }));
+    const mappingVersionResult = await client.query<{
+      mapping_set_id: string; ledger_id: string; template_id: string;
+      mapping_version: number; state: "ACTIVE" | "INACTIVE"; effective_from: string;
+    }>(
+      `SELECT mapping.id AS mapping_set_id, mapping.ledger_id, mapping.template_id,
+         mapping.version AS mapping_version, mapping.state, mapping.effective_from::text
+       FROM tax_account_mapping_sets mapping
+       WHERE mapping.organization_id=$1
+         AND NOT EXISTS (SELECT 1 FROM tax_account_mapping_sets successor
+           WHERE successor.organization_id=mapping.organization_id
+             AND successor.supersedes_mapping_set_id=mapping.id)
+       ORDER BY mapping.ledger_id, mapping.template_id`,
+      [principal.organizationId],
+    );
+    const mappingVersions = mappingVersionResult.rows.map<TaxAccountMappingVersionDto>((row) => ({
+      mappingSetId: row.mapping_set_id,
+      ledgerId: row.ledger_id,
+      templateId: row.template_id,
+      mappingVersion: row.mapping_version,
+      state: row.state,
+      effectiveFrom: row.effective_from,
     }));
 
     const filingRows = options.includeFilings === false
@@ -367,9 +403,85 @@ export async function loadTaxFilingWorkspace(
       ledgers,
       accounts,
       mappings,
+      mappingVersions,
       filings,
       canManageMappings,
       canPrepareFilings,
     };
+  });
+}
+
+export async function previewTaxAccountMappings(
+  principal: SessionPrincipal,
+  raw: z.input<typeof saveTaxAccountMappingsSchema>,
+) {
+  const command = saveTaxAccountMappingsSchema.parse(raw);
+  const workspace = await loadTaxFilingWorkspace(principal, { includeFilings: false });
+  const template = workspace.templates.find((candidate) => candidate.id === command.templateId);
+  const ledger = workspace.ledgers.find((candidate) => candidate.ledgerId === command.ledgerId && candidate.legalEntityId === command.legalEntityId);
+  if (!template || template.version !== command.expectedTemplateVersion) throw new Error("The reviewed template version is unavailable or stale");
+  if (!ledger || ledger.currencyCode !== template.currencyCode) throw new Error("Choose an exact active company ledger in the template currency");
+  const currentVersion = workspace.mappingVersions.find((mapping) => mapping.ledgerId === command.ledgerId && mapping.templateId === command.templateId)?.mappingVersion ?? 0;
+  if (currentVersion !== command.expectedMappingVersion) throw new Error("The mapping version is stale");
+  const fields = new Map(template.definition.fields.map((field) => [field.key, field]));
+  const accounts = new Map(workspace.accounts.filter((account) => account.ledgerId === command.ledgerId).map((account) => [account.id, account]));
+  if (command.mappings.some((mapping) => !fields.get(mapping.fieldKey)?.allowAccountMapping || !accounts.has(mapping.glAccountId))) {
+    throw new Error("A mapping field or account is outside the reviewed template and ledger");
+  }
+  const identities = new Set(command.mappings.map((mapping) => `${mapping.fieldKey}|${mapping.glAccountId}`));
+  if (identities.size !== command.mappings.length) throw new Error("Each account can be mapped to a template field only once");
+  const required = template.definition.fields.filter((field) => field.kind === "ACCOUNT" && field.required);
+  if (required.some((field) => !command.mappings.some((mapping) => mapping.fieldKey === field.key))) throw new Error("Map every required account-backed field");
+  if (template.templateKey === "ca.gst-hst.return") {
+    const registrationAvailable = await withWorkspaceTenantRead(readContext(principal), "/app/tax", async (client) => {
+      await assertActorHasActivePermission(client, {
+        organizationId: principal.organizationId,
+        actorId: principal.userId,
+        permission: PERMISSIONS.manageTaxMappings,
+      });
+      return Boolean((await client.query(
+        `SELECT 1 FROM entity_tax_registrations registration
+         WHERE registration.organization_id=$1
+           AND registration.legal_entity_id=$2
+           AND registration.regime_key LIKE 'ca.%.hst'
+           AND registration.valid_from <= $3::date
+           AND (registration.valid_to IS NULL OR registration.valid_to >= $3::date)
+         LIMIT 1`,
+        [principal.organizationId, command.legalEntityId, command.effectiveFrom],
+      )).rows[0]);
+    });
+    if (!registrationAvailable) throw new Error("An effective Canadian HST registration is required for this mapping date");
+  }
+  return { valid: true, writesPerformed: false, template, ledger, currentMappingVersion: currentVersion, normalizedMappings: [...command.mappings].sort((a, b) => `${a.fieldKey}|${a.glAccountId}`.localeCompare(`${b.fieldKey}|${b.glAccountId}`)) };
+}
+
+export async function loadTaxAccountMappingHistory(
+  principal: SessionPrincipal,
+  filter: Readonly<{ ledgerId?: string; templateId?: string }> = {},
+) {
+  return withWorkspaceTenantRead(readContext(principal), "/app/tax", async (client) => {
+    await assertActorHasActivePermission(client, { organizationId: principal.organizationId, actorId: principal.userId, permission: PERMISSIONS.readTax });
+    const result = await client.query(
+      `SELECT mapping.id, mapping.legal_entity_id AS "legalEntityId", mapping.ledger_id AS "ledgerId",
+         mapping.template_id AS "templateId", mapping.version, mapping.state,
+         mapping.effective_from::text AS "effectiveFrom", mapping.effective_to::text AS "effectiveTo",
+         mapping.supersedes_mapping_set_id AS "supersedesMappingSetId", mapping.reason,
+         mapping.created_by AS "createdBy", mapping.created_at::text AS "createdAt",
+         NOT EXISTS (SELECT 1 FROM tax_account_mapping_sets successor
+           WHERE successor.organization_id=mapping.organization_id AND successor.supersedes_mapping_set_id=mapping.id) AS current,
+         coalesce(jsonb_agg(jsonb_build_object(
+           'fieldKey', line.field_key, 'glAccountId', line.gl_account_id,
+           'balanceBasis', line.balance_basis, 'multiplier', line.multiplier::text
+         ) ORDER BY line.field_key, line.gl_account_id) FILTER (WHERE line.id IS NOT NULL), '[]'::jsonb) AS lines
+       FROM tax_account_mapping_sets mapping
+       LEFT JOIN tax_account_mapping_lines line ON line.organization_id=mapping.organization_id AND line.mapping_set_id=mapping.id
+       WHERE mapping.organization_id=$1
+         AND ($2::uuid IS NULL OR mapping.ledger_id=$2)
+         AND ($3::uuid IS NULL OR mapping.template_id=$3)
+       GROUP BY mapping.id
+       ORDER BY mapping.ledger_id, mapping.template_id, mapping.version`,
+      [principal.organizationId, filter.ledgerId ?? null, filter.templateId ?? null],
+    );
+    return { versions: result.rows };
   });
 }
