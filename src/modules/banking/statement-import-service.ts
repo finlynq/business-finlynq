@@ -41,6 +41,42 @@ type PendingImportRow = Readonly<{
   ciphertext: string;
 }>;
 
+export function normalizeStatementImportDatabaseError(error: unknown): Error {
+  if (error instanceof BankingServiceError) return error;
+  const code = error && typeof error === "object" && "code" in error
+    ? String((error as { code?: unknown }).code ?? "")
+    : "";
+  if (code === "42501") {
+    return new BankingServiceError(
+      "Statement import authorization was rejected by a database guard. Ask an administrator to verify the deployed runtime grants and retry unchanged.",
+      403,
+      "STATEMENT_IMPORT_AUTHORIZATION_REJECTED",
+    );
+  }
+  if (code === "23503") {
+    return new BankingServiceError(
+      "The statement import no longer has complete source, evidence, account, or reconciliation lineage. Sync and review the inbox item again.",
+      409,
+      "STATEMENT_IMPORT_LINEAGE_REJECTED",
+    );
+  }
+  if (code === "23514") {
+    return new BankingServiceError(
+      "A statement-import integrity guard rejected the reviewed account mapping, row totals, or reconciliation state. Preview the current source and mapping again.",
+      409,
+      "STATEMENT_IMPORT_INTEGRITY_REJECTED",
+    );
+  }
+  if (code === "23505" || code === "23P01" || code === "55000") {
+    return new BankingServiceError(
+      "The statement import conflicts with retained banking state. Read the current account and reconciliation, then retry or review the retained record.",
+      409,
+      "STATEMENT_IMPORT_STATE_CONFLICT",
+    );
+  }
+  return error instanceof Error ? error : new Error("Statement import failed");
+}
+
 function encryptedValue(input: Readonly<{
   plaintext: string;
   organizationId: string;
@@ -94,6 +130,8 @@ async function validateLedgerMapping(
   }>,
 ): Promise<void> {
   const expectedClass = input.accountKind === "CASH" ? "ASSET" : "LIABILITY";
+  // This is an early, user-facing validation only. The mapping trigger takes
+  // authoritative row locks under its reviewed SECURITY DEFINER boundary.
   const result = await client.query(
     `SELECT 1
      FROM account_combinations combination
@@ -115,8 +153,7 @@ async function validateLedgerMapping(
       AND enabled_currency.currency_code = $6 AND enabled_currency.enabled
      WHERE combination.organization_id = $1 AND combination.id = $4
        AND combination.entity_id = $2 AND combination.ledger_id = $3
-       AND combination.active
-     FOR SHARE OF combination, account, ledger, entity, enabled_currency`,
+       AND combination.active`,
     [
       context.organizationId,
       input.legalEntityId,

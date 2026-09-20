@@ -73,6 +73,7 @@ export function archiveName(metadata: FilingMetadata, itemId: string, mimeType: 
     "text/csv": "csv", "text/tab-separated-values": "tsv", "text/plain": "txt",
     "application/vnd.ms-excel": "xls",
     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "xlsx",
+    "message/rfc822": "eml",
   }[mimeType];
   if (!extension) throw new Error("Unsupported document format");
   const parts = [parsed.documentDate, safeFilenamePart(parsed.counterparty, 45)];

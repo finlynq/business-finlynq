@@ -10,6 +10,7 @@ import { loadConnection, prepareConnectedDrive, resolvePreparedDrive, type Conne
 import { CloudDrive, StorageError, type CloudFile } from "./provider";
 import { assertStoredFile } from "./boundaries";
 import { classifyInboxFile, validateInboxDocumentBytes } from "./file-types";
+import { parseEmlDocument } from "./eml";
 
 export function supportedCloudFile(file: CloudFile) {
   return classifyInboxFile(file).supported;
@@ -22,7 +23,19 @@ export async function validatedCloudBytes(drive: CloudDrive, file: CloudFile) {
     if (bytes.length !== file.size) throw new StorageError("STORAGE_CONTENT_CHANGED", "The provider-reported size does not match the downloaded document.");
     const validated = validateInboxDocumentBytes(file.name, file.mimeType, bytes);
     const sha256 = createHash("sha256").update(bytes).digest("hex");
-    const scan = await scanEvidence(bytes);
+    let scan: Awaited<ReturnType<typeof scanEvidence>>;
+    try {
+      scan = await scanEvidence(bytes);
+    } catch (error) {
+      if (validated.format === "EML" && error instanceof Error && /malware/i.test(error.message)) {
+        throw new StorageError("STORAGE_EML_MALWARE", "The email or one of its attachments was rejected by malware scanning.");
+      }
+      throw error;
+    }
+    if (validated.format === "EML") {
+      const parsed = parseEmlDocument(bytes);
+      for (const attachment of parsed.attachments) attachment.bytes.fill(0);
+    }
     const latest = await drive.file(file.id);
     if (latest.id !== file.id || latest.parentId !== file.parentId || latest.mimeType !== file.mimeType || latest.version !== file.version || latest.size !== file.size) throw new StorageError("STORAGE_CONTENT_CHANGED", "The document changed or moved during processing. Sync and read it again.");
     return { bytes, sha256, scan, file: latest, format: validated.format, mimeType: validated.canonicalMimeType };
