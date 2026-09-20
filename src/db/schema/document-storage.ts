@@ -1,4 +1,5 @@
-import { bigint, boolean, index, integer, pgTable, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
+import { bigint, boolean, check, foreignKey, index, integer, pgTable, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
 import { organizations } from "./identity";
 
 export const documentStorageConnections = pgTable("document_storage_connections", {
@@ -42,4 +43,21 @@ export const documentInboxItems = pgTable("document_inbox_items", {
   index("document_inbox_items_checksum_idx").on(table.organizationId, table.sha256),
   index("document_inbox_items_business_key_idx").on(table.organizationId, table.businessKey),
   uniqueIndex("document_inbox_items_upload_unique").on(table.organizationId, table.connectionId, table.uploadKey),
+]);
+
+export const documentInboxProcessingAttempts = pgTable("document_inbox_processing_attempts", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  organizationId: uuid("organization_id").notNull().references(() => organizations.id, { onDelete: "restrict" }),
+  inboxItemId: uuid("inbox_item_id").notNull(),
+  operation: text("operation").notNull(),
+  outcome: text("outcome").notNull(),
+  errorCode: text("error_code"),
+  correlationId: text("correlation_id").notNull(),
+  createdBy: uuid("created_by").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  uniqueIndex("document_inbox_processing_attempts_org_id_unique").on(table.organizationId, table.id),
+  index("document_inbox_processing_attempts_item_created_idx").on(table.organizationId, table.inboxItemId, table.createdAt.desc()),
+  check("document_inbox_processing_attempts_outcome_check", sql`${table.outcome} IN ('SUCCEEDED', 'FAILED')`),
+  foreignKey({ columns: [table.organizationId, table.inboxItemId], foreignColumns: [documentInboxItems.organizationId, documentInboxItems.id], name: "document_inbox_processing_attempts_org_item_fk" }).onDelete("restrict"),
 ]);

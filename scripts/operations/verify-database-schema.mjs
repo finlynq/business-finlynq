@@ -61,17 +61,21 @@ const runtimeSelectRelations = [
   "open_item_void_events", "open_item_balances", "tax_pack_versions",
   "entity_tax_registrations", "tax_determination_snapshots", "tax_filing_templates",
   "tax_account_mapping_sets", "tax_account_mapping_lines", "tax_filings",
+  "tax_filing_asset_adjustments",
   "asset_categories", "asset_register", "asset_schedule_entries", "asset_lifecycle_events",
+  "asset_tax_classifications", "asset_tax_schedules",
   "bank_connections", "bank_connection_credential_events",
   "bank_external_accounts", "bank_sync_runs", "bank_observations",
   "bank_observation_versions", "bank_balance_anchors",
   "bank_statement_imports", "bank_statement_import_rows",
   "bank_reconciliation_sessions", "bank_reconciliation_voids",
   "bank_match_allocations", "bank_match_allocation_voids", "bank_rules",
-  "bank_rule_runs", "bank_draft_proposals", "mcp_oauth_clients",
+  "bank_rule_runs", "bank_draft_proposals", "bank_account_cutovers",
+  "bank_accounting_proposals", "mcp_oauth_clients",
   "mcp_connections", "mcp_oauth_codes", "mcp_access_tokens",
   "mcp_refresh_tokens", "mcp_approvals", "mcp_tool_executions",
   "document_storage_connections", "document_storage_oauth", "document_inbox_items",
+  "document_inbox_processing_attempts",
   "email_ingestion_aliases", "inbound_email_messages", "inbound_email_attachments",
   "email_booking_rules", "email_booking_evaluations", "email_delivery_settings",
   "payment_instruction_profiles", "customer_delivery_preferences",
@@ -96,13 +100,16 @@ const runtimeInsertRelations = [
   "subledger_events", "open_items", "document_settlement_allocations",
   "open_item_void_events", "tax_determination_snapshots",
   "tax_account_mapping_sets", "tax_account_mapping_lines", "tax_filings",
-  "asset_categories", "asset_lifecycle_events",
+  "tax_filing_asset_adjustments",
+  "asset_categories", "asset_lifecycle_events", "asset_tax_classifications",
+  "asset_tax_schedules",
   "bank_connection_credential_events", "bank_observations",
   "bank_observation_versions", "bank_balance_anchors",
   "bank_statement_imports", "bank_statement_import_rows",
   "bank_reconciliation_voids", "bank_match_allocations",
   "bank_match_allocation_voids", "bank_rules", "bank_rule_runs",
-  "bank_draft_proposals", "mcp_oauth_clients",
+  "bank_draft_proposals", "bank_account_cutovers", "bank_accounting_proposals",
+  "mcp_oauth_clients", "document_inbox_processing_attempts",
   "email_booking_rules", "sales_invoice_pdf_artifacts", "invoice_delivery_events",
 ];
 const runtimeExecuteFunctions = [
@@ -929,6 +936,19 @@ function ownerOnlyPolicyExpression(tableName) {
 }
 
 function expectedRlsPolicy(table) {
+  if (table.name === "document_inbox_processing_attempts") {
+    const itemIdentity = "item.organization_id = document_inbox_processing_attempts.organization_id AND item.id = document_inbox_processing_attempts.inbox_item_id";
+    const moduleRead = "app.current_actor_has_permission(item.owner_module || '.read'::text) OR app.current_actor_has_permission(item.owner_module || '.manage'::text)";
+    const moduleManage = "app.current_actor_has_permission(item.owner_module || '.manage'::text)";
+    return {
+      command: "ALL",
+      name: "tenant_isolation",
+      permissive: true,
+      roles: ["PUBLIC"],
+      usingExpression: `organization_id = app.current_organization_id() AND EXISTS (SELECT 1 FROM document_inbox_items item WHERE ${itemIdentity} AND (${moduleRead}))`,
+      withCheckExpression: `organization_id = app.current_organization_id() AND EXISTS (SELECT 1 FROM document_inbox_items item WHERE ${itemIdentity} AND ${moduleManage})`,
+    };
+  }
   if (["document_storage_connections", "document_storage_oauth", "document_inbox_items"].includes(table.name)) {
     const moduleRead = "organization_id = app.current_organization_id() AND (app.current_actor_has_permission(owner_module || '.read'::text) OR app.current_actor_has_permission(owner_module || '.manage'::text))";
     const connectionAccess = "organization_id = app.current_organization_id() AND (app.current_actor_has_permission(owner_module || '.read'::text) OR app.current_actor_has_permission(owner_module || '.manage'::text) OR app.current_actor_has_permission('organization.settings.manage'::text))";

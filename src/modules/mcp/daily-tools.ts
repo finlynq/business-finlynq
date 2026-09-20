@@ -48,11 +48,31 @@ import {
   voidSettlementSchema,
 } from "@/modules/subledger/document-model";
 import { loadBankingWorkspace } from "@/modules/banking/banking-workspace";
+import { bankCutoverCommitSchema, bankCutoverPreviewSchema, commitBankAccountCutover, previewBankAccountCutover } from "@/modules/banking/cutover-service";
+import {
+  commitBankAccountingProposal,
+  commitBankAccountingProposalSchema,
+  decideBankAccountingProposal,
+  decideBankAccountingProposalSchema,
+  getBankAccountingProposal,
+  getBankAccountingProposalSchema,
+  listBankAccountingProposals,
+  prepareBankAccountingProposal,
+  prepareBankAccountingProposalSchema,
+} from "@/modules/banking/proposal-service";
 import {
   createTaxFiling,
   createTaxFilingSchema,
 } from "@/modules/tax/filing-service";
 import { loadTaxFilingWorkspace } from "@/modules/tax/filing-workspace";
+import {
+  exportTaxFilingWorkpaper,
+  listTaxFilingWorkpapers,
+  previewTaxFilingExport,
+  taxFilingExportPreviewSchema,
+  taxFilingExportSchema,
+  taxFilingWorkpaperListSchema,
+} from "@/modules/tax/filing-export";
 import {
   createBankMatchAllocation,
   createBankReconciliation,
@@ -490,6 +510,80 @@ export const DAILY_MCP_TOOLS: readonly McpToolDefinition[] = [
       sourceSurface: "MCP",
       ...args,
     }),
+  }),
+  defineMcpTool({
+    policy: { name: "finlynq_daily_list_tax_filing_workpapers", group: "DAILY", access: "READ", permission: PERMISSIONS.readTax },
+    title: "List immutable tax filing workpapers",
+    description: "List bounded permission-filtered filing workpaper versions and their exact entity, ledger, template, mapping, period, status, and preparer metadata. This does not submit a return or initiate payment.",
+    inputSchema: taxFilingWorkpaperListSchema,
+    invoke: (args, runtime) => listTaxFilingWorkpapers(runtime.sessionPrincipal, args),
+  }),
+  defineMcpTool({
+    policy: { name: "finlynq_daily_preview_tax_filing_export", group: "DAILY", access: "READ", permission: PERMISSIONS.readTax },
+    title: "Preview deterministic tax workpaper export",
+    description: "Recheck authorization and return exact JSON/CSV sizes, unresolved variance count, and content hash before transferring a bounded immutable tax workpaper package.",
+    inputSchema: taxFilingExportPreviewSchema,
+    invoke: (args, runtime) => previewTaxFilingExport(runtime.sessionPrincipal, args.filingId),
+  }),
+  defineMcpTool({
+    policy: { name: "finlynq_daily_export_tax_filing_workpaper", group: "DAILY", access: "READ", permission: PERMISSIONS.readTax },
+    title: "Export deterministic tax filing workpaper",
+    description: "Return bounded base64 JSON or CSV for an exact immutable workpaper and optional preview hash. Includes registration metadata, mapped balances, tax population, journal/source references, and reviewed CCA adjustments; excludes ciphertext, credentials, signed URLs, and raw documents. Never submits or pays a return.",
+    inputSchema: taxFilingExportSchema,
+    invoke: (args, runtime) => exportTaxFilingWorkpaper(runtime.sessionPrincipal, args),
+  }),
+  defineMcpTool({
+    policy: { name: "finlynq_daily_preview_bank_account_cutover", group: "DAILY", access: "READ", permission: PERMISSIONS.prepareBankReconciliation },
+    title: "Preview migrated bank-account cutover proof",
+    description: "Validate an exact predecessor-to-successor account declaration and return gross observations, predecessor ledger population, migration lines, exceptions, and deterministic confirmation hash without changing posted history.",
+    inputSchema: bankCutoverPreviewSchema,
+    invoke: (args, runtime) => previewBankAccountCutover({ principal: runtime.sessionPrincipal, requestId: runtime.requestId, ...args }),
+  }),
+  defineMcpTool({
+    policy: { name: "finlynq_daily_commit_bank_account_cutover", group: "DAILY", access: "WRITE", permission: PERMISSIONS.prepareBankReconciliation },
+    title: "Commit migrated bank-account cutover proof",
+    description: "Commit an idempotent date-effective predecessor-account declaration from an exact preview hash and permanent reason. Posted observations and journals are never rewritten.",
+    inputSchema: bankCutoverCommitSchema,
+    idempotent: true,
+    invoke: (args, runtime) => commitBankAccountCutover({ principal: runtime.sessionPrincipal, requestId: runtime.requestId, ...args }),
+  }),
+  defineMcpTool({
+    policy: { name: "finlynq_daily_list_bank_accounting_proposals", group: "DAILY", access: "READ", permission: PERMISSIONS.readBanking },
+    title: "List bank accounting proposal history",
+    description: "Return append-only prepared, reviewed, rejected, and committed accounting-proposal versions for bank observations. This exposes review facts and hashes, never bank credentials.",
+    inputSchema: z.object({ observationVersionId: z.uuid().optional() }).strict(),
+    invoke: (args, runtime) => listBankAccountingProposals(runtime.sessionPrincipal, args),
+  }),
+  defineMcpTool({
+    policy: { name: "finlynq_daily_get_bank_accounting_proposal", group: "DAILY", access: "READ", permission: PERMISSIONS.readBanking },
+    title: "Get an exact bank accounting proposal version",
+    description: "Return one exact permission-filtered append-only proposal version, including its immutable observation facts, review history fields, content hash, and linked draft journal ID when committed.",
+    inputSchema: getBankAccountingProposalSchema,
+    invoke: (args, runtime) => getBankAccountingProposal(runtime.sessionPrincipal, args),
+  }),
+  defineMcpTool({
+    policy: { name: "finlynq_daily_prepare_bank_accounting_proposal", group: "DAILY", access: "WRITE", permission: PERMISSIONS.prepareBankReconciliation },
+    title: "Prepare accounting for an unmatched bank observation",
+    description: "Prepare an idempotent, balanced proposal against the exact current unmatched observation. The proposal records accounts, tax evidence, confidence, warnings, duplicate checks, and transfer evidence, but does not create or post a journal.",
+    inputSchema: prepareBankAccountingProposalSchema,
+    idempotent: true,
+    invoke: (args, runtime) => prepareBankAccountingProposal({ principal: runtime.sessionPrincipal, requestId: runtime.requestId, ...args }),
+  }),
+  defineMcpTool({
+    policy: { name: "finlynq_daily_decide_bank_accounting_proposal", group: "DAILY", access: "WRITE", permission: PERMISSIONS.reviewBankReconciliation },
+    title: "Review or reject a bank accounting proposal",
+    description: "Append a reviewed or rejected decision for the exact proposal version and hash. The proposal remains immutable and no journal is created by this step.",
+    inputSchema: decideBankAccountingProposalSchema,
+    idempotent: true,
+    invoke: (args, runtime) => decideBankAccountingProposal({ principal: runtime.sessionPrincipal, requestId: runtime.requestId, ...args }),
+  }),
+  defineMcpTool({
+    policy: { name: "finlynq_daily_commit_bank_accounting_proposal", group: "DAILY", access: "WRITE", permission: PERMISSIONS.draftJournal },
+    title: "Create a draft from a reviewed bank proposal",
+    description: "Create one idempotent manual journal draft from the exact reviewed proposal version and hash. Posting and reconciliation matching remain separate authorized actions.",
+    inputSchema: commitBankAccountingProposalSchema,
+    idempotent: true,
+    invoke: (args, runtime) => commitBankAccountingProposal({ principal: runtime.sessionPrincipal, requestId: runtime.requestId, ...args }),
   }),
   defineMcpTool({
     policy: { name: "finlynq_daily_banking_overview", group: "DAILY", access: "READ", permission: PERMISSIONS.readBanking },

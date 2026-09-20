@@ -14,6 +14,8 @@ type Category = Readonly<{
   code: string;
   displayName: string;
   version: number;
+  active: boolean;
+  current: boolean;
 }>;
 type Asset = Readonly<{
   id: string;
@@ -102,6 +104,7 @@ export function AssetWorkspace({ workspace }: {
   ])).values()), [workspace.accounts]);
   const categoryAccounts = useMemo(() => workspace.accounts.filter((account) =>
     account.ledgerId === selectedLedgerId), [workspace.accounts, selectedLedgerId]);
+  const activeCategories = useMemo(() => workspace.categories.filter((category) => category.active && category.current), [workspace.categories]);
 
   async function submitCategory(formData: FormData) {
     setBusy("category"); setFeedback(null);
@@ -120,6 +123,9 @@ export function AssetWorkspace({ workspace }: {
         expenseAccountCombinationId: String(formData.get("expenseAccountCombinationId")),
         ...(impairmentAccountCombinationId ? { impairmentAccountCombinationId } : {}),
         ...(disposalAccountCombinationId ? { disposalAccountCombinationId } : {}),
+        effectiveFrom: new Date().toISOString().slice(0, 10),
+        reason: String(formData.get("reason")),
+        idempotencyKey: crypto.randomUUID(),
       });
       setFeedback({ kind: "success", message: "Category created." }); router.refresh();
     } catch (error) { setFeedback({ kind: "error", message: error instanceof Error ? error.message : "Category creation failed." }); }
@@ -130,7 +136,7 @@ export function AssetWorkspace({ workspace }: {
     setBusy("asset"); setFeedback(null);
     try {
       const categoryId = String(formData.get("categoryId"));
-      const category = workspace.categories.find((item) => item.id === categoryId);
+      const category = activeCategories.find((item) => item.id === categoryId);
       if (!category) throw new Error("Choose an asset category.");
       const indefinite = formData.get("classification") === "INDEFINITE_LIFE";
       await postJson("/api/assets/register", {
@@ -246,10 +252,10 @@ export function AssetWorkspace({ workspace }: {
       </table></div> : <p className="panel-note">Indefinite-life intangibles intentionally have no automatic amortization schedule.</p>}
     </section>
 
-    {workspace.canDraftSchedules && workspace.categories.length > 0 && <CompactDisclosure summary="Create an asset or prepaid"><section className="panel" aria-labelledby="new-asset-title">
+    {workspace.canDraftSchedules && activeCategories.length > 0 && <CompactDisclosure summary="Create an asset or prepaid"><section className="panel" aria-labelledby="new-asset-title">
       <div className="panel-heading"><div><p className="eyebrow">New register item</p><h2 id="new-asset-title">Create an asset or prepaid</h2></div></div>
       <form className="settings-form" action={(data) => void submitAsset(data)}>
-        <label><span>Category</span><select name="categoryId" required>{workspace.categories.map((category) => <option key={category.id} value={category.id}>{category.kind} · {category.code} · {category.displayName}</option>)}</select></label>
+        <label><span>Category</span><select name="categoryId" required>{activeCategories.map((category) => <option key={category.id} value={category.id}>{category.kind} · {category.code} · {category.displayName}</option>)}</select></label>
         <label><span>Asset number</span><input name="assetNumber" required maxLength={40} /></label>
         <label><span>Name</span><input name="displayName" required maxLength={200} /></label>
         <label><span>Classification</span><select name="classification"><option value="FINITE_LIFE">Finite life</option><option value="INDEFINITE_LIFE">Indefinite-life intangible</option></select></label>
@@ -273,6 +279,7 @@ export function AssetWorkspace({ workspace }: {
         <label><span>Kind</span><select name="kind"><option value="TANGIBLE">Tangible</option><option value="INTANGIBLE">Intangible</option><option value="PREPAID">Prepaid</option></select></label>
         <label><span>Code</span><input name="code" required maxLength={30} /></label>
         <label><span>Name</span><input name="displayName" required maxLength={160} /></label>
+        <label><span>Permanent reason</span><input name="reason" required minLength={8} maxLength={500} /></label>
         {(["costAccountCombinationId", "contraAccountCombinationId", "expenseAccountCombinationId", "impairmentAccountCombinationId", "disposalAccountCombinationId"] as const).map((name) => <label key={name}><span>{name === "costAccountCombinationId" ? "Cost / prepaid account" : name === "contraAccountCombinationId" ? "Accumulated depreciation / amortization" : name === "expenseAccountCombinationId" ? "Recognition expense account" : name === "impairmentAccountCombinationId" ? "Impairment expense account" : "Disposal expense account"}</span><select name={name} required={["costAccountCombinationId", "expenseAccountCombinationId"].includes(name)}><option value="">Not applicable</option>{categoryAccounts.map((account) => <option key={account.id} value={account.id}>{account.code} · {account.displayName} · {account.class}</option>)}</select></label>)}
         <button className="primary-button" disabled={busy !== null}>{busy === "category" ? "Creating…" : "Create category"}</button>
       </form>

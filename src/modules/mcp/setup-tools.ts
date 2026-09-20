@@ -52,10 +52,12 @@ import {
   organizationFxProviderPolicyConfigurationSchema,
 } from "@/modules/fx/provider-policy";
 import {
+  deactivateTaxAccountMappings,
+  deactivateTaxAccountMappingsSchema,
   saveTaxAccountMappings,
   saveTaxAccountMappingsSchema,
 } from "@/modules/tax/filing-service";
-import { loadTaxFilingWorkspace } from "@/modules/tax/filing-workspace";
+import { loadTaxAccountMappingHistory, loadTaxFilingWorkspace, previewTaxAccountMappings } from "@/modules/tax/filing-workspace";
 
 const emptySchema = z.object({}).strict();
 const accountingConfigurationContextSchema = z.object({
@@ -241,6 +243,20 @@ export const SETUP_MCP_TOOLS: readonly McpToolDefinition[] = [
     invoke: (args, runtime) => configureTaxRegistration({ principal: runtime.sessionPrincipal, requestId: runtime.requestId, ...args }),
   }),
   defineMcpTool({
+    policy: { name: "finlynq_setup_list_tax_account_mapping_versions", group: "SETUP", access: "READ", permission: PERMISSIONS.readTax },
+    title: "List tax account mapping history",
+    description: "Return every immutable mapping version, state, effective dates, predecessor, reason, and exact lines for an optional ledger/template scope.",
+    inputSchema: z.object({ ledgerId: z.uuid().optional(), templateId: z.uuid().optional() }).strict(),
+    invoke: (args, runtime) => loadTaxAccountMappingHistory(runtime.sessionPrincipal, args),
+  }),
+  defineMcpTool({
+    policy: { name: "finlynq_setup_preview_tax_account_mappings", group: "SETUP", access: "READ", permission: PERMISSIONS.manageTaxMappings },
+    title: "Preview tax account mappings",
+    description: "Validate exact reviewed template, mapping version, ledger, fields, and accounts without persistence.",
+    inputSchema: saveTaxAccountMappingsSchema,
+    invoke: (args, runtime) => previewTaxAccountMappings(runtime.sessionPrincipal, args),
+  }),
+  defineMcpTool({
     policy: { name: "finlynq_setup_save_tax_account_mappings", group: "SETUP", access: "WRITE", permission: PERMISSIONS.manageTaxMappings },
     title: "Save tax filing account mappings",
     description: "Append an immutable client mapping version from reviewed tax-template fields to active, postable, non-control ledger accounts. Call the tax filing configuration tool first for template, ledger, field, and account IDs.",
@@ -252,6 +268,15 @@ export const SETUP_MCP_TOOLS: readonly McpToolDefinition[] = [
       sourceSurface: "MCP",
       ...args,
     }),
+  }),
+  defineMcpTool({
+    policy: { name: "finlynq_setup_deactivate_tax_account_mappings", group: "SETUP", access: "WRITE", permission: PERMISSIONS.manageTaxMappings },
+    title: "Deactivate tax account mappings prospectively",
+    description: "Append an inactive version from the exact current mapping and permanent reason. Prior filings keep their captured mapping snapshot.",
+    inputSchema: deactivateTaxAccountMappingsSchema,
+    destructive: true,
+    idempotent: true,
+    invoke: (args, runtime) => deactivateTaxAccountMappings({ principal: runtime.sessionPrincipal, requestId: runtime.requestId, sourceSurface: "MCP", ...args }),
   }),
   defineMcpTool({
     policy: { name: "finlynq_setup_create_legal_entity", group: "SETUP", access: "WRITE", permission: PERMISSIONS.manageOrganizationSettings },

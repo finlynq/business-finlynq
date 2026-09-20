@@ -530,9 +530,24 @@ export async function loadBankingWorkspace(
            LEFT JOIN bank_match_allocation_voids void
              ON void.organization_id = allocation.organization_id AND void.allocation_id = allocation.id
            WHERE line.organization_id = $1
-             AND line.account_combination_id = $3
+             AND (
+               line.account_combination_id = $3
+               OR EXISTS (
+                 SELECT 1 FROM bank_account_cutovers cutover
+                 WHERE cutover.organization_id=$1
+                   AND cutover.reconciliation_session_id=$2
+                   AND cutover.predecessor_account_combination_id=line.account_combination_id
+                   AND journal.accounting_date <= cutover.effective_on
+               )
+             )
              AND line.transaction_currency = $5
              AND journal.accounting_date BETWEEN $4::date AND $6::date
+             AND NOT EXISTS (
+               SELECT 1 FROM bank_account_cutovers migration_cutover
+               WHERE migration_cutover.organization_id=$1
+                 AND migration_cutover.reconciliation_session_id=$2
+                 AND migration_cutover.migration_journal_line_ids ? line.id::text
+             )
            GROUP BY line.id, journal.id
            ORDER BY journal.accounting_date, journal.id, line.line_number`,
           [principal.organizationId, selectedReconciliation.id,

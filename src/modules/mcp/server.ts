@@ -1,5 +1,7 @@
 import "server-only";
+import { createHash } from "node:crypto";
 import { MutationBodyError, readBoundedJson } from "@/modules/ledger/request-body";
+import { z } from "zod";
 
 import {
   McpServer,
@@ -25,7 +27,28 @@ import { SHARED_MCP_TOOLS } from "./shared-tools";
 import { EMAIL_MCP_TOOLS } from "./email-tools";
 import { registerMcpTools } from "./tool-types";
 
-const allTools = [...SHARED_MCP_TOOLS, ...DAILY_MCP_TOOLS, ...ASSET_MCP_TOOLS, ...INBOX_MCP_TOOLS, ...STATEMENT_MCP_TOOLS, ...SETUP_MCP_TOOLS, ...EMAIL_MCP_TOOLS];
+export const ALL_MCP_TOOLS = [...SHARED_MCP_TOOLS, ...DAILY_MCP_TOOLS, ...ASSET_MCP_TOOLS, ...INBOX_MCP_TOOLS, ...STATEMENT_MCP_TOOLS, ...SETUP_MCP_TOOLS, ...EMAIL_MCP_TOOLS] as const;
+
+export const MCP_TOOL_CATALOG_REVISION = createHash("sha256").update(JSON.stringify(
+  [...ALL_MCP_TOOLS]
+    .sort((left, right) => left.policy.name.localeCompare(right.policy.name))
+    .map((tool) => ({
+      name: tool.policy.name,
+      group: tool.policy.group,
+      access: tool.policy.access,
+      permission: tool.policy.permission ?? null,
+      permissionsAny: tool.policy.permissionsAny ?? null,
+      title: tool.title,
+      description: tool.description,
+      destructive: tool.destructive,
+      idempotent: tool.idempotent,
+      openWorld: tool.openWorld,
+      // The wire contract is the schema input. Some tools normalize strings
+      // with Zod transforms, whose output side is intentionally not JSON
+      // Schema-representable.
+      inputSchema: z.toJSONSchema(tool.inputSchema, { io: "input" }),
+    })),
+)).digest("hex");
 
 function principalFromAuthInfo(authInfo: AuthInfo | undefined): McpConnectionPrincipal {
   const value = authInfo?.extra?.finlynqPrincipal;
@@ -38,12 +61,12 @@ const handler = createMcpHandler(async (context) => {
   const snapshot = await loadMcpAuthorizationSnapshot(principal);
   const server = new McpServer({
     name: "business-finlynq-accounting",
-    version: "1.0.0",
+    version: `1.0.0+catalog.${MCP_TOOL_CATALOG_REVISION.slice(0, 12)}`,
   }, {
-    capabilities: { tools: { listChanged: false } },
+    capabilities: { tools: { listChanged: true } },
     instructions: "Act only within the visible FinLynQ tools. Start with the connection capabilities tool, then load accounting or setup context. Never invent IDs or retry a write with changed arguments after user approval.",
   });
-  registerMcpTools(server, snapshot, allTools, context.requestInfo?.url);
+  registerMcpTools(server, snapshot, ALL_MCP_TOOLS, context.requestInfo?.url);
   return server;
 }, {
   legacy: "stateless",
@@ -95,5 +118,6 @@ export async function handleMcpRequest(request: Request): Promise<Response> {
   const headers = new Headers(response.headers);
   headers.set("cache-control", "private, no-store");
   headers.set("vary", "Authorization, MCP-Protocol-Version");
+  headers.set("x-finlynq-mcp-catalog-revision", MCP_TOOL_CATALOG_REVISION);
   return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
 }
