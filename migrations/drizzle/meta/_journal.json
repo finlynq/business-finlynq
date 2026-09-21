@@ -505,6 +505,34 @@
       "when": 1789984539000,
       "tag": "0071_ticket_60_62_hardening",
       "breakpoints": true
+    },
+    {
+      "idx": 72,
+      "version": "7",
+      "when": 1790010451247,
+      "tag": "0072_ticket_63_66",
+      "breakpoints": true
+    },
+    {
+      "idx": 73,
+      "version": "7",
+      "when": 1790010485848,
+      "tag": "0073_tax_filing_configuration_lifecycle",
+      "breakpoints": true
+    },
+    {
+      "idx": 74,
+      "version": "7",
+      "when": 1790011249665,
+      "tag": "0074_tax_filing_registration_scopes",
+      "breakpoints": true
+    },
+    {
+      "idx": 75,
+      "version": "7",
+      "when": 1790012128315,
+      "tag": "0075_tax_filing_scope_constraints",
+      "breakpoints": true
     }
   ]
 }

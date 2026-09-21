@@ -2,6 +2,7 @@ import {
   exact,
   formatMoney,
   minorUnits,
+  quantizeMoney,
   sumExact,
 } from "@/kernel/money";
 
@@ -26,5 +27,32 @@ export function displayExactMoney(currency: string, amount: string): string {
     return formatMoney(amount, currency);
   } catch {
     return `${currency} ${amount}`;
+  }
+}
+
+export function sourceTaxOverridePreview(input: Readonly<{
+  netAmount: string;
+  ratePercent: string;
+  sourceTaxAmount: string;
+  currency: string;
+}>): Readonly<{
+  calculatedTax: string;
+  sourceTax: string;
+  gross: string;
+  arithmeticMatches: boolean;
+}> | null {
+  try {
+    const scale = minorUnits(input.currency);
+    const net = exact(input.netAmount);
+    const calculatedTax = quantizeMoney(net.times(input.ratePercent).div(100), input.currency);
+    const sourceTax = exact(input.sourceTaxAmount);
+    return {
+      calculatedTax: calculatedTax.toFixed(scale),
+      sourceTax: sourceTax.toFixed(scale),
+      gross: net.plus(sourceTax).toFixed(scale),
+      arithmeticMatches: calculatedTax.equals(sourceTax),
+    };
+  } catch {
+    return null;
   }
 }

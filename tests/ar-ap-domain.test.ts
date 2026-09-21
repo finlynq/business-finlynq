@@ -97,6 +97,104 @@ describe("AR/AP immutable source snapshots", () => {
     ]);
   });
 
+  it("preserves an exact CAD 1.80 source tax on CAD 12 and blocks posting until recoverability review", () => {
+    const input = baseDocument();
+    const draft = buildBusinessDocumentSnapshot({
+      ...input,
+      kind: "SUPPLIER_BILL",
+      sourceNumber: "source-tax-override-1",
+      documentDate: "2025-01-03",
+      accountingDate: "2025-01-03",
+      dueOn: "2025-02-02",
+      lines: [{
+        ...input.lines[0],
+        accountCombinationId: ids.expense,
+        netAmount: "12.00",
+        tax: {
+          ...input.lines[0].tax,
+          destinationRegion: "ON",
+          recoverablePercent: "100",
+          sourceTaxOverride: {
+            ratePercent: "15",
+            amount: "1.80",
+            jurisdiction: "CA-NB",
+            componentKey: "HST_SOURCE",
+            effectiveFrom: "2025-01-01",
+            reason: "Supplier invoice states HST at 15 percent",
+            evidenceReference: "inbox:8f109c50-b12b-4158-997b-24a3513c829f",
+          },
+        },
+      }],
+    }, "CAD");
+
+    expect(draft).toMatchObject({ subtotal: "12.00", taxTotal: "1.80", grossTotal: "13.80" });
+    expect(draft.lines[0]?.taxDecision).toMatchObject({
+      status: "MANUAL_REVIEW_REQUIRED",
+      totalTax: "1.80",
+      sourceOverride: {
+        state: "PENDING_REVIEW",
+        calculatedAmount: "1.80",
+        adjustmentAmount: "0.00",
+        automatedRatePercent: "13",
+        automatedAmount: "1.56",
+      },
+    });
+    expect(() => assertSnapshotTaxDecisionsCurrent(draft)).toThrow("manual review");
+
+    const reviewed = buildBusinessDocumentSnapshot({
+      ...input,
+      kind: "SUPPLIER_BILL",
+      sourceNumber: "source-tax-override-2",
+      documentDate: "2025-01-03",
+      accountingDate: "2025-01-03",
+      dueOn: "2025-02-02",
+      lines: [{
+        ...input.lines[0],
+        accountCombinationId: ids.expense,
+        netAmount: "12.00",
+        tax: {
+          ...input.lines[0].tax,
+          recoverablePercent: "100",
+          sourceTaxOverride: {
+            ratePercent: "15",
+            amount: "1.80",
+            jurisdiction: "CA-NB",
+            componentKey: "HST_SOURCE",
+            effectiveFrom: "2025-01-01",
+            reason: "Supplier invoice states HST at 15 percent",
+            evidenceReference: "inbox:8f109c50-b12b-4158-997b-24a3513c829f",
+            reviewedTreatment: "FULLY_RECOVERABLE",
+          },
+        },
+      }],
+    }, "CAD");
+    expect(reviewed.lines[0]?.taxDecision.components).toEqual([
+      expect.objectContaining({ amount: "1.80", treatment: "RECOVERABLE" }),
+    ]);
+    expect(() => assertSnapshotTaxDecisionsCurrent(reviewed)).not.toThrow();
+  });
+
+  it("requires adjustment evidence when a source tax amount differs from rate times net", () => {
+    const input = baseDocument();
+    expect(() => buildBusinessDocumentSnapshot({
+      ...input,
+      kind: "SUPPLIER_BILL",
+      lines: [{ ...input.lines[0], tax: {
+        ...input.lines[0].tax,
+        recoverablePercent: "0",
+        sourceTaxOverride: {
+          ratePercent: "15",
+          amount: "14.99",
+          jurisdiction: "CA-NB",
+          componentKey: "HST_SOURCE",
+          effectiveFrom: "2026-01-01",
+          reason: "Preserve supplier source tax amount",
+          evidenceReference: "supplier-invoice-line-1",
+        },
+      } }],
+    }, "CAD")).toThrow("adjustment reason");
+  });
+
   it("excludes Washington consumer use tax from the supplier open-item gross", () => {
     const input = baseDocument();
     const snapshot = buildBusinessDocumentSnapshot({

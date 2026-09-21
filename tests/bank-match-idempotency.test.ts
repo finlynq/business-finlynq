@@ -71,8 +71,10 @@ function sessionRow() {
   return {
     id: ids.reconciliation,
     status: "DRAFT" as const,
+    version: 1,
     external_account_id: "10000000-0000-4000-8000-000000000009",
     cash_account_combination_id: "10000000-0000-4000-8000-000000000010",
+    account_class: "ASSET" as const,
     currency_code: "CAD",
     statement_start_on: "2026-08-01",
     statement_end_on: "2026-08-31",
@@ -115,7 +117,7 @@ describe("bank-match allocation idempotency", () => {
       requestId: "bank-match-replay",
       reconciliationId: ids.reconciliation,
       ...body,
-    })).resolves.toEqual({ allocationId: ids.allocation, idempotentReplay: true });
+    })).resolves.toEqual({ allocationId: ids.allocation, idempotentReplay: true, reconciliationVersion: 1 });
     expect(query).toHaveBeenCalledTimes(2);
   });
 
@@ -166,7 +168,7 @@ describe("bank-match allocation idempotency", () => {
       reconciliationId: ids.reconciliation,
       ...body,
       allocatedAmount: "25.000",
-    })).resolves.toEqual({ allocationId: ids.allocation, idempotentReplay: true });
+    })).resolves.toEqual({ allocationId: ids.allocation, idempotentReplay: true, reconciliationVersion: 1 });
   });
 
   it("persists the canonical command hash and permits independent split allocation keys", async () => {
@@ -182,6 +184,9 @@ describe("bank-match allocation idempotency", () => {
       if (statement.includes("INSERT INTO bank_match_allocations")) {
         (inserts as unknown[][]).push([...(parameters ?? [])]);
         return { rows: [{ id: parameters?.[0] }] };
+      }
+      if (statement.includes("UPDATE bank_reconciliation_sessions SET version = version + 1")) {
+        return { rows: [{ version: 2 }] };
       }
       throw new Error(`Unexpected create SQL: ${statement}`);
     });

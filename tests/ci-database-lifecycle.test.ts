@@ -64,9 +64,9 @@ describe("CI predecessor-upgrade and restore verification", () => {
     );
   });
 
-  it("replays exactly 0000-0024 before preserving a tenant sentinel through 0071", () => {
+  it("replays exactly 0000-0024 before preserving a tenant sentinel through 0075", () => {
     expect(migrationJournal.entries.map((entry) => entry.idx)).toEqual(
-      Array.from({ length: 72 }, (_, index) => index),
+      Array.from({ length: 76 }, (_, index) => index),
     );
     expect(migrationJournal.entries.find((entry) => entry.idx === 25)?.tag).toBe(
       "0025_tenant_rls_completion",
@@ -195,6 +195,18 @@ describe("CI predecessor-upgrade and restore verification", () => {
     expect(migrationJournal.entries.find((entry) => entry.idx === 71)?.tag).toBe(
       "0071_ticket_60_62_hardening",
     );
+    expect(migrationJournal.entries.find((entry) => entry.idx === 72)?.tag).toBe(
+      "0072_ticket_63_66",
+    );
+    expect(migrationJournal.entries.find((entry) => entry.idx === 73)?.tag).toBe(
+      "0073_tax_filing_configuration_lifecycle",
+    );
+    expect(migrationJournal.entries.find((entry) => entry.idx === 74)?.tag).toBe(
+      "0074_tax_filing_registration_scopes",
+    );
+    expect(migrationJournal.entries.find((entry) => entry.idx === 75)?.tag).toBe(
+      "0075_tax_filing_scope_constraints",
+    );
     expect(tenantPolicyMigration).toContain("ALTER TABLE public.%I FORCE ROW LEVEL SECURITY");
     expect(tenantPolicyMigration).toContain("auth_sessions");
     expect(lifecycleScript).toContain("migration_prefix <= 24");
@@ -217,9 +229,9 @@ describe("CI predecessor-upgrade and restore verification", () => {
     expect(lifecycleScript).toContain(
       'run_migrations "$predecessor_database" "$repository_root/migrations/drizzle"',
     );
-    expect(lifecycleScript).toContain('[[ "$upgraded_count" == "72" ]]');
+    expect(lifecycleScript).toContain('[[ "$upgraded_count" == "76" ]]');
     expect(lifecycleScript).toContain(
-      "tenant sentinel was not preserved through migrations 0025 through 0071",
+      "tenant sentinel was not preserved through migrations 0025 through 0075",
     );
     expect(lifecycleScript).toContain("ci.predecessor-audit-after-upgrade");
     expect(lifecycleScript).toContain(

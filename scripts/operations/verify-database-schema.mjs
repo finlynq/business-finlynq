@@ -61,7 +61,8 @@ const runtimeSelectRelations = [
   "open_item_void_events", "open_item_balances", "tax_pack_versions",
   "entity_tax_registrations", "tax_determination_snapshots", "tax_filing_templates",
   "tax_account_mapping_sets", "tax_account_mapping_lines", "tax_filings",
-  "tax_filing_asset_adjustments",
+  "tax_filing_configurations", "tax_filing_lifecycle_events",
+  "tax_filing_canonical_selections", "tax_filing_asset_adjustments",
   "asset_categories", "asset_register", "asset_schedule_entries", "asset_lifecycle_events",
   "asset_tax_classifications", "asset_tax_schedules",
   "bank_connections", "bank_connection_credential_events",
@@ -100,7 +101,8 @@ const runtimeInsertRelations = [
   "subledger_events", "open_items", "document_settlement_allocations",
   "open_item_void_events", "tax_determination_snapshots",
   "tax_account_mapping_sets", "tax_account_mapping_lines", "tax_filings",
-  "tax_filing_asset_adjustments",
+  "tax_filing_configurations", "tax_filing_lifecycle_events",
+  "tax_filing_canonical_selections", "tax_filing_asset_adjustments",
   "asset_categories", "asset_lifecycle_events", "asset_tax_classifications",
   "asset_tax_schedules",
   "bank_connection_credential_events", "bank_observations",
@@ -1496,7 +1498,13 @@ export function applyMigrationOwnedConstraintContract(snapshotContract, migratio
     }
   }
   for (const name of migrationContract.droppedIndexes ?? []) {
-    for (const table of selectedSnapshot.tables.values()) table.indexes.delete(name);
+    for (const table of selectedSnapshot.tables.values()) {
+      // A later UNIQUE constraint can intentionally replace an earlier unique
+      // index with the same name (for example, to add NULLS NOT DISTINCT).
+      // PostgreSQL exposes the constraint's backing index, so retain the
+      // synthesized index contract when the final migration contract owns it.
+      if (!table.uniqueConstraints.has(name)) table.indexes.delete(name);
+    }
   }
   for (const [tableName, names] of migrationContract.droppedConstraints ?? []) {
     const table = selectedSnapshot.tables.get(tableName);

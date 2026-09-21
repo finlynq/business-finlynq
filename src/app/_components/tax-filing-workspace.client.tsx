@@ -29,6 +29,41 @@ function currentLedger(workspace: TaxFilingWorkspaceDto, ledgerId: string) {
   return workspace.ledgers.find((ledger) => ledger.ledgerId === ledgerId) ?? workspace.ledgers[0] ?? null;
 }
 
+function effectiveConfiguration(
+  workspace: TaxFilingWorkspaceDto,
+  input: Readonly<{ ledgerId: string; filingTypeKey?: string; registrationId: string | null; on: string }>,
+) {
+  if (!input.filingTypeKey || !input.on) return null;
+  return [...(workspace.configurations ?? [])]
+    .filter((configuration) => (
+      configuration.ledgerId === input.ledgerId
+      && configuration.filingTypeKey === input.filingTypeKey
+      && configuration.registrationId === input.registrationId
+      && configuration.effectiveFrom <= input.on
+      && (!configuration.effectiveTo || configuration.effectiveTo >= input.on)
+    ))
+    .sort((left, right) => right.effectiveFrom.localeCompare(left.effectiveFrom) || right.version - left.version)[0] ?? null;
+}
+
+function effectiveConfigurationsForDate(
+  workspace: TaxFilingWorkspaceDto,
+  ledgerId: string,
+  on: string,
+) {
+  const byScope = new Map<string, NonNullable<TaxFilingWorkspaceDto["configurations"]>[number]>();
+  for (const configuration of workspace.configurations ?? []) {
+    if (configuration.ledgerId !== ledgerId || configuration.effectiveFrom > on
+        || (configuration.effectiveTo && configuration.effectiveTo < on)) continue;
+    const key = `${configuration.registrationId ?? "none"}|${configuration.filingTypeKey}`;
+    const current = byScope.get(key);
+    if (!current || configuration.effectiveFrom > current.effectiveFrom
+        || (configuration.effectiveFrom === current.effectiveFrom && configuration.version > current.version)) {
+      byScope.set(key, configuration);
+    }
+  }
+  return [...byScope.values()];
+}
+
 function mappingSelections(
   workspace: TaxFilingWorkspaceDto,
   templateId: string,
@@ -125,8 +160,12 @@ function idempotencyCommand() {
 
 export function TaxFilingWorkspace({ workspace }: { workspace: TaxFilingWorkspaceDto }) {
   const router = useRouter();
-  const initialTemplateId = workspace.templates[0]?.id ?? "";
-  const initialLedgerId = workspace.ledgers.find(
+  const today = new Date().toISOString().slice(0, 10);
+  const initialConfiguration = [...(workspace.configurations ?? [])]
+    .filter((configuration) => configuration.state === "ACTIVE" && configuration.effectiveFrom <= today && (!configuration.effectiveTo || configuration.effectiveTo >= today))
+    .sort((left, right) => right.effectiveFrom.localeCompare(left.effectiveFrom) || right.version - left.version)[0];
+  const initialTemplateId = initialConfiguration?.templateId ?? workspace.templates[0]?.id ?? "";
+  const initialLedgerId = initialConfiguration?.ledgerId ?? workspace.ledgers.find(
     (candidate) => candidate.currencyCode === workspace.templates[0]?.currencyCode,
   )?.ledgerId ?? workspace.ledgers[0]?.ledgerId ?? "";
   const initialSelections = mappingSelections(workspace, initialTemplateId, initialLedgerId);
@@ -143,6 +182,13 @@ export function TaxFilingWorkspace({ workspace }: { workspace: TaxFilingWorkspac
   const [mappingFeedback, setMappingFeedback] = useState<Feedback | null>(null);
   const [mappingBusy, setMappingBusy] = useState(false);
   const mappingCommand = useRef(idempotencyCommand());
+  const [configurationReason, setConfigurationReason] = useState("");
+  const [configurationEffectiveFrom, setConfigurationEffectiveFrom] = useState(() => new Date().toISOString().slice(0, 10));
+  const [configurationEffectiveTo, setConfigurationEffectiveTo] = useState("");
+  const [configurationState, setConfigurationState] = useState<"ACTIVE" | "INACTIVE">("ACTIVE");
+  const [showConfigurationHistory, setShowConfigurationHistory] = useState(false);
+  const [configurationBusy, setConfigurationBusy] = useState(false);
+  const configurationCommand = useRef(idempotencyCommand());
 
   const [filingType, setFilingType] = useState<"PREPARED" | "HISTORICAL_IMPORT">("PREPARED");
   const [periodStart, setPeriodStart] = useState("");
@@ -177,6 +223,22 @@ export function TaxFilingWorkspace({ workspace }: { workspace: TaxFilingWorkspac
     () => workspace.mappings.filter((mapping) => mapping.ledgerId === ledgerId && mapping.templateId === templateId),
     [workspace.mappings, ledgerId, templateId],
   );
+  const scopeRegistration = useMemo(
+    () => (workspace.registrations ?? []).find((registration) => (
+      registration.legalEntityId === ledger?.legalEntityId
+      && (template?.templateKey !== "ca.gst-hst.return" || registration.regimeKey.includes("hst"))
+    )) ?? null,
+    [workspace.registrations, ledger?.legalEntityId, template?.templateKey],
+  );
+  const currentConfiguration = useMemo(
+    () => (workspace.configurations ?? []).find((configuration) => (
+      configuration.current
+      && configuration.legalEntityId === ledger?.legalEntityId
+      && configuration.filingTypeKey === template?.templateKey
+      && configuration.registrationId === (scopeRegistration?.id ?? null)
+    )) ?? null,
+    [workspace.configurations, ledger?.legalEntityId, template?.templateKey, scopeRegistration?.id],
+  );
 
   const selectScope = (nextTemplateId: string, nextLedgerId: string) => {
     const selections = mappingSelections(workspace, nextTemplateId, nextLedgerId);
@@ -189,6 +251,79 @@ export function TaxFilingWorkspace({ workspace }: { workspace: TaxFilingWorkspac
     setReportedValues({});
     mappingCommand.current = idempotencyCommand();
     filingCommand.current = idempotencyCommand();
+    configurationCommand.current = idempotencyCommand();
+  };
+
+  const saveConfiguration = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!template || !ledger || configurationBusy) return;
+    const mapping = workspace.mappingVersions.find((candidate) => (
+      candidate.ledgerId === ledger.ledgerId && candidate.templateId === template.id && candidate.state === "ACTIVE"
+    ));
+    if (!mapping) {
+      setMappingFeedback({ kind: "error", message: "Save an active mapping version before activating this filing configuration." });
+      return;
+    }
+    const fields = {
+      legalEntityId: ledger.legalEntityId,
+      ledgerId: ledger.ledgerId,
+      registrationId: template.templateKey === "ca.gst-hst.return" ? scopeRegistration?.id ?? null : null,
+      filingTypeKey: template.templateKey,
+      templateId: template.id,
+      mappingSetId: mapping.mappingSetId,
+      expectedConfigurationVersion: currentConfiguration?.version ?? 0,
+      state: configurationState,
+      effectiveFrom: configurationEffectiveFrom,
+      ...(configurationEffectiveTo ? { effectiveTo: configurationEffectiveTo } : {}),
+      reason: configurationReason.trim(),
+    };
+    const fingerprint = JSON.stringify(fields);
+    if (configurationCommand.current.fingerprint !== fingerprint) configurationCommand.current = { fingerprint, key: crypto.randomUUID() };
+    setConfigurationBusy(true); setMappingFeedback(null);
+    try {
+      const response = await fetch("/api/tax/configurations", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ...fields, idempotencyKey: configurationCommand.current.key }),
+      });
+      const payload = await response.json() as { error?: string; version?: number };
+      if (!response.ok) throw new Error(payload.error ?? "The filing configuration could not be saved.");
+      setMappingFeedback({ kind: "success", message: `Filing configuration version ${payload.version ?? "new"} activated without changing any existing workpaper.` });
+      setConfigurationReason(""); router.refresh();
+    } catch (error) {
+      setMappingFeedback({ kind: "error", message: error instanceof Error ? error.message : "The filing configuration could not be saved." });
+    } finally { setConfigurationBusy(false); }
+  };
+
+  const selectCanonical = async (event: React.FormEvent<HTMLFormElement>, filingId: string, expectedSelectionVersion: number) => {
+    event.preventDefault();
+    const reason = String(new FormData(event.currentTarget).get("reason") ?? "").trim();
+    setFilingBusy(true); setFilingFeedback(null);
+    try {
+      const response = await fetch("/api/tax/filings/canonical", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ filingId, expectedSelectionVersion, reason, idempotencyKey: crypto.randomUUID() }),
+      });
+      const payload = await response.json() as { error?: string };
+      if (!response.ok) throw new Error(payload.error ?? "The canonical workpaper could not be selected.");
+      setFilingFeedback({ kind: "success", message: "Canonical selection recorded as a new immutable version." }); router.refresh();
+    } catch (error) { setFilingFeedback({ kind: "error", message: error instanceof Error ? error.message : "Canonical selection failed." }); }
+    finally { setFilingBusy(false); }
+  };
+
+  const archiveFiling = async (event: React.FormEvent<HTMLFormElement>, filingId: string, expectedLifecycleVersion: number) => {
+    event.preventDefault();
+    const reason = String(new FormData(event.currentTarget).get("reason") ?? "").trim();
+    setFilingBusy(true); setFilingFeedback(null);
+    try {
+      const response = await fetch("/api/tax/filings/lifecycle", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ filingId, expectedLifecycleVersion, state: "ARCHIVED", reason, idempotencyKey: crypto.randomUUID() }),
+      });
+      const payload = await response.json() as { error?: string };
+      if (!response.ok) throw new Error(payload.error ?? "The workpaper could not be archived.");
+      setFilingFeedback({ kind: "success", message: "Workpaper archived without deleting filing evidence." }); router.refresh();
+    } catch (error) { setFilingFeedback({ kind: "error", message: error instanceof Error ? error.message : "Workpaper archive failed." }); }
+    finally { setFilingBusy(false); }
   };
 
   const selectTemplate = (nextTemplateId: string) => {
@@ -263,10 +398,17 @@ export function TaxFilingWorkspace({ workspace }: { workspace: TaxFilingWorkspac
   const createFiling = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (!template || !ledger || filingBusy) return;
+    const selectedConfiguration = effectiveConfiguration(workspace, {
+      ledgerId: ledger.ledgerId,
+      filingTypeKey: template.templateKey,
+      registrationId: template.templateKey === "ca.gst-hst.return" ? scopeRegistration?.id ?? null : null,
+      on: periodEnd,
+    });
     const fields = {
       legalEntityId: ledger.legalEntityId,
       ledgerId: ledger.ledgerId,
       templateId: template.id,
+      ...(selectedConfiguration ? { configurationId: selectedConfiguration.id } : {}),
       filingType,
       periodStart,
       periodEnd,
@@ -316,6 +458,30 @@ export function TaxFilingWorkspace({ workspace }: { workspace: TaxFilingWorkspac
 
   const mappingReady = requiredMappingFields
     .every((field) => (accountSelections[field.key] ?? []).length > 0);
+  const periodConfiguration = effectiveConfiguration(workspace, {
+    ledgerId,
+    filingTypeKey: template.templateKey,
+    registrationId: template.templateKey === "ca.gst-hst.return" ? scopeRegistration?.id ?? null : null,
+    on: periodEnd || today,
+  });
+  const configurationReady = periodConfiguration?.state === "ACTIVE"
+    && periodConfiguration.templateId === template.id;
+  const activeTemplateIds = new Set(effectiveConfigurationsForDate(workspace, ledgerId, today)
+    .filter((configuration) => configuration.state === "ACTIVE")
+    .map((configuration) => configuration.templateId));
+  const templateOptions = showConfigurationHistory || activeTemplateIds.size === 0
+    ? workspace.templates
+    : workspace.templates.filter((option) => activeTemplateIds.has(option.id) || option.id === templateId);
+  const scopeConfigurations = (workspace.configurations ?? []).filter((item) => (
+    item.ledgerId === ledgerId && item.filingTypeKey === template.templateKey
+  ));
+  const visibleConfigurations = showConfigurationHistory
+    ? scopeConfigurations
+    : scopeConfigurations.filter((item) => item.current);
+  const scopedFilings = workspace.filings.filter((filing) => filing.legalEntityId === ledger.legalEntityId);
+  const visibleFilingControls = showConfigurationHistory
+    ? scopedFilings
+    : scopedFilings.filter((filing) => filing.canonical && !["ARCHIVED", "SUPERSEDED"].includes(filing.lifecycleState ?? ""));
   const visibleFeedback = filingFeedback ?? mappingFeedback;
 
   return (
@@ -324,7 +490,7 @@ export function TaxFilingWorkspace({ workspace }: { workspace: TaxFilingWorkspac
       <section className={styles.scopeBar} aria-label="Tax filing scope">
         <label><span>Template</span>
           <select value={templateId} onChange={(event) => selectTemplate(event.target.value)}>
-            {workspace.templates.map((option) => <option key={option.id} value={option.id}>{option.name} · v{option.version}</option>)}
+            {templateOptions.map((option) => <option key={option.id} value={option.id}>{option.name} · v{option.version}</option>)}
           </select>
         </label>
         <label><span>Client company / ledger</span>
@@ -340,12 +506,43 @@ export function TaxFilingWorkspace({ workspace }: { workspace: TaxFilingWorkspac
             {mappingReady ? `Ready · v${latestMappings[0]?.mappingVersion ?? "new"}` : "Required fields missing"}
           </strong>
         </div>
+        <label className={styles.historyToggle}><input type="checkbox" checked={showConfigurationHistory} onChange={(event) => setShowConfigurationHistory(event.target.checked)} /><span>History and inactive</span></label>
       </section>
 
       <SectionTabs label="Tax preparation sections" defaultSection="tax-workpaper" sections={[
+        { id: "tax-configuration", label: "Filing configuration" },
         { id: "tax-mappings", label: "Account mappings" },
         { id: "tax-workpaper", label: "Prepare or reconcile" },
       ]}>
+        <section className="panel form-panel" aria-labelledby="tax-configuration-title">
+          <div className="panel-heading"><div><p className="eyebrow">Effective tenant setup</p><h2 id="tax-configuration-title">Filing configuration</h2><p>Select the exact template and mapping version that may create workpapers for this entity, registration, filing type, and effective period.</p></div></div>
+          <div className={styles.configurationSummary}>
+            <div><span>Current state</span><strong>{currentConfiguration?.state.replaceAll("_", " ") ?? "NEEDS CONFIGURATION"}</strong></div>
+            <div><span>Template</span><strong>{currentConfiguration ? `${currentConfiguration.templateName} v${currentConfiguration.templateVersion}` : `${template.name} v${template.version} proposed`}</strong></div>
+            <div><span>Mapping</span><strong>{currentConfiguration ? `v${currentConfiguration.mappingVersion}` : latestMappings[0] ? `v${latestMappings[0].mappingVersion} proposed` : "Missing"}</strong></div>
+            <div><span>Registration</span><strong>{scopeRegistration ? `${scopeRegistration.regimeKey} · ${scopeRegistration.id}` : template.templateKey === "ca.gst-hst.return" ? "Missing" : "Not required"}</strong></div>
+          </div>
+          <form className="close-form" onSubmit={(event) => { void saveConfiguration(event); }}>
+            <div className="form-grid form-grid-three">
+              <label><span>Effective from</span><input type="date" value={configurationEffectiveFrom} onChange={(event) => setConfigurationEffectiveFrom(event.target.value)} required /></label>
+              <label><span>Effective to</span><input type="date" min={configurationEffectiveFrom} value={configurationEffectiveTo} onChange={(event) => setConfigurationEffectiveTo(event.target.value)} /></label>
+              <label><span>Revision state</span><select value={configurationState} onChange={(event) => setConfigurationState(event.target.value as "ACTIVE" | "INACTIVE")}><option value="ACTIVE">Active</option><option value="INACTIVE">Inactive prospectively</option></select></label>
+              <label className="full-field"><span>Configuration reason</span><textarea value={configurationReason} onChange={(event) => setConfigurationReason(event.target.value)} minLength={8} maxLength={500} required placeholder="Why should this exact template and mapping govern future workpapers?" /></label>
+            </div>
+            <p className="form-footnote">Activation is versioned and prospective. It never rewrites an existing prepared or historical workpaper and never submits a return.</p>
+            <div className="form-actions"><button className="primary-button" disabled={!workspace.canManageConfigurations || configurationBusy || !mappingReady || (template.templateKey === "ca.gst-hst.return" && !scopeRegistration)}>{configurationBusy ? "Activating…" : currentConfiguration ? "Create configuration revision" : "Activate configuration"}</button></div>
+          </form>
+          <details className="mapping-details"><summary>{showConfigurationHistory ? "Configuration history" : "Current configuration"} ({visibleConfigurations.length})</summary>
+            <ul className="checklist large-checklist">{visibleConfigurations.map((item) => <li key={item.id}><div><strong>v{item.version} · {item.state.replaceAll("_", " ")}</strong><small>{item.effectiveFrom} – {item.effectiveTo ?? "open"} · template v{item.templateVersion} · mapping v{item.mappingVersion} · {item.dependencyCount} workpaper dependenc{item.dependencyCount === 1 ? "y" : "ies"}</small><small>Reason: {item.reason} · actor {item.createdBy}</small></div>{item.current && <span className="status-pill status-neutral">CURRENT VERSION</span>}</li>)}</ul>
+          </details>
+          {(visibleFilingControls.length > 0) && <details className="mapping-details"><summary>{showConfigurationHistory ? "Canonical and lifecycle history" : "Canonical workpapers"}</summary>
+            <div className={styles.lifecycleList}>{visibleFilingControls.map((filing) => <article key={filing.id}>
+              <div><strong>{filing.entityCode} · {filing.periodStart} – {filing.periodEnd}</strong><small>{filing.filingType.replaceAll("_", " ")} · {filing.lifecycleState ?? "HISTORICAL"} · {filing.canonical ? "canonical" : "not canonical"}</small><small>Lifecycle reason: {filing.lifecycleReason ?? "Legacy workpaper"}{filing.replacementFilingId ? ` · replacement ${filing.replacementFilingId}` : ""}{filing.canonicalReason ? ` · canonical reason: ${filing.canonicalReason}` : ""}</small></div>
+              {workspace.canManageCanonical && !filing.canonical && !["ARCHIVED", "SUPERSEDED"].includes(filing.lifecycleState ?? "") && <form onSubmit={(event) => { void selectCanonical(event, filing.id, filing.canonicalVersion ?? 0); }}><input name="reason" minLength={8} maxLength={500} required placeholder="Canonical selection reason" /><button className="secondary-button" disabled={filingBusy}>Set canonical</button></form>}
+              {workspace.canManageCanonical && !filing.canonical && !["ARCHIVED", "SUPERSEDED"].includes(filing.lifecycleState ?? "") && <form onSubmit={(event) => { void archiveFiling(event, filing.id, filing.lifecycleVersion ?? 1); }}><input name="reason" minLength={8} maxLength={500} required placeholder="Permanent archive reason" /><button className="secondary-button" disabled={filingBusy}>Archive</button></form>}
+            </article>)}</div>
+          </details>}
+        </section>
         <section className="panel form-panel" aria-labelledby="tax-mapping-title">
           <div className="panel-heading">
             <div>
@@ -475,9 +672,10 @@ export function TaxFilingWorkspace({ workspace }: { workspace: TaxFilingWorkspac
 
             <p className="form-footnote">Calculations use posted journal lines in the selected date range and mapping version. The resulting workpaper is immutable and does not submit data to {template.authority}.</p>
             {!mappingReady && <p className="validation-message validation-error">Map the required fields in the Account mappings tab before preparing a return.</p>}
+            {mappingReady && !configurationReady && <p className="validation-message validation-error">Activate the exact template and mapping in Filing configuration for this period before preparing a return.</p>}
             {!workspace.canPrepareFilings && <p className="validation-message">Your role can view tax workpapers but cannot prepare or import filings.</p>}
             <div className="form-actions">
-              <button className="primary-button" type="submit" disabled={!workspace.canPrepareFilings || filingBusy || !mappingReady}>{filingBusy ? "Calculating…" : filingType === "PREPARED" ? "Prepare return" : "Reconcile historical filing"}</button>
+              <button className="primary-button" type="submit" disabled={!workspace.canPrepareFilings || filingBusy || !mappingReady || !configurationReady}>{filingBusy ? "Calculating…" : filingType === "PREPARED" ? "Prepare return" : "Reconcile historical filing"}</button>
             </div>
           </form>
         </section>

@@ -78,6 +78,37 @@ export type TaxAccountMappingVersionDto = Readonly<{
   effectiveFrom: string;
 }>;
 
+export type TaxFilingRegistrationDto = Readonly<{
+  id: string;
+  legalEntityId: string;
+  regimeKey: string;
+  validFrom: string;
+  validTo: string | null;
+}>;
+
+export type TaxFilingConfigurationDto = Readonly<{
+  id: string;
+  legalEntityId: string;
+  ledgerId: string;
+  registrationId: string | null;
+  filingTypeKey: string;
+  templateId: string;
+  templateName: string;
+  templateVersion: number;
+  mappingSetId: string;
+  mappingVersion: number;
+  version: number;
+  state: "ACTIVE" | "INACTIVE" | "NEEDS_CONFIGURATION";
+  effectiveFrom: string;
+  effectiveTo: string | null;
+  supersedesConfigurationId: string | null;
+  reason: string;
+  createdBy: string;
+  createdAt: string;
+  current: boolean;
+  dependencyCount: number;
+}>;
+
 export type TaxFilingSummaryDto = Readonly<{
   id: string;
   legalEntityId: string;
@@ -92,6 +123,15 @@ export type TaxFilingSummaryDto = Readonly<{
   periodEnd: string;
   externalReference: string | null;
   sourceFileName: string | null;
+  configurationId?: string | null;
+  configurationVersion?: number | null;
+  lifecycleState?: "CURRENT" | "HISTORICAL" | "SUPERSEDED" | "ARCHIVED";
+  lifecycleVersion?: number;
+  lifecycleReason?: string;
+  replacementFilingId?: string | null;
+  canonical?: boolean;
+  canonicalVersion?: number;
+  canonicalReason?: string | null;
   reconciliation: readonly TaxFieldReconciliation[];
   validations: readonly TaxFilingValidationResult[];
   createdAt: string;
@@ -103,9 +143,13 @@ export type TaxFilingWorkspaceDto = Readonly<{
   accounts: readonly TaxAccountDto[];
   mappings: readonly TaxAccountMappingDto[];
   mappingVersions: readonly TaxAccountMappingVersionDto[];
+  registrations?: readonly TaxFilingRegistrationDto[];
+  configurations?: readonly TaxFilingConfigurationDto[];
   filings: readonly TaxFilingSummaryDto[];
   canManageMappings: boolean;
   canPrepareFilings: boolean;
+  canManageConfigurations?: boolean;
+  canManageCanonical?: boolean;
 }>;
 
 type TaxFilingSummaryRow = Readonly<{
@@ -122,6 +166,15 @@ type TaxFilingSummaryRow = Readonly<{
   period_end: string;
   external_reference: string | null;
   source_file_name: string | null;
+  configuration_id: string | null;
+  configuration_version: number | null;
+  lifecycle_state: "CURRENT" | "HISTORICAL" | "SUPERSEDED" | "ARCHIVED";
+  lifecycle_version: number;
+  lifecycle_reason: string;
+  replacement_filing_id: string | null;
+  canonical: boolean;
+  canonical_version: number;
+  canonical_reason: string | null;
   reconciliation_snapshot: unknown;
   validation_snapshot: unknown;
   created_at: string;
@@ -172,7 +225,7 @@ export async function loadTaxFilingWorkspace(
       permission: PERMISSIONS.readTax,
     });
     const writable = principalCanWrite(principal);
-    const [canManageMappings, canPrepareFilings] = writable
+    const [canManageMappings, canPrepareFilings, canManageConfigurations, canManageCanonical] = writable
       ? await Promise.all([
           actorHasActivePermission(client, {
             organizationId: principal.organizationId,
@@ -184,8 +237,18 @@ export async function loadTaxFilingWorkspace(
             actorId: principal.userId,
             permission: PERMISSIONS.prepareTaxFilings,
           }),
+          actorHasActivePermission(client, {
+            organizationId: principal.organizationId,
+            actorId: principal.userId,
+            permission: PERMISSIONS.manageTaxFilingConfiguration,
+          }),
+          actorHasActivePermission(client, {
+            organizationId: principal.organizationId,
+            actorId: principal.userId,
+            permission: PERMISSIONS.manageTaxFilingCanonical,
+          }),
         ])
-      : [false, false];
+      : [false, false, false, false];
 
     const templatesResult = await client.query<{
       id: string;
@@ -356,6 +419,62 @@ export async function loadTaxFilingWorkspace(
       effectiveFrom: row.effective_from,
     }));
 
+    const registrationRows = (await client.query<{
+      id: string; legal_entity_id: string; regime_key: string; valid_from: string; valid_to: string | null;
+    }>(
+      `SELECT id,legal_entity_id,regime_key,valid_from::text,valid_to::text
+       FROM entity_tax_registrations WHERE organization_id=$1
+       ORDER BY legal_entity_id,regime_key,valid_from,id`,
+      [principal.organizationId],
+    )).rows;
+    const registrations = registrationRows.map<TaxFilingRegistrationDto>((row) => ({
+      id: row.id,
+      legalEntityId: row.legal_entity_id,
+      regimeKey: row.regime_key,
+      validFrom: row.valid_from,
+      validTo: row.valid_to,
+    }));
+
+    const configurationRows = (await client.query<{
+      id: string; legal_entity_id: string; ledger_id: string; registration_id: string | null;
+      filing_type_key: string; template_id: string; template_name: string; template_version: number;
+      mapping_set_id: string; mapping_version: number; version: number;
+      state: "ACTIVE" | "INACTIVE" | "NEEDS_CONFIGURATION"; effective_from: string;
+      effective_to: string | null; supersedes_configuration_id: string | null;
+      reason: string; created_by: string; created_at: string; current: boolean; dependency_count: number;
+    }>(
+      `SELECT configuration.id,configuration.legal_entity_id,configuration.ledger_id,
+         configuration.registration_id,configuration.filing_type_key,configuration.template_id,
+         template.name AS template_name,template.version AS template_version,
+         configuration.mapping_set_id,mapping.version AS mapping_version,configuration.version,
+         configuration.state,configuration.effective_from::text,configuration.effective_to::text,
+         configuration.supersedes_configuration_id,configuration.reason,configuration.created_by,
+         configuration.created_at::text,
+         NOT EXISTS (SELECT 1 FROM tax_filing_configurations successor
+           WHERE successor.organization_id=configuration.organization_id
+             AND successor.supersedes_configuration_id=configuration.id) AS current,
+         (SELECT count(*)::int FROM tax_filings filing
+           WHERE filing.organization_id=configuration.organization_id
+             AND filing.configuration_id=configuration.id) AS dependency_count
+       FROM tax_filing_configurations configuration
+       JOIN tax_filing_templates template ON template.id=configuration.template_id
+       JOIN tax_account_mapping_sets mapping
+         ON mapping.organization_id=configuration.organization_id AND mapping.id=configuration.mapping_set_id
+       WHERE configuration.organization_id=$1
+       ORDER BY configuration.legal_entity_id,configuration.filing_type_key,configuration.version DESC`,
+      [principal.organizationId],
+    )).rows;
+    const configurations = configurationRows.map<TaxFilingConfigurationDto>((row) => ({
+      id: row.id, legalEntityId: row.legal_entity_id, ledgerId: row.ledger_id,
+      registrationId: row.registration_id, filingTypeKey: row.filing_type_key,
+      templateId: row.template_id, templateName: row.template_name, templateVersion: row.template_version,
+      mappingSetId: row.mapping_set_id, mappingVersion: row.mapping_version, version: row.version,
+      state: row.state, effectiveFrom: row.effective_from, effectiveTo: row.effective_to,
+      supersedesConfigurationId: row.supersedes_configuration_id,
+      reason: row.reason, createdBy: row.created_by, createdAt: row.created_at, current: row.current,
+      dependencyCount: row.dependency_count,
+    }));
+
     const filingRows = options.includeFilings === false
       ? []
       : (await client.query<TaxFilingSummaryRow>(
@@ -364,8 +483,13 @@ export async function loadTaxFilingWorkspace(
          template.name AS template_name, template.version AS template_version,
          filing.filing_type, filing.status, filing.period_start::text,
          filing.period_end::text, filing.external_reference,
-         filing.source_file_name, filing.reconciliation_snapshot,
-         filing.validation_snapshot, filing.created_at::text
+         filing.source_file_name, filing.configuration_id, filing.configuration_version,
+         lifecycle.state AS lifecycle_state,lifecycle.version AS lifecycle_version,
+         lifecycle.reason AS lifecycle_reason,lifecycle.replacement_filing_id,
+         (canonical.filing_id=filing.id AND canonical.state='ACTIVE') AS canonical,
+         coalesce(canonical.version,0)::int AS canonical_version,
+         canonical.reason AS canonical_reason,
+         filing.reconciliation_snapshot, filing.validation_snapshot, filing.created_at::text
        FROM tax_filings filing
        JOIN legal_entities entity
          ON entity.organization_id = filing.organization_id
@@ -374,6 +498,28 @@ export async function loadTaxFilingWorkspace(
          ON ledger.organization_id = filing.organization_id
         AND ledger.id = filing.ledger_id
        JOIN tax_filing_templates template ON template.id = filing.template_id
+       JOIN LATERAL (
+         SELECT event.state,event.version,event.reason,event.replacement_filing_id
+         FROM tax_filing_lifecycle_events event
+         WHERE event.organization_id=filing.organization_id AND event.filing_id=filing.id
+           AND NOT EXISTS (SELECT 1 FROM tax_filing_lifecycle_events successor
+             WHERE successor.organization_id=event.organization_id AND successor.supersedes_event_id=event.id)
+         ORDER BY event.version DESC LIMIT 1
+       ) lifecycle ON true
+       LEFT JOIN LATERAL (
+         SELECT selection.filing_id,selection.state,selection.version,selection.reason
+         FROM tax_filing_canonical_selections selection
+         JOIN tax_filing_configurations configuration
+           ON configuration.organization_id=filing.organization_id AND configuration.id=filing.configuration_id
+         WHERE selection.organization_id=filing.organization_id
+           AND selection.legal_entity_id=filing.legal_entity_id
+           AND selection.registration_id IS NOT DISTINCT FROM configuration.registration_id
+           AND selection.filing_type_key=configuration.filing_type_key
+           AND selection.period_start=filing.period_start AND selection.period_end=filing.period_end
+           AND NOT EXISTS (SELECT 1 FROM tax_filing_canonical_selections successor
+             WHERE successor.organization_id=selection.organization_id AND successor.supersedes_selection_id=selection.id)
+         ORDER BY selection.version DESC LIMIT 1
+       ) canonical ON true
        WHERE filing.organization_id = $1
        ORDER BY filing.created_at DESC, filing.id DESC
        LIMIT 50`,
@@ -393,6 +539,15 @@ export async function loadTaxFilingWorkspace(
       periodEnd: row.period_end,
       externalReference: row.external_reference,
       sourceFileName: row.source_file_name,
+      configurationId: row.configuration_id,
+      configurationVersion: row.configuration_version,
+      lifecycleState: row.lifecycle_state,
+      lifecycleVersion: row.lifecycle_version,
+      lifecycleReason: row.lifecycle_reason,
+      replacementFilingId: row.replacement_filing_id,
+      canonical: row.canonical,
+      canonicalVersion: row.canonical_version,
+      canonicalReason: row.canonical_reason,
       reconciliation: reconciliationArraySchema.parse(row.reconciliation_snapshot),
       validations: validationArraySchema.parse(row.validation_snapshot),
       createdAt: row.created_at,
@@ -404,9 +559,13 @@ export async function loadTaxFilingWorkspace(
       accounts,
       mappings,
       mappingVersions,
+      registrations,
+      configurations,
       filings,
       canManageMappings,
       canPrepareFilings,
+      canManageConfigurations,
+      canManageCanonical,
     };
   });
 }
@@ -483,5 +642,63 @@ export async function loadTaxAccountMappingHistory(
       [principal.organizationId, filter.ledgerId ?? null, filter.templateId ?? null],
     );
     return { versions: result.rows };
+  });
+}
+
+export async function previewTaxFilingConfigurationDependencies(
+  principal: SessionPrincipal,
+  configurationId: string,
+) {
+  const parsedId = z.uuid().parse(configurationId);
+  return withWorkspaceTenantRead(readContext(principal), "/app/tax", async (client) => {
+    await assertActorHasActivePermission(client, {
+      organizationId: principal.organizationId,
+      actorId: principal.userId,
+      permission: PERMISSIONS.readTax,
+    });
+    const result = await client.query<{
+      id: string; version: number; state: string; template_id: string; mapping_set_id: string;
+      registration_id: string | null; workpaper_count: number; canonical_count: number;
+      replacement_count: number;
+    }>(
+      `SELECT configuration.id,configuration.version,configuration.state,
+         configuration.template_id,configuration.mapping_set_id,configuration.registration_id,
+         (SELECT count(*)::int FROM tax_filings filing
+           WHERE filing.organization_id=configuration.organization_id
+             AND filing.configuration_id=configuration.id) AS workpaper_count,
+         (SELECT count(*)::int FROM tax_filing_canonical_selections selection
+           JOIN tax_filings filing ON filing.organization_id=selection.organization_id
+             AND filing.id=selection.filing_id
+           WHERE selection.organization_id=configuration.organization_id
+             AND filing.configuration_id=configuration.id
+             AND selection.state='ACTIVE'
+             AND NOT EXISTS (SELECT 1 FROM tax_filing_canonical_selections successor
+               WHERE successor.organization_id=selection.organization_id
+                 AND successor.supersedes_selection_id=selection.id)) AS canonical_count,
+         (SELECT count(*)::int FROM tax_filing_configurations successor
+           WHERE successor.organization_id=configuration.organization_id
+             AND successor.supersedes_configuration_id=configuration.id) AS replacement_count
+       FROM tax_filing_configurations configuration
+       WHERE configuration.organization_id=$1 AND configuration.id=$2`,
+      [principal.organizationId, parsedId],
+    );
+    const selected = result.rows[0];
+    if (!selected) throw new Error("The filing configuration was not found");
+    return {
+      configurationId: selected.id,
+      configurationVersion: selected.version,
+      state: selected.state,
+      templateId: selected.template_id,
+      mappingSetId: selected.mapping_set_id,
+      registrationId: selected.registration_id,
+      dependencies: {
+        workpapers: selected.workpaper_count,
+        currentCanonicalSelections: selected.canonical_count,
+        successorRevisions: selected.replacement_count,
+      },
+      hardDeleteAllowed: false,
+      writesPerformed: false,
+      consequence: "Configuration changes append a prospective revision; referenced templates, mappings, registrations, configurations, and workpapers remain immutable.",
+    };
   });
 }
