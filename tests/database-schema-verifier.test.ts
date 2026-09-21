@@ -30,6 +30,10 @@ const runtimeRoleReconciler = readFileSync(
   join(process.cwd(), "deploy", "postgres", "010-runtime-role.sh"),
   "utf8",
 );
+const schemaVerifierSource = readFileSync(
+  join(process.cwd(), "scripts", "operations", "verify-database-schema.mjs"),
+  "utf8",
+);
 
 function temporaryMetaDirectory(): string {
   const directory = mkdtempSync(join(tmpdir(), "business-finlynq-schema-verifier-"));
@@ -190,6 +194,10 @@ afterEach(() => {
 });
 
 describe("database schema verifier", () => {
+  it("does not double-count indexes owned by primary, unique, or exclusion constraints", () => {
+    expect(schemaVerifierSource).toContain("constraint_definition.contype IN ('p', 'u', 'x')");
+  });
+
   it("builds a migration-owner connection from individual environment settings", () => {
     expect(migrationConnectionConfig({
       NODE_ENV: "test",

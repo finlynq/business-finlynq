@@ -2678,7 +2678,7 @@ export async function readDatabaseSchemaContract(client) {
           SELECT 1
             FROM pg_catalog.pg_constraint constraint_definition
            WHERE constraint_definition.conindid = index_relation.oid
-             AND constraint_definition.contype IN ('p', 'x')
+             AND constraint_definition.contype IN ('p', 'u', 'x')
         )
       GROUP BY relation.relname, index_relation.relname, index_definition.indisunique, index_definition.indnullsnotdistinct,
                access_method.amname, index_definition.indpred, index_definition.indrelid
