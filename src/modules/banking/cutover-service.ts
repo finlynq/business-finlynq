@@ -91,6 +91,41 @@ function previewCommand(command: z.infer<typeof bankCutoverPreviewSchema>) {
   };
 }
 
+type CutoverLedgerLine = Readonly<{
+  id: string;
+  journalId: string;
+  accountingDate: string;
+  amount: string;
+}>;
+
+type CutoverObservation = Readonly<{
+  id: string;
+  postedOn: string;
+  amount: string;
+}>;
+
+type CutoverMigrationLine = CutoverLedgerLine & Readonly<{
+  accountCombinationId: string;
+}>;
+
+type CutoverAllocation = Readonly<{
+  id: string;
+  observationVersionId: string;
+  observationPostedOn: string;
+  observationAmount: string;
+  journalLineId: string;
+  journalLineAccountCombinationId: string;
+  journalLineAmount: string;
+  allocatedAmount: string;
+}>;
+
+function calendarDayDistance(left: string, right: string): number {
+  const millisecondsPerDay = 24 * 60 * 60 * 1_000;
+  return Math.round(Math.abs(
+    Date.parse(`${left}T00:00:00Z`) - Date.parse(`${right}T00:00:00Z`),
+  ) / millisecondsPerDay);
+}
+
 async function preview(client: PoolClient, organizationId: string, raw: z.input<typeof bankCutoverPreviewSchema>) {
   const command = bankCutoverPreviewSchema.parse(raw);
   const session = (await client.query<{
@@ -132,8 +167,8 @@ async function preview(client: PoolClient, organizationId: string, raw: z.input<
   if (!predecessor || !successor || predecessor.account_class !== successor.account_class || predecessor.id === session.successor_id) {
     throw new BankingServiceError("Choose a distinct active predecessor account of the same class in the reconciliation ledger.", 400, "CUTOVER_ACCOUNT_INVALID");
   }
-  const [observations, predecessorLines, migrationLines, allocations] = await Promise.all([
-    client.query(
+  const [observations, predecessorLines, successorLines, migrationLines, allocations] = await Promise.all([
+    client.query<CutoverObservation>(
       `WITH latest AS (SELECT DISTINCT ON (observation.id) version.id, version.amount,
          version.posted_on, version.currency_code, version.status
        FROM bank_observations observation JOIN bank_observation_versions version
@@ -145,7 +180,7 @@ async function preview(client: PoolClient, organizationId: string, raw: z.input<
          AND currency_code=$5 AND status='POSTED' ORDER BY posted_on, id`,
       [organizationId, session.id, session.statement_start_on, command.effectiveOn, session.currency_code],
     ),
-    client.query(
+    client.query<CutoverLedgerLine>(
       `SELECT line.id, journal.id AS "journalId", journal.accounting_date::text AS "accountingDate",
          (line.debit_transaction-line.credit_transaction)::text AS amount
        FROM journal_lines line JOIN journal_entries journal ON journal.organization_id=line.organization_id AND journal.id=line.journal_entry_id AND journal.status='POSTED'
@@ -155,7 +190,33 @@ async function preview(client: PoolClient, organizationId: string, raw: z.input<
        ORDER BY journal.accounting_date, journal.id, line.line_number`,
       [organizationId, predecessor.id, session.currency_code, session.statement_start_on, command.effectiveOn, command.migrationJournalLineIds],
     ),
-    command.migrationJournalLineIds.length === 0 ? Promise.resolve({ rows: [] }) : client.query(
+    client.query<CutoverLedgerLine>(
+      `SELECT line.id, journal.id AS "journalId",
+         journal.accounting_date::text AS "accountingDate",
+         (line.debit_transaction-line.credit_transaction)::text AS amount
+       FROM journal_lines line
+       JOIN journal_entries journal ON journal.organization_id=line.organization_id
+         AND journal.id=line.journal_entry_id AND journal.status='POSTED'
+       WHERE line.organization_id=$1 AND line.account_combination_id=$2
+         AND line.transaction_currency=$3
+         AND journal.accounting_date BETWEEN $4::date AND $5::date
+         AND NOT (line.id = ANY($6::uuid[]))
+         AND EXISTS (
+           SELECT 1 FROM bank_match_allocations allocation
+           LEFT JOIN bank_match_allocation_voids void
+             ON void.organization_id=allocation.organization_id
+            AND void.allocation_id=allocation.id
+           WHERE allocation.organization_id=line.organization_id
+             AND allocation.reconciliation_session_id=$7
+             AND allocation.journal_line_id=line.id
+             AND void.id IS NULL
+         )
+       ORDER BY journal.accounting_date, journal.id, line.line_number`,
+      [organizationId, session.successor_id, session.currency_code,
+        session.statement_start_on, command.effectiveOn,
+        command.migrationJournalLineIds, session.id],
+    ),
+    command.migrationJournalLineIds.length === 0 ? Promise.resolve({ rows: [] as CutoverMigrationLine[] }) : client.query<CutoverMigrationLine>(
       `SELECT line.id, journal.id AS "journalId", journal.accounting_date::text AS "accountingDate",
          line.account_combination_id AS "accountCombinationId",
          (line.debit_transaction-line.credit_transaction)::text AS amount
@@ -168,15 +229,22 @@ async function preview(client: PoolClient, organizationId: string, raw: z.input<
       [organizationId, command.migrationJournalLineIds, predecessor.id, session.successor_id,
         session.currency_code, command.effectiveOn],
     ),
-    client.query<{
-      id: string; observationVersionId: string; journalLineId: string; allocatedAmount: string;
-    }>(
+    client.query<CutoverAllocation>(
       `SELECT allocation.id, allocation.observation_version_id AS "observationVersionId",
          allocation.journal_line_id AS "journalLineId",
-         allocation.allocated_amount::text AS "allocatedAmount"
+         allocation.allocated_amount::text AS "allocatedAmount",
+         observation.posted_on::text AS "observationPostedOn",
+         observation.amount::text AS "observationAmount",
+         line.account_combination_id AS "journalLineAccountCombinationId",
+         (line.debit_transaction-line.credit_transaction)::text AS "journalLineAmount"
        FROM bank_match_allocations allocation
        LEFT JOIN bank_match_allocation_voids void
          ON void.organization_id=allocation.organization_id AND void.allocation_id=allocation.id
+       JOIN bank_observation_versions observation
+         ON observation.organization_id=allocation.organization_id
+        AND observation.id=allocation.observation_version_id
+       JOIN journal_lines line ON line.organization_id=allocation.organization_id
+        AND line.id=allocation.journal_line_id
        WHERE allocation.organization_id=$1 AND allocation.reconciliation_session_id=$2
          AND void.id IS NULL
        ORDER BY allocation.id`,
@@ -185,16 +253,19 @@ async function preview(client: PoolClient, organizationId: string, raw: z.input<
   ]);
   if (migrationLines.rows.length !== new Set(command.migrationJournalLineIds).size) throw new BankingServiceError("Every migration line must be a posted line on the exact predecessor or successor account.", 400, "CUTOVER_MIGRATION_LINE_INVALID");
   const observationAmounts = observations.rows.map((row) => new Decimal(String((row as { amount: unknown }).amount)));
-  const predecessorAmounts = predecessorLines.rows.map((row) => new Decimal(String((row as { amount: unknown }).amount)));
-  const migration = migrationLines.rows as Array<{ accountCombinationId: string; amount: string }>;
+  const predecessorAmounts = predecessorLines.rows.map((row) => new Decimal(row.amount));
+  const successorAmounts = successorLines.rows.map((row) => new Decimal(row.amount));
+  const migration = migrationLines.rows;
   const grossIncreases = observationAmounts.filter((amount) => amount.isPositive()).reduce((sum, amount) => sum.plus(amount), new Decimal(0));
   const grossDecreases = observationAmounts.filter((amount) => amount.isNegative()).reduce((sum, amount) => sum.plus(amount.abs()), new Decimal(0));
   const observationNet = observationAmounts.reduce((sum, amount) => sum.plus(amount), new Decimal(0));
   const predecessorNet = predecessorAmounts.reduce((sum, amount) => sum.plus(amount), new Decimal(0));
+  const successorNet = successorAmounts.reduce((sum, amount) => sum.plus(amount), new Decimal(0));
+  const authorizedLedgerNet = predecessorNet.plus(successorNet);
   const predecessorMigrationNet = migration.filter((line) => line.accountCombinationId === predecessor.id).reduce((sum, line) => sum.plus(line.amount), new Decimal(0));
   const successorMigrationNet = migration.filter((line) => line.accountCombinationId === session.successor_id).reduce((sum, line) => sum.plus(line.amount), new Decimal(0));
   const migrationNet = predecessorMigrationNet.plus(successorMigrationNet);
-  const remainingDifference = observationNet.minus(predecessorNet);
+  const remainingDifference = observationNet.minus(authorizedLedgerNet);
   const observationAllocated = new Map<string, Decimal>();
   const ledgerAllocated = new Map<string, Decimal>();
   for (const allocation of allocations.rows) {
@@ -207,22 +278,120 @@ async function preview(client: PoolClient, organizationId: string, raw: z.input<
       (ledgerAllocated.get(allocation.journalLineId) ?? new Decimal(0)).plus(allocation.allocatedAmount),
     );
   }
+  const migrationLineIds = new Set(migration.map((line) => line.id));
+  const selectedObservationIds = new Set(observations.rows.map((observation) => observation.id));
+  const migrationAllocationCandidates = allocations.rows
+    .filter((allocation) => (
+      selectedObservationIds.has(allocation.observationVersionId) &&
+      allocation.journalLineAccountCombinationId === session.successor_id &&
+      migrationLineIds.has(allocation.journalLineId)
+    ))
+    .sort((left, right) => (
+      `${left.observationPostedOn}|${left.id}`.localeCompare(`${right.observationPostedOn}|${right.id}`)
+    ));
+  const consumedMigrationAllocationIds = new Set<string>();
+  const predecessorLineDispositions = predecessorLines.rows.map((line) => {
+    const directAllocations = allocations.rows.filter((allocation) => (
+      selectedObservationIds.has(allocation.observationVersionId) &&
+      allocation.journalLineId === line.id
+    ));
+    const directAmount = directAllocations.reduce(
+      (sum, allocation) => sum.plus(allocation.allocatedAmount),
+      new Decimal(0),
+    );
+    if (directAllocations.length > 0 && directAmount.equals(new Decimal(line.amount).abs())) {
+      return {
+        journalLineId: line.id,
+        accountingDate: line.accountingDate,
+        amount: line.amount,
+        disposition: "DIRECT_ALLOCATION" as const,
+        allocationIds: directAllocations.map((allocation) => allocation.id),
+        observationVersionIds: directAllocations.map((allocation) => allocation.observationVersionId),
+        migrationJournalLineId: null,
+        reason: "The predecessor line is represented by active allocations in this reconciliation.",
+      };
+    }
+    const migrationLineage = migrationAllocationCandidates
+      .filter((allocation) => (
+        !consumedMigrationAllocationIds.has(allocation.id) &&
+        new Decimal(allocation.allocatedAmount).equals(new Decimal(line.amount).abs()) &&
+        new Decimal(allocation.observationAmount).equals(new Decimal(line.amount))
+      ))
+      .map((allocation) => ({
+        allocation,
+        dateDifferenceDays: calendarDayDistance(allocation.observationPostedOn, line.accountingDate),
+      }))
+      .filter((candidate) => candidate.dateDifferenceDays <= 7)
+      .sort((left, right) => (
+        left.dateDifferenceDays - right.dateDifferenceDays ||
+        left.allocation.id.localeCompare(right.allocation.id)
+      ))[0];
+    if (migrationLineage) {
+      consumedMigrationAllocationIds.add(migrationLineage.allocation.id);
+      return {
+        journalLineId: line.id,
+        accountingDate: line.accountingDate,
+        amount: line.amount,
+        disposition: "MIGRATION_ALLOCATION_LINEAGE" as const,
+        allocationIds: [migrationLineage.allocation.id],
+        observationVersionIds: [migrationLineage.allocation.observationVersionId],
+        migrationJournalLineId: migrationLineage.allocation.journalLineId,
+        observationPostedOn: migrationLineage.allocation.observationPostedOn,
+        dateDifferenceDays: migrationLineage.dateDifferenceDays,
+        reason: "The predecessor activity is represented by the closest-date exact-amount observation allocation to the selected successor migration line (maximum seven-day posting lag).",
+      };
+    }
+    if (allocations.rows.length === 0) {
+      return {
+        journalLineId: line.id,
+        accountingDate: line.accountingDate,
+        amount: line.amount,
+        disposition: "GROSS_POPULATION" as const,
+        allocationIds: [] as string[],
+        observationVersionIds: [] as string[],
+        migrationJournalLineId: null,
+        reason: "No existing allocations constrain the cutover; the posted predecessor line is included in the gross proof population.",
+      };
+    }
+    return {
+      journalLineId: line.id,
+      accountingDate: line.accountingDate,
+      amount: line.amount,
+      disposition: "UNMATCHED" as const,
+      allocationIds: [] as string[],
+      observationVersionIds: [] as string[],
+      migrationJournalLineId: null,
+      reason: "No active direct or migration-allocation lineage accounts for this predecessor line.",
+    };
+  });
+  const migrationAllocationLineageNet = migrationAllocationCandidates
+    .filter((allocation) => consumedMigrationAllocationIds.has(allocation.id))
+    .reduce((sum, allocation) => sum.plus(allocation.allocatedAmount), new Decimal(0));
   const matchedAmount = allocations.rows.reduce((sum, allocation) => sum.plus(allocation.allocatedAmount), new Decimal(0));
-  const unmatchedObservationCount = observations.rows.filter((row) => {
+  const matchedObservationCount = observations.rows.filter((row) => {
     const selected = row as { id: string; amount: string };
-    return !new Decimal(selected.amount).abs().equals(observationAllocated.get(selected.id) ?? 0);
+    return new Decimal(selected.amount).abs().equals(observationAllocated.get(selected.id) ?? 0);
   }).length;
-  const unmatchedPredecessorLedgerLineCount = predecessorLines.rows.filter((row) => {
-    const selected = row as { id: string; amount: string };
-    return !new Decimal(selected.amount).abs().equals(ledgerAllocated.get(selected.id) ?? 0);
-  }).length;
+  const unmatchedObservationCount = observations.rows.length - matchedObservationCount;
+  const matchedSuccessorLedgerLineCount = successorLines.rows.filter((line) => (
+    new Decimal(line.amount).abs().equals(ledgerAllocated.get(line.id) ?? 0)
+  )).length;
+  const unmatchedSuccessorLedgerLineCount = successorLines.rows.length - matchedSuccessorLedgerLineCount;
+  const unmatchedPredecessorLedgerLineCount = predecessorLineDispositions
+    .filter((line) => line.disposition === "UNMATCHED").length;
+  const unusedMigrationAllocationCount = migrationAllocationCandidates
+    .filter((allocation) => !consumedMigrationAllocationIds.has(allocation.id)).length;
   const exceptions: string[] = [];
   if (observations.rows.length === 0) exceptions.push("No current posted observations exist in the declared pre-cutover range.");
   if (predecessorLines.rows.length === 0) exceptions.push("No posted predecessor-account lines exist in the declared pre-cutover range.");
-  if (!remainingDifference.isZero()) exceptions.push("The gross observation net does not equal the authorized predecessor ledger population.");
+  if (!remainingDifference.isZero()) exceptions.push("The gross observation net does not equal the authorized predecessor and allocated-successor ledger population.");
+  if (allocations.rows.length > 0 && unmatchedObservationCount > 0) exceptions.push("Every in-range observation must be fully represented by active allocations.");
+  if (unmatchedPredecessorLedgerLineCount > 0) exceptions.push("Every predecessor ledger line must have an explicit direct or migration-allocation lineage disposition.");
+  if (unmatchedSuccessorLedgerLineCount > 0) exceptions.push("Every included successor ledger line must be fully represented by active allocations.");
+  if (unusedMigrationAllocationCount > 0) exceptions.push("Every allocation to a selected successor migration line must explain exactly one predecessor ledger line.");
   if (migration.length === 0 || predecessorMigrationNet.isZero() || successorMigrationNet.isZero()) exceptions.push("Select posted migration lines on both the predecessor and successor accounts.");
   if (!migrationNet.isZero()) exceptions.push("The selected migration lines are not balanced between predecessor and successor accounts.");
-  if (!predecessorMigrationNet.equals(observationNet.negated()) || !successorMigrationNet.equals(observationNet)) exceptions.push("The selected migration lines do not move the exact proven net amount from predecessor to successor.");
+  if (!predecessorMigrationNet.equals(predecessorNet.negated()) || !successorMigrationNet.equals(predecessorNet)) exceptions.push("The selected migration lines do not move the exact predecessor activity net from predecessor to successor.");
   const proof = {
     reconciliationId: session.id,
     statementRange: { startOn: session.statement_start_on, endOn: session.statement_end_on },
@@ -232,6 +401,8 @@ async function preview(client: PoolClient, organizationId: string, raw: z.input<
     successor: { accountCombinationId: session.successor_id, accountCode: successor.code },
     observations: observations.rows,
     predecessorLedgerLines: predecessorLines.rows,
+    predecessorLineDispositions,
+    successorLedgerLines: successorLines.rows,
     migrationLines: migrationLines.rows,
     existingAllocations: allocations.rows,
     grossObservationCount: observations.rows.length,
@@ -239,17 +410,22 @@ async function preview(client: PoolClient, organizationId: string, raw: z.input<
     grossDecreases: grossDecreases.toFixed(2),
     observationNet: observationNet.toFixed(2),
     predecessorLedgerNet: predecessorNet.toFixed(2),
+    successorLedgerNet: successorNet.toFixed(2),
+    authorizedLedgerNet: authorizedLedgerNet.toFixed(2),
     predecessorMigrationNet: predecessorMigrationNet.toFixed(2),
     successorMigrationNet: successorMigrationNet.toFixed(2),
     migrationNet: migrationNet.toFixed(2),
+    migrationAllocationLineageNet: migrationAllocationLineageNet.toFixed(2),
     remainingDifference: remainingDifference.toFixed(2),
     predecessorLedgerLineCount: predecessorLines.rows.length,
+    successorLedgerLineCount: successorLines.rows.length,
     activeAllocationCount: allocations.rows.length,
-    matchedObservationCount: observationAllocated.size,
-    matchedLedgerLineCount: ledgerAllocated.size,
+    matchedObservationCount,
+    matchedLedgerLineCount: predecessorLines.rows.length - unmatchedPredecessorLedgerLineCount + matchedSuccessorLedgerLineCount,
     matchedAmount: matchedAmount.toFixed(2),
     unmatchedObservationCount,
     unmatchedPredecessorLedgerLineCount,
+    unmatchedSuccessorLedgerLineCount,
     exceptions,
   };
   return { proof, confirmationHash: createHash("sha256").update(JSON.stringify(proof), "utf8").digest("hex"), writesPerformed: false };

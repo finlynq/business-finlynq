@@ -498,6 +498,13 @@
       "when": 1789933933029,
       "tag": "0070_open_item_effective_indexes",
       "breakpoints": true
+    },
+    {
+      "idx": 71,
+      "version": "7",
+      "when": 1789984539000,
+      "tag": "0071_ticket_60_62_hardening",
+      "breakpoints": true
     }
   ]
 }
