@@ -184,7 +184,7 @@ runDatabaseTests("tax filing workpaper application-role boundary", () => {
            template_id,mapping_set_id,version,state,effective_from,effective_to,
            supersedes_configuration_id,reason,idempotency_key,command_hash,created_by
          ) VALUES ($1,$2,$3,$4,$5,'ca.gst-hst.return',$6,$7,1,'ACTIVE',
-           '2025-01-01',NULL,NULL,'Create exact filing configuration for integration coverage',
+           '2025-04-01',NULL,NULL,'Create exact filing configuration for integration coverage',
            $8,$9,$10)`,
         [ids.configuration, ids.organization, ids.entity, ids.ledger, ids.registration,
           templateId, ids.mappingSet, `tax-configuration-integration-${ids.organization}`,

@@ -354,7 +354,10 @@ run("cloud inbox PostgreSQL lifecycle", () => {
     const claim = randomUUID();
     await claimInboxDocument(requestContext(), { itemId: row.id, claimId: claim });
     const read = await readInboxDocument(requestContext(), { itemId: row.id, claimId: claim });
-    expect(read).toMatchObject({ mimeType: "application/pdf" });
+    expect(read).toMatchObject({
+      mimeType: "image/png",
+      item: { id: row.id, mimeType: "application/pdf" },
+    });
     const command = {
       itemId: row.id,
       claimId: claim,
