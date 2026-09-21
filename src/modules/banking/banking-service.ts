@@ -1383,8 +1383,10 @@ export type BankReconciliationProof = Readonly<{
 type ReconciliationIdentity = Readonly<{
   id: string;
   status: "DRAFT" | "SUBMITTED" | "REVIEWED" | "FINALIZED" | "VOIDED";
+  version: number;
   external_account_id: string;
   cash_account_combination_id: string;
+  account_class: "ASSET" | "LIABILITY";
   currency_code: string;
   statement_start_on: string;
   statement_end_on: string;
@@ -1398,11 +1400,20 @@ async function lockReconciliation(
   reconciliationId: string,
 ): Promise<ReconciliationIdentity> {
   const result = await client.query<ReconciliationIdentity>(
-    `SELECT id, status, external_account_id, cash_account_combination_id,
-       currency_code, statement_start_on::text, statement_end_on::text,
-       opening_balance::text, closing_balance::text
-     FROM bank_reconciliation_sessions
-     WHERE organization_id = $1 AND id = $2 FOR UPDATE`,
+    `SELECT reconciliation.id, reconciliation.status, reconciliation.version,
+       reconciliation.external_account_id, reconciliation.cash_account_combination_id,
+       account.class AS account_class, reconciliation.currency_code,
+       reconciliation.statement_start_on::text, reconciliation.statement_end_on::text,
+       reconciliation.opening_balance::text, reconciliation.closing_balance::text
+     FROM bank_reconciliation_sessions reconciliation
+     JOIN account_combinations combination
+       ON combination.organization_id = reconciliation.organization_id
+      AND combination.id = reconciliation.cash_account_combination_id
+     JOIN gl_accounts account
+       ON account.organization_id = combination.organization_id
+      AND account.id = combination.account_id
+     WHERE reconciliation.organization_id = $1 AND reconciliation.id = $2
+     FOR UPDATE OF reconciliation`,
     [organizationId, reconciliationId],
   );
   if (!result.rows[0]) throw new BankingServiceError("The reconciliation was not found.", 404, "RECONCILIATION_NOT_FOUND");
@@ -1434,12 +1445,20 @@ async function reconciliationProof(
        WHERE posted_on BETWEEN $4::date AND $5::date
          AND currency_code = $6
      ), in_period_ledger_line AS (
-       SELECT line.id, line.debit_transaction - line.credit_transaction AS amount
+       SELECT line.id, CASE WHEN account.class = 'LIABILITY'
+         THEN line.credit_transaction - line.debit_transaction
+         ELSE line.debit_transaction - line.credit_transaction END AS amount
        FROM journal_lines line
        JOIN journal_entries journal
          ON journal.organization_id = line.organization_id
         AND journal.id = line.journal_entry_id
         AND journal.status = 'POSTED'
+       JOIN account_combinations combination
+         ON combination.organization_id = line.organization_id
+        AND combination.id = line.account_combination_id
+       JOIN gl_accounts account
+         ON account.organization_id = combination.organization_id
+        AND account.id = combination.account_id
        WHERE line.organization_id = $1
          AND (
            line.account_combination_id = $7
@@ -1616,7 +1635,8 @@ export async function createBankMatchAllocation(input: Readonly<{
   journalLineId: string;
   allocatedAmount: string;
   idempotencyKey: string;
-}>): Promise<Readonly<{ allocationId: string; idempotentReplay: boolean }>> {
+  expectedVersion?: number;
+}>): Promise<Readonly<{ allocationId: string; idempotentReplay: boolean; reconciliationVersion: number }>> {
   assertBankingSession(input.principal);
   const idempotencyKey = idempotencyKeySchema.parse(input.idempotencyKey);
   const requestedAmount = matchAllocationAmountSchema.parse(input.allocatedAmount);
@@ -1664,7 +1684,10 @@ export async function createBankMatchAllocation(input: Readonly<{
       )) {
         throw new BankingServiceError("The match idempotency key was already used for a different allocation.", 409, "IDEMPOTENCY_CONFLICT");
       }
-      return { allocationId: existing.rows[0].id, idempotentReplay: true };
+      return { allocationId: existing.rows[0].id, idempotentReplay: true, reconciliationVersion: session.version };
+    }
+    if (input.expectedVersion !== undefined && session.version !== input.expectedVersion) {
+      throw new BankingServiceError("The reconciliation changed. Reload its latest version before adding an allocation.", 409, "RECONCILIATION_VERSION_CONFLICT");
     }
     if (session.status !== "DRAFT") throw new BankingServiceError("Matches can change only while the reconciliation is a draft.", 409, "RECONCILIATION_LOCKED");
     await lockBankEvidence(client, input.principal.organizationId, session.external_account_id);
@@ -1691,11 +1714,19 @@ export async function createBankMatchAllocation(input: Readonly<{
            )
        ), selected_line AS (
          SELECT line.id,
-           line.debit_transaction - line.credit_transaction AS amount
+           CASE WHEN account.class = 'LIABILITY'
+             THEN line.credit_transaction - line.debit_transaction
+             ELSE line.debit_transaction - line.credit_transaction END AS amount
          FROM journal_lines line
          JOIN journal_entries journal
-           ON journal.organization_id = line.organization_id
+          ON journal.organization_id = line.organization_id
           AND journal.id = line.journal_entry_id AND journal.status = 'POSTED'
+         JOIN account_combinations combination
+           ON combination.organization_id = line.organization_id
+          AND combination.id = line.account_combination_id
+         JOIN gl_accounts account
+           ON account.organization_id = combination.organization_id
+          AND account.id = combination.account_id
          WHERE line.organization_id = $1 AND line.id = $7
            AND (
              line.account_combination_id = $8
@@ -1796,13 +1827,19 @@ export async function createBankMatchAllocation(input: Readonly<{
           conflict.rows[0].command_hash,
           commandFingerprints,
         )) {
-          return { allocationId: conflict.rows[0].id, idempotentReplay: true };
+          return { allocationId: conflict.rows[0].id, idempotentReplay: true, reconciliationVersion: session.version };
         }
         throw new BankingServiceError("The match idempotency key was already used for a different allocation.", 409, "IDEMPOTENCY_CONFLICT");
       }
       throw new BankingServiceError("The match allocation conflicted with another request. Retry with the same idempotency key.", 409, "MATCH_CONFLICT");
     }
-    return { allocationId: inserted.rows[0].id, idempotentReplay: false };
+    const updated = await client.query<{ version: number }>(
+      `UPDATE bank_reconciliation_sessions SET version = version + 1
+       WHERE organization_id = $1 AND id = $2 AND version = $3 RETURNING version`,
+      [input.principal.organizationId, session.id, session.version],
+    );
+    if (!updated.rows[0]) throw new BankingServiceError("The reconciliation changed while the allocation was saved.", 409, "RECONCILIATION_VERSION_CONFLICT");
+    return { allocationId: inserted.rows[0].id, idempotentReplay: false, reconciliationVersion: updated.rows[0].version };
   });
 }
 
@@ -1812,7 +1849,8 @@ export async function voidBankMatchAllocation(input: Readonly<{
   reconciliationId: string;
   allocationId: string;
   reason: string;
-}>): Promise<Readonly<{ voidId: string }>> {
+  expectedVersion?: number;
+}>): Promise<Readonly<{ voidId: string; idempotentReplay: boolean; reconciliationVersion: number }>> {
   assertBankingSession(input.principal);
   return withAuthorizedBankingWrite({
     principal: input.principal,
@@ -1822,15 +1860,24 @@ export async function voidBankMatchAllocation(input: Readonly<{
   }, async (client) => {
     const session = await lockReconciliation(client, input.principal.organizationId, input.reconciliationId);
     if (session.status !== "DRAFT") throw new BankingServiceError("Matches can be voided only while the reconciliation is a draft.", 409, "RECONCILIATION_LOCKED");
-    const allocation = await client.query(
-      `SELECT 1 FROM bank_match_allocations allocation
+    const allocation = await client.query<{ void_id: string | null; void_reason: string | null }>(
+      `SELECT void.id AS void_id, void.reason AS void_reason FROM bank_match_allocations allocation
        LEFT JOIN bank_match_allocation_voids void
          ON void.organization_id = allocation.organization_id AND void.allocation_id = allocation.id
        WHERE allocation.organization_id = $1 AND allocation.id = $2
-         AND allocation.reconciliation_session_id = $3 AND void.id IS NULL`,
+         AND allocation.reconciliation_session_id = $3`,
       [input.principal.organizationId, input.allocationId, session.id],
     );
     if (!allocation.rows[0]) throw new BankingServiceError("The active match allocation was not found.", 404, "MATCH_NOT_FOUND");
+    if (allocation.rows[0].void_id) {
+      if (allocation.rows[0].void_reason !== input.reason.trim()) {
+        throw new BankingServiceError("This match was already voided with a different permanent reason.", 409, "MATCH_VOID_CONFLICT");
+      }
+      return { voidId: allocation.rows[0].void_id, idempotentReplay: true, reconciliationVersion: session.version };
+    }
+    if (input.expectedVersion !== undefined && session.version !== input.expectedVersion) {
+      throw new BankingServiceError("The reconciliation changed. Reload its latest version before voiding an allocation.", 409, "RECONCILIATION_VERSION_CONFLICT");
+    }
     const voidId = randomUUID();
     await client.query(
       `INSERT INTO bank_match_allocation_voids(
@@ -1838,7 +1885,13 @@ export async function voidBankMatchAllocation(input: Readonly<{
        ) VALUES ($1,$2,$3,$4,$5)`,
       [voidId, input.principal.organizationId, input.allocationId, input.reason, input.principal.userId],
     );
-    return { voidId };
+    const updated = await client.query<{ version: number }>(
+      `UPDATE bank_reconciliation_sessions SET version = version + 1
+       WHERE organization_id = $1 AND id = $2 AND version = $3 RETURNING version`,
+      [input.principal.organizationId, session.id, session.version],
+    );
+    if (!updated.rows[0]) throw new BankingServiceError("The reconciliation changed while the allocation void was saved.", 409, "RECONCILIATION_VERSION_CONFLICT");
+    return { voidId, idempotentReplay: false, reconciliationVersion: updated.rows[0].version };
   });
 }
 
@@ -1846,6 +1899,7 @@ export async function transitionBankReconciliation(input: Readonly<{
   principal: SessionPrincipal;
   requestId: string;
   reconciliationId: string;
+  expectedVersion?: number;
 } & (
   { action: "SUBMIT" | "REVIEW" | "FINALIZE" }
   | { action: "VOID"; reason: string }
@@ -1869,6 +1923,9 @@ export async function transitionBankReconciliation(input: Readonly<{
     reason: `${input.action.toLowerCase()} a balanced bank reconciliation`,
   }, async (client) => {
     const session = await lockReconciliation(client, input.principal.organizationId, input.reconciliationId);
+    if (input.expectedVersion !== undefined && session.version !== input.expectedVersion) {
+      throw new BankingServiceError("The reconciliation changed. Reload its latest version before changing status.", 409, "RECONCILIATION_VERSION_CONFLICT");
+    }
     if (input.action === "VOID") {
       const requiredPermission = session.status === "REVIEWED"
         ? PERMISSIONS.reviewBankReconciliation
@@ -1905,7 +1962,7 @@ export async function transitionBankReconciliation(input: Readonly<{
         [voidId, input.principal.organizationId, session.id, voidReason, input.principal.userId],
       );
       await client.query(
-        `UPDATE bank_reconciliation_sessions SET status = 'VOIDED'
+        `UPDATE bank_reconciliation_sessions SET status = 'VOIDED', version = version + 1
          WHERE organization_id = $1 AND id = $2`,
         [input.principal.organizationId, session.id],
       );
@@ -1915,7 +1972,7 @@ export async function transitionBankReconciliation(input: Readonly<{
     if (input.action === "SUBMIT") {
       if (session.status !== "DRAFT") throw new BankingServiceError("Only a draft reconciliation can be submitted.", 409, "INVALID_RECONCILIATION_STATE");
       await client.query(
-        `UPDATE bank_reconciliation_sessions SET status = 'SUBMITTED', submitted_by = $3, submitted_at = now()
+        `UPDATE bank_reconciliation_sessions SET status = 'SUBMITTED', version = version + 1, submitted_by = $3, submitted_at = now()
          WHERE organization_id = $1 AND id = $2`,
         [input.principal.organizationId, session.id, input.principal.userId],
       );
@@ -1924,7 +1981,7 @@ export async function transitionBankReconciliation(input: Readonly<{
     if (input.action === "REVIEW") {
       if (session.status !== "SUBMITTED") throw new BankingServiceError("Only a submitted reconciliation can be reviewed.", 409, "INVALID_RECONCILIATION_STATE");
       await client.query(
-        `UPDATE bank_reconciliation_sessions SET status = 'REVIEWED', reviewed_by = $3, reviewed_at = now()
+        `UPDATE bank_reconciliation_sessions SET status = 'REVIEWED', version = version + 1, reviewed_by = $3, reviewed_at = now()
          WHERE organization_id = $1 AND id = $2`,
         [input.principal.organizationId, session.id, input.principal.userId],
       );
@@ -1933,7 +1990,7 @@ export async function transitionBankReconciliation(input: Readonly<{
     if (session.status !== "REVIEWED") throw new BankingServiceError("Only a reviewed reconciliation can be finalized.", 409, "INVALID_RECONCILIATION_STATE");
     await client.query(
       `UPDATE bank_reconciliation_sessions SET
-         status = 'FINALIZED', finalized_by = $3, finalized_at = now(),
+         status = 'FINALIZED', version = version + 1, finalized_by = $3, finalized_at = now(),
          finalized_observation_total = $4, finalized_ledger_total = $5,
          finalized_unexplained_difference = $6, finalized_match_hash = $7
        WHERE organization_id = $1 AND id = $2`,

@@ -7,11 +7,12 @@ const schema = z.object({
   journalLineId: z.uuid(),
   allocatedAmount: z.string().trim().regex(/^\d+(?:\.\d{1,9})?$/),
   idempotencyKey: z.string().trim().min(1).max(180),
+  expectedVersion: z.number().int().positive().optional(),
 }).strict();
 
 export const POST = createBankingMutationRoute<
   z.infer<typeof schema>,
-  Readonly<{ allocationId: string; idempotentReplay: boolean }>,
+  Readonly<{ allocationId: string; idempotentReplay: boolean; reconciliationVersion: number }>,
   { reconciliationId: string }
 >({
   schema,

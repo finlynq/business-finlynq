@@ -42,6 +42,33 @@ describe("versioned tax decisions", () => {
     expect(decision.components).toHaveLength(1);
   });
 
+  it("calculates the time-correct Atlantic HST rate", () => {
+    const facts = {
+      direction: "PURCHASE" as const,
+      currency: "CAD",
+      taxableBasis: "12.00",
+      destinationCountry: "CA",
+      category: "STANDARD" as const,
+      registrationId: "demo-registration",
+      recoverablePercent: "100",
+    };
+    expect(decideTax("ca.atlantic.hst", {
+      ...facts,
+      taxPointDate: "2025-01-03",
+      destinationRegion: "NB",
+    })).toMatchObject({ totalTax: "1.80", effectiveFrom: "2016-07-01" });
+    expect(decideTax("ca.atlantic.hst", {
+      ...facts,
+      taxPointDate: "2025-03-31",
+      destinationRegion: "NS",
+    })).toMatchObject({ totalTax: "1.80", effectiveTo: "2025-03-31" });
+    expect(decideTax("ca.atlantic.hst", {
+      ...facts,
+      taxPointDate: "2025-04-01",
+      destinationRegion: "NS",
+    })).toMatchObject({ totalTax: "1.68", effectiveFrom: "2025-04-01" });
+  });
+
   it("distinguishes zero-rated from exempt Ontario supplies", () => {
     const facts = {
       direction: "SALE" as const,

@@ -1,6 +1,6 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { StorageError, storageRetryAfterSeconds } from "@/modules/document-storage/provider";
-import { mcpToolFailureResult } from "@/modules/mcp/tool-types";
+import { finalizeSuccessfulMcpExecution, mcpToolFailureResult } from "@/modules/mcp/tool-types";
 import { isRetryableDatabaseError, isRetryableOperationError } from "@/modules/mcp/retryable";
 
 function envelope(error: unknown) {
@@ -11,6 +11,28 @@ function envelope(error: unknown) {
 }
 
 describe("evidence retry transport", () => {
+  it("keeps a committed tool response successful when audit finalization fails", async () => {
+    const privateFailure = Object.assign(new Error("postgresql host and row details"), { code: "57P03" });
+    const errorLog = vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+    await expect(finalizeSuccessfulMcpExecution({
+      toolName: "complete_document_inbox_item",
+      requestId: "request-archive-response",
+      finish: vi.fn(async () => { throw privateFailure; }),
+    })).resolves.toBeUndefined();
+
+    expect(errorLog).toHaveBeenCalledOnce();
+    const logged = String(errorLog.mock.calls[0]?.[0]);
+    expect(JSON.parse(logged)).toEqual({
+      event: "mcp.execution.audit_finalize_failed_after_success",
+      tool: "complete_document_inbox_item",
+      requestId: "request-archive-response",
+      errorCode: "57P03",
+    });
+    expect(logged).not.toContain("postgresql host");
+    errorLog.mockRestore();
+  });
+
   it.each(["40001", "40P01", "53300", "55P03", "57014", "57P03"])(
     "classifies transient database code %s as bounded and retryable",
     (code) => {

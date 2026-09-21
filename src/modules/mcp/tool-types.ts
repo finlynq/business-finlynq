@@ -79,6 +79,29 @@ function successResult(result: unknown): CallToolResult {
   };
 }
 
+export async function finalizeSuccessfulMcpExecution(input: Readonly<{
+  toolName: string;
+  requestId: string;
+  finish: () => Promise<void>;
+}>): Promise<void> {
+  try {
+    await input.finish();
+  } catch (error) {
+    const candidate = error && typeof error === "object"
+      ? error as { code?: unknown }
+      : null;
+    console.error(JSON.stringify({
+      event: "mcp.execution.audit_finalize_failed_after_success",
+      tool: input.toolName,
+      requestId: input.requestId,
+      errorCode: typeof candidate?.code === "string"
+        && /^[A-Z0-9_]{2,80}$/.test(candidate.code)
+        ? candidate.code
+        : "MCP_AUDIT_FINALIZE_FAILED",
+    }));
+  }
+}
+
 function approvalResult(approval: Readonly<{
   approvalId?: string;
   approvalUrl?: string;
@@ -235,7 +258,19 @@ export function registerMcpTools(
             persistentMfaAuthorization,
           ),
         });
-        await finishMcpExecution(snapshot, execution, { status: "SUCCEEDED", approvalId, result });
+        // The domain operation may already have committed an accounting or
+        // provider mutation. A separate audit-finalization outage must be
+        // observable, but it must not turn that committed result into an
+        // ambiguous MCP failure that encourages a blind retry.
+        await finalizeSuccessfulMcpExecution({
+          toolName: definition.policy.name,
+          requestId: execution.requestId,
+          finish: () => finishMcpExecution(snapshot, execution!, {
+            status: "SUCCEEDED",
+            approvalId,
+            result,
+          }),
+        });
         return definition.formatResult ? definition.formatResult(result) : successResult(result);
       } catch (error) {
         const failure = toolError(error);

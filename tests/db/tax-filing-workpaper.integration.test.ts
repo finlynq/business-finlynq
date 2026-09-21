@@ -14,6 +14,8 @@ const ids = {
   entity: randomUUID(),
   ledger: randomUUID(),
   mappingSet: randomUUID(),
+  configuration: randomUUID(),
+  registration: randomUUID(),
   accounts: [randomUUID(), randomUUID(), randomUUID()],
   failedFiling: randomUUID(),
   filing: randomUUID(),
@@ -59,27 +61,30 @@ runDatabaseTests("tax filing workpaper application-role boundary", () => {
     return client.query(
       `INSERT INTO tax_filings(
          id, organization_id, legal_entity_id, ledger_id, template_id,
-         mapping_set_id, filing_type, status, period_start, period_end,
+         mapping_set_id, configuration_id, configuration_version,
+         filing_type, status, period_start, period_end,
          reported_values, calculated_values, reconciliation_snapshot,
          validation_snapshot, template_snapshot, idempotency_key,
          command_hash, created_by
        )
-       SELECT $1,$2,$3,$4,template.id,$5,'PREPARED','READY',
+       SELECT $1,$2,$3,$4,template.id,$5,$6,1,'PREPARED','READY',
          '2025-01-01'::date,'2025-12-31'::date,
          '{}'::jsonb,'{}'::jsonb,'[]'::jsonb,'[]'::jsonb,
          jsonb_build_object(
            'id', template.id,
            'version', template.version,
            'mappingSetId', $5::uuid,
-           'mappingVersion', $6::integer,
+           'mappingVersion', $7::integer,
+           'configurationId', $6::uuid,
+           'configurationVersion', 1,
            'sourceDigest', template.source_digest,
            'definition', template.definition
          ),
-         $7,$8,$9
+         $8,$9,$10
        FROM tax_filing_templates template
-       WHERE template.id=$10`,
+       WHERE template.id=$11`,
       [filingId, ids.organization, ids.entity, ids.ledger, ids.mappingSet,
-        mappingVersion, idempotencyKey, "b".repeat(64), ids.actor, templateId],
+        ids.configuration, mappingVersion, idempotencyKey, "b".repeat(64), ids.actor, templateId],
     );
   }
 
@@ -107,7 +112,8 @@ runDatabaseTests("tax filing workpaper application-role boundary", () => {
     );
     await owner.query(
       `INSERT INTO role_permissions(organization_id, role_id, permission_key)
-       VALUES ($1,$2,'tax.filings.prepare'),($1,$2,'tax.mappings.manage')`,
+       VALUES ($1,$2,'tax.filings.prepare'),($1,$2,'tax.mappings.manage'),
+         ($1,$2,'tax.filing.configuration.manage')`,
       [ids.organization, ids.role],
     );
     await owner.query(
@@ -128,6 +134,13 @@ runDatabaseTests("tax filing workpaper application-role boundary", () => {
        ) VALUES ($1,$2,$3,'TAX-WP','Tax workpaper ledger','PRIMARY',
          'CAN_ASPE','CAD',true)`,
       [ids.ledger, ids.organization, ids.entity],
+    );
+    await owner.query(
+      `INSERT INTO entity_tax_registrations(
+         id,organization_id,legal_entity_id,regime_key,destination_country,
+         destination_region,registration_ciphertext,key_version,valid_from,valid_to
+       ) VALUES ($1,$2,$3,'ca.on.hst','CA','ON','encrypted-test-registration','1','2025-01-01',NULL)`,
+      [ids.registration, ids.organization, ids.entity],
     );
     await owner.query(
       `INSERT INTO gl_accounts(
@@ -164,6 +177,18 @@ runDatabaseTests("tax filing workpaper application-role boundary", () => {
            ($1,$2,'line_103',$4,'NET_CREDIT',1),
            ($1,$2,'line_106',$5,'NET_DEBIT',1)`,
         [ids.organization, ids.mappingSet, ...ids.accounts],
+      );
+      await client.query(
+        `INSERT INTO tax_filing_configurations(
+           id,organization_id,legal_entity_id,ledger_id,registration_id,filing_type_key,
+           template_id,mapping_set_id,version,state,effective_from,effective_to,
+           supersedes_configuration_id,reason,idempotency_key,command_hash,created_by
+         ) VALUES ($1,$2,$3,$4,$5,'ca.gst-hst.return',$6,$7,1,'ACTIVE',
+           '2025-01-01',NULL,NULL,'Create exact filing configuration for integration coverage',
+           $8,$9,$10)`,
+        [ids.configuration, ids.organization, ids.entity, ids.ledger, ids.registration,
+          templateId, ids.mappingSet, `tax-configuration-integration-${ids.organization}`,
+          "c".repeat(64), ids.actor],
       );
     });
   });

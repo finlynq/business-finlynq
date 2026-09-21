@@ -421,8 +421,34 @@ export async function completeInboxDocument(context: TenantTransactionContext, i
     throw error;
   });
   // A durable READY_TO_FILE item exists even if this process stops here.
-  try { return { ...result, ...await retryDocumentFiling(context, { itemId: command.itemId }) }; }
-  catch { return { ...result, filingPending: true, instruction: "Accounting and evidence were saved. Call retry_document_filing to finish archiving." }; }
+  try {
+    const filed = { ...result, ...await retryDocumentFiling(context, { itemId: command.itemId }) };
+    console.info(JSON.stringify({
+      event: "document.inbox.completion.response_ready",
+      requestId: context.requestId,
+      itemId: command.itemId,
+      claimId: command.claimId,
+      assetId: filed.item.assetId,
+      action: command.action.type,
+      status: filed.item.status,
+      providerMoveOutcome: "FILED",
+      idempotentReplay: filed.idempotentReplay,
+    }));
+    return filed;
+  } catch (error) {
+    console.warn(JSON.stringify({
+      event: "document.inbox.completion.filing_pending",
+      requestId: context.requestId,
+      itemId: command.itemId,
+      claimId: command.claimId,
+      assetId: result.item.assetId,
+      action: command.action.type,
+      status: result.item.status,
+      providerMoveOutcome: "RETRY_REQUIRED",
+      errorCode: error instanceof StorageError ? error.code : "STORAGE_FILING_RETRY_REQUIRED",
+    }));
+    return { ...result, filingPending: true, instruction: "Accounting and evidence were saved. Call retry_document_filing to finish archiving." };
+  }
 }
 export async function retryDocumentFiling(context: TenantTransactionContext, input: z.input<typeof retryFilingSchema>) {
   const command = retryFilingSchema.parse(input);

@@ -1,0 +1,4 @@
+DROP INDEX "tax_filing_canonical_selections_scope_version_unique";--> statement-breakpoint
+DROP INDEX "tax_filing_configurations_scope_version_unique";--> statement-breakpoint
+CREATE UNIQUE INDEX "tax_filing_canonical_selections_scope_version_unique" ON "tax_filing_canonical_selections" USING btree ("organization_id","legal_entity_id","registration_id","filing_type_key","period_start","period_end","version");--> statement-breakpoint
+CREATE UNIQUE INDEX "tax_filing_configurations_scope_version_unique" ON "tax_filing_configurations" USING btree ("organization_id","legal_entity_id","ledger_id","registration_id","filing_type_key","version");

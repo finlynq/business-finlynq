@@ -7,6 +7,8 @@ import { taxFilingTemplateDefinitionSchema } from "@/modules/tax/filing-template
 const root = process.cwd();
 const migration = readFileSync(join(root, "migrations/drizzle/0054_tax_filing_reconciliation.sql"), "utf8");
 const auditTriggerRepair = readFileSync(join(root, "migrations/drizzle/0071_ticket_60_62_hardening.sql"), "utf8");
+const filingGovernance = readFileSync(join(root, "migrations/drizzle/0073_tax_filing_configuration_lifecycle.sql"), "utf8");
+const filingScopeConstraints = readFileSync(join(root, "migrations/drizzle/0075_tax_filing_scope_constraints.sql"), "utf8");
 const runtimeGrants = readFileSync(join(root, "deploy/postgres/010-runtime-role.sh"), "utf8");
 const verifier = readFileSync(join(root, "scripts/operations/verify-database-schema.mjs"), "utf8");
 
@@ -77,5 +79,47 @@ describe("tax filing reconciliation migration", () => {
     expect(migration).toContain("'tax.filings.prepare'");
     expect(migration).toContain("assign_tax_filing_template_permissions");
     expect(migration).toContain("'OWNER', 'ACCOUNTANT_APPROVER', 'BOOKKEEPER_MAKER', 'demo_accountant'");
+  });
+
+  it("backfills filing governance without deleting templates, mappings, or workpapers", () => {
+    expect(filingGovernance).toContain("WITH candidates AS");
+    expect(filingGovernance).toContain("current_active_count");
+    expect(filingGovernance).toContain("'NEEDS_CONFIGURATION'");
+    expect(filingGovernance).toContain("configuration_id=filing.mapping_set_id");
+    expect(filingGovernance).toContain("configuration_version=configuration.version");
+    expect(filingGovernance).not.toMatch(/DELETE\s+FROM\s+(tax_filing_templates|tax_account_mapping_sets|tax_filings)/i);
+    for (const id of [
+      "f1000000-0000-4000-8000-000000000001",
+      "f1000000-0000-4000-8000-000000000002",
+      "f2000000-0000-4000-8000-000000000001",
+      "f2000000-0000-4000-8000-000000000002",
+    ]) expect(filingGovernance).not.toContain(`DELETE ${id}`);
+  });
+
+  it("makes nullable registration scopes unique and filing configuration references mandatory", () => {
+    expect(filingScopeConstraints).toContain("UNIQUE NULLS NOT DISTINCT");
+    expect(filingScopeConstraints).toContain('"configuration_id" SET NOT NULL');
+    expect(filingScopeConstraints).toContain('"configuration_version" SET NOT NULL');
+    expect(filingGovernance).toContain("tax_filing_configuration_reference_guard");
+    expect(filingGovernance).toContain("tax_filing_governance_integrity");
+    expect(filingGovernance).toContain("tax_filing_configuration_overlap_guard");
+    expect(filingGovernance).toContain("prior.effective_from<=NEW.effective_from");
+    expect(filingGovernance).toContain("Tax filing replacement scope or lifecycle is invalid");
+    expect(filingGovernance).toContain("candidate.valid_to >= coalesce(mapping.effective_to,mapping.effective_from)");
+    expect(filingGovernance).toContain("template.effective_from<=NEW.effective_from");
+    expect(filingGovernance).toContain("configuration.state='ACTIVE'");
+    expect(filingGovernance).toContain("successor.effective_from<=NEW.period_end");
+  });
+
+  it("keeps the runtime app role append-only on governance tables", () => {
+    for (const table of [
+      "tax_filing_configurations",
+      "tax_filing_lifecycle_events",
+      "tax_filing_canonical_selections",
+    ]) {
+      expect(runtimeGrants).toContain(`'${table}'`);
+      expect(verifier).toContain(`"${table}"`);
+    }
+    expect(filingGovernance).toContain("REVOKE UPDATE,DELETE ON tax_filing_configurations");
   });
 });

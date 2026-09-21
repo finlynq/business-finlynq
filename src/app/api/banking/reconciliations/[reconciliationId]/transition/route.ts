@@ -3,10 +3,11 @@ import { createBankingMutationRoute } from "@/app/api/_shared/banking-mutation-r
 import { transitionBankReconciliation } from "@/modules/banking/banking-service";
 
 const schema = z.discriminatedUnion("action", [
-  z.object({ action: z.enum(["SUBMIT", "REVIEW", "FINALIZE"]) }).strict(),
+  z.object({ action: z.enum(["SUBMIT", "REVIEW", "FINALIZE"]), expectedVersion: z.number().int().positive().optional() }).strict(),
   z.object({
     action: z.literal("VOID"),
     reason: z.string().trim().min(8).max(500),
+    expectedVersion: z.number().int().positive().optional(),
   }).strict(),
 ]);
 

@@ -2,7 +2,10 @@ import { z } from "zod";
 import { createBankingMutationRoute } from "@/app/api/_shared/banking-mutation-route";
 import { voidBankMatchAllocation } from "@/modules/banking/banking-service";
 
-const schema = z.object({ reason: z.string().trim().min(8).max(500) }).strict();
+const schema = z.object({
+  reason: z.string().trim().min(8).max(500),
+  expectedVersion: z.number().int().positive().optional(),
+}).strict();
 
 export const POST = createBankingMutationRoute({
   schema,
@@ -12,6 +15,6 @@ export const POST = createBankingMutationRoute({
   successStatus: 201,
   invoke: (body, principal, requestId, { reconciliationId, allocationId }) =>
     voidBankMatchAllocation({
-      principal, requestId, reconciliationId, allocationId, reason: body.reason,
+      principal, requestId, reconciliationId, allocationId, ...body,
     }),
 });

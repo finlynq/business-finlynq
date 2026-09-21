@@ -74,8 +74,14 @@ import {
 import {
   createTaxFiling,
   createTaxFilingSchema,
+  saveTaxFilingConfiguration,
+  saveTaxFilingConfigurationSchema,
+  setTaxFilingCanonical,
+  setTaxFilingCanonicalSchema,
+  transitionTaxFilingLifecycle,
+  transitionTaxFilingLifecycleSchema,
 } from "@/modules/tax/filing-service";
-import { loadTaxFilingWorkspace } from "@/modules/tax/filing-workspace";
+import { loadTaxFilingWorkspace, previewTaxFilingConfigurationDependencies } from "@/modules/tax/filing-workspace";
 import {
   exportTaxFilingWorkpaper,
   listTaxFilingWorkpapers,
@@ -510,6 +516,13 @@ export const DAILY_MCP_TOOLS: readonly McpToolDefinition[] = [
     invoke: (_args, runtime) => loadTaxFilingWorkspace(runtime.sessionPrincipal),
   }),
   defineMcpTool({
+    policy: { name: "finlynq_daily_preview_tax_filing_configuration_dependencies", group: "DAILY", access: "READ", permission: PERMISSIONS.readTax },
+    title: "Preview tax filing configuration dependencies",
+    description: "Read the exact template, mapping, registration, workpaper, canonical, and successor dependencies before a prospective configuration change. This preview performs no write, filing, payment, or authority transmission.",
+    inputSchema: z.object({ configurationId: z.uuid() }).strict(),
+    invoke: (args, runtime) => previewTaxFilingConfigurationDependencies(runtime.sessionPrincipal, args.configurationId),
+  }),
+  defineMcpTool({
     policy: { name: "finlynq_daily_create_tax_filing_workpaper", group: "DAILY", access: "WRITE", permission: PERMISSIONS.prepareTaxFilings },
     title: "Prepare or reconcile tax filing workpaper",
     description: "Create an immutable tax filing workpaper from posted ledger activity and the latest mapping version. PREPARED calculates a current declaration; HISTORICAL_IMPORT compares supplied reported values. This does not transmit or pay a return.",
@@ -521,6 +534,31 @@ export const DAILY_MCP_TOOLS: readonly McpToolDefinition[] = [
       sourceSurface: "MCP",
       ...args,
     }),
+  }),
+  defineMcpTool({
+    policy: { name: "finlynq_daily_save_tax_filing_configuration", group: "DAILY", access: "WRITE", permission: PERMISSIONS.manageTaxFilingConfiguration },
+    title: "Save tax filing configuration",
+    description: "Append an effective-dated tenant filing configuration selecting the exact entity, registration, filing type, template, and mapping versions. Existing workpapers are never rewritten.",
+    inputSchema: saveTaxFilingConfigurationSchema,
+    idempotent: true,
+    invoke: (args, runtime) => saveTaxFilingConfiguration({ principal: runtime.sessionPrincipal, requestId: runtime.requestId, sourceSurface: "MCP", ...args }),
+  }),
+  defineMcpTool({
+    policy: { name: "finlynq_daily_set_canonical_tax_filing", group: "DAILY", access: "WRITE", permission: PERMISSIONS.manageTaxFilingCanonical },
+    title: "Select canonical tax workpaper",
+    description: "Explicitly select one immutable workpaper as canonical for its entity, registration, filing type, and period. Historical imports are never selected implicitly.",
+    inputSchema: setTaxFilingCanonicalSchema,
+    idempotent: true,
+    invoke: (args, runtime) => setTaxFilingCanonical({ principal: runtime.sessionPrincipal, requestId: runtime.requestId, sourceSurface: "MCP", ...args }),
+  }),
+  defineMcpTool({
+    policy: { name: "finlynq_daily_transition_tax_filing_lifecycle", group: "DAILY", access: "WRITE", permission: PERMISSIONS.manageTaxFilingCanonical },
+    title: "Archive or supersede tax workpaper",
+    description: "Append an archive or supersession lifecycle event without deleting the workpaper, its mappings, or evidence. Canonical dependencies must be resolved first.",
+    inputSchema: transitionTaxFilingLifecycleSchema,
+    destructive: true,
+    idempotent: true,
+    invoke: (args, runtime) => transitionTaxFilingLifecycle({ principal: runtime.sessionPrincipal, requestId: runtime.requestId, sourceSurface: "MCP", ...args }),
   }),
   defineMcpTool({
     policy: { name: "finlynq_daily_list_tax_filing_workpapers", group: "DAILY", access: "READ", permission: PERMISSIONS.readTax },
@@ -624,8 +662,13 @@ export const DAILY_MCP_TOOLS: readonly McpToolDefinition[] = [
     policy: { name: "finlynq_daily_banking_overview", group: "DAILY", access: "READ", permission: PERMISSIONS.readBanking },
     title: "Get banking and reconciliation workspace",
     description: "Return bank connections without credentials, observed accounts and transactions, matches, reconciliation proofs, rules, and suggested draft proposals.",
-    inputSchema: z.object({ reconciliationId: z.uuid().optional() }).strict(),
-    invoke: (args, runtime) => loadBankingWorkspace(runtime.sessionPrincipal, args.reconciliationId),
+    inputSchema: z.object({
+      reconciliationId: z.uuid().optional(),
+      bankAfter: z.string().trim().max(400).optional(),
+      booksAfter: z.string().trim().max(400).optional(),
+      pageSize: z.number().int().min(10).max(100).optional(),
+    }).strict(),
+    invoke: (args, runtime) => loadBankingWorkspace(runtime.sessionPrincipal, args.reconciliationId, args),
   }),
   defineMcpTool({
     policy: { name: "finlynq_daily_sync_bank_feed", group: "DAILY", access: "WRITE", permission: PERMISSIONS.syncBanking },
@@ -646,14 +689,14 @@ export const DAILY_MCP_TOOLS: readonly McpToolDefinition[] = [
     policy: { name: "finlynq_daily_match_bank_transaction", group: "DAILY", access: "WRITE", permission: PERMISSIONS.prepareBankReconciliation },
     title: "Match bank transaction",
     description: "Allocate an exact amount from a current bank-observation version to a posted cash journal line inside a draft reconciliation.",
-    inputSchema: z.object({ reconciliationId: z.uuid(), observationVersionId: z.uuid(), journalLineId: z.uuid(), allocatedAmount: exactAmountSchema, idempotencyKey: z.string().trim().min(1).max(180) }).strict(),
+    inputSchema: z.object({ reconciliationId: z.uuid(), observationVersionId: z.uuid(), journalLineId: z.uuid(), allocatedAmount: exactAmountSchema, idempotencyKey: z.string().trim().min(1).max(180), expectedVersion: z.number().int().positive().optional() }).strict(),
     invoke: (args, runtime) => createBankMatchAllocation({ principal: runtime.sessionPrincipal, requestId: runtime.requestId, ...args }),
   }),
   defineMcpTool({
     policy: { name: "finlynq_daily_void_bank_match", group: "DAILY", access: "WRITE", permission: PERMISSIONS.prepareBankReconciliation },
     title: "Void bank match",
     description: "Void one active match allocation while its reconciliation remains a draft. The original match remains in history.",
-    inputSchema: z.object({ reconciliationId: z.uuid(), allocationId: z.uuid(), reason: z.string().trim().min(8).max(500) }).strict(),
+    inputSchema: z.object({ reconciliationId: z.uuid(), allocationId: z.uuid(), reason: z.string().trim().min(8).max(500), expectedVersion: z.number().int().positive().optional() }).strict(),
     destructive: true,
     invoke: (args, runtime) => voidBankMatchAllocation({ principal: runtime.sessionPrincipal, requestId: runtime.requestId, ...args }),
   }),
@@ -661,16 +704,16 @@ export const DAILY_MCP_TOOLS: readonly McpToolDefinition[] = [
     policy: { name: "finlynq_daily_transition_bank_reconciliation", group: "DAILY", access: "WRITE", permissionsAny: [PERMISSIONS.prepareBankReconciliation, PERMISSIONS.reviewBankReconciliation] },
     title: "Advance or void bank reconciliation",
     description: "Submit, review, finalize, or void a reconciliation. Balance proof and current-user permissions are rechecked; finalized reconciliations are immutable.",
-    inputSchema: z.object({ reconciliationId: z.uuid(), action: z.enum(["SUBMIT", "REVIEW", "FINALIZE", "VOID"]), reason: z.string().trim().min(8).max(500).optional() }).strict(),
+    inputSchema: z.object({ reconciliationId: z.uuid(), action: z.enum(["SUBMIT", "REVIEW", "FINALIZE", "VOID"]), reason: z.string().trim().min(8).max(500).optional(), expectedVersion: z.number().int().positive().optional() }).strict(),
     destructive: true,
     invoke: (args, runtime) => {
       const required = args.action === "REVIEW" || args.action === "FINALIZE" ? PERMISSIONS.reviewBankReconciliation : PERMISSIONS.prepareBankReconciliation;
       if (!runtime.snapshot.permissions.has(required)) throw new Error(`${required} permission is required`);
       if (args.action === "VOID") {
         if (!args.reason) throw new Error("A permanent void reason is required");
-        return transitionBankReconciliation({ principal: runtime.sessionPrincipal, requestId: runtime.requestId, reconciliationId: args.reconciliationId, action: "VOID", reason: args.reason });
+        return transitionBankReconciliation({ principal: runtime.sessionPrincipal, requestId: runtime.requestId, reconciliationId: args.reconciliationId, action: "VOID", reason: args.reason, expectedVersion: args.expectedVersion });
       }
-      return transitionBankReconciliation({ principal: runtime.sessionPrincipal, requestId: runtime.requestId, reconciliationId: args.reconciliationId, action: args.action });
+      return transitionBankReconciliation({ principal: runtime.sessionPrincipal, requestId: runtime.requestId, reconciliationId: args.reconciliationId, action: args.action, expectedVersion: args.expectedVersion });
     },
   }),
 ];

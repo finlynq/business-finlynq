@@ -78,6 +78,29 @@ const context = { organizationId: ids.org, actorId: ids.actor, sessionId: ids.se
 function requestContext(overrides: Partial<typeof context> = {}) { return { ...context, ...overrides, requestId: randomUUID() }; }
 const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jZ1kAAAAASUVORK5CYII=", "base64");
 const checksum = createHash("sha256").update(png).digest("hex");
+function onePagePdf() {
+  const objects = [
+    "<< /Type /Catalog /Pages 2 0 R >>",
+    "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+    "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 300] /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>",
+    "BT /F1 16 Tf 25 240 Td (Archived receipt CAD 13.80) Tj ET",
+    "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+  ];
+  let body = "%PDF-1.4\n";
+  const offsets = [0];
+  objects.forEach((object, index) => {
+    offsets.push(Buffer.byteLength(body));
+    const content = index === 3
+      ? `<< /Length ${Buffer.byteLength(object)} >>\nstream\n${object}\nendstream`
+      : object;
+    body += `${index + 1} 0 obj\n${content}\nendobj\n`;
+  });
+  const start = Buffer.byteLength(body);
+  body += `xref\n0 ${offsets.length}\n0000000000 65535 f \n`;
+  body += offsets.slice(1).map((offset) => `${String(offset).padStart(10, "0")} 00000 n \n`).join("");
+  body += `trailer\n<< /Size ${offsets.length} /Root 1 0 R >>\nstartxref\n${start}\n%%EOF`;
+  return Buffer.from(body);
+}
 const draftInput = { kind: "SUPPLIER_BILL" as const, sourceNumber: "INBOX-BILL", ledgerId: randomUUID(), legalEntityId: ids.entity,
   partyAccountId: randomUUID(), controlAccountCombinationId: randomUUID(), documentDate: "2026-09-04", accountingDate: "2026-09-04", periodId: randomUUID(), dueOn: "2026-09-30", currency: "USD",
   fx: { rate: "1", source: "FUNCTIONAL" as const, effectiveAt: "2026-09-04T00:00:00Z", quoteConvention: "FUNCTIONAL_UNITS_PER_TRANSACTION_UNIT" as const }, description: "Cloud invoice",
@@ -244,22 +267,29 @@ run("cloud inbox PostgreSQL lifecycle", () => {
     const read = await readInboxDocument(requestContext(), { itemId: row.id, claimId: claim });
     expect(read.mimeType).toBe("text/csv");
 
-    const saved = await completeInboxDocument(requestContext(), {
+    const archiveCommand = {
       itemId: row.id,
       claimId: claim,
       sha256: read.sha256,
       metadata: {
-        documentType: "STATEMENT",
+        documentType: "STATEMENT" as const,
         documentDate: "2026-09-01",
         counterparty: "Test Bank",
         currency: "USD",
       },
-      action: { type: "ARCHIVE_ONLY" },
+      action: { type: "ARCHIVE_ONLY" as const },
       reason: "Archive validated structured statement evidence",
-    });
+    };
+    const saved = await completeInboxDocument(requestContext(), archiveCommand);
     expect(saved.item).toMatchObject({ status: "FILED", mimeType: "text/csv" });
     expect(saved.item.canonicalName).toMatch(/\.csv$/);
     const assetId = saved.item.assetId!;
+    const replay = await completeInboxDocument(requestContext(), archiveCommand);
+    expect(replay).toMatchObject({
+      filingPending: false,
+      idempotentReplay: true,
+      item: { id: row.id, status: "FILED", assetId },
+    });
     const stored = (await owner.query(
       "SELECT mime_type,storage_backend,content_ciphertext,sha256 FROM document_evidence_assets WHERE organization_id=$1 AND id=$2",
       [ids.org, assetId],
@@ -317,6 +347,41 @@ run("cloud inbox PostgreSQL lifecycle", () => {
         await client.query("RELEASE SAVEPOINT unsafe_evidence_mime_probe");
       }
     });
+  });
+  it("returns the same durable FILED result when an archived PDF response is replayed", async () => {
+    const pdf = onePagePdf();
+    const row = await discoverDocument("archive-response-receipt.pdf", "application/pdf", pdf);
+    const claim = randomUUID();
+    await claimInboxDocument(requestContext(), { itemId: row.id, claimId: claim });
+    const read = await readInboxDocument(requestContext(), { itemId: row.id, claimId: claim });
+    expect(read).toMatchObject({ mimeType: "application/pdf" });
+    const command = {
+      itemId: row.id,
+      claimId: claim,
+      sha256: read.sha256,
+      metadata: {
+        documentType: "OTHER" as const,
+        documentDate: "2026-09-21",
+        counterparty: "Corporations Canada",
+        reference: "663257780013602920",
+        currency: "CAD",
+        total: "13.80",
+      },
+      action: { type: "ARCHIVE_ONLY" as const },
+      reason: "Archive the reviewed PDF receipt as durable evidence",
+    };
+    const first = await completeInboxDocument(requestContext(), command);
+    const assetId = first.item.assetId!;
+    expect(first).toMatchObject({ filingPending: false, idempotentReplay: false, item: { id: row.id, status: "FILED", assetId } });
+    await expect(completeInboxDocument(requestContext(), command)).resolves.toMatchObject({
+      filingPending: false,
+      idempotentReplay: true,
+      item: { id: row.id, status: "FILED", assetId },
+    });
+    expect((await owner.query(
+      "SELECT count(*)::int AS count FROM document_evidence_assets WHERE organization_id=$1 AND id=$2",
+      [ids.org, assetId],
+    )).rows).toEqual([{ count: 1 }]);
   });
   it("extracts EML attachments exactly once with source lineage and preserves the original", async () => {
     const boundary = "finlynq-eml-test";
@@ -398,16 +463,22 @@ run("cloud inbox PostgreSQL lifecycle", () => {
     const sharedAttachment = (await listDocumentInbox(requestContext())).items.find((item) => item.id === extracted.inboxItemId);
     expect(sharedAttachment?.sourceMessages).toHaveLength(2);
 
-    const saved = await completeInboxDocument(requestContext(), {
+    const archiveCommand = {
       itemId: source.id,
       claimId: claim,
       sha256: first.sha256,
-      metadata: { documentType: "OTHER", documentDate: "2026-09-18", counterparty: "CGI Receipts" },
-      action: { type: "ARCHIVE_ONLY" },
+      metadata: { documentType: "OTHER" as const, documentDate: "2026-09-18", counterparty: "CGI Receipts" },
+      action: { type: "ARCHIVE_ONLY" as const },
       reason: "Preserve the original email after reviewing its receipt attachment",
-    });
+    };
+    const saved = await completeInboxDocument(requestContext(), archiveCommand);
     expect(saved.item).toMatchObject({ status: "FILED", mimeType: "message/rfc822" });
     expect(saved.item.canonicalName).toMatch(/\.eml$/);
+    await expect(completeInboxDocument(requestContext(), archiveCommand)).resolves.toMatchObject({
+      filingPending: false,
+      idempotentReplay: true,
+      item: { id: source.id, status: "FILED", assetId: saved.item.assetId },
+    });
     expect((await owner.query(
       "SELECT mime_type FROM document_evidence_assets WHERE organization_id=$1 AND id=$2",
       [ids.org, saved.item.assetId],

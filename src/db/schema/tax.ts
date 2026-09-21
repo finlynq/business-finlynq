@@ -9,6 +9,7 @@ import {
   pgTable,
   text,
   timestamp,
+  unique,
   uniqueIndex,
   uuid,
 } from "drizzle-orm/pg-core";
@@ -261,6 +262,50 @@ export const taxAccountMappingLines = pgTable(
   ],
 );
 
+/** Tenant-owned, effective-dated filing setup. Revisions are append-only. */
+export const taxFilingConfigurations = pgTable(
+  "tax_filing_configurations",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    organizationId: uuid("organization_id").notNull().references(() => organizations.id, { onDelete: "restrict" }),
+    legalEntityId: uuid("legal_entity_id").notNull(),
+    ledgerId: uuid("ledger_id").notNull(),
+    registrationId: uuid("registration_id"),
+    filingTypeKey: text("filing_type_key").notNull(),
+    templateId: uuid("template_id").notNull().references(() => taxFilingTemplates.id, { onDelete: "restrict" }),
+    mappingSetId: uuid("mapping_set_id").notNull(),
+    version: integer("version").notNull(),
+    state: text("state").notNull(),
+    effectiveFrom: date("effective_from").notNull(),
+    effectiveTo: date("effective_to"),
+    supersedesConfigurationId: uuid("supersedes_configuration_id"),
+    reason: text("reason").notNull(),
+    idempotencyKey: text("idempotency_key").notNull(),
+    commandHash: text("command_hash").notNull(),
+    createdBy: uuid("created_by").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("tax_filing_configurations_org_id_unique").on(table.organizationId, table.id),
+    uniqueIndex("tax_filing_configurations_org_idempotency_unique").on(table.organizationId, table.idempotencyKey),
+    unique("tax_filing_configurations_scope_version_unique")
+      .on(table.organizationId, table.legalEntityId, table.registrationId, table.filingTypeKey, table.version)
+      .nullsNotDistinct(),
+    uniqueIndex("tax_filing_configurations_org_supersedes_unique").on(table.organizationId, table.supersedesConfigurationId),
+    index("tax_filing_configurations_effective_lookup").on(table.organizationId, table.legalEntityId, table.filingTypeKey, table.effectiveFrom, table.effectiveTo),
+    foreignKey({ columns: [table.organizationId, table.legalEntityId], foreignColumns: [legalEntities.organizationId, legalEntities.id], name: "tax_filing_configurations_org_entity_fk" }).onDelete("restrict"),
+    foreignKey({ columns: [table.organizationId, table.ledgerId], foreignColumns: [ledgers.organizationId, ledgers.id], name: "tax_filing_configurations_org_ledger_fk" }).onDelete("restrict"),
+    foreignKey({ columns: [table.organizationId, table.registrationId], foreignColumns: [entityTaxRegistrations.organizationId, entityTaxRegistrations.id], name: "tax_filing_configurations_org_registration_fk" }).onDelete("restrict"),
+    foreignKey({ columns: [table.organizationId, table.mappingSetId], foreignColumns: [taxAccountMappingSets.organizationId, taxAccountMappingSets.id], name: "tax_filing_configurations_org_mapping_fk" }).onDelete("restrict"),
+    foreignKey({ columns: [table.organizationId, table.supersedesConfigurationId], foreignColumns: [table.organizationId, table.id], name: "tax_filing_configurations_org_supersedes_fk" }).onDelete("restrict"),
+    check("tax_filing_configurations_version_check", sql`${table.version} > 0`),
+    check("tax_filing_configurations_state_check", sql`${table.state} IN ('ACTIVE', 'INACTIVE', 'NEEDS_CONFIGURATION')`),
+    check("tax_filing_configurations_effective_check", sql`${table.effectiveTo} IS NULL OR ${table.effectiveTo} >= ${table.effectiveFrom}`),
+    check("tax_filing_configurations_reason_check", sql`char_length(btrim(${table.reason})) BETWEEN 8 AND 500`),
+    check("tax_filing_configurations_hash_check", sql`${table.commandHash} ~ '^[a-f0-9]{64}$'`),
+  ],
+);
+
 /** Append-only prepared returns and imported historical filing snapshots. */
 export const taxFilings = pgTable(
   "tax_filings",
@@ -275,6 +320,8 @@ export const taxFilings = pgTable(
       .notNull()
       .references(() => taxFilingTemplates.id, { onDelete: "restrict" }),
     mappingSetId: uuid("mapping_set_id").notNull(),
+    configurationId: uuid("configuration_id").notNull(),
+    configurationVersion: integer("configuration_version").notNull(),
     filingType: text("filing_type").notNull(),
     status: text("status").notNull(),
     periodStart: date("period_start").notNull(),
@@ -307,6 +354,11 @@ export const taxFilings = pgTable(
       columns: [table.organizationId, table.legalEntityId],
       foreignColumns: [legalEntities.organizationId, legalEntities.id],
       name: "tax_filings_org_entity_fk",
+    }).onDelete("restrict"),
+    foreignKey({
+      columns: [table.organizationId, table.configurationId],
+      foreignColumns: [taxFilingConfigurations.organizationId, taxFilingConfigurations.id],
+      name: "tax_filings_org_configuration_fk",
     }).onDelete("restrict"),
     foreignKey({
       columns: [table.organizationId, table.ledgerId],
@@ -343,6 +395,78 @@ export const taxFilings = pgTable(
           AND ${table.reportedValues} <> '{}')`,
     ),
     check("tax_filings_hash_check", sql`${table.commandHash} ~ '^[a-f0-9]{64}$'`),
+  ],
+);
+
+/** Append-only lifecycle history for immutable filing workpapers. */
+export const taxFilingLifecycleEvents = pgTable(
+  "tax_filing_lifecycle_events",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    organizationId: uuid("organization_id").notNull().references(() => organizations.id, { onDelete: "restrict" }),
+    filingId: uuid("filing_id").notNull(),
+    version: integer("version").notNull(),
+    state: text("state").notNull(),
+    replacementFilingId: uuid("replacement_filing_id"),
+    supersedesEventId: uuid("supersedes_event_id"),
+    reason: text("reason").notNull(),
+    idempotencyKey: text("idempotency_key").notNull(),
+    commandHash: text("command_hash").notNull(),
+    createdBy: uuid("created_by").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("tax_filing_lifecycle_events_org_id_unique").on(table.organizationId, table.id),
+    uniqueIndex("tax_filing_lifecycle_events_filing_version_unique").on(table.filingId, table.version),
+    uniqueIndex("tax_filing_lifecycle_events_org_idempotency_unique").on(table.organizationId, table.idempotencyKey),
+    uniqueIndex("tax_filing_lifecycle_events_org_supersedes_unique").on(table.organizationId, table.supersedesEventId),
+    foreignKey({ columns: [table.organizationId, table.filingId], foreignColumns: [taxFilings.organizationId, taxFilings.id], name: "tax_filing_lifecycle_events_org_filing_fk" }).onDelete("restrict"),
+    foreignKey({ columns: [table.organizationId, table.replacementFilingId], foreignColumns: [taxFilings.organizationId, taxFilings.id], name: "tax_filing_lifecycle_events_org_replacement_fk" }).onDelete("restrict"),
+    foreignKey({ columns: [table.organizationId, table.supersedesEventId], foreignColumns: [table.organizationId, table.id], name: "tax_filing_lifecycle_events_org_supersedes_fk" }).onDelete("restrict"),
+    check("tax_filing_lifecycle_events_version_check", sql`${table.version} > 0`),
+    check("tax_filing_lifecycle_events_state_check", sql`${table.state} IN ('CURRENT', 'HISTORICAL', 'SUPERSEDED', 'ARCHIVED')`),
+    check("tax_filing_lifecycle_events_reason_check", sql`char_length(btrim(${table.reason})) BETWEEN 8 AND 500`),
+    check("tax_filing_lifecycle_events_hash_check", sql`${table.commandHash} ~ '^[a-f0-9]{64}$'`),
+  ],
+);
+
+/** Explicit canonical choice per filing scope and period; never inferred from import order. */
+export const taxFilingCanonicalSelections = pgTable(
+  "tax_filing_canonical_selections",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    organizationId: uuid("organization_id").notNull().references(() => organizations.id, { onDelete: "restrict" }),
+    legalEntityId: uuid("legal_entity_id").notNull(),
+    registrationId: uuid("registration_id"),
+    filingTypeKey: text("filing_type_key").notNull(),
+    periodStart: date("period_start").notNull(),
+    periodEnd: date("period_end").notNull(),
+    filingId: uuid("filing_id").notNull(),
+    version: integer("version").notNull(),
+    state: text("state").notNull().default("ACTIVE"),
+    supersedesSelectionId: uuid("supersedes_selection_id"),
+    reason: text("reason").notNull(),
+    idempotencyKey: text("idempotency_key").notNull(),
+    commandHash: text("command_hash").notNull(),
+    createdBy: uuid("created_by").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("tax_filing_canonical_selections_org_id_unique").on(table.organizationId, table.id),
+    uniqueIndex("tax_filing_canonical_selections_org_idempotency_unique").on(table.organizationId, table.idempotencyKey),
+    unique("tax_filing_canonical_selections_scope_version_unique")
+      .on(table.organizationId, table.legalEntityId, table.registrationId, table.filingTypeKey, table.periodStart, table.periodEnd, table.version)
+      .nullsNotDistinct(),
+    uniqueIndex("tax_filing_canonical_selections_org_supersedes_unique").on(table.organizationId, table.supersedesSelectionId),
+    foreignKey({ columns: [table.organizationId, table.legalEntityId], foreignColumns: [legalEntities.organizationId, legalEntities.id], name: "tax_filing_canonical_selections_org_entity_fk" }).onDelete("restrict"),
+    foreignKey({ columns: [table.organizationId, table.registrationId], foreignColumns: [entityTaxRegistrations.organizationId, entityTaxRegistrations.id], name: "tax_filing_canonical_selections_org_registration_fk" }).onDelete("restrict"),
+    foreignKey({ columns: [table.organizationId, table.filingId], foreignColumns: [taxFilings.organizationId, taxFilings.id], name: "tax_filing_canonical_selections_org_filing_fk" }).onDelete("restrict"),
+    foreignKey({ columns: [table.organizationId, table.supersedesSelectionId], foreignColumns: [table.organizationId, table.id], name: "tax_filing_canonical_selections_org_supersedes_fk" }).onDelete("restrict"),
+    check("tax_filing_canonical_selections_version_check", sql`${table.version} > 0`),
+    check("tax_filing_canonical_selections_state_check", sql`${table.state} IN ('ACTIVE', 'WITHDRAWN')`),
+    check("tax_filing_canonical_selections_period_check", sql`${table.periodStart} <= ${table.periodEnd}`),
+    check("tax_filing_canonical_selections_reason_check", sql`char_length(btrim(${table.reason})) BETWEEN 8 AND 500`),
+    check("tax_filing_canonical_selections_hash_check", sql`${table.commandHash} ~ '^[a-f0-9]{64}$'`),
   ],
 );
 

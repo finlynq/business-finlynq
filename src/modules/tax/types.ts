@@ -58,6 +58,25 @@ export type TaxDecision = Readonly<{
   rounding: "LINE_HALF_UP";
   source: string;
   reviewReason?: string;
+  sourceOverride?: Readonly<{
+    state: "PENDING_REVIEW" | "REVIEWED";
+    ratePercent: string;
+    sourceAmount: string;
+    calculatedAmount: string;
+    adjustmentAmount: string;
+    automatedStatus: "APPLIED" | "ZERO_RATED" | "EXEMPT" | "RESALE" |
+      "MARKETPLACE_COLLECTED" | "OUT_OF_SCOPE" | "MANUAL_REVIEW_REQUIRED";
+    automatedRatePercent: string;
+    automatedAmount: string;
+    automatedRuleKey: string;
+    jurisdiction: string;
+    componentKey: string;
+    reason: string;
+    evidenceReference: string;
+    reviewedTreatment?: "OUTPUT_PAYABLE" | "FULLY_RECOVERABLE" | "PARTIALLY_RECOVERABLE" | "NONRECOVERABLE";
+    adjustmentReason?: string;
+    adjustmentEvidenceReference?: string;
+  }>;
 }>;
 
 export type TaxPack = Readonly<{
