@@ -122,6 +122,16 @@ describe("tax filing reconciliation migration", () => {
     expect(filingGovernance).toContain("successor.effective_from<=NEW.period_end");
   });
 
+  it("only reads lifecycle-specific trigger fields for lifecycle rows", () => {
+    const appendGuard = filingGovernance
+      .split("CREATE FUNCTION app.guard_tax_filing_governance_append()")[1]
+      ?.split("REVOKE ALL ON FUNCTION app.guard_tax_filing_governance_append()")[0] ?? "";
+    expect(appendGuard).toContain("IF TG_TABLE_NAME = 'tax_filing_configurations' THEN");
+    expect(appendGuard).toContain("ELSIF TG_TABLE_NAME = 'tax_filing_lifecycle_events' THEN");
+    expect(appendGuard).not.toContain("required_permission := CASE TG_TABLE_NAME");
+    expect(appendGuard).toContain("NEW.supersedes_event_id IS NULL");
+  });
+
   it("keeps the runtime app role append-only on governance tables", () => {
     for (const table of [
       "tax_filing_configurations",

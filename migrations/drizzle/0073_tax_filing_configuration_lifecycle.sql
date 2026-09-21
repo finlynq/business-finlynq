@@ -463,13 +463,17 @@ AS $$
 DECLARE required_permission text;
 BEGIN
   IF TG_OP <> 'INSERT' THEN RAISE EXCEPTION '% is append-only',TG_TABLE_NAME USING ERRCODE='55000'; END IF;
-  required_permission := CASE TG_TABLE_NAME
-    WHEN 'tax_filing_configurations' THEN 'tax.filing.configuration.manage'
-    WHEN 'tax_filing_lifecycle_events' THEN
-      CASE WHEN NEW.version=1 AND NEW.supersedes_event_id IS NULL
-        THEN 'tax.filings.prepare' ELSE 'tax.filing.canonical.manage' END
-    ELSE 'tax.filing.canonical.manage'
-  END;
+  IF TG_TABLE_NAME = 'tax_filing_configurations' THEN
+    required_permission := 'tax.filing.configuration.manage';
+  ELSIF TG_TABLE_NAME = 'tax_filing_lifecycle_events' THEN
+    required_permission := CASE
+      WHEN NEW.version=1 AND NEW.supersedes_event_id IS NULL
+        THEN 'tax.filings.prepare'
+      ELSE 'tax.filing.canonical.manage'
+    END;
+  ELSE
+    required_permission := 'tax.filing.canonical.manage';
+  END IF;
   IF NEW.organization_id IS DISTINCT FROM app.current_organization_id()
     OR app.current_actor_id() IS NULL
     OR NOT app.current_actor_has_permission(required_permission)
