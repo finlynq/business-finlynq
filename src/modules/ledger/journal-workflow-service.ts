@@ -24,13 +24,14 @@ const approveSchema = z.object({
 export async function submitJournalForApproval(input: Readonly<{
   context: TenantTransactionContext;
 }> & z.input<typeof submitSchema>) {
-  assertTenantWritesEnabled(input.context);
-  const command = submitSchema.parse(input);
-  return withTenantTransaction(input.context, async (client) => {
-    await assertWritableOrganization(client, input.context);
+  const { context, ...unparsedCommand } = input;
+  assertTenantWritesEnabled(context);
+  const command = submitSchema.parse(unparsedCommand);
+  return withTenantTransaction(context, async (client) => {
+    await assertWritableOrganization(client, context);
     await assertActorHasActivePermission(client, {
-      organizationId: input.context.organizationId,
-      actorId: input.context.actorId,
+      organizationId: context.organizationId,
+      actorId: context.actorId,
       permission: PERMISSIONS.submitJournal,
     });
     const current = await client.query<{
@@ -50,7 +51,7 @@ export async function submitJournalForApproval(input: Readonly<{
         AND type.version = entry.journal_type_version
        WHERE entry.organization_id = $1 AND entry.id = $2
        FOR UPDATE OF entry`,
-      [input.context.organizationId, command.journalId],
+      [context.organizationId, command.journalId],
     );
     const journal = current.rows[0];
     if (!journal || journal.owner_module !== "ledger" || journal.journal_type_key !== "ledger.manual") {
@@ -77,7 +78,7 @@ export async function submitJournalForApproval(input: Readonly<{
       `UPDATE journal_entries SET status = 'SUBMITTED'
        WHERE organization_id = $1 AND id = $2 AND status = 'DRAFT'
        RETURNING content_hash, approval_version`,
-      [input.context.organizationId, journal.id],
+      [context.organizationId, journal.id],
     );
     const submitted = updated.rows[0];
     if (!submitted) throw new Error("Concurrent journal submission detected");
@@ -88,14 +89,15 @@ export async function submitJournalForApproval(input: Readonly<{
 export async function approveSubmittedJournal(input: Readonly<{
   context: TenantTransactionContext;
 }> & z.input<typeof approveSchema>) {
-  assertTenantWritesEnabled(input.context);
-  const command = approveSchema.parse(input);
-  if (input.context.reason !== command.reason) throw new Error("Approval reason must be bound to the transaction audit context");
-  return withTenantTransaction(input.context, async (client) => {
-    await assertWritableOrganization(client, input.context);
+  const { context, ...unparsedCommand } = input;
+  assertTenantWritesEnabled(context);
+  const command = approveSchema.parse(unparsedCommand);
+  if (context.reason !== command.reason) throw new Error("Approval reason must be bound to the transaction audit context");
+  return withTenantTransaction(context, async (client) => {
+    await assertWritableOrganization(client, context);
     await assertActorHasActivePermission(client, {
-      organizationId: input.context.organizationId,
-      actorId: input.context.actorId,
+      organizationId: context.organizationId,
+      actorId: context.actorId,
       permission: PERMISSIONS.approveJournal,
     });
     const current = await client.query<{
@@ -111,7 +113,7 @@ export async function approveSubmittedJournal(input: Readonly<{
        FROM journal_entries
        WHERE organization_id = $1 AND id = $2
        FOR UPDATE`,
-      [input.context.organizationId, command.journalId],
+      [context.organizationId, command.journalId],
     );
     const journal = current.rows[0];
     if (!journal) throw new Error("Journal was not found in the authorized organization");
@@ -125,7 +127,7 @@ export async function approveSubmittedJournal(input: Readonly<{
     if (journal.status !== "SUBMITTED" || !journal.content_hash || !journal.approval_version) {
       throw new Error("Only a submitted frozen journal can be approved");
     }
-    if (journal.created_by === input.context.actorId) {
+    if (journal.created_by === context.actorId) {
       throw new Error("Maker-checker control prevents a journal creator from approving the same journal");
     }
     if (journal.content_hash.toLowerCase() !== command.expectedContentHash.toLowerCase() ||
@@ -145,7 +147,7 @@ export async function approveSubmittedJournal(input: Readonly<{
         journal.id,
         journal.approval_version,
         journal.content_hash,
-        input.context.actorId,
+        context.actorId,
         command.reason,
       ],
     );
@@ -154,7 +156,7 @@ export async function approveSubmittedJournal(input: Readonly<{
        SET status = 'APPROVED', approved_by = $3, approved_at = now()
        WHERE organization_id = $1 AND id = $2 AND status = 'SUBMITTED'
        RETURNING content_hash, approval_version`,
-      [input.context.organizationId, journal.id, input.context.actorId],
+      [context.organizationId, journal.id, context.actorId],
     );
     if (!updated.rows[0]) throw new Error("Concurrent journal approval detected");
     return { journalId: journal.id, status: "APPROVED" as const, contentHash: updated.rows[0].content_hash, approvalVersion: updated.rows[0].approval_version, idempotentReplay: false };
