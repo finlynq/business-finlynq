@@ -767,6 +767,17 @@ describe("database schema verifier", () => {
       .toMatchObject({ isUnique: true, method: "btree" });
     expect(merged.tables.get("constraint_probe")?.indexes.has("constraint_probe_request_key_idx")).toBe(false);
 
+    const replacementOverlay = parseMigrationOwnedConstraintContract(`
+      DROP INDEX constraint_probe_scope_unique;
+      ALTER TABLE constraint_probe ADD CONSTRAINT constraint_probe_scope_unique
+        UNIQUE NULLS NOT DISTINCT (parent_id, request_key);
+    `);
+    const replacementMerged = applyMigrationOwnedConstraintContract(merged, replacementOverlay);
+    expect(replacementMerged.tables.get("constraint_probe")?.uniqueConstraints.get("constraint_probe_scope_unique"))
+      .toEqual({ name: "constraint_probe_scope_unique", columns: ["parent_id", "request_key"], nullsNotDistinct: true });
+    expect(replacementMerged.tables.get("constraint_probe")?.indexes.get("constraint_probe_scope_unique"))
+      .toMatchObject({ isUnique: true, nullsNotDistinct: true });
+
     const journalSnapshot = {
       tables: new Map([["journal_entries", {
         checks: new Map(),
@@ -802,7 +813,7 @@ describe("database schema verifier", () => {
       }),
       { checks: 0, foreignKeys: 0, indexes: 0, uniqueConstraints: 0 },
     );
-    expect(counts).toEqual({ checks: 302, foreignKeys: 115, indexes: 255, uniqueConstraints: 55 });
+    expect(counts).toEqual({ checks: 316, foreignKeys: 115, indexes: 266, uniqueConstraints: 57 });
     expect(migrationContract.get("bank_connections")?.checks.get("bank_connections_provider_check"))
       .toMatchObject({ expression: "provider=any(array['SIMPLEFIN','FILE_IMPORT'])" });
     expect(migrationContract.get("bank_match_allocations")?.checks.get("bank_match_allocations_command_hash_sha256"))

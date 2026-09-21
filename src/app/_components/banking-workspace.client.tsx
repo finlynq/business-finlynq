@@ -216,7 +216,43 @@ function ReconciliationView({ workspace }: { workspace: BankingWorkspaceDto }) {
   const [message, setMessage] = useState("");
   const [error, setError] = useState(false);
   const [matchIdempotencyKey, setMatchIdempotencyKey] = useState("");
+  const [reconciliationMode, setReconciliationMode] = useState<"SIMPLE" | "ADVANCED">("SIMPLE");
+  const [mobilePane, setMobilePane] = useState<"BANK" | "BOOKS">("BOOKS");
+  const [selectedObservationId, setSelectedObservationId] = useState("");
+  const [selectedLedgerLineId, setSelectedLedgerLineId] = useState("");
+  const [allocationAmount, setAllocationAmount] = useState("");
+  const [reconciliationFilter, setReconciliationFilter] = useState("");
   const mapped = workspace.accounts.filter((account) => account.accountCombinationId);
+  const normalizedReconciliationFilter = reconciliationFilter.trim().toLowerCase();
+  const visibleObservations = (workspace.activeReconciliation?.observations ?? []).filter((row) => (
+    !normalizedReconciliationFilter
+    || `${row.postedOn} ${row.payee} ${row.amount}`.toLowerCase().includes(normalizedReconciliationFilter)
+  ));
+  const visibleLedgerLines = (workspace.activeReconciliation?.ledgerLines ?? []).filter((row) => (
+    !normalizedReconciliationFilter
+    || `${row.accountingDate} ${row.journalLabel} ${row.description} ${row.memo ?? ""} ${row.amount}`.toLowerCase().includes(normalizedReconciliationFilter)
+  ));
+  const linkedLedgerLineIds = new Set((workspace.activeReconciliation?.allocations ?? [])
+    .filter((allocation) => allocation.observationVersionId === selectedObservationId)
+    .map((allocation) => allocation.journalLineId));
+  const linkedObservationIds = new Set((workspace.activeReconciliation?.allocations ?? [])
+    .filter((allocation) => allocation.journalLineId === selectedLedgerLineId)
+    .map((allocation) => allocation.observationVersionId));
+
+  function navigateReconciliationPage(kind: "bank" | "books", cursor: string | null) {
+    const active = workspace.activeReconciliation;
+    if (!active) return;
+    const parameters = new URLSearchParams({
+      view: "reconciliation",
+      reconciliation: active.id,
+      pageSize: String(active.pagination.pageSize),
+    });
+    const bankAfter = kind === "bank" ? cursor : active.pagination.bankAfter;
+    const booksAfter = kind === "books" ? cursor : active.pagination.booksAfter;
+    if (bankAfter) parameters.set("bankAfter", bankAfter);
+    if (booksAfter) parameters.set("booksAfter", booksAfter);
+    router.push(`/app/banking?${parameters.toString()}`);
+  }
 
   async function create(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -249,12 +285,14 @@ function ReconciliationView({ workspace }: { workspace: BankingWorkspaceDto }) {
     setBusy(true); setMessage(""); setError(false);
     try {
       await mutation(`/api/banking/reconciliations/${active.id}/matches`, "POST", {
-        observationVersionId: values.get("observationVersionId"),
-        journalLineId: values.get("journalLineId"),
-        allocatedAmount: values.get("allocatedAmount"),
+        observationVersionId: selectedObservationId || values.get("observationVersionId"),
+        journalLineId: selectedLedgerLineId || values.get("journalLineId"),
+        allocatedAmount: allocationAmount || values.get("allocatedAmount"),
         idempotencyKey: requestKey,
+        expectedVersion: active.version,
       });
       setMatchIdempotencyKey("");
+      setSelectedObservationId(""); setSelectedLedgerLineId(""); setAllocationAmount("");
       setMessage("Exact allocation added. The underlying provider observation and journal line remain immutable.");
       router.refresh();
     } catch (caught) { setError(true); setMessage(caught instanceof Error ? caught.message : "The allocation result is unknown. Retry the unchanged match to reuse its idempotency key."); }
@@ -268,7 +306,7 @@ function ReconciliationView({ workspace }: { workspace: BankingWorkspaceDto }) {
     const reason = String(new FormData(event.currentTarget).get("reason") ?? "").trim();
     setBusy(true); setMessage(""); setError(false);
     try {
-      await mutation(`/api/banking/reconciliations/${active.id}/matches/${allocationId}/void`, "POST", { reason });
+      await mutation(`/api/banking/reconciliations/${active.id}/matches/${allocationId}/void`, "POST", { reason, expectedVersion: active.version });
       setMessage("The allocation was voided with a permanent reason record.");
       router.refresh();
     } catch (caught) { setError(true); setMessage(caught instanceof Error ? caught.message : "Allocation void failed."); }
@@ -280,7 +318,7 @@ function ReconciliationView({ workspace }: { workspace: BankingWorkspaceDto }) {
     if (!active) return;
     setBusy(true); setMessage(""); setError(false);
     try {
-      await mutation(`/api/banking/reconciliations/${active.id}/transition`, "POST", { action });
+      await mutation(`/api/banking/reconciliations/${active.id}/transition`, "POST", { action, expectedVersion: active.version });
       setMessage(action === "SUBMIT" ? "Reconciliation submitted for authorized review." : action === "REVIEW" ? "Authorized review recorded." : "Reconciliation finalized with its exact balance proof and allocation hash.");
       router.refresh();
     } catch (caught) { setError(true); setMessage(caught instanceof Error ? caught.message : "Reconciliation transition failed."); }
@@ -294,7 +332,7 @@ function ReconciliationView({ workspace }: { workspace: BankingWorkspaceDto }) {
     const reason = String(new FormData(event.currentTarget).get("reason") ?? "").trim();
     setBusy(true); setMessage(""); setError(false);
     try {
-      await mutation(`/api/banking/reconciliations/${active.id}/transition`, "POST", { action: "VOID", reason });
+      await mutation(`/api/banking/reconciliations/${active.id}/transition`, "POST", { action: "VOID", reason, expectedVersion: active.version });
       setMessage("The reconciliation was voided with permanent evidence. Its provider observations and posted journals were not changed.");
       router.refresh();
     } catch (caught) { setError(true); setMessage(caught instanceof Error ? caught.message : "Reconciliation void failed."); }
@@ -323,18 +361,54 @@ function ReconciliationView({ workspace }: { workspace: BankingWorkspaceDto }) {
           <div><span>Statement-to-bank difference</span><strong>{displayAmount(workspace.activeReconciliation.statementToBankDifference, workspace.activeReconciliation.currencyCode)}</strong></div>
           <div><span>Allocated posted cash-line movement</span><strong>{displayAmount(workspace.activeReconciliation.ledgerTotal, workspace.activeReconciliation.currencyCode)}</strong></div>
           <div><span>Unexplained difference</span><strong>{displayAmount(workspace.activeReconciliation.unexplainedDifference, workspace.activeReconciliation.currencyCode)}</strong></div>
-          <div><span>Unresolved evidence</span><strong>{workspace.activeReconciliation.unmatchedObservationCount} bank observation(s) · {workspace.activeReconciliation.unmatchedLedgerLineCount} invalid allocation(s)</strong></div>
+          <div><span>Unresolved evidence</span><strong>{workspace.activeReconciliation.unmatchedObservationCount} bank observation(s) · {workspace.activeReconciliation.unmatchedLedgerLineCount} unmatched books line(s)</strong></div>
         </div>
-        {workspace.activeReconciliation.status === "DRAFT" && workspace.permissions.reconcilePrepare && <form className={styles.form} onSubmit={(event) => { void addMatch(event); }}>
-          <div className={styles.gridThree}>
-            <label><span>Bank observation</span><select name="observationVersionId" required defaultValue=""><option value="">Choose unmatched observation…</option>{workspace.activeReconciliation.observations.filter((row) => row.remaining !== "0.000000000").map((row) => <option key={row.versionId} value={row.versionId}>{row.postedOn} · {row.payee} · {displayAmount(row.remaining, workspace.activeReconciliation!.currencyCode)} remaining</option>)}</select></label>
-            <label><span>Posted cash line</span><select name="journalLineId" required defaultValue=""><option value="">Choose unmatched ledger line…</option>{workspace.activeReconciliation.ledgerLines.filter((row) => row.remaining !== "0.000000000").map((row) => <option key={row.lineId} value={row.lineId}>{row.accountingDate} · {row.journalLabel} · {displayAmount(row.remaining, workspace.activeReconciliation!.currencyCode)} remaining</option>)}</select></label>
-            <label><span>Positive allocation amount</span><input name="allocatedAmount" inputMode="decimal" pattern="\d+(\.\d{1,9})?" required /></label>
+        <div className={styles.reconciliationToolbar}>
+          <div className={styles.segmented} role="group" aria-label="Reconciliation mode">
+            <button type="button" aria-pressed={reconciliationMode === "SIMPLE"} onClick={() => setReconciliationMode("SIMPLE")}>Simple</button>
+            <button type="button" aria-pressed={reconciliationMode === "ADVANCED"} onClick={() => setReconciliationMode("ADVANCED")}>Advanced</button>
           </div>
-          <div className={styles.actions}><button className="secondary-button" disabled={busy}>Add exact allocation</button></div>
+          <label><span className="sr-only">Filter bank and book rows</span><input type="search" value={reconciliationFilter} onChange={(event) => setReconciliationFilter(event.target.value)} placeholder="Filter date, payee, memo, amount…" /></label>
+          <span className={styles.versionBadge}>Version {workspace.activeReconciliation.version} · {workspace.activeReconciliation.accountClass.toLowerCase()} account</span>
+        </div>
+        <div className={styles.filterCounts} aria-label="Complete reconciliation population counts">
+          <span>Matched {workspace.activeReconciliation.filterCounts.matched}</span>
+          <span>Partial {workspace.activeReconciliation.filterCounts.partial}</span>
+          <span>Suggested {workspace.activeReconciliation.filterCounts.suggested}</span>
+          <span>Bank only {workspace.activeReconciliation.filterCounts.bankOnly}</span>
+          <span>Books only {workspace.activeReconciliation.filterCounts.booksOnly}</span>
+          <span>Exceptions {workspace.activeReconciliation.filterCounts.exceptions}</span>
+          <span>Pending drafts {workspace.activeReconciliation.filterCounts.pendingDrafts}</span>
+        </div>
+        <div className={styles.mobilePaneTabs} role="group" aria-label="Choose reconciliation pane">
+          <button type="button" aria-pressed={mobilePane === "BOOKS"} onClick={() => setMobilePane("BOOKS")}>Books</button>
+          <button type="button" aria-pressed={mobilePane === "BANK"} onClick={() => setMobilePane("BANK")}>Bank statement</button>
+        </div>
+        <div className={styles.reconciliationPanes} data-mobile-pane={mobilePane.toLowerCase()}>
+          <section className={styles.reconciliationPane} data-pane="books" aria-labelledby="books-pane-title">
+            <div className={styles.paneHeading}><div><p className="eyebrow">Posted accounting</p><h3 id="books-pane-title">Books</h3></div><span>{workspace.activeReconciliation.pagination.totalBooksRows} total</span></div>
+            <div className={styles.rowList}>{visibleLedgerLines.map((row) => <button type="button" key={row.lineId} className={`${styles.matchRow} ${linkedLedgerLineIds.has(row.lineId) ? styles.linkedRow : ""}`} aria-pressed={selectedLedgerLineId === row.lineId} data-linked={linkedLedgerLineIds.has(row.lineId)} onClick={() => { setSelectedLedgerLineId(row.lineId); if (!allocationAmount && row.remaining !== "0.000000000") setAllocationAmount(row.remaining); }}>
+              <span><strong>{row.journalLabel} · {row.memo ?? row.description}</strong><small>{row.accountingDate} · Debit {row.debitAmount} · Credit {row.creditAmount} · {row.accountEffect.toLowerCase()} {row.accountClass.toLowerCase()}{reconciliationMode === "ADVANCED" ? ` · ${row.lineId}` : ""}</small>{linkedLedgerLineIds.has(row.lineId) && <small>Linked to selected bank row</small>}</span>
+              <span className={styles.amount}><strong>{displayAmount(row.amount, workspace.activeReconciliation!.currencyCode)}</strong><small>{displayAmount(row.remaining, workspace.activeReconciliation!.currencyCode)} remaining</small></span>
+            </button>)}</div>
+            <div className={styles.panePagination}><button type="button" className="secondary-button" disabled={!workspace.activeReconciliation.pagination.booksAfter} onClick={() => navigateReconciliationPage("books", null)}>First books page</button><button type="button" className="secondary-button" disabled={!workspace.activeReconciliation.pagination.booksNext} onClick={() => navigateReconciliationPage("books", workspace.activeReconciliation!.pagination.booksNext)}>Next books page</button></div>
+          </section>
+          <section className={styles.reconciliationPane} data-pane="bank" aria-labelledby="bank-pane-title">
+            <div className={styles.paneHeading}><div><p className="eyebrow">Immutable provider evidence</p><h3 id="bank-pane-title">Bank statement</h3></div><span>{workspace.activeReconciliation.pagination.totalBankRows} total</span></div>
+            <div className={styles.rowList}>{visibleObservations.map((row) => <button type="button" key={row.versionId} className={`${styles.matchRow} ${linkedObservationIds.has(row.versionId) ? styles.linkedRow : ""}`} aria-pressed={selectedObservationId === row.versionId} data-linked={linkedObservationIds.has(row.versionId)} onClick={() => { setSelectedObservationId(row.versionId); if (!allocationAmount && row.remaining !== "0.000000000") setAllocationAmount(row.remaining); }}>
+              <span><strong>{row.payee}</strong><small>{row.postedOn}{reconciliationMode === "ADVANCED" ? ` · ${row.versionId}` : ""}</small>{linkedObservationIds.has(row.versionId) && <small>Linked to selected books row</small>}</span>
+              <span className={styles.amount}><strong>{displayAmount(row.amount, workspace.activeReconciliation!.currencyCode)}</strong><small>{displayAmount(row.remaining, workspace.activeReconciliation!.currencyCode)} remaining</small></span>
+            </button>)}</div>
+            <div className={styles.panePagination}><button type="button" className="secondary-button" disabled={!workspace.activeReconciliation.pagination.bankAfter} onClick={() => navigateReconciliationPage("bank", null)}>First bank page</button><button type="button" className="secondary-button" disabled={!workspace.activeReconciliation.pagination.bankNext} onClick={() => navigateReconciliationPage("bank", workspace.activeReconciliation!.pagination.bankNext)}>Next bank page</button></div>
+          </section>
+        </div>
+        {workspace.activeReconciliation.status === "DRAFT" && workspace.permissions.reconcilePrepare && <form className={styles.allocationBar} onSubmit={(event) => { void addMatch(event); }}>
+          <div><span>Bank selection</span><strong>{selectedObservationId ? "1 row selected" : "Choose a bank row"}</strong></div>
+          <div><span>Books selection</span><strong>{selectedLedgerLineId ? "1 row selected" : "Choose a books row"}</strong></div>
+          <label><span>Positive partial allocation</span><input name="allocatedAmount" value={allocationAmount} onChange={(event) => setAllocationAmount(event.target.value)} inputMode="decimal" pattern="\d+(\.\d{1,9})?" required /></label>
+          <button className="secondary-button" disabled={busy || !selectedObservationId || !selectedLedgerLineId}>Add exact allocation</button>
+          <small className={styles.full}>Repeat allocations against any remaining amount for one-to-many, many-to-one, or many-to-many matching. Nothing posts automatically.</small>
         </form>}
-        <div className="table-scroll" tabIndex={0}><table><thead><tr><th>Date / bank observation</th><th className={styles.amount}>Amount</th><th className={styles.amount}>Allocated</th><th className={styles.amount}>Remaining</th></tr></thead><tbody>{workspace.activeReconciliation.observations.map((row) => <tr key={row.versionId}><td><strong>{row.payee}</strong><small>{row.postedOn}</small></td><td className={styles.amount}>{displayAmount(row.amount, workspace.activeReconciliation!.currencyCode)}</td><td className={styles.amount}>{displayAmount(row.allocated, workspace.activeReconciliation!.currencyCode)}</td><td className={styles.amount}>{displayAmount(row.remaining, workspace.activeReconciliation!.currencyCode)}</td></tr>)}</tbody></table></div>
-        <div className="table-scroll" tabIndex={0}><table><thead><tr><th>Date / posted journal</th><th>Description</th><th className={styles.amount}>Amount</th><th className={styles.amount}>Allocated</th><th className={styles.amount}>Remaining</th></tr></thead><tbody>{workspace.activeReconciliation.ledgerLines.map((row) => <tr key={row.lineId}><td><strong>{row.journalLabel}</strong><small>{row.accountingDate}</small></td><td>{row.memo ?? row.description}</td><td className={styles.amount}>{displayAmount(row.amount, workspace.activeReconciliation!.currencyCode)}</td><td className={styles.amount}>{displayAmount(row.allocated, workspace.activeReconciliation!.currencyCode)}</td><td className={styles.amount}>{displayAmount(row.remaining, workspace.activeReconciliation!.currencyCode)}</td></tr>)}</tbody></table></div>
         {workspace.activeReconciliation.allocations.length > 0 && <div className="table-scroll" tabIndex={0}><table><thead><tr><th>Active allocation</th><th>Amount</th><th>Created</th><th>Correction</th></tr></thead><tbody>{workspace.activeReconciliation.allocations.map((row) => <tr key={row.id}><td><small>{row.observationVersionId}<br />{row.journalLineId}</small></td><td>{displayAmount(row.allocatedAmount, workspace.activeReconciliation!.currencyCode)}</td><td>{displayDate(row.createdAt)}</td><td>{workspace.activeReconciliation!.status === "DRAFT" && workspace.permissions.reconcilePrepare && <form className={styles.inlineForm} onSubmit={(event) => { void voidMatch(event, row.id); }}><input name="reason" minLength={8} maxLength={500} required placeholder="Permanent void reason" /><button className="secondary-button" disabled={busy}>Void match</button></form>}</td></tr>)}</tbody></table></div>}
         {(workspace.permissions.reconcilePrepare || workspace.permissions.reconcileReview) && <div className={styles.actions}>
           {workspace.activeReconciliation.status === "DRAFT" && workspace.permissions.reconcilePrepare && <button className="primary-button" type="button" disabled={busy} onClick={() => { void transition("SUBMIT"); }}>Submit balanced proof</button>}

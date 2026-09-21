@@ -22,10 +22,38 @@
 .proofGrid > div { display:grid; gap:4px; padding:10px; background:#fff; }
 .proofGrid span { color:var(--muted); font-size:12px; font-weight:750; text-transform:uppercase; letter-spacing:.05em; }
 .proofGrid strong { font-variant-numeric:tabular-nums; }
+.reconciliationToolbar { position:sticky; top:0; z-index:3; display:flex; flex-wrap:wrap; align-items:end; gap:10px; padding:10px; border:1px solid var(--line); border-radius:9px; background:rgba(255,255,255,.96); }
+.reconciliationToolbar label { flex:1 1 260px; }
+.segmented,.mobilePaneTabs { display:inline-flex; gap:2px; padding:3px; border:1px solid var(--line); border-radius:8px; background:#f4f7f8; }
+.segmented button,.mobilePaneTabs button { min-height:36px; padding:6px 12px; border:0; border-radius:6px; background:transparent; color:var(--muted); font-weight:750; }
+.segmented button[aria-pressed="true"],.mobilePaneTabs button[aria-pressed="true"] { color:#fff; background:var(--accent); }
+.versionBadge { margin-left:auto; color:var(--muted); font-size:12px; font-weight:750; }
+.filterCounts { display:flex; flex-wrap:wrap; gap:7px; margin:0 0 12px; }
+.filterCounts span { padding:5px 9px; border:1px solid var(--line); border-radius:999px; background:var(--surface); color:var(--muted); font-size:11px; font-weight:700; }
+.mobilePaneTabs { display:none; }
+.reconciliationPanes { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); gap:12px; min-height:360px; }
+.reconciliationPane { min-width:0; overflow:hidden; border:1px solid var(--line); border-radius:9px; background:#fff; }
+.reconciliationPane[data-pane="books"] { resize:horizontal; max-width:75vw; }
+.paneHeading { display:flex; justify-content:space-between; align-items:center; gap:8px; padding:12px; border-bottom:1px solid var(--line); background:#f8fbfb; }
+.paneHeading h3,.paneHeading p { margin:0; }
+.paneHeading > span { color:var(--muted); font-size:12px; }
+.rowList { display:grid; max-height:520px; overflow:auto; }
+.matchRow { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:12px; align-items:center; width:100%; min-height:64px; padding:10px 12px; border:0; border-bottom:1px solid var(--line); border-radius:0; text-align:left; background:#fff; color:var(--ink); }
+.matchRow:hover:not(:disabled) { background:#f5faf9; }
+.matchRow[aria-pressed="true"] { box-shadow:inset 4px 0 0 var(--accent); background:#eaf6f3; }
+.linkedRow { outline:2px dashed #466b85; outline-offset:-3px; }
+.matchRow:focus-visible { position:relative; z-index:1; outline:3px solid var(--accent); outline-offset:-3px; }
+.matchRow:disabled { opacity:.58; }
+.matchRow span { display:grid; gap:3px; min-width:0; }
+.matchRow small { overflow-wrap:anywhere; color:var(--muted); }
+.allocationBar { display:grid; grid-template-columns:1fr 1fr minmax(180px,1fr) auto; gap:10px; align-items:end; padding:12px; border:1px solid #c8ddd8; border-radius:9px; background:#f3faf8; }
+.allocationBar > div { display:grid; gap:4px; }
+.allocationBar span { color:var(--muted); font-size:12px; font-weight:750; text-transform:uppercase; letter-spacing:.04em; }
 .selectedRow { background:#f0f8f6; }
+.panePagination { display:flex; justify-content:flex-end; gap:8px; padding:9px; border-top:1px solid var(--line); background:#f8fbfb; }
 .inlineForm { display:flex; gap:8px; align-items:center; min-width:0; flex-wrap:wrap; }
 .inlineForm input { min-width:150px; }
-@media (max-width:860px) { .grid,.gridThree{grid-template-columns:repeat(2,minmax(0,1fr))}.full{grid-column:auto}.rowAction{display:grid}.rowAction select{min-width:0;width:100%} }
-@media (max-width:700px) { .proofGrid{grid-template-columns:repeat(2,minmax(0,1fr))}.inlineForm{display:grid;min-width:0} }
+@media (max-width:860px) { .grid,.gridThree{grid-template-columns:repeat(2,minmax(0,1fr))}.full{grid-column:auto}.rowAction{display:grid}.rowAction select{min-width:0;width:100%}.allocationBar{grid-template-columns:1fr 1fr}.reconciliationPanes{grid-template-columns:1fr}.reconciliationPane[data-pane="books"]{resize:none;max-width:none}.mobilePaneTabs{display:inline-flex}.reconciliationPanes[data-mobile-pane="bank"] [data-pane="books"],.reconciliationPanes[data-mobile-pane="books"] [data-pane="bank"]{display:none} }
+@media (max-width:700px) { .proofGrid{grid-template-columns:repeat(2,minmax(0,1fr))}.inlineForm{display:grid;min-width:0}.reconciliationToolbar{position:static}.versionBadge{margin-left:0;width:100%} }
 
 @media(max-width:480px) { .grid,.gridThree { grid-template-columns:1fr; } .proofGrid { grid-template-columns:1fr; } }

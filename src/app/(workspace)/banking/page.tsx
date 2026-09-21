@@ -7,13 +7,23 @@ import { requireWorkspacePrincipal } from "@/modules/workspace/access";
 type BankingView = "connections" | "reconciliation" | "rules";
 
 export default async function BankingPage({ searchParams }: {
-  searchParams: Promise<{ view?: string; reconciliation?: string }>;
+  searchParams: Promise<{
+    view?: string;
+    reconciliation?: string;
+    bankAfter?: string;
+    booksAfter?: string;
+    pageSize?: string;
+  }>;
 }) {
   const principal = await requireWorkspacePrincipal("/app/banking");
   const requestedParams = await searchParams;
   const requested = requestedParams.view;
   const view: BankingView = requested === "reconciliation" || requested === "rules" ? requested : "connections";
-  const workspace = await loadBankingWorkspace(principal, requestedParams.reconciliation);
+  const workspace = await loadBankingWorkspace(principal, requestedParams.reconciliation, {
+    bankAfter: requestedParams.bankAfter,
+    booksAfter: requestedParams.booksAfter,
+    pageSize: requestedParams.pageSize ? Number(requestedParams.pageSize) : undefined,
+  });
 
   return <div className="page-content">
     <PageHeader

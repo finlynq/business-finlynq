@@ -131,8 +131,8 @@ export default async function TaxPage({ searchParams }: { searchParams: Promise<
                 return <ExpandableTableRow key={filing.id} columns={6} label={`comparison for ${filing.entityCode} ${filing.periodStart}–${filing.periodEnd}`} cells={<>
                   <td><strong>{filing.periodStart} – {filing.periodEnd}</strong><small>{filing.filingType === "PREPARED" ? "Prepared declaration" : `Historical · ${filing.externalReference ?? "No reference"}`}</small></td>
                   <td><strong>{filing.entityCode}</strong><small>{filing.ledgerCode}</small></td>
-                  <td><strong>{filing.templateName}</strong><small>Version {filing.templateVersion}</small></td>
-                  <td><StatusPill status={filing.status} /></td>
+                  <td><strong>{filing.templateName}</strong><small>Template v{filing.templateVersion} · configuration v{filing.configurationVersion ?? "legacy"}</small></td>
+                  <td><StatusPill status={filing.status} /><small>{filing.lifecycleState ?? "HISTORICAL"}{filing.canonical ? " · CANONICAL" : " · not canonical"}</small><small>Reason: {filing.lifecycleReason ?? "Legacy workpaper"}{filing.replacementFilingId ? ` · replacement ${filing.replacementFilingId}` : ""}{filing.canonicalReason ? ` · canonical: ${filing.canonicalReason}` : ""}</small></td>
                   <td><strong>{variances.length} field{variances.length === 1 ? "" : "s"}</strong><small>{failedRules.length} rule exception{failedRules.length === 1 ? "" : "s"}</small></td>
                   </>}>
                       <div className="table-scroll" tabIndex={0} aria-label={`Workpaper comparison for ${filing.entityCode}`}>

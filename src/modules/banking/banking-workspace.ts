@@ -26,6 +26,66 @@ export function unmatchedReconciliationLedgerLines<T extends Readonly<{
   return rows.filter((row) => !new Decimal(row.amount).abs().equals(row.allocated));
 }
 
+export function interpretBankAccountLine(input: Readonly<{
+  accountClass: "ASSET" | "LIABILITY";
+  debitAmount: string;
+  creditAmount: string;
+}>): Readonly<{
+  signedComparisonAmount: string;
+  accountEffect: "INCREASE" | "DECREASE";
+}> {
+  const debit = new Decimal(input.debitAmount);
+  const credit = new Decimal(input.creditAmount);
+  const signed = input.accountClass === "LIABILITY"
+    ? credit.minus(debit)
+    : debit.minus(credit);
+  return {
+    signedComparisonAmount: signed.toFixed(9),
+    accountEffect: signed.isNegative() ? "DECREASE" : "INCREASE",
+  };
+}
+
+export type BankingWorkspacePaginationInput = Readonly<{
+  pageSize?: number;
+  bankAfter?: string;
+  booksAfter?: string;
+}>;
+
+function encodeRowCursor(kind: "bank" | "books", id: string, snapshotKey: string): string {
+  return Buffer.from(JSON.stringify({ v: 1, kind, id, snapshotKey }), "utf8").toString("base64url");
+}
+
+export function paginateReconciliationRows<T>(input: Readonly<{
+  rows: readonly T[];
+  kind: "bank" | "books";
+  after?: string;
+  pageSize: number;
+  snapshotKey: string;
+  id: (row: T) => string;
+}>): Readonly<{ rows: readonly T[]; nextCursor: string | null }> {
+  let start = 0;
+  if (input.after) {
+    try {
+      const decoded = JSON.parse(Buffer.from(input.after, "base64url").toString("utf8")) as { v?: unknown; kind?: unknown; id?: unknown; snapshotKey?: unknown };
+      if (decoded.v !== 1 || decoded.kind !== input.kind || typeof decoded.id !== "string"
+        || decoded.snapshotKey !== input.snapshotKey) throw new Error("invalid cursor");
+      const index = input.rows.findIndex((row) => input.id(row) === decoded.id);
+      if (index < 0) throw new Error("stale cursor");
+      start = index + 1;
+    } catch {
+      throw new Error(`The ${input.kind} reconciliation cursor is invalid or stale`);
+    }
+  }
+  const rows = input.rows.slice(start, start + input.pageSize);
+  const last = rows.at(-1);
+  return {
+    rows,
+    nextCursor: last && start + rows.length < input.rows.length
+      ? encodeRowCursor(input.kind, input.id(last), input.snapshotKey)
+      : null,
+  };
+}
+
 export type BankingWorkspaceDto = Readonly<{
   isDemo: boolean;
   feedEnabled: boolean;
@@ -119,6 +179,7 @@ export type BankingWorkspaceDto = Readonly<{
     closingBalance: string;
     currencyCode: string;
     status: string;
+    version: number;
     createdAt: string;
     matchCount: number;
     voidReason: string | null;
@@ -151,6 +212,8 @@ export type BankingWorkspaceDto = Readonly<{
   activeReconciliation: Readonly<{
     id: string;
     status: string;
+    version: number;
+    accountClass: "ASSET" | "LIABILITY";
     currencyCode: string;
     statementMovement: string;
     observationTotal: string;
@@ -177,7 +240,14 @@ export type BankingWorkspaceDto = Readonly<{
       accountingDate: string;
       description: string;
       memo: string | null;
+      debit: string;
+      credit: string;
+      debitAmount: string;
+      creditAmount: string;
+      accountClass: "ASSET" | "LIABILITY";
+      accountEffect: "INCREASE" | "DECREASE";
       amount: string;
+      signedComparisonAmount: string;
       allocated: string;
       remaining: string;
     }>[];
@@ -188,6 +258,24 @@ export type BankingWorkspaceDto = Readonly<{
       allocatedAmount: string;
       createdAt: string;
     }>[];
+    pagination: Readonly<{
+      pageSize: number;
+      bankAfter: string | null;
+      bankNext: string | null;
+      booksAfter: string | null;
+      booksNext: string | null;
+      totalBankRows: number;
+      totalBooksRows: number;
+    }>;
+    filterCounts: Readonly<{
+      matched: number;
+      partial: number;
+      suggested: number;
+      bankOnly: number;
+      booksOnly: number;
+      exceptions: number;
+      pendingDrafts: number;
+    }>;
   }> | null;
 }>;
 
@@ -230,7 +318,12 @@ function safeDecrypt(input: Readonly<{
 export async function loadBankingWorkspace(
   principal: SessionPrincipal,
   selectedReconciliationId?: string,
+  pagination: BankingWorkspacePaginationInput = {},
 ): Promise<BankingWorkspaceDto> {
+  const requestedPageSize = pagination.pageSize;
+  const pageSize = Number.isInteger(requestedPageSize)
+    ? Math.min(100, Math.max(10, requestedPageSize!))
+    : 50;
   return withWorkspaceTenantRead(readContext(principal), "/app/banking", async (client) => {
     const [canRead, canConnect, canSync, canPrepareReconciliation, canReviewReconciliation, canManageRules] = await Promise.all([
       actorHasActivePermission(client, { organizationId: principal.organizationId, actorId: principal.userId, permission: PERMISSIONS.readBanking }),
@@ -381,7 +474,8 @@ export async function loadBankingWorkspace(
         id: string; external_account_id: string; cash_account_combination_id: string;
         statement_start_on: string;
         statement_end_on: string; opening_balance: string; closing_balance: string;
-        currency_code: string; status: string; created_at: string; match_count: number;
+        currency_code: string; status: string; version: number;
+        account_class: "ASSET" | "LIABILITY"; created_at: string; match_count: number;
         void_reason: string | null; voided_at: string | null;
         finalized_observation_total: string | null; finalized_ledger_total: string | null;
         finalized_unexplained_difference: string | null; finalized_match_hash: string | null;
@@ -390,7 +484,8 @@ export async function loadBankingWorkspace(
            reconciliation.cash_account_combination_id,
            reconciliation.statement_start_on::text, reconciliation.statement_end_on::text,
            reconciliation.opening_balance::text, reconciliation.closing_balance::text,
-           reconciliation.currency_code, reconciliation.status, reconciliation.created_at::text,
+           reconciliation.currency_code, reconciliation.status, reconciliation.version,
+           account.class AS account_class, reconciliation.created_at::text,
            reconciliation.finalized_observation_total::text,
            reconciliation.finalized_ledger_total::text,
            reconciliation.finalized_unexplained_difference::text,
@@ -403,6 +498,12 @@ export async function loadBankingWorkspace(
                AND allocation.reconciliation_session_id = reconciliation.id
                AND void.id IS NULL) AS match_count
          FROM bank_reconciliation_sessions reconciliation
+         JOIN account_combinations combination
+           ON combination.organization_id = reconciliation.organization_id
+          AND combination.id = reconciliation.cash_account_combination_id
+         JOIN gl_accounts account
+           ON account.organization_id = combination.organization_id
+          AND account.id = combination.account_id
          LEFT JOIN bank_reconciliation_voids void
            ON void.organization_id = reconciliation.organization_id
           AND void.reconciliation_session_id = reconciliation.id
@@ -459,7 +560,7 @@ export async function loadBankingWorkspace(
     const selectedReconciliation = selectedReconciliationId
       ? reconciliationResult.rows.find((row) => row.id === selectedReconciliationId) ?? null
       : reconciliationResult.rows[0] ?? null;
-    const [reconciliationObservationsResult, reconciliationLinesResult, reconciliationAllocationsResult] = selectedReconciliation
+    const [reconciliationObservationsResult, reconciliationLinesResult, reconciliationAllocationsResult, reconciliationPendingDraftsResult] = selectedReconciliation
       ? await Promise.all([
         client.query<{
           id: string; details_ciphertext: string; key_version: number; posted_on: string;
@@ -509,13 +610,18 @@ export async function loadBankingWorkspace(
         ),
         client.query<{
           id: string; journal_id: string; journal_label: string; accounting_date: string;
-          description: string; memo: string | null; amount: string; allocated: string;
+          description: string; memo: string | null; debit: string; credit: string;
+          account_class: "ASSET" | "LIABILITY"; amount: string; allocated: string;
           session_allocated: string;
         }>(
           `SELECT line.id, journal.id AS journal_id,
              coalesce(journal.journal_number::text, journal.description) AS journal_label,
              journal.accounting_date::text, journal.description, line.memo,
-             (line.debit_transaction - line.credit_transaction)::text AS amount,
+             line.debit_transaction::text AS debit, line.credit_transaction::text AS credit,
+             account.class AS account_class,
+             (CASE WHEN account.class = 'LIABILITY'
+               THEN line.credit_transaction - line.debit_transaction
+               ELSE line.debit_transaction - line.credit_transaction END)::text AS amount,
              coalesce(sum(allocation.allocated_amount) FILTER (
                WHERE void.id IS NULL AND allocated_session.id IS NOT NULL
              ), 0)::text AS allocated,
@@ -527,6 +633,12 @@ export async function loadBankingWorkspace(
            JOIN journal_entries journal
              ON journal.organization_id = line.organization_id
             AND journal.id = line.journal_entry_id AND journal.status = 'POSTED'
+           JOIN account_combinations line_combination
+             ON line_combination.organization_id = line.organization_id
+            AND line_combination.id = line.account_combination_id
+           JOIN gl_accounts account
+             ON account.organization_id = line_combination.organization_id
+            AND account.id = line_combination.account_id
            LEFT JOIN bank_match_allocations allocation
              ON allocation.organization_id = $1
              AND allocation.journal_line_id = line.id
@@ -575,7 +687,7 @@ export async function loadBankingWorkspace(
                      AND deactivation.state='INACTIVE' AND deactivation.version>migration_cutover.version
                      AND deactivation.lifecycle_effective_on <= journal.accounting_date)
              )
-           GROUP BY line.id, journal.id
+           GROUP BY line.id, journal.id, account.class
            ORDER BY journal.accounting_date, journal.id, line.line_number`,
           [principal.organizationId, selectedReconciliation.id,
             selectedReconciliation.cash_account_combination_id,
@@ -597,8 +709,31 @@ export async function loadBankingWorkspace(
            ORDER BY allocation.id`,
           [principal.organizationId, selectedReconciliation.id],
         ),
+        client.query<{ count: number }>(
+          `SELECT count(DISTINCT proposal.observation_version_id)::int AS count
+           FROM bank_accounting_proposals proposal
+           JOIN bank_observation_versions version
+             ON version.organization_id=proposal.organization_id
+            AND version.id=proposal.observation_version_id
+           JOIN bank_observations observation
+             ON observation.organization_id=version.organization_id
+            AND observation.id=version.observation_id
+           WHERE proposal.organization_id=$1
+             AND observation.external_account_id=$2
+             AND version.posted_on BETWEEN $3::date AND $4::date
+             AND version.currency_code=$5
+             AND proposal.status IN ('PREPARED','REVIEWED')
+             AND NOT EXISTS (
+               SELECT 1 FROM bank_accounting_proposals successor
+               WHERE successor.organization_id=proposal.organization_id
+                 AND successor.supersedes_proposal_id=proposal.id
+             )`,
+          [principal.organizationId, selectedReconciliation.external_account_id,
+            selectedReconciliation.statement_start_on, selectedReconciliation.statement_end_on,
+            selectedReconciliation.currency_code],
+        ),
       ])
-      : [null, null, null] as const;
+      : [null, null, null, null] as const;
 
     const encryptedRowsExist = accountsResult.rows.length > 0 || rulesResult.rows.length > 0 || observationsResult.rows.length > 0 || proposalDetailsResult.rows.length > 0 || (reconciliationObservationsResult?.rows.length ?? 0) > 0;
     const activeKey = encryptedRowsExist
@@ -767,6 +902,14 @@ export async function loadBankingWorkspace(
         const lineRows = reconciliationLinesResult.rows.map((row) => {
           const amount = new Decimal(row.amount);
           const allocated = new Decimal(row.allocated);
+          const interpreted = interpretBankAccountLine({
+            accountClass: row.account_class,
+            debitAmount: row.debit,
+            creditAmount: row.credit,
+          });
+          if (!new Decimal(interpreted.signedComparisonAmount).equals(amount)) {
+            throw new Error("The database and application bank-account sign interpretations differ");
+          }
           return {
             lineId: row.id,
             journalId: row.journal_id,
@@ -774,7 +917,14 @@ export async function loadBankingWorkspace(
             accountingDate: row.accounting_date,
             description: row.description,
             memo: row.memo,
+            debit: new Decimal(row.debit).toFixed(9),
+            credit: new Decimal(row.credit).toFixed(9),
+            debitAmount: new Decimal(row.debit).toFixed(9),
+            creditAmount: new Decimal(row.credit).toFixed(9),
+            accountClass: row.account_class,
+            accountEffect: interpreted.accountEffect,
             amount: amount.toFixed(9),
+            signedComparisonAmount: interpreted.signedComparisonAmount,
             allocated: allocated.toFixed(9),
             remaining: amount.abs().minus(allocated).toFixed(9),
           };
@@ -810,9 +960,46 @@ export async function loadBankingWorkspace(
         const displayedUnexplainedDifference = finalized && selectedReconciliation.finalized_unexplained_difference !== null
           ? new Decimal(selectedReconciliation.finalized_unexplained_difference)
           : statementMovement.minus(displayedLedgerTotal);
+        const bankSnapshotKey = createHash("sha256").update(JSON.stringify({
+          reconciliationId: selectedReconciliation.id,
+          version: selectedReconciliation.version,
+          rows: observationRows.map((row) => row.versionId),
+        }), "utf8").digest("hex");
+        const booksSnapshotKey = createHash("sha256").update(JSON.stringify({
+          reconciliationId: selectedReconciliation.id,
+          version: selectedReconciliation.version,
+          rows: lineRows.map((row) => row.lineId),
+        }), "utf8").digest("hex");
+        const bankPage = paginateReconciliationRows({
+          rows: observationRows,
+          kind: "bank",
+          after: pagination.bankAfter,
+          pageSize,
+          snapshotKey: bankSnapshotKey,
+          id: (row) => row.versionId,
+        });
+        const booksPage = paginateReconciliationRows({
+          rows: lineRows,
+          kind: "books",
+          after: pagination.booksAfter,
+          pageSize,
+          snapshotKey: booksSnapshotKey,
+          id: (row) => row.lineId,
+        });
+        const matchedBankRows = observationRows.filter((row) => new Decimal(row.allocated).equals(new Decimal(row.amount).abs())).length;
+        const partialBankRows = observationRows.filter((row) => new Decimal(row.allocated).greaterThan(0)
+          && new Decimal(row.allocated).lessThan(new Decimal(row.amount).abs())).length;
+        const partialBookRows = lineRows.filter((row) => new Decimal(row.allocated).greaterThan(0)
+          && new Decimal(row.allocated).lessThan(new Decimal(row.amount).abs())).length;
+        const reconciliationObservationIds = new Set(observationRows.map((row) => row.versionId));
+        const suggestedObservationIds = new Set(proposals
+          .filter((proposal) => reconciliationObservationIds.has(proposal.observationVersionId))
+          .map((proposal) => proposal.observationVersionId));
         activeReconciliation = {
           id: selectedReconciliation.id,
           status: selectedReconciliation.status,
+          version: selectedReconciliation.version,
+          accountClass: selectedReconciliation.account_class,
           currencyCode: selectedReconciliation.currency_code,
           statementMovement: statementMovement.toFixed(9),
           observationTotal: displayedObservationTotal.toFixed(9),
@@ -826,8 +1013,8 @@ export async function loadBankingWorkspace(
           matchHash: finalized ? selectedReconciliation.finalized_match_hash ?? liveMatchHash : liveMatchHash,
           voidReason: selectedReconciliation.void_reason,
           voidedAt: selectedReconciliation.voided_at,
-          observations: observationRows,
-          ledgerLines: finalized ? [] : unmatchedLineRows,
+          observations: bankPage.rows,
+          ledgerLines: booksPage.rows,
           allocations: reconciliationAllocationsResult.rows.map((row) => ({
             id: row.id,
             observationVersionId: row.observation_version_id,
@@ -835,6 +1022,25 @@ export async function loadBankingWorkspace(
             allocatedAmount: row.allocated_amount,
             createdAt: row.created_at,
           })),
+          pagination: {
+            pageSize,
+            bankAfter: pagination.bankAfter ?? null,
+            bankNext: bankPage.nextCursor,
+            booksAfter: pagination.booksAfter ?? null,
+            booksNext: booksPage.nextCursor,
+            totalBankRows: observationRows.length,
+            totalBooksRows: lineRows.length,
+          },
+          filterCounts: {
+            matched: matchedBankRows,
+            partial: partialBankRows + partialBookRows,
+            suggested: suggestedObservationIds.size,
+            bankOnly: observationRows.length - matchedBankRows - partialBankRows,
+            booksOnly: unmatchedLineRows.filter((row) => new Decimal(row.allocated).isZero()).length,
+            exceptions: observationRows.filter((row) => new Decimal(row.remaining).isNegative()).length
+              + lineRows.filter((row) => new Decimal(row.remaining).isNegative()).length,
+            pendingDrafts: reconciliationPendingDraftsResult?.rows[0]?.count ?? 0,
+          },
         };
       }
 
@@ -879,7 +1085,7 @@ export async function loadBankingWorkspace(
           accountName: accountNames.get(row.external_account_id) ?? "Bank account",
           statementStartOn: row.statement_start_on, statementEndOn: row.statement_end_on,
           openingBalance: row.opening_balance, closingBalance: row.closing_balance,
-          currencyCode: row.currency_code, status: row.status,
+          currencyCode: row.currency_code, status: row.status, version: row.version,
           createdAt: row.created_at, matchCount: row.match_count,
           voidReason: row.void_reason, voidedAt: row.voided_at,
         })),
