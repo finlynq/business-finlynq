@@ -1498,7 +1498,13 @@ export function applyMigrationOwnedConstraintContract(snapshotContract, migratio
     }
   }
   for (const name of migrationContract.droppedIndexes ?? []) {
-    for (const table of selectedSnapshot.tables.values()) table.indexes.delete(name);
+    for (const table of selectedSnapshot.tables.values()) {
+      // A later UNIQUE constraint can intentionally replace an earlier unique
+      // index with the same name (for example, to add NULLS NOT DISTINCT).
+      // PostgreSQL exposes the constraint's backing index, so retain the
+      // synthesized index contract when the final migration contract owns it.
+      if (!table.uniqueConstraints.has(name)) table.indexes.delete(name);
+    }
   }
   for (const [tableName, names] of migrationContract.droppedConstraints ?? []) {
     const table = selectedSnapshot.tables.get(tableName);
@@ -2678,7 +2684,7 @@ export async function readDatabaseSchemaContract(client) {
           SELECT 1
             FROM pg_catalog.pg_constraint constraint_definition
            WHERE constraint_definition.conindid = index_relation.oid
-             AND constraint_definition.contype IN ('p', 'u', 'x')
+             AND constraint_definition.contype IN ('p', 'x')
         )
       GROUP BY relation.relname, index_relation.relname, index_definition.indisunique, index_definition.indnullsnotdistinct,
                access_method.amname, index_definition.indpred, index_definition.indrelid

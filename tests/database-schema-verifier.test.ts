@@ -30,10 +30,6 @@ const runtimeRoleReconciler = readFileSync(
   join(process.cwd(), "deploy", "postgres", "010-runtime-role.sh"),
   "utf8",
 );
-const schemaVerifierSource = readFileSync(
-  join(process.cwd(), "scripts", "operations", "verify-database-schema.mjs"),
-  "utf8",
-);
 
 function temporaryMetaDirectory(): string {
   const directory = mkdtempSync(join(tmpdir(), "business-finlynq-schema-verifier-"));
@@ -194,10 +190,6 @@ afterEach(() => {
 });
 
 describe("database schema verifier", () => {
-  it("does not double-count indexes owned by primary, unique, or exclusion constraints", () => {
-    expect(schemaVerifierSource).toContain("constraint_definition.contype IN ('p', 'u', 'x')");
-  });
-
   it("builds a migration-owner connection from individual environment settings", () => {
     expect(migrationConnectionConfig({
       NODE_ENV: "test",
@@ -774,6 +766,17 @@ describe("database schema verifier", () => {
     expect(merged.tables.get("constraint_probe")?.indexes.get("constraint_probe_parent_request_unique"))
       .toMatchObject({ isUnique: true, method: "btree" });
     expect(merged.tables.get("constraint_probe")?.indexes.has("constraint_probe_request_key_idx")).toBe(false);
+
+    const replacementOverlay = parseMigrationOwnedConstraintContract(`
+      DROP INDEX constraint_probe_scope_unique;
+      ALTER TABLE constraint_probe ADD CONSTRAINT constraint_probe_scope_unique
+        UNIQUE NULLS NOT DISTINCT (parent_id, request_key);
+    `);
+    const replacementMerged = applyMigrationOwnedConstraintContract(merged, replacementOverlay);
+    expect(replacementMerged.tables.get("constraint_probe")?.uniqueConstraints.get("constraint_probe_scope_unique"))
+      .toEqual({ name: "constraint_probe_scope_unique", columns: ["parent_id", "request_key"], nullsNotDistinct: true });
+    expect(replacementMerged.tables.get("constraint_probe")?.indexes.get("constraint_probe_scope_unique"))
+      .toMatchObject({ isUnique: true, nullsNotDistinct: true });
 
     const journalSnapshot = {
       tables: new Map([["journal_entries", {
