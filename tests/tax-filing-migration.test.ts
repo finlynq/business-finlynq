@@ -96,6 +96,17 @@ describe("tax filing reconciliation migration", () => {
     ]) expect(filingGovernance).not.toContain(`DELETE ${id}`);
   });
 
+  it("creates composite self-reference targets before their foreign keys", () => {
+    for (const [uniqueName, foreignKeyName] of [
+      ["tax_filing_canonical_selections_org_id_unique", "tax_filing_canonical_selections_org_supersedes_fk"],
+      ["tax_filing_configurations_org_id_unique", "tax_filing_configurations_org_supersedes_fk"],
+      ["tax_filing_lifecycle_events_org_id_unique", "tax_filing_lifecycle_events_org_supersedes_fk"],
+    ]) {
+      expect(filingGovernance.indexOf(uniqueName)).toBeGreaterThan(-1);
+      expect(filingGovernance.indexOf(uniqueName)).toBeLessThan(filingGovernance.indexOf(foreignKeyName));
+    }
+  });
+
   it("makes nullable registration scopes unique and filing configuration references mandatory", () => {
     expect(filingScopeConstraints).toContain("UNIQUE NULLS NOT DISTINCT");
     expect(filingScopeConstraints).toContain('"configuration_id" SET NOT NULL');
