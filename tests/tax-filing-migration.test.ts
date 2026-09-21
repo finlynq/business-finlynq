@@ -6,6 +6,7 @@ import { taxFilingTemplateDefinitionSchema } from "@/modules/tax/filing-template
 
 const root = process.cwd();
 const migration = readFileSync(join(root, "migrations/drizzle/0054_tax_filing_reconciliation.sql"), "utf8");
+const auditTriggerRepair = readFileSync(join(root, "migrations/drizzle/0071_ticket_60_62_hardening.sql"), "utf8");
 const runtimeGrants = readFileSync(join(root, "deploy/postgres/010-runtime-role.sh"), "utf8");
 const verifier = readFileSync(join(root, "scripts/operations/verify-database-schema.mjs"), "utf8");
 
@@ -47,6 +48,15 @@ describe("tax filing reconciliation migration", () => {
     const reset = migration.split("INSERT INTO demo_sandbox_reset_tables")[1] ?? "";
     expect(reset.indexOf("tax_account_mapping_lines")).toBeLessThan(reset.indexOf("tax_account_mapping_sets"));
     expect(reset.indexOf("tax_filings")).toBeLessThan(reset.indexOf("tax_account_mapping_sets"));
+  });
+
+  it("audits both mapping versions and filings without accessing a missing record field", () => {
+    expect(auditTriggerRepair).toContain("CREATE OR REPLACE FUNCTION app.audit_tax_filing_event()");
+    expect(auditTriggerRepair).toContain("selected_row jsonb := to_jsonb(NEW)");
+    expect(auditTriggerRepair).toContain("'version', selected_row -> 'version'");
+    expect(auditTriggerRepair).not.toMatch(/\bNEW\.version\b/);
+    expect(auditTriggerRepair).toContain("RETURN NEW");
+    expect(auditTriggerRepair).toContain("REVOKE ALL ON FUNCTION app.audit_tax_filing_event() FROM PUBLIC");
   });
 
   it("keeps runtime grant allowlists in lockstep without update or delete access", () => {

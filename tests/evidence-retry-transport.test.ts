@@ -40,6 +40,18 @@ describe("evidence retry transport", () => {
     expect(failure.error).not.toHaveProperty("retryAfterSeconds");
   });
 
+  it("reports a database schema-contract mismatch without exposing internals", () => {
+    const failure = envelope(Object.assign(new Error("record NEW has no field version"), { code: "42703" }));
+    expect(failure).toEqual({
+      status: "failed",
+      error: {
+        code: "MCP_SCHEMA_CONTRACT_MISMATCH",
+        message: "The operation encountered an internal schema contract mismatch. No accounting change was committed; contact support.",
+      },
+    });
+    expect(JSON.stringify(failure)).not.toContain("record NEW");
+  });
+
   it("reports an audit collision as a distinct non-retryable integrity failure", () => {
     const failure = envelope(Object.assign(new Error("internal audit row details"), { code: "MCP_AUDIT_INTEGRITY" }));
     expect(failure.error).toEqual({
