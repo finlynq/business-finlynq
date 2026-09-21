@@ -1,6 +1,6 @@
 .workspace { display:grid; gap:12px; }
 .workspace,.scopeBar,.scopeBar>*,.mappingField>*,.valueGrid>* { min-width:0; }
-.scopeBar { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1.2fr) minmax(140px,.55fr); align-items:end; gap:10px; padding:12px 14px; border:1px solid var(--line); border-radius:11px; background:#f8fbfb; box-shadow:var(--shadow); }
+.scopeBar { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1.2fr) minmax(140px,.55fr) auto; align-items:end; gap:10px; padding:12px 14px; border:1px solid var(--line); border-radius:11px; background:#f8fbfb; box-shadow:var(--shadow); }
 .scopeBar label>span,.scopeStatus>span { display:block; margin-bottom:7px; color:#53657a; font-size:12px; font-weight:850; letter-spacing:.06em; text-transform:uppercase; }
 .scopeStatus { min-height:44px; display:grid; align-content:center; padding:0 12px; border-left:3px solid #8ca6a1; }
 .scopeStatus>span { margin-bottom:3px; }
@@ -29,3 +29,17 @@
 @media(pointer:coarse),(max-width:860px) { .modeSwitch button { min-height:44px; } }
 .mappingSummary { display:block; margin-top:4px; color:var(--muted); font-size:12px; font-weight:500; overflow-wrap:anywhere; }
 .mappingField { border:0; border-radius:0; }
+.configurationSummary { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:1px; margin:0 16px; border:1px solid var(--line); border-radius:9px; overflow:hidden; background:var(--line); }
+.configurationSummary>div { display:grid; gap:5px; padding:12px; background:#fff; }
+.configurationSummary span { color:var(--muted); font-size:11px; font-weight:800; letter-spacing:.05em; text-transform:uppercase; }
+.configurationSummary strong { overflow-wrap:anywhere; font-size:13px; }
+.historyToggle { display:flex; align-items:center; gap:8px; min-height:42px; }
+.historyToggle input { width:auto; }
+.lifecycleList { display:grid; gap:10px; padding:12px; }
+.lifecycleList article { display:grid; grid-template-columns:minmax(0,1fr) minmax(240px,.8fr) minmax(240px,.8fr); gap:10px; align-items:end; padding:12px; border:1px solid var(--line); border-radius:8px; }
+.lifecycleList article>div { display:grid; gap:4px; }
+.lifecycleList article small { color:var(--muted); }
+.lifecycleList form { display:flex; gap:6px; align-items:end; }
+.lifecycleList form input { min-width:0; }
+@media (max-width:900px) { .configurationSummary{grid-template-columns:repeat(2,minmax(0,1fr))}.lifecycleList article{grid-template-columns:1fr}.lifecycleList form{display:grid} }
+@media (max-width:560px) { .configurationSummary{grid-template-columns:1fr;margin:0 12px} }

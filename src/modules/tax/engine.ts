@@ -1,10 +1,12 @@
 import { ontarioHstPack } from "./packs/ontario";
+import { atlanticHstPack } from "./packs/atlantic";
 import { washingtonSalesUsePack } from "./packs/washington";
 import { genericUnsupportedTaxPack } from "./packs/generic-unsupported";
 import type { TaxDecision, TaxFacts, TaxPack } from "./types";
 
 const registeredPacks = new Map<string, TaxPack>([
   [ontarioHstPack.key, ontarioHstPack],
+  [atlanticHstPack.key, atlanticHstPack],
   [washingtonSalesUsePack.key, washingtonSalesUsePack],
   [genericUnsupportedTaxPack.key, genericUnsupportedTaxPack],
 ]);

@@ -29,6 +29,9 @@ export type RouteFailureOperation =
   | "session-revocation"
   | "subledger-mutation"
   | "tax-filing-create"
+  | "tax-filing-configuration-save"
+  | "tax-filing-canonical-select"
+  | "tax-filing-lifecycle-transition"
   | "tax-mapping-save"
   | "trusted-browser-management";
 

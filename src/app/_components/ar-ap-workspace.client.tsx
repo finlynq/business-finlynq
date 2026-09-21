@@ -22,6 +22,7 @@ import {
   displayExactMoney,
   exactAllocationTotal,
   isPositiveExactAmount,
+  sourceTaxOverridePreview,
 } from "@/modules/subledger/client-money";
 import {
   applicableOrganizationFxRates,
@@ -57,6 +58,18 @@ export type DocumentLineDraft = Readonly<{
   category: TaxCategory;
   recoverablePercent: string;
   evidenceReference: string;
+  sourceTaxOverrideEnabled: boolean;
+  sourceTaxRatePercent: string;
+  sourceTaxAmount: string;
+  sourceTaxJurisdiction: string;
+  sourceTaxComponentKey: string;
+  sourceTaxEffectiveFrom: string;
+  sourceTaxEffectiveTo: string;
+  sourceTaxReason: string;
+  sourceTaxEvidenceReference: string;
+  sourceTaxReviewedTreatment: "" | "OUTPUT_PAYABLE" | "FULLY_RECOVERABLE" | "PARTIALLY_RECOVERABLE" | "NONRECOVERABLE";
+  sourceTaxAdjustmentReason: string;
+  sourceTaxAdjustmentEvidenceReference: string;
 }>;
 
 type BusinessDraft = Readonly<{
@@ -245,7 +258,7 @@ export function businessDraftCanPreserveFx(
 }
 
 export function businessDocumentLineDraftsFromSnapshot(
-  snapshot: Pick<BusinessDocumentSnapshot, "kind" | "lines">,
+  snapshot: Pick<BusinessDocumentSnapshot, "kind" | "lines" | "documentDate">,
 ): readonly DocumentLineDraft[] {
   return snapshot.lines.map((line) => ({
     key: line.lineNumber.toString(),
@@ -258,18 +271,51 @@ export function businessDocumentLineDraftsFromSnapshot(
       ? line.tax.recoverablePercent ?? "100"
       : "",
     evidenceReference: line.tax.evidenceReference ?? "",
+    sourceTaxOverrideEnabled: line.tax.sourceTaxOverride !== undefined,
+    sourceTaxRatePercent: line.tax.sourceTaxOverride?.ratePercent ?? "",
+    sourceTaxAmount: line.tax.sourceTaxOverride?.amount ?? "",
+    sourceTaxJurisdiction: line.tax.sourceTaxOverride?.jurisdiction ?? "",
+    sourceTaxComponentKey: line.tax.sourceTaxOverride?.componentKey ?? "HST_SOURCE",
+    sourceTaxEffectiveFrom: line.tax.sourceTaxOverride?.effectiveFrom ?? snapshot.documentDate,
+    sourceTaxEffectiveTo: line.tax.sourceTaxOverride?.effectiveTo ?? "",
+    sourceTaxReason: line.tax.sourceTaxOverride?.reason ?? "",
+    sourceTaxEvidenceReference: line.tax.sourceTaxOverride?.evidenceReference ?? "",
+    sourceTaxReviewedTreatment: line.tax.sourceTaxOverride?.reviewedTreatment ?? "",
+    sourceTaxAdjustmentReason: line.tax.sourceTaxOverride?.adjustmentReason ?? "",
+    sourceTaxAdjustmentEvidenceReference: line.tax.sourceTaxOverride?.adjustmentEvidenceReference ?? "",
   }));
 }
 
 export function businessDocumentLineTaxMutationFields(
-  line: Pick<DocumentLineDraft, "recoverablePercent" | "evidenceReference">,
+  line: Pick<DocumentLineDraft,
+    | "recoverablePercent" | "evidenceReference" | "sourceTaxOverrideEnabled"
+    | "sourceTaxRatePercent" | "sourceTaxAmount" | "sourceTaxJurisdiction"
+    | "sourceTaxComponentKey" | "sourceTaxEffectiveFrom" | "sourceTaxEffectiveTo"
+    | "sourceTaxReason" | "sourceTaxEvidenceReference" | "sourceTaxReviewedTreatment"
+    | "sourceTaxAdjustmentReason" | "sourceTaxAdjustmentEvidenceReference"
+  >,
   ownerModule: "receivables" | "payables",
-): Readonly<{ evidenceReference?: string; recoverablePercent?: string }> {
+): Readonly<Record<string, unknown>> {
   return {
     ...(line.evidenceReference ? { evidenceReference: line.evidenceReference } : {}),
     ...(ownerModule === "payables" && line.recoverablePercent
       ? { recoverablePercent: line.recoverablePercent }
       : {}),
+    ...(line.sourceTaxOverrideEnabled ? {
+      sourceTaxOverride: {
+        ratePercent: line.sourceTaxRatePercent,
+        amount: line.sourceTaxAmount,
+        jurisdiction: line.sourceTaxJurisdiction,
+        componentKey: line.sourceTaxComponentKey,
+        effectiveFrom: line.sourceTaxEffectiveFrom,
+        ...(line.sourceTaxEffectiveTo ? { effectiveTo: line.sourceTaxEffectiveTo } : {}),
+        reason: line.sourceTaxReason,
+        evidenceReference: line.sourceTaxEvidenceReference,
+        ...(line.sourceTaxReviewedTreatment ? { reviewedTreatment: line.sourceTaxReviewedTreatment } : {}),
+        ...(line.sourceTaxAdjustmentReason ? { adjustmentReason: line.sourceTaxAdjustmentReason } : {}),
+        ...(line.sourceTaxAdjustmentEvidenceReference ? { adjustmentEvidenceReference: line.sourceTaxAdjustmentEvidenceReference } : {}),
+      },
+    } : {}),
   };
 }
 
@@ -277,6 +323,39 @@ function taxEvidenceReferenceRequired(packKey: string, category: TaxCategory): b
   return category === "RESALE"
     || category === "MARKETPLACE_COLLECTED"
     || (packKey === "generic.unsupported" && category !== "STANDARD");
+}
+
+function SourceTaxOverridePreview({
+  line,
+  currency,
+}: Readonly<{
+  line: DocumentLineDraft;
+  currency: string;
+}>) {
+  const preview = sourceTaxOverridePreview({
+    netAmount: line.netAmount,
+    ratePercent: line.sourceTaxRatePercent,
+    sourceTaxAmount: line.sourceTaxAmount,
+    currency,
+  });
+
+  if (!preview) {
+    return <p className="full-field form-footnote">Enter a valid net amount, source rate, and source tax amount to preview the preserved arithmetic.</p>;
+  }
+
+  return (
+    <div
+      className={`full-field validation-message ${preview.arithmeticMatches ? "validation-success" : "validation-error"}`}
+      role="status"
+      aria-live="polite"
+    >
+      <strong>Source arithmetic</strong>
+      <p>
+        Net {displayExactMoney(currency, line.netAmount)} · Rate-calculated tax {displayExactMoney(currency, preview.calculatedTax)} · Source tax {displayExactMoney(currency, preview.sourceTax)} · Gross {displayExactMoney(currency, preview.gross)}
+      </p>
+      {!preview.arithmeticMatches && <p>The source tax differs from rate × net. Record both an adjustment reason and adjustment evidence before saving.</p>}
+    </div>
+  );
 }
 
 function defaultDocumentDraft(
@@ -356,6 +435,18 @@ function defaultDocumentDraft(
       category: "STANDARD",
       recoverablePercent: workspace.ownerModule === "payables" ? "100" : "",
       evidenceReference: "",
+      sourceTaxOverrideEnabled: false,
+      sourceTaxRatePercent: "",
+      sourceTaxAmount: "",
+      sourceTaxJurisdiction: `${entity?.tax.destinationCountry ?? ""}-${entity?.tax.destinationRegion ?? ""}`,
+      sourceTaxComponentKey: "HST_SOURCE",
+      sourceTaxEffectiveFrom: documentDate,
+      sourceTaxEffectiveTo: "",
+      sourceTaxReason: "",
+      sourceTaxEvidenceReference: "",
+      sourceTaxReviewedTreatment: "",
+      sourceTaxAdjustmentReason: "",
+      sourceTaxAdjustmentEvidenceReference: "",
     }],
   };
 }
@@ -548,7 +639,15 @@ export function DocumentDetails({
                   <td>{line.lineType === "ADJUSTMENT" ? "Adjustment / credit" : "Standard"}</td>
                   <td>{line.description}</td>
                   <td>{accountLabel(entity, line.accountCombinationId)}</td>
-                  <td>{line.tax.category.replaceAll("_", " ")}</td>
+                  <td>
+                    {line.tax.category.replaceAll("_", " ")}
+                    <small className="block-note">
+                      {line.taxDecision.sourceOverride
+                        ? `Automatic ${line.taxDecision.sourceOverride.automatedRatePercent ?? "unresolved"}% / ${displayExactMoney(businessSnapshot.currency, line.taxDecision.sourceOverride.automatedAmount ?? "0")} · Source override ${line.taxDecision.sourceOverride.ratePercent}% / ${displayExactMoney(businessSnapshot.currency, line.taxDecision.sourceOverride.sourceAmount)} · ${line.taxDecision.sourceOverride.state.replaceAll("_", " ").toLowerCase()}`
+                        : `Automatic · ${line.taxDecision.packKey}`}
+                    </small>
+                    {line.taxDecision.sourceOverride && <small className="block-note">Evidence: {line.taxDecision.sourceOverride.evidenceReference} · Reason: {line.taxDecision.sourceOverride.reason} · Treatment: {line.taxDecision.sourceOverride.reviewedTreatment?.replaceAll("_", " ") ?? "review required"}</small>}
+                  </td>
                   <td className={styles.amountCell}>{displayExactMoney(businessSnapshot.currency, line.netAmount)}</td>
                   <td className={styles.amountCell}>{displayExactMoney(businessSnapshot.currency, line.taxDecision.totalTax)}</td>
                 </tr>
@@ -1398,6 +1497,18 @@ export function ArApWorkspace({
                     ? draft.lines.at(-1)?.recoverablePercent ?? "100"
                     : "",
                   evidenceReference: "",
+                  sourceTaxOverrideEnabled: false,
+                  sourceTaxRatePercent: "",
+                  sourceTaxAmount: "",
+                  sourceTaxJurisdiction: `${documentEntity.tax.destinationCountry}-${documentEntity.tax.destinationRegion}`,
+                  sourceTaxComponentKey: "HST_SOURCE",
+                  sourceTaxEffectiveFrom: draft.documentDate,
+                  sourceTaxEffectiveTo: "",
+                  sourceTaxReason: "",
+                  sourceTaxEvidenceReference: "",
+                  sourceTaxReviewedTreatment: "",
+                  sourceTaxAdjustmentReason: "",
+                  sourceTaxAdjustmentEvidenceReference: "",
                 }],
               }))}>＋ Add line</button>
             </div>
@@ -1443,6 +1554,42 @@ export function ArApWorkspace({
                     <input value={line.evidenceReference} onChange={(event) => updateLine(line.key, { evidenceReference: event.target.value })} maxLength={200} required={taxEvidenceReferenceRequired(documentEntity.tax.packKey, line.category)} />
                     <small>Optional line-specific invoice, exemption, resale, or marketplace evidence reference.</small>
                   </label>
+                  <label className="full-field checkbox-field">
+                    <input
+                      type="checkbox"
+                      checked={line.sourceTaxOverrideEnabled}
+                      onChange={(event) => updateLine(line.key, {
+                        sourceTaxOverrideEnabled: event.target.checked,
+                        sourceTaxEffectiveFrom: line.sourceTaxEffectiveFrom || documentDraft.documentDate,
+                      })}
+                    />
+                    <span>Preserve tax stated on source document</span>
+                    <small>Controlled override. Drafts remain blocked from posting until an authorized recoverability treatment is selected.</small>
+                  </label>
+                  {line.sourceTaxOverrideEnabled && (
+                    <div className="full-field form-grid form-grid-three">
+                      <label><span>Source tax rate %</span><input inputMode="decimal" value={line.sourceTaxRatePercent} onChange={(event) => updateLine(line.key, { sourceTaxRatePercent: event.target.value })} required /></label>
+                      <label><span>Source tax amount</span><input inputMode="decimal" value={line.sourceTaxAmount} onChange={(event) => updateLine(line.key, { sourceTaxAmount: event.target.value })} required /></label>
+                      <label><span>Jurisdiction</span><input value={line.sourceTaxJurisdiction} onChange={(event) => updateLine(line.key, { sourceTaxJurisdiction: event.target.value.toUpperCase() })} placeholder="CA-NB" required /></label>
+                      <SourceTaxOverridePreview line={line} currency={documentDraft.currency} />
+                      <label><span>Component key</span><input value={line.sourceTaxComponentKey} onChange={(event) => updateLine(line.key, { sourceTaxComponentKey: event.target.value.toUpperCase() })} required /></label>
+                      <label><span>Effective from</span><input type="date" value={line.sourceTaxEffectiveFrom} onChange={(event) => updateLine(line.key, { sourceTaxEffectiveFrom: event.target.value })} required /></label>
+                      <label><span>Effective to</span><input type="date" value={line.sourceTaxEffectiveTo} onChange={(event) => updateLine(line.key, { sourceTaxEffectiveTo: event.target.value })} /></label>
+                      <label className="full-field"><span>Override reason</span><input value={line.sourceTaxReason} onChange={(event) => updateLine(line.key, { sourceTaxReason: event.target.value })} minLength={8} maxLength={500} required /></label>
+                      <label className="full-field"><span>Source evidence reference</span><input value={line.sourceTaxEvidenceReference} onChange={(event) => updateLine(line.key, { sourceTaxEvidenceReference: event.target.value })} maxLength={200} required /></label>
+                      <label className="full-field">
+                        <span>Authorized posting treatment</span>
+                        <select value={line.sourceTaxReviewedTreatment} onChange={(event) => updateLine(line.key, { sourceTaxReviewedTreatment: event.target.value as DocumentLineDraft["sourceTaxReviewedTreatment"] })}>
+                          <option value="">Pending review — save draft only</option>
+                          {workspace.ownerModule === "receivables"
+                            ? <option value="OUTPUT_PAYABLE">Output tax payable</option>
+                            : <><option value="FULLY_RECOVERABLE">Fully recoverable</option><option value="PARTIALLY_RECOVERABLE">Partially recoverable</option><option value="NONRECOVERABLE">Nonrecoverable</option></>}
+                        </select>
+                      </label>
+                      <label className="full-field"><span>Amount-adjustment reason (only if source amount differs from rate × net)</span><input value={line.sourceTaxAdjustmentReason} onChange={(event) => updateLine(line.key, { sourceTaxAdjustmentReason: event.target.value })} maxLength={500} /></label>
+                      <label className="full-field"><span>Amount-adjustment evidence</span><input value={line.sourceTaxAdjustmentEvidenceReference} onChange={(event) => updateLine(line.key, { sourceTaxAdjustmentEvidenceReference: event.target.value })} maxLength={200} /></label>
+                    </div>
+                  )}
                   <button className="icon-button remove-line" type="button" aria-label={`Remove line ${index + 1}`} onClick={() => setDocumentDraft((draft) => ({ ...draft, lines: draft.lines.filter((candidate) => candidate.key !== line.key) }))} disabled={documentDraft.lines.length === 1}>×</button>
                 </fieldset>
               ))}
@@ -1735,6 +1882,7 @@ export function ArApWorkspace({
                       const documentDate = subledgerDocumentDate(document);
                       const dueOn = subledgerDocumentDueDate(document);
                       const partiallySettled = document.openStatus === "PARTIALLY_SETTLED" || document.openStatus === "SETTLED";
+                      const taxReviewRequired = businessSnapshot?.lines?.some((line) => line.taxDecision.status === "MANUAL_REVIEW_REQUIRED") ?? false;
                       return (
                         <tr id={`source-${document.id}`} key={document.id}>
                           <td className={styles.numberCell}>
@@ -1770,7 +1918,8 @@ export function ArApWorkspace({
                             <div className={styles.rowActions}>
                               <button className="secondary-button compact-button" type="button" onClick={() => viewDocument(document)} disabled={busy || pending}>View details</button>
                               {business && document.status === "DRAFT" && workspace.canManage && <button className="secondary-button compact-button" type="button" onClick={() => openDocument(document)} disabled={busy || pending}>Edit draft</button>}
-                              {business && document.status === "DRAFT" && workspace.canPost && <button className="primary-button compact-button" type="button" onClick={() => void issueDocument(document)} disabled={busy || pending}>Issue</button>}
+                              {business && document.status === "DRAFT" && workspace.canPost && !taxReviewRequired && <button className="primary-button compact-button" type="button" onClick={() => void issueDocument(document)} disabled={busy || pending}>Issue</button>}
+                              {business && document.status === "DRAFT" && taxReviewRequired && <small>Tax review required before issue</small>}
                               {business && document.status === "POSTED" && workspace.canSettle && document.openAmount && isPositiveExactAmount(document.openAmount) && <button className="secondary-button compact-button" type="button" onClick={() => openSettlement(document.snapshot.partyAccountId, document.snapshot.currency)} disabled={busy || pending}>Record {settlementLabel}</button>}
                               {document.status === "POSTED" && workspace.canVoid && <button className="text-danger-button" type="button" onClick={() => prepareVoid(document)} disabled={busy || pending || (business && partiallySettled)}>{business && partiallySettled ? `Reverse ${settlementLabel} first` : "Void"}</button>}
                             </div>

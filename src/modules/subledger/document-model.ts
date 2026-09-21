@@ -413,6 +413,34 @@ export const taxInputSchema = z.object({
   registrationId: z.string().trim().min(1).max(200).optional(),
   evidenceReference: z.string().trim().min(1).max(200).optional(),
   recoverablePercent: z.string().trim().regex(/^\d+(?:\.\d{1,9})?$/).optional(),
+  sourceTaxOverride: z.object({
+    ratePercent: z.string().trim().regex(/^\d+(?:\.\d{1,9})?$/),
+    amount: signedNonZeroAmountSchema,
+    jurisdiction: z.string().trim().toUpperCase().regex(/^[A-Z]{2}(?:-[A-Z0-9]{2,10})?$/),
+    componentKey: z.string().trim().toUpperCase().regex(/^[A-Z][A-Z0-9_]{1,49}$/),
+    effectiveFrom: z.iso.date(),
+    effectiveTo: z.iso.date().nullable().optional(),
+    reason: z.string().trim().min(8).max(500),
+    evidenceReference: z.string().trim().min(1).max(200),
+    reviewedTreatment: z.enum([
+      "OUTPUT_PAYABLE",
+      "FULLY_RECOVERABLE",
+      "PARTIALLY_RECOVERABLE",
+      "NONRECOVERABLE",
+    ]).optional(),
+    adjustmentReason: z.string().trim().min(8).max(500).optional(),
+    adjustmentEvidenceReference: z.string().trim().min(1).max(200).optional(),
+  }).strict().superRefine((value, context) => {
+    if (exact(value.ratePercent).lessThanOrEqualTo(0) || exact(value.ratePercent).greaterThan(100)) {
+      context.addIssue({ code: "custom", path: ["ratePercent"], message: "Source tax rate must be greater than zero and no more than 100 percent" });
+    }
+    if ((value.adjustmentReason === undefined) !== (value.adjustmentEvidenceReference === undefined)) {
+      context.addIssue({ code: "custom", message: "A source-tax amount adjustment requires both a reason and evidence reference" });
+    }
+    if (value.effectiveTo && value.effectiveTo < value.effectiveFrom) {
+      context.addIssue({ code: "custom", path: ["effectiveTo"], message: "Source-tax effective end cannot precede its start" });
+    }
+  }).optional(),
 }).strict();
 
 export const businessDocumentLineInputSchema = z.object({
@@ -594,6 +622,27 @@ export const taxDecisionSchema = z.object({
   rounding: z.literal("LINE_HALF_UP"),
   source: z.string(),
   reviewReason: z.string().optional(),
+  sourceOverride: z.object({
+    state: z.enum(["PENDING_REVIEW", "REVIEWED"]),
+    ratePercent: z.string(),
+    sourceAmount: z.string(),
+    calculatedAmount: z.string(),
+    adjustmentAmount: z.string(),
+    automatedStatus: z.enum([
+      "APPLIED", "ZERO_RATED", "EXEMPT", "RESALE", "MARKETPLACE_COLLECTED",
+      "OUT_OF_SCOPE", "MANUAL_REVIEW_REQUIRED",
+    ]).optional(),
+    automatedRatePercent: z.string().optional(),
+    automatedAmount: z.string().optional(),
+    automatedRuleKey: z.string().optional(),
+    jurisdiction: z.string(),
+    componentKey: z.string(),
+    reason: z.string(),
+    evidenceReference: z.string(),
+    reviewedTreatment: z.enum(["OUTPUT_PAYABLE", "FULLY_RECOVERABLE", "PARTIALLY_RECOVERABLE", "NONRECOVERABLE"]).optional(),
+    adjustmentReason: z.string().optional(),
+    adjustmentEvidenceReference: z.string().optional(),
+  }).strict().optional(),
 }).strict();
 
 const businessDocumentSnapshotLineSchema = z.object({
@@ -796,6 +845,133 @@ function buildTaxFacts(
   };
 }
 
+function decideLineTax(
+  tax: z.infer<typeof taxInputSchema>,
+  facts: TaxFacts,
+): TaxDecision {
+  const baseDecision = decideTax(tax.packKey, facts);
+  const override = tax.sourceTaxOverride;
+  if (!override) return baseDecision;
+  if (facts.category !== "STANDARD") {
+    throw new Error("A source-tax override is only valid for a standard taxable line");
+  }
+  if (facts.taxPointDate < override.effectiveFrom
+      || (override.effectiveTo && facts.taxPointDate > override.effectiveTo)) {
+    throw new Error("The source-tax override is not effective on the document date");
+  }
+  if (!isQuantizedMoney(override.amount, facts.currency)) {
+    throw new Error("The source-tax amount exceeds the document currency precision");
+  }
+  const basis = exact(facts.taxableBasis);
+  const sourceAmount = exact(override.amount);
+  if ((basis.isNegative() && sourceAmount.greaterThan(0))
+      || (basis.greaterThan(0) && sourceAmount.isNegative())) {
+    throw new Error("The source-tax amount must have the same sign as its taxable basis");
+  }
+  const rate = exact(override.ratePercent).div(100);
+  const calculated = quantizeMoney(basis.times(rate), facts.currency);
+  const adjustment = sourceAmount.minus(calculated);
+  if (!adjustment.isZero() && (!override.adjustmentReason || !override.adjustmentEvidenceReference)) {
+    throw new Error("A source-tax amount that differs from rate × net requires an adjustment reason and evidence reference");
+  }
+
+  const reviewed = override.reviewedTreatment !== undefined;
+  const automatedRatePercent = baseDecision.components
+    .reduce((total, component) => total.plus(component.rate), exact(0))
+    .times(100)
+    .toFixed();
+  let recoveryRate = exact(facts.recoverablePercent ?? "0").div(100);
+  if (facts.direction === "SALE") {
+    if (reviewed && override.reviewedTreatment !== "OUTPUT_PAYABLE") {
+      throw new Error("A sales source-tax override must be reviewed as output payable");
+    }
+    recoveryRate = exact(0);
+  } else {
+    if (recoveryRate.isNegative() || recoveryRate.greaterThan(1)) {
+      throw new Error("Recoverable source-tax percentage must be between 0 and 100");
+    }
+    if (override.reviewedTreatment === "OUTPUT_PAYABLE") {
+      throw new Error("A purchase source-tax override cannot be reviewed as output payable");
+    }
+    if (override.reviewedTreatment === "FULLY_RECOVERABLE" && !recoveryRate.equals(1)) {
+      throw new Error("Fully recoverable source tax requires a recoverable percentage of 100");
+    }
+    if (override.reviewedTreatment === "PARTIALLY_RECOVERABLE"
+        && (recoveryRate.lessThanOrEqualTo(0) || recoveryRate.greaterThanOrEqualTo(1))) {
+      throw new Error("Partially recoverable source tax requires a percentage greater than 0 and less than 100");
+    }
+    if (override.reviewedTreatment === "NONRECOVERABLE" && !recoveryRate.isZero()) {
+      throw new Error("Nonrecoverable source tax requires a recoverable percentage of 0");
+    }
+  }
+
+  const scale = minorUnits(facts.currency);
+  const recoverable = facts.direction === "PURCHASE"
+    ? quantizeMoney(sourceAmount.times(recoveryRate), facts.currency)
+    : exact(0);
+  const nonrecoverable = facts.direction === "PURCHASE"
+    ? sourceAmount.minus(recoverable)
+    : exact(0);
+  const components = facts.direction === "SALE"
+    ? [{
+        key: override.componentKey,
+        label: `${override.jurisdiction} source tax`,
+        rate: rate.toFixed(),
+        amount: sourceAmount.toFixed(scale),
+        treatment: "PAYABLE" as const,
+      }]
+    : [
+        ...(!recoverable.isZero() ? [{
+          key: `${override.componentKey}_RECOVERABLE`,
+          label: `${override.jurisdiction} source tax — recoverable`,
+          rate: rate.toFixed(),
+          amount: recoverable.toFixed(scale),
+          treatment: "RECOVERABLE" as const,
+        }] : []),
+        ...(!nonrecoverable.isZero() ? [{
+          key: `${override.componentKey}_NONRECOVERABLE`,
+          label: `${override.jurisdiction} source tax — nonrecoverable`,
+          rate: rate.toFixed(),
+          amount: nonrecoverable.toFixed(scale),
+          treatment: "NONRECOVERABLE" as const,
+        }] : []),
+      ];
+
+  return {
+    status: reviewed ? "APPLIED" : "MANUAL_REVIEW_REQUIRED",
+    packKey: baseDecision.packKey,
+    packVersion: baseDecision.packVersion,
+    ruleKey: "controlled-source-tax-override",
+    jurisdiction: override.jurisdiction,
+    effectiveFrom: override.effectiveFrom,
+    effectiveTo: override.effectiveTo ?? null,
+    facts,
+    components,
+    totalTax: sourceAmount.toFixed(scale),
+    rounding: "LINE_HALF_UP",
+    source: `Controlled source-document override; base rules: ${baseDecision.source}`,
+    ...(reviewed ? {} : { reviewReason: "Source tax is preserved, but recoverability and posting treatment require authorized review" }),
+    sourceOverride: {
+      state: reviewed ? "REVIEWED" : "PENDING_REVIEW",
+      ratePercent: exact(override.ratePercent).toFixed(),
+      sourceAmount: sourceAmount.toFixed(scale),
+      calculatedAmount: calculated.toFixed(scale),
+      adjustmentAmount: moneyString(adjustment, facts.currency),
+      automatedStatus: baseDecision.status,
+      automatedRatePercent,
+      automatedAmount: baseDecision.totalTax,
+      automatedRuleKey: baseDecision.ruleKey,
+      jurisdiction: override.jurisdiction,
+      componentKey: override.componentKey,
+      reason: override.reason,
+      evidenceReference: override.evidenceReference,
+      reviewedTreatment: override.reviewedTreatment,
+      adjustmentReason: override.adjustmentReason,
+      adjustmentEvidenceReference: override.adjustmentEvidenceReference,
+    },
+  };
+}
+
 function assertTaxDecisionAccountingShape(
   decision: TaxDecision,
   direction: TaxDirection,
@@ -876,7 +1052,7 @@ export function buildBusinessDocumentSnapshot(
         );
       }
     }
-    const decision = decideTax(line.tax.packKey, buildTaxFacts(policy.direction, line, input));
+    const decision = decideLineTax(line.tax, buildTaxFacts(policy.direction, line, input));
     assertTaxDecisionAccountingShape(decision, policy.direction, input.currency, line.netAmount);
     return {
       lineNumber,
@@ -951,7 +1127,7 @@ export function buildBusinessDocumentSnapshot(
 
 export function assertSnapshotTaxDecisionsCurrent(snapshot: BusinessDocumentSnapshot): void {
   for (const line of snapshot.lines) {
-    const current = decideTax(line.tax.packKey, line.taxDecision.facts);
+    const current = decideLineTax(line.tax, line.taxDecision.facts);
     const currentHash = canonicalHash(current);
     if (currentHash !== line.taxDecisionHash) {
       throw new Error(
