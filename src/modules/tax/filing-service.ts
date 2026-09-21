@@ -508,7 +508,12 @@ export async function createTaxFiling(input: Readonly<{
   sourceSurface?: "API" | "MCP";
 }> & CreateTaxFilingInput): Promise<Readonly<{
   filingId: string;
+  filingType: "PREPARED" | "HISTORICAL_IMPORT";
   status: "READY" | "MATCHED" | "REVIEW_REQUIRED";
+  templateId: string;
+  templateVersion: number;
+  mappingSetId: string;
+  mappingVersion: number;
   varianceCount: number;
   failedValidationCount: number;
   idempotentReplay: boolean;
@@ -542,12 +547,20 @@ export async function createTaxFiling(input: Readonly<{
   }, async (client) => {
     const replay = await client.query<{
       id: string;
+      filing_type: "PREPARED" | "HISTORICAL_IMPORT";
       status: "READY" | "MATCHED" | "REVIEW_REQUIRED";
+      template_id: string;
+      mapping_set_id: string;
+      template_version: number;
+      mapping_version: number;
       command_hash: string;
       reconciliation_snapshot: unknown;
       validation_snapshot: unknown;
     }>(
-      `SELECT id, status, command_hash, reconciliation_snapshot, validation_snapshot
+      `SELECT id, filing_type, status, template_id, mapping_set_id,
+         (template_snapshot ->> 'version')::integer AS template_version,
+         (template_snapshot ->> 'mappingVersion')::integer AS mapping_version,
+         command_hash, reconciliation_snapshot, validation_snapshot
        FROM tax_filings
        WHERE organization_id = $1 AND idempotency_key = $2`,
       [input.principal.organizationId, command.idempotencyKey],
@@ -560,7 +573,12 @@ export async function createTaxFiling(input: Readonly<{
       const validations = z.array(z.object({ status: z.string() }).passthrough()).parse(replay.rows[0].validation_snapshot);
       return {
         filingId: replay.rows[0].id,
+        filingType: replay.rows[0].filing_type,
         status: replay.rows[0].status,
+        templateId: replay.rows[0].template_id,
+        templateVersion: replay.rows[0].template_version,
+        mappingSetId: replay.rows[0].mapping_set_id,
+        mappingVersion: replay.rows[0].mapping_version,
         varianceCount: reconciliation.filter((field) => field.status === "VARIANCE").length,
         failedValidationCount: validations.filter((rule) => rule.status === "FAIL").length,
         idempotentReplay: true,
@@ -700,7 +718,12 @@ export async function createTaxFiling(input: Readonly<{
     );
     return {
       filingId,
+      filingType: command.filingType,
       status,
+      templateId: template.id,
+      templateVersion: template.version,
+      mappingSetId: mappingSet.id,
+      mappingVersion: mappingSet.version,
       varianceCount: evaluation.varianceCount,
       failedValidationCount: evaluation.failedValidationCount,
       idempotentReplay: false,

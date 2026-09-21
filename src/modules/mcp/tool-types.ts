@@ -126,6 +126,12 @@ function toolError(error: unknown): Readonly<{
   if (candidate?.code === "MCP_AUDIT_INTEGRITY") {
     return { code: "MCP_AUDIT_INTEGRITY", message: "The MCP execution audit record failed its integrity check" };
   }
+  if (candidate?.code === "42703") {
+    return {
+      code: "MCP_SCHEMA_CONTRACT_MISMATCH",
+      message: "The operation encountered an internal schema contract mismatch. No accounting change was committed; contact support.",
+    };
+  }
   if (typeof candidate?.code === "string" && /^[0-9A-Z]{5}$/.test(candidate.code)) {
     return { code: "MCP_DATABASE_REJECTED", message: "The accounting operation was rejected by an integrity or concurrency control" };
   }
