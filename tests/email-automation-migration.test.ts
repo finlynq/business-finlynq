@@ -4,6 +4,8 @@ import { describe, expect, it } from "vitest";
 import { EMAIL_MCP_TOOLS } from "@/modules/mcp/email-tools";
 
 const migration = readFileSync(join(process.cwd(), "migrations/drizzle/0063_illegal_jocasta.sql"), "utf8");
+const personalAliasMigration = readFileSync(join(process.cwd(), "migrations/drizzle/0076_cuddly_dreadnoughts.sql"), "utf8");
+const inboundSource = readFileSync(join(process.cwd(), "src/modules/email/inbound.ts"), "utf8");
 const compose = readFileSync(join(process.cwd(), "docker-compose.yml"), "utf8");
 
 describe("accounting email persistence and MCP boundary", () => {
@@ -23,6 +25,21 @@ describe("accounting email persistence and MCP boundary", () => {
     expect(migration).toContain("invoice_delivery_events_append_only");
     expect(migration).toContain("REVOKE ALL ON email_ingestion_aliases");
     expect(migration).toContain("app.resolve_inbound_email_alias(text)");
+  });
+
+  it("binds one active personal address to an active tenant membership", () => {
+    expect(personalAliasMigration).toContain("owner_membership_id");
+    expect(personalAliasMigration).toContain("email_ingestion_aliases_active_personal_owner_unique");
+    expect(personalAliasMigration).toContain("email_ingestion_aliases_tenant_owner_membership_fk");
+    expect(personalAliasMigration).toContain("actor_membership.id=alias.owner_membership_id");
+    expect(personalAliasMigration).toContain("actor_membership.active");
+    expect(personalAliasMigration).toContain("JOIN users actor ON actor.id=actor_membership.user_id AND actor.active");
+    expect(personalAliasMigration).toContain("alias.address_digest=selected_address_digest");
+    expect(personalAliasMigration).toContain("REVOKE ALL ON FUNCTION app.resolve_inbound_email_alias(text) FROM PUBLIC");
+    expect(inboundSource).toContain("app.lock_active_email_membership(selected_alias.owner_membership_id)");
+    expect(personalAliasMigration).toContain("membership.organization_id=app.current_organization_id()");
+    expect(personalAliasMigration).toContain("membership.user_id=app.current_actor_id()");
+    expect(personalAliasMigration).toContain("FOR SHARE OF membership,actor");
   });
 
   it("mounts separate accounting provider and webhook secrets only through files", () => {

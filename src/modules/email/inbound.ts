@@ -87,7 +87,11 @@ async function stageForAlias(alias: ResolvedAlias, message: InboundProviderMessa
   return withTenantTransaction(context, async (client) => {
     await assertWritableOrganization(client, context);
     const currentAlias = await client.query(
-      "SELECT 1 FROM email_ingestion_aliases WHERE organization_id=$1 AND id=$2 AND status='ACTIVE' FOR SHARE",
+      `SELECT 1
+       FROM email_ingestion_aliases selected_alias
+       WHERE selected_alias.organization_id=$1 AND selected_alias.id=$2 AND selected_alias.status='ACTIVE'
+         AND app.lock_active_email_membership(selected_alias.owner_membership_id)
+       FOR SHARE OF selected_alias`,
       [alias.organization_id, alias.alias_id],
     );
     if (!currentAlias.rows[0]) return { context, row: null, attachments: [], replay: false, ignored: true };
