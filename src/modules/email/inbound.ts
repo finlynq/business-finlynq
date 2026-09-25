@@ -87,8 +87,17 @@ async function stageForAlias(alias: ResolvedAlias, message: InboundProviderMessa
   return withTenantTransaction(context, async (client) => {
     await assertWritableOrganization(client, context);
     const currentAlias = await client.query(
-      "SELECT 1 FROM email_ingestion_aliases WHERE organization_id=$1 AND id=$2 AND status='ACTIVE' FOR SHARE",
-      [alias.organization_id, alias.alias_id],
+      `SELECT 1
+       FROM email_ingestion_aliases selected_alias
+       JOIN organization_memberships actor_membership
+         ON actor_membership.organization_id=selected_alias.organization_id
+        AND actor_membership.active
+        AND actor_membership.user_id=$3
+        AND (selected_alias.owner_membership_id IS NULL OR actor_membership.id=selected_alias.owner_membership_id)
+       JOIN users actor ON actor.id=actor_membership.user_id AND actor.active
+       WHERE selected_alias.organization_id=$1 AND selected_alias.id=$2 AND selected_alias.status='ACTIVE'
+       FOR SHARE OF selected_alias,actor_membership,actor`,
+      [alias.organization_id, alias.alias_id, alias.actor_id],
     );
     if (!currentAlias.rows[0]) return { context, row: null, attachments: [], replay: false, ignored: true };
     const existing = (await client.query<MessageRow>(

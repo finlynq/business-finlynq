@@ -213,5 +213,12 @@ input,select,textarea { min-height:36px; padding:7px 10px; }
 .email-count-list span { text-transform:capitalize; }
 .email-list-row div { display:grid; min-width:0; }
 .email-list-row span { color:var(--muted); font-size:12px; }
+.personal-inbound-panel { display:grid; gap:12px; }
+.personal-inbound-panel>p { margin:0; }
+.personal-inbound-address-row { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:10px; }
+.personal-inbound-address-row input { min-width:0; font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace; }
+.personal-inbound-routing { display:flex; align-items:end; flex-wrap:wrap; gap:10px; }
+.personal-inbound-routing label { display:grid; flex:1 1 280px; gap:6px; }
+.personal-inbound-warning { padding:10px 12px; border:1px solid #efcf8c; border-radius:8px; background:#fff9e9; }
 @media(max-width:900px) { .email-readiness-grid { grid-template-columns:repeat(2,minmax(0,1fr)); } .email-metric-grid { grid-template-columns:1fr; } }
-@media(max-width:580px) { .email-readiness-grid { grid-template-columns:1fr; } }
+@media(max-width:580px) { .email-readiness-grid { grid-template-columns:1fr; } .personal-inbound-address-row { grid-template-columns:1fr; } .personal-inbound-routing>* { width:100%; } }
