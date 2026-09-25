@@ -3,14 +3,17 @@ import { randomUUID } from "node:crypto";
 import { requireWorkspacePrincipal } from "@/modules/workspace/access";
 import { mutationContext } from "@/modules/workspace/write-policy";
 import { DemoNotice, PageHeader } from "@/app/_components/ui";
+import { PersonalInboundAddress } from "@/app/_components/personal-inbound-address.client";
 import { SettingsNavigation } from "@/app/_components/route-tabs";
 import {
   getEmailDeliverySettings,
+  getPersonalEmailAlias,
   listEmailAliases,
   listEmailBookingRules,
   listPaymentProfiles,
 } from "@/modules/email/configuration";
 import { loadEmailOperations } from "@/modules/email/operations";
+import { listStorageConnections } from "@/modules/document-storage/connections";
 
 export const dynamic = "force-dynamic";
 
@@ -27,12 +30,15 @@ export default async function EmailAutomationPage() {
   const data = principal.sessionMode === "real" ? await Promise.all([
     listEmailAliases(context), listEmailBookingRules(context), listPaymentProfiles(context),
     getEmailDeliverySettings(context), loadEmailOperations(context),
+    getPersonalEmailAlias(context, principal.membershipId), listStorageConnections(context),
   ]) : null;
   const aliases = data?.[0] ?? [];
   const rules = data?.[1] ?? [];
   const profiles = data?.[2] ?? [];
   const settings = data?.[3] ?? null;
   const operations = data?.[4] ?? null;
+  const personalAlias = data?.[5] ?? null;
+  const storageConnections = data?.[6] ?? [];
   return <div className="page-content email-operations-page">
     <PageHeader eyebrow="Email-to-books" title="Invoice email automation"
       description="Monitor tenant-safe supplier-invoice ingest, guarded AP rules, customer invoice PDFs and delivery without exposing message bodies or payment credentials."
@@ -40,6 +46,7 @@ export default async function EmailAutomationPage() {
     <SettingsNavigation active="email" />
     {!data && <DemoNotice>Email providers and external delivery are disabled in the shared demo.</DemoNotice>}
     {operations && <>
+      <PersonalInboundAddress initialAlias={personalAlias} connections={storageConnections} />
       <section className="email-readiness-grid" aria-label="Email provider readiness">
         <article className="panel"><p className="eyebrow">Inbound provider</p><h2>{operations.readiness.inbound ? "Ready" : "Needs configuration"}</h2><p>{operations.readiness.inboundDomain ?? "No environment domain"}</p></article>
         <article className="panel"><p className="eyebrow">Outbound provider</p><h2>{operations.readiness.outbound ? "Ready" : "Needs configuration"}</h2><p>{operations.readiness.outboundDomain ?? "No verified sending domain"}</p></article>
