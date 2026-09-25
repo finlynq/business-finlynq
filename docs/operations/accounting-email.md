@@ -55,11 +55,24 @@ the Email settings page reports inbound and outbound readiness.
 
 ## Tenant activation
 
-An organization administrator with the destination module's manage permission
-creates an unguessable alias from Settings → Email automation. Bind payables
-aliases to a payables OneDrive connection and receivables aliases to a
-receivables connection. Alias values are encrypted at rest; routing uses only a
-full SHA-256 digest. Disable or rotate an alias immediately if it is disclosed.
+Every active organization member can create one personal inbound address from
+Settings → Email automation. The address uses a cryptographically random
+128-bit local token, is encrypted at rest, and is resolved only by its full
+SHA-256 digest. It is bound to the exact organization membership, so disabling
+that membership immediately stops routing. A member can copy the address,
+select an authorized payables or receivables document connection, and rotate
+the address; rotation retires the prior address atomically.
+
+Mail received before document storage is selected remains encrypted and
+retry-pending. Select a connected document inbox before using the address in a
+normal workflow. A member must have the destination module's manage permission
+to bind that connection and for the inbound worker to upload on their behalf.
+
+Organization administrators can separately create shared aliases through the
+setup MCP tools. Bind payables aliases to a payables storage connection and
+receivables aliases to a receivables connection. Personal aliases are excluded
+from the organization-alias administration surface. Disable or rotate any
+address immediately if it is disclosed.
 
 Start booking rules in `REVIEW_ONLY`. Move a narrowly matched supplier rule to
 `CREATE_DRAFT` only after reviewing representative messages. `AUTO_POST`
@@ -88,6 +101,9 @@ Use synthetic data in a real writable development organization:
 6. Replay the issue and provider callback; confirm the artifact, attempt, and
    event are idempotent. Send a synthetic hard bounce and confirm suppression.
 7. Download the issued artifact and compare its SHA-256 with stored evidence.
+8. Create and rotate a personal address. Confirm the old address is ignored,
+   the new address routes as that member, and disabling the membership stops
+   the new address without affecting another member or shared alias.
 
 ## Incidents, retries, and retention
 

@@ -53,6 +53,26 @@ export const rotateEmailAliasSchema = z.object({
   reason: z.string().trim().min(5).max(500),
 }).strict();
 
+export const provisionPersonalEmailAliasSchema = z.object({
+  membershipId: z.uuid(),
+  connectionId: z.uuid().optional(),
+  reason: z.string().trim().min(5).max(500),
+}).strict();
+export const configurePersonalEmailAliasSchema = z.object({
+  membershipId: z.uuid(),
+  aliasId: z.uuid(),
+  expectedVersion: z.number().int().positive(),
+  connectionId: z.uuid().nullable(),
+  reason: z.string().trim().min(5).max(500),
+}).strict();
+export const rotatePersonalEmailAliasSchema = z.object({
+  membershipId: z.uuid(),
+  aliasId: z.uuid(),
+  expectedVersion: z.number().int().positive(),
+  idempotencyKey: z.string().trim().min(1).max(200),
+  reason: z.string().trim().min(5).max(500),
+}).strict();
+
 export const bookingModeSchema = z.enum(["REVIEW_ONLY", "CREATE_DRAFT", "AUTO_POST"]);
 export const emailBookingConditionSchema = z.object({
   sender: emailAddressSchema.optional(),

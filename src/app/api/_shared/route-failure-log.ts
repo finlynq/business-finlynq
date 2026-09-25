@@ -41,7 +41,8 @@ export type ObservedRouteOperation = RouteFailureOperation
   | "service-liveness"
   | "document-evidence-download"
   | "document-storage"
-  | "document-storage-callback";
+  | "document-storage-callback"
+  | "personal-email-alias";
 
 type RouteErrorType = "Error" | "RangeError" | "SyntaxError" | "TypeError" | "Unknown";
 type OidcSignupProofErrorCode = "OIDC_SIGNUP_PROOF_EXPIRED" | "OIDC_SIGNUP_PROOF_INVALID";

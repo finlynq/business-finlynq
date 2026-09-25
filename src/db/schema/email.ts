@@ -12,9 +12,10 @@ import {
   uniqueIndex,
   uuid,
 } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
 import { documentInboxItems } from "./document-storage";
 import { documentEvidenceAssets } from "./evidence";
-import { organizations } from "./identity";
+import { organizationMemberships, organizations } from "./identity";
 import { sourceDocuments } from "./journals";
 import { legalEntities } from "./ledger";
 import { partyAccounts } from "./parties";
@@ -22,6 +23,7 @@ import { partyAccounts } from "./parties";
 export const emailIngestionAliases = pgTable("email_ingestion_aliases", {
   id: uuid("id").defaultRandom().primaryKey(),
   organizationId: uuid("organization_id").notNull().references(() => organizations.id, { onDelete: "restrict" }),
+  ownerMembershipId: uuid("owner_membership_id"),
   legalEntityId: uuid("legal_entity_id"),
   connectionId: uuid("connection_id"),
   provider: text("provider").notNull().default("RESEND"),
@@ -44,7 +46,15 @@ export const emailIngestionAliases = pgTable("email_ingestion_aliases", {
   uniqueIndex("email_ingestion_aliases_org_id_unique").on(table.organizationId, table.id),
   uniqueIndex("email_ingestion_aliases_address_unique").on(table.addressDigest),
   uniqueIndex("email_ingestion_aliases_idempotency_unique").on(table.organizationId, table.idempotencyKey),
+  uniqueIndex("email_ingestion_aliases_active_personal_owner_unique")
+    .on(table.organizationId, table.ownerMembershipId)
+    .where(sql`${table.ownerMembershipId} IS NOT NULL AND ${table.status} = 'ACTIVE'`),
   index("email_ingestion_aliases_org_status_idx").on(table.organizationId, table.status, table.id),
+  foreignKey({
+    columns: [table.organizationId, table.ownerMembershipId],
+    foreignColumns: [organizationMemberships.organizationId, organizationMemberships.id],
+    name: "email_ingestion_aliases_tenant_owner_membership_fk",
+  }).onDelete("restrict"),
   foreignKey({
     columns: [table.organizationId, table.legalEntityId],
     foreignColumns: [legalEntities.organizationId, legalEntities.id],

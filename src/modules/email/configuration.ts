@@ -9,12 +9,15 @@ import { PERMISSIONS } from "@/modules/identity/permissions";
 import { assertTenantWritesEnabled, assertWritableOrganization } from "@/modules/workspace/write-policy";
 import {
   createEmailAliasSchema,
+  configurePersonalEmailAliasSchema,
   customerDeliveryPreferenceSchema,
   emailDeliverySettingsSchema,
   normalizeEmailAddress,
   paymentInstructionDetailsSchema,
+  provisionPersonalEmailAliasSchema,
   retirePaymentProfileSchema,
   rotateEmailAliasSchema,
+  rotatePersonalEmailAliasSchema,
   savePaymentProfileSchema,
   updateEmailAliasSchema,
   upsertEmailBookingRuleSchema,
@@ -32,6 +35,7 @@ function withoutContext<T extends ContextCommand>(value: T): Omit<T, "context"> 
 type AliasRow = Readonly<{
   id: string;
   organization_id: string;
+  owner_membership_id: string | null;
   legal_entity_id: string | null;
   connection_id: string | null;
   provider: "RESEND";
@@ -64,6 +68,10 @@ function outboundDomain(): string | null {
 
 function addressDigest(address: string): string {
   return createHash("sha256").update(normalizeEmailAddress(address), "utf8").digest("hex");
+}
+
+function newInboundAddress(): string {
+  return normalizeEmailAddress(`in+${randomBytes(16).toString("hex")}@${inboundDomain()}`);
 }
 
 async function assertEmailAdministrator(client: PoolClient, context: TenantTransactionContext): Promise<void> {
@@ -116,6 +124,7 @@ async function aliasDto(client: PoolClient, row: AliasRow) {
     purpose: row.purpose,
     legalEntityId: row.legal_entity_id,
     connectionId: row.connection_id,
+    personal: row.owner_membership_id !== null,
     provider: row.provider,
     status: row.status,
     version: row.version,
@@ -135,7 +144,7 @@ export async function listEmailAliases(context: TenantTransactionContext) {
       permission: PERMISSIONS.readOrganizationSettings,
     });
     const rows = await client.query<AliasRow>(
-      "SELECT * FROM email_ingestion_aliases WHERE organization_id=$1 ORDER BY created_at,id",
+      "SELECT * FROM email_ingestion_aliases WHERE organization_id=$1 AND owner_membership_id IS NULL ORDER BY created_at,id",
       [context.organizationId],
     );
     return Promise.all(rows.rows.map((row) => aliasDto(client, row)));
@@ -149,7 +158,7 @@ export async function createEmailAlias(unparsed: ContextCommand & z.input<typeof
   return withTenantTransaction({ ...unparsed.context, reason: command.reason }, async (client) => {
     await assertEmailAdministrator(client, unparsed.context);
     const replay = (await client.query<AliasRow>(
-      "SELECT * FROM email_ingestion_aliases WHERE organization_id=$1 AND idempotency_key=$2",
+      "SELECT * FROM email_ingestion_aliases WHERE organization_id=$1 AND idempotency_key=$2 AND owner_membership_id IS NULL",
       [unparsed.context.organizationId, idempotencyKey],
     )).rows[0];
     if (replay) {
@@ -158,7 +167,7 @@ export async function createEmailAlias(unparsed: ContextCommand & z.input<typeof
     }
     await assertEntityAndConnection(client, unparsed.context, command.legalEntityId, command.connectionId, command.purpose);
     const id = randomUUID();
-    const address = normalizeEmailAddress(`in+${randomBytes(16).toString("hex")}@${inboundDomain()}`);
+    const address = newInboundAddress();
     const scope = { id, organization_id: unparsed.context.organizationId, key_version: await activeEmailKeyVersion(client, unparsed.context.organizationId) };
     const ciphertext = await encryptEmailValue(client, scope, "email_ingestion_aliases", "address_ciphertext", address);
     const inserted = (await client.query<AliasRow>(
@@ -179,7 +188,7 @@ export async function updateEmailAlias(unparsed: ContextCommand & z.input<typeof
   return withTenantTransaction({ ...unparsed.context, reason: command.reason }, async (client) => {
     await assertEmailAdministrator(client, unparsed.context);
     const current = (await client.query<AliasRow>(
-      "SELECT * FROM email_ingestion_aliases WHERE organization_id=$1 AND id=$2 FOR UPDATE",
+      "SELECT * FROM email_ingestion_aliases WHERE organization_id=$1 AND id=$2 AND owner_membership_id IS NULL FOR UPDATE",
       [unparsed.context.organizationId, command.aliasId],
     )).rows[0];
     if (!current || current.status === "RETIRED") throw new Error("Email alias is unavailable");
@@ -208,7 +217,7 @@ export async function rotateEmailAlias(unparsed: ContextCommand & z.input<typeof
   return withTenantTransaction({ ...unparsed.context, reason: command.reason }, async (client) => {
     await assertEmailAdministrator(client, unparsed.context);
     const replay = (await client.query<AliasRow>(
-      "SELECT * FROM email_ingestion_aliases WHERE organization_id=$1 AND idempotency_key=$2",
+      "SELECT * FROM email_ingestion_aliases WHERE organization_id=$1 AND idempotency_key=$2 AND owner_membership_id IS NULL",
       [unparsed.context.organizationId, key],
     )).rows[0];
     if (replay) {
@@ -216,7 +225,7 @@ export async function rotateEmailAlias(unparsed: ContextCommand & z.input<typeof
       return { alias: await aliasDto(client, replay), idempotentReplay: true };
     }
     const current = (await client.query<AliasRow>(
-      "SELECT * FROM email_ingestion_aliases WHERE organization_id=$1 AND id=$2 FOR UPDATE",
+      "SELECT * FROM email_ingestion_aliases WHERE organization_id=$1 AND id=$2 AND owner_membership_id IS NULL FOR UPDATE",
       [unparsed.context.organizationId, command.aliasId],
     )).rows[0];
     if (!current || current.status === "RETIRED" || current.version !== command.expectedVersion) {
@@ -234,7 +243,7 @@ export async function rotateEmailAlias(unparsed: ContextCommand & z.input<typeof
       [unparsed.context.organizationId, current.id],
     );
     const id = randomUUID();
-    const address = normalizeEmailAddress(`in+${randomBytes(16).toString("hex")}@${inboundDomain()}`);
+    const address = newInboundAddress();
     const scope = { id, organization_id: current.organization_id, key_version: await activeEmailKeyVersion(client, current.organization_id) };
     const ciphertext = await encryptEmailValue(client, scope, "email_ingestion_aliases", "address_ciphertext", address);
     const inserted = (await client.query<AliasRow>(
@@ -243,6 +252,157 @@ export async function rotateEmailAlias(unparsed: ContextCommand & z.input<typeof
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'ACTIVE',1,$11,$12,$13,$14,$15) RETURNING *`,
       [id, current.organization_id, current.legal_entity_id, current.connection_id, current.provider,
         current.label, current.purpose, addressDigest(address), ciphertext, scope.key_version,
+        current.hourly_limit, current.max_payload_bytes, key, commandHash, unparsed.context.actorId],
+    )).rows[0];
+    return { alias: await aliasDto(client, inserted), retiredAliasId: current.id, idempotentReplay: false };
+  });
+}
+
+
+async function assertPersonalAliasMembership(
+  client: PoolClient,
+  membershipId: string,
+): Promise<void> {
+  const membership = await client.query<{ allowed: boolean }>(
+    "SELECT app.lock_active_email_membership($1) AS allowed",
+    [membershipId],
+  );
+  if (!membership.rows[0]?.allowed) throw new Error("Your organization membership is not active");
+}
+
+async function activePersonalAlias(
+  client: PoolClient,
+  organizationId: string,
+  membershipId: string,
+  lock = false,
+): Promise<AliasRow | undefined> {
+  return (await client.query<AliasRow>(
+    `SELECT * FROM email_ingestion_aliases
+     WHERE organization_id=$1 AND owner_membership_id=$2 AND status='ACTIVE'
+     ${lock ? "FOR UPDATE" : ""}`,
+    [organizationId, membershipId],
+  )).rows[0];
+}
+
+export async function getPersonalEmailAlias(
+  context: TenantTransactionContext,
+  membershipId: string,
+) {
+  const selectedMembershipId = z.uuid().parse(membershipId);
+  return withTenantTransaction(context, async (client) => {
+    await assertPersonalAliasMembership(client, selectedMembershipId);
+    const row = await activePersonalAlias(client, context.organizationId, selectedMembershipId);
+    return row ? aliasDto(client, row) : null;
+  });
+}
+
+export async function provisionPersonalEmailAlias(
+  unparsed: ContextCommand & z.input<typeof provisionPersonalEmailAliasSchema>,
+) {
+  const command = provisionPersonalEmailAliasSchema.parse(withoutContext(unparsed));
+  return withTenantTransaction({ ...unparsed.context, reason: command.reason }, async (client) => {
+    assertTenantWritesEnabled(unparsed.context);
+    await assertWritableOrganization(client, unparsed.context);
+    await assertPersonalAliasMembership(client, command.membershipId);
+    await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))", [
+      `personal-email-alias:${unparsed.context.organizationId}:${command.membershipId}`,
+    ]);
+    const current = await activePersonalAlias(client, unparsed.context.organizationId, command.membershipId, true);
+    if (current) return { alias: await aliasDto(client, current), idempotentReplay: true };
+
+    await assertEntityAndConnection(client, unparsed.context, null, command.connectionId, "GENERAL");
+    const id = randomUUID();
+    const address = newInboundAddress();
+    const scope = {
+      id,
+      organization_id: unparsed.context.organizationId,
+      key_version: await activeEmailKeyVersion(client, unparsed.context.organizationId),
+    };
+    const ciphertext = await encryptEmailValue(client, scope, "email_ingestion_aliases", "address_ciphertext", address);
+    const idempotencyKey = `personal-email-provision:${canonicalHash(`${command.membershipId}:${id}`)}`;
+    const commandHash = canonicalHash({ membershipId: command.membershipId, connectionId: command.connectionId ?? null });
+    const inserted = (await client.query<AliasRow>(
+      `INSERT INTO email_ingestion_aliases
+       (id,organization_id,owner_membership_id,connection_id,provider,label,purpose,address_digest,address_ciphertext,key_version,status,version,hourly_limit,max_payload_bytes,idempotency_key,command_hash,created_by)
+       VALUES ($1,$2,$3,$4,'RESEND','Personal document inbox','GENERAL',$5,$6,$7,'ACTIVE',1,25,$8,$9,$10,$11)
+       RETURNING *`,
+      [id, unparsed.context.organizationId, command.membershipId, command.connectionId ?? null,
+        addressDigest(address), ciphertext, scope.key_version, 10 * 1024 * 1024,
+        idempotencyKey, commandHash, unparsed.context.actorId],
+    )).rows[0];
+    return { alias: await aliasDto(client, inserted), idempotentReplay: false };
+  });
+}
+
+export async function configurePersonalEmailAlias(
+  unparsed: ContextCommand & z.input<typeof configurePersonalEmailAliasSchema>,
+) {
+  const command = configurePersonalEmailAliasSchema.parse(withoutContext(unparsed));
+  return withTenantTransaction({ ...unparsed.context, reason: command.reason }, async (client) => {
+    assertTenantWritesEnabled(unparsed.context);
+    await assertWritableOrganization(client, unparsed.context);
+    await assertPersonalAliasMembership(client, command.membershipId);
+    const current = await activePersonalAlias(client, unparsed.context.organizationId, command.membershipId, true);
+    if (!current || current.id !== command.aliasId || current.version !== command.expectedVersion) {
+      throw new Error("Personal email address changed; reload before updating storage");
+    }
+    await assertEntityAndConnection(client, unparsed.context, null, command.connectionId, "GENERAL");
+    const updated = (await client.query<AliasRow>(
+      `UPDATE email_ingestion_aliases SET connection_id=$4,version=version+1,updated_at=now()
+       WHERE organization_id=$1 AND id=$2 AND owner_membership_id=$3 RETURNING *`,
+      [unparsed.context.organizationId, current.id, command.membershipId, command.connectionId],
+    )).rows[0];
+    return { alias: await aliasDto(client, updated), idempotentReplay: false };
+  });
+}
+
+export async function rotatePersonalEmailAlias(
+  unparsed: ContextCommand & z.input<typeof rotatePersonalEmailAliasSchema>,
+) {
+  const command = rotatePersonalEmailAliasSchema.parse(withoutContext(unparsed));
+  const key = `personal-email-rotation:${canonicalHash(command.idempotencyKey)}`;
+  const commandHash = canonicalHash({
+    membershipId: command.membershipId,
+    aliasId: command.aliasId,
+    expectedVersion: command.expectedVersion,
+  });
+  return withTenantTransaction({ ...unparsed.context, reason: command.reason }, async (client) => {
+    assertTenantWritesEnabled(unparsed.context);
+    await assertWritableOrganization(client, unparsed.context);
+    await assertPersonalAliasMembership(client, command.membershipId);
+    const replay = (await client.query<AliasRow>(
+      `SELECT * FROM email_ingestion_aliases
+       WHERE organization_id=$1 AND owner_membership_id=$2 AND idempotency_key=$3`,
+      [unparsed.context.organizationId, command.membershipId, key],
+    )).rows[0];
+    if (replay) {
+      if (replay.command_hash !== commandHash) throw new Error("Personal address rotation key was already used differently");
+      return { alias: await aliasDto(client, replay), idempotentReplay: true };
+    }
+    const current = await activePersonalAlias(client, unparsed.context.organizationId, command.membershipId, true);
+    if (!current || current.id !== command.aliasId || current.version !== command.expectedVersion) {
+      throw new Error("Personal address rotation requires the exact active version");
+    }
+    await assertEntityAndConnection(client, unparsed.context, null, current.connection_id, "GENERAL");
+    await client.query(
+      `UPDATE email_ingestion_aliases SET status='RETIRED',version=version+1,retired_at=now(),updated_at=now()
+       WHERE organization_id=$1 AND id=$2 AND owner_membership_id=$3`,
+      [unparsed.context.organizationId, current.id, command.membershipId],
+    );
+    const id = randomUUID();
+    const address = newInboundAddress();
+    const scope = {
+      id,
+      organization_id: current.organization_id,
+      key_version: await activeEmailKeyVersion(client, current.organization_id),
+    };
+    const ciphertext = await encryptEmailValue(client, scope, "email_ingestion_aliases", "address_ciphertext", address);
+    const inserted = (await client.query<AliasRow>(
+      `INSERT INTO email_ingestion_aliases
+       (id,organization_id,owner_membership_id,legal_entity_id,connection_id,provider,label,purpose,address_digest,address_ciphertext,key_version,status,version,hourly_limit,max_payload_bytes,idempotency_key,command_hash,created_by)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'ACTIVE',1,$12,$13,$14,$15,$16) RETURNING *`,
+      [id, current.organization_id, command.membershipId, current.legal_entity_id, current.connection_id,
+        current.provider, current.label, current.purpose, addressDigest(address), ciphertext, scope.key_version,
         current.hourly_limit, current.max_payload_bytes, key, commandHash, unparsed.context.actorId],
     )).rows[0];
     return { alias: await aliasDto(client, inserted), retiredAliasId: current.id, idempotentReplay: false };
