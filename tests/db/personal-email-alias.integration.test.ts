@@ -9,6 +9,7 @@ import {
   provisionPersonalEmailAlias, rotatePersonalEmailAlias,
 } from "@/modules/email/configuration";
 import { ingestInboundEmail } from "@/modules/email/inbound";
+import { parseRelayMessage } from "@/modules/email/self-smtp";
 import type { InboundProviderMessage } from "@/modules/email/model";
 
 const run = process.env.TEST_DATABASE_URL && process.env.TEST_APP_DATABASE_URL ? describe : describe.skip;
@@ -24,13 +25,14 @@ const context = {
 const command = { context, membershipId: ids.membership, reason: context.reason };
 
 function message(address: string): InboundProviderMessage {
-  return {
-    provider: "RESEND", eventId: randomUUID(), messageId: randomUUID(),
-    from: "sender@example.test", to: [address], cc: [], subject: "Private invoice",
-    receivedAt: new Date().toISOString(), senderAuth: {}, attachmentOverflow: false,
-    attachments: [{ id: "invoice", filename: "invoice.pdf", mimeType: "application/pdf",
-      content: Buffer.from("%PDF-1.7\nPersonal email integration fixture\n%%EOF") }],
-  };
+  const pdf = Buffer.from("%PDF-1.7\nPersonal email integration fixture\n%%EOF");
+  return parseRelayMessage(Buffer.from(JSON.stringify({
+    message_id: randomUUID(), smtp_message_id: "same-sender-controlled-id@example.test",
+    from: { name: null, address: "sender@example.test" }, to: [], recipient: address,
+    subject: "Private invoice", text: null, html: null, received_at: new Date().toISOString(),
+    attachments: [{ filename: "invoice.pdf", content_type: "application/pdf",
+      size: pdf.length, content_base64: pdf.toString("base64") }],
+  })));
 }
 
 run("personal email PostgreSQL lifecycle with the restricted runtime role", () => {
@@ -100,6 +102,40 @@ run("personal email PostgreSQL lifecycle with the restricted runtime role", () =
     expect(stored).toHaveLength(1);
     expect(stored[0]).toMatchObject({ organization_id: ids.org, alias_id: created.alias.id, status: "RETRY_PENDING" });
     expect(stored[0].envelope_ciphertext).not.toContain("Private invoice");
+
+    // Concurrent relay retries serialize alias staging and cannot duplicate a
+    // message even when they arrive before initial downstream processing ends.
+    const concurrent = message(created.alias.address);
+    const deliveries = await Promise.all([ingestInboundEmail(concurrent), ingestInboundEmail(concurrent)]);
+    expect(deliveries.reduce((count, result) => count + result.replays, 0)).toBe(1);
+    expect((await owner.query("SELECT id FROM inbound_email_messages WHERE provider_message_id=$1",
+      [concurrent.messageId])).rows).toHaveLength(1);
+
+    // Unsupported types remain encrypted in quarantine, not silently lost
+    // when Mailpit deletes the acknowledged copy.
+    const unsupported = message(created.alias.address);
+    unsupported.attachments[0] = { id: "csv", filename: "statement.csv", mimeType: "text/csv",
+      content: Buffer.from("private,statement"), declaredSize: 17 };
+    expect(await ingestInboundEmail(unsupported)).toMatchObject({ routedRecipients: 1 });
+    const quarantined = (await owner.query(`SELECT a.status,a.mime_type,a.content_ciphertext
+      FROM inbound_email_attachments a JOIN inbound_email_messages m ON m.id=a.message_id
+      WHERE m.provider_message_id=$1`, [unsupported.messageId])).rows[0];
+    expect(quarantined).toMatchObject({ status: "QUARANTINED", mime_type: "text/csv" });
+    expect(quarantined.content_ciphertext).toBeTruthy();
+    expect(quarantined.content_ciphertext).not.toContain("private,statement");
+
+    await withTenantTransaction({ ...context, requestId: randomUUID() }, (client) => client.query(
+      "UPDATE email_ingestion_aliases SET max_payload_bytes=1024 WHERE organization_id=$1 AND id=$2",
+      [ids.org, created.alias.id]));
+    const overAliasLimit = message(created.alias.address);
+    overAliasLimit.attachments[0].content = Buffer.alloc(2048, "x");
+    overAliasLimit.attachments[0].declaredSize = 2048;
+    expect(await ingestInboundEmail(overAliasLimit)).toMatchObject({ routedRecipients: 1 });
+    const retained = (await owner.query(`SELECT m.status,a.status AS attachment_status,a.content_ciphertext
+      FROM inbound_email_messages m JOIN inbound_email_attachments a ON a.message_id=m.id
+      WHERE m.provider_message_id=$1`, [overAliasLimit.messageId])).rows[0];
+    expect(retained).toMatchObject({ status: "QUARANTINED", attachment_status: "QUARANTINED" });
+    expect(retained.content_ciphertext).toBeTruthy();
 
     const rotation = { ...command, context: { ...context, requestId: randomUUID() },
       aliasId: created.alias.id, expectedVersion: configured.alias.version,

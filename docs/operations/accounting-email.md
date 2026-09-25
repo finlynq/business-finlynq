@@ -6,52 +6,109 @@ worker and credential boundary.
 
 ## Environment boundary and provider setup
 
-Use distinct Resend domains, API keys, webhook endpoints, and signing secrets
-for every environment. The hosted development contract is:
+Incoming mail uses the same **self-hosted Mailpit → DevManager → signed HTTPS
+push** protocol as Personal Finlynq. Resend is **outbound only**, including
+authentication mail and invoice delivery events. The former
+`/api/email/inbound/resend` endpoint returns 410 and does not ingest anything.
+Do not create a Resend receiving subscription or configure inbound Resend MX.
 
 | Purpose | Development value |
 | --- | --- |
 | Application | `https://dev.business.finlynq.com` |
-| Inbound domain | `inbound.dev.business.finlynq.com` |
+| Inbound domain (proposed; requires DNS/relay activation) | `inbound.dev.business.finlynq.com` |
+| Inbound relay endpoint | `https://dev.business.finlynq.com/api/email/inbound/self-smtp` |
 | Outbound domain | `mail.dev.business.finlynq.com` |
-| Inbound webhook | `https://dev.business.finlynq.com/api/email/inbound/resend` |
-| Delivery-event webhook | `https://dev.business.finlynq.com/api/email/events/resend` |
+| Resend delivery-event webhook | `https://dev.business.finlynq.com/api/email/events/resend` |
 
-Create both webhook subscriptions in the development Resend account. Subscribe
-the inbound endpoint only to received-email events. Subscribe the delivery
-endpoint to sent, delivered, failed, bounced, and complained events. Copy the
-two independently generated `whsec_` secrets; never reuse one for both routes.
-
-Publish the exact MX, SPF, and DKIM records supplied by Resend for the two
-development subdomains. Add a monitoring-mode DMARC policy first, confirm that
-legitimate traffic aligns, and then move to the organization's reviewed
-enforcement policy. Do not copy development DNS records, aliases, or keys to
-the production domain.
-
-Install these single-line files as `root:business-finlynq-secrets`, mode
-`0440`, outside Git:
-
-```text
-/etc/business-finlynq-dev/secrets/accounting-resend-api-key
-/etc/business-finlynq-dev/secrets/accounting-email-inbound-webhook-secret
-/etc/business-finlynq-dev/secrets/accounting-email-outbound-webhook-secret
-```
-
-Point `/etc/business-finlynq-dev/compose.env` at those host files and set the
-public domains:
+Install single-line files outside Git as `root:business-finlynq-secrets`, mode
+`0440`. Receiving needs only a **new, independently generated >=32-character
+random relay secret**, shared with the corresponding Business relay route.
+Never reuse Personal's secret, a Resend `whsec_`, or another environment's
+secret. The old `ACCOUNTING_EMAIL_INBOUND_WEBHOOK_SECRET_FILE` is no longer read.
 
 ```dotenv
-ACCOUNTING_EMAIL_RESEND_API_KEY_FILE=/etc/business-finlynq-dev/secrets/accounting-resend-api-key
-ACCOUNTING_EMAIL_INBOUND_WEBHOOK_SECRET_FILE=/etc/business-finlynq-dev/secrets/accounting-email-inbound-webhook-secret
-ACCOUNTING_EMAIL_OUTBOUND_WEBHOOK_SECRET_FILE=/etc/business-finlynq-dev/secrets/accounting-email-outbound-webhook-secret
+ACCOUNTING_EMAIL_INBOUND_RELAY_SECRET_FILE=/etc/business-finlynq-dev/secrets/accounting-email-inbound-relay-secret
 BUSINESS_FINLYNQ_INBOUND_EMAIL_DOMAIN=inbound.dev.business.finlynq.com
+# Optional outbound invoice delivery only:
+ACCOUNTING_EMAIL_RESEND_API_KEY_FILE=/etc/business-finlynq-dev/secrets/accounting-resend-api-key
+ACCOUNTING_EMAIL_OUTBOUND_WEBHOOK_SECRET_FILE=/etc/business-finlynq-dev/secrets/accounting-email-outbound-webhook-secret
 BUSINESS_FINLYNQ_OUTBOUND_EMAIL_DOMAIN=mail.dev.business.finlynq.com
 ```
 
-The app receives fixed `/run/secrets/...` paths. A missing or empty source file
-keeps provider readiness disabled without exposing a secret in health output.
-After changing a secret or domain, run the managed dev deployment and confirm
-the Email settings page reports inbound and outbound readiness.
+Set these in the root-managed environment's `compose.env`. The app receives
+fixed `/run/secrets/...` paths. Missing/blank relay secret or domain keeps
+receiving disabled (503); missing or broken Resend credentials do not disable
+receiving. The settings page reports **receiver configuration**, not proof that
+DNS, the external relay or SMTP delivery has been validated.
+
+### Relay activation (separate operator change)
+
+The inspected DevManager configuration supports Personal's prod/dev routes,
+not Business routes. **Do not repoint `FINLYNQ_INBOUND_WEBHOOK_URL`,
+`FINLYNQ_DEV_WEBHOOK_URL`, `MAIL_IMPORT_DOMAIN`, or their secrets to Business.**
+Before activating receiving, the relay operator must add independent Business
+routes (or a separately isolated relay instance), preserving Personal's routes:
+
+- Match each Business environment's exact dedicated domain and local-part
+  `^in\+[0-9a-f]{32}$`. Existing Business addresses need not be renamed.
+- Forward to that environment's `/api/email/inbound/self-smtp` using its own
+  HMAC secret. Do not use the shared Personal domain for Business aliases.
+- Route the domain's MX to the actual self-hosted SMTP receiver, verifying its
+  current hostname/IP and SMTP configuration first. Leave root-domain and
+  Personal MX records, and all outbound SPF/DKIM records, unchanged.
+- Confirm retry-on-failure behavior. DevManager has an optional
+  `MAIL_DROP_ON_FAILURE` privacy mode which **deletes mail even on failed
+  forwarding**. Business needs `dropOnFailure=false` on its own route/instance,
+  deletion only after a durable 2xx acknowledgment, and reconciliation enabled.
+  Do not change Personal's retention policy globally to achieve this.
+- Check relay limits against the receiver: 20 MiB JSON, 10 MiB decoded bodies
+  plus attachments, at most 20 attachments. Only safe PDFs up to 2 MiB enter
+  document processing; other supported-size files are encrypted in quarantine.
+  Next's proxy buffer is set to 20 MiB + 1 byte so it cannot silently truncate
+  valid signed bodies at the framework's default 10 MiB. The route rejects
+  overflow; any additional ingress proxy must permit the full 20 MiB payload.
+- Run an actual synthetic SMTP delivery plus a replay/failure test before
+  advertising addresses as usable. An app deployment alone is not activation.
+
+No Mailpit API credentials belong in Business. Business never polls, downloads
+from, or deletes messages in Mailpit.
+
+### Signed push contract
+
+Headers: `Content-Type: application/json`, `X-Mail-Timestamp` (ISO UTC),
+`X-Mail-Signature: sha256=<64 lowercase hex>`, and optionally
+`X-Mail-Message-Id` matching the payload. HMAC-SHA256 uses the raw shared secret
+over `timestamp + "." + exact raw request body`; timestamps must be within
+five minutes, including future skew. Send a fresh signature when retrying.
+
+Payload is Personal's `NormalizedInboundEmail`:
+`message_id`, nullable `smtp_message_id`, `from: {name,address}`,
+`to: [{name,address}]`, `recipient`, `subject`, nullable `text`/`html`,
+`received_at`, and `attachments: [{filename,content_type,size,content_base64}]`.
+Names may be null. Attachments use canonical base64 and exact nonzero sizes.
+There are no attachment URLs. The app routes **only `recipient`**, including
+Bcc/envelope-only delivery; other To recipients cannot fan out across tenants.
+Sender SPF/DKIM/DMARC remain UNKNOWN because the signed relay authenticates
+transport, not the SMTP sender.
+
+Use the stable **Mailpit `message_id`**, not sender-controlled SMTP Message-ID,
+for deduplication. Retries cannot create a second message per alias.
+2xx means encrypted content is durably staged/quarantined or the recipient was
+deliberately ignored (unknown, rotated, or disabled membership/alias).
+Storage-not-configured mail is durably retry-pending and also receives 2xx.
+Invalid signatures return 401; malformed/mismatched payloads 400, oversized
+bodies 413, wrong content type 415, and unavailable configuration/database 503.
+Non-2xx must not be treated as successful delivery by the relay.
+
+Migration 0077 accepts SELF_SMTP while retaining historical RESEND provenance.
+It changes only the default for new aliases and widens reviewed checks; it does
+not rewrite old message history, ownership, addresses, RLS, grants, or audit
+records. New/rotated aliases are SELF_SMTP; historical aliases can route through
+the relay after their domain's MX cutover.
+
+Outbound invoice delivery still uses separate Resend domains/API keys and its
+own delivery-event `whsec_` per environment. Subscribe only the outbound event
+endpoint to sent, delivered, failed, bounced and complained events.
 
 ## Tenant activation
 
@@ -91,7 +148,8 @@ the durable failed attempt after resolving the provider issue.
 
 Use synthetic data in a real writable development organization:
 
-1. Send one PDF supplier invoice and one related receipt to a payables alias.
+1. Confirm the Business relay route, domain MX, unique mounted secret, and
+   retry-on-failure behavior; then send one PDF supplier invoice and one related receipt to a payables alias.
 2. Confirm one invoice inbox item, grouped receipt evidence, immutable EMAIL
    lineage, and a review/draft outcome matching the active rule.
 3. Replay the same provider event and confirm no second inbox item or bill.

@@ -48,7 +48,7 @@ export default async function EmailAutomationPage() {
     {operations && <>
       <PersonalInboundAddress initialAlias={personalAlias} connections={storageConnections} />
       <section className="email-readiness-grid" aria-label="Email provider readiness">
-        <article className="panel"><p className="eyebrow">Inbound provider</p><h2>{operations.readiness.inbound ? "Ready" : "Needs configuration"}</h2><p>{operations.readiness.inboundDomain ?? "No environment domain"}</p></article>
+        <article className="panel"><p className="eyebrow">Inbound · self-hosted relay</p><h2>{operations.readiness.inbound ? "Receiver configured" : "Needs configuration"}</h2><p>{operations.readiness.inboundDomain ?? "No environment domain"}</p><p className="panel-note">Mailpit → DevManager → Finlynq. Verify relay routing and a test delivery before use.</p></article>
         <article className="panel"><p className="eyebrow">Outbound provider</p><h2>{operations.readiness.outbound ? "Ready" : "Needs configuration"}</h2><p>{operations.readiness.outboundDomain ?? "No verified sending domain"}</p></article>
         <article className="panel"><p className="eyebrow">Organization policy</p><h2>{settings?.outboundEnabled ? "Outbound enabled" : "Outbound disabled"}</h2><p>{settings?.autoSendEnabled ? "Opted-in customers may auto-send" : "Manual send only"}</p></article>
         <article className="panel"><p className="eyebrow">Oldest queued work</p><h2>{operations.metrics.oldestQueueSeconds}s</h2><p>Retries are bounded and idempotent.</p></article>

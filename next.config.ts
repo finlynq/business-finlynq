@@ -5,6 +5,12 @@ const nextConfig: NextConfig = {
   poweredByHeader: false,
   output: "standalone",
   serverExternalPackages: ["pg"],
+  experimental: {
+    // The signed relay carries inline base64 attachments (20 MiB JSON cap).
+    // Next's default 10 MiB proxy buffer truncates that body and breaks HMAC.
+    // One extra byte lets the route itself reject overflow with 413.
+    proxyClientMaxBodySize: 20 * 1024 * 1024 + 1,
+  },
   turbopack: {
     // An unrelated lockfile exists higher in the Windows user directory.
     // Pinning the root prevents Turbopack from traversing outside this repo.

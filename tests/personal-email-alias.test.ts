@@ -58,7 +58,7 @@ function aliasRow(overrides: Record<string, unknown> = {}) {
     owner_membership_id: ids.membership,
     legal_entity_id: null,
     connection_id: null,
-    provider: "RESEND",
+    provider: "SELF_SMTP",
     label: "Personal document inbox",
     purpose: "GENERAL",
     address_digest: "a".repeat(64),
