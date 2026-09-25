@@ -50,13 +50,7 @@ Before activating receiving, the relay operator must add independent Business
 routes (or a separately isolated relay instance), preserving Personal's routes:
 
 - Match each Business environment's exact dedicated domain and local-part
-  `^in\\+[0-9a-f]{32}# Accounting email operations
-
-Accounting email is a tenant-scoped automation surface for inbound document
-capture and outbound invoice delivery. Authentication email remains a separate
-worker and credential boundary.
-
-. Existing Business addresses need not be renamed.
+  `^in\+[0-9a-f]{32}$`. Existing Business addresses need not be renamed.
 - Forward to that environment's `/api/email/inbound/self-smtp` using its own
   HMAC secret. Do not use the shared Personal domain for Business aliases.
 - Route the domain's MX to the actual self-hosted SMTP receiver, verifying its
