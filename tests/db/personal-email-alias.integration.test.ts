@@ -41,7 +41,9 @@ run("personal email PostgreSQL lifecycle with the restricted runtime role", () =
   beforeAll(async () => {
     vi.stubEnv("DATABASE_URL", process.env.TEST_APP_DATABASE_URL!);
     vi.stubEnv("BUSINESS_WRITES_ENABLED", "true");
-    vi.stubEnv("BUSINESS_FINLYNQ_INBOUND_EMAIL_DOMAIN", "inbound.example.test");
+    vi.stubEnv("BUSINESS_FINLYNQ_INBOUND_EMAIL_DOMAIN", "mail.finlynq.com");
+    vi.stubEnv("BUSINESS_FINLYNQ_INBOUND_EMAIL_PREFIX", "businessdev-");
+    vi.stubEnv("APP_ORIGIN", "https://dev.business.finlynq.com");
     await owner.query(`INSERT INTO organizations(id,slug,display_name,active,is_demo,organization_mode,writes_enabled_at)
       VALUES ($1,$2,'Personal email test',true,false,'REAL',now()),
         ($3,$4,'Other email tenant',true,false,'REAL',now())`,
@@ -85,7 +87,7 @@ run("personal email PostgreSQL lifecycle with the restricted runtime role", () =
     expect(await getPersonalEmailAlias(context, ids.membership)).toBeNull();
     const created = await provisionPersonalEmailAlias(command);
     expect(created.idempotentReplay).toBe(false);
-    expect(created.alias.address).toMatch(/^in\+[a-f0-9]{32}@inbound\.example\.test$/);
+    expect(created.alias.address).toMatch(/^businessdev-[a-f0-9]{32}@mail\.finlynq\.com$/);
     expect((await provisionPersonalEmailAlias(command)).alias.id).toBe(created.alias.id);
     expect((await getPersonalEmailAlias(context, ids.membership))?.id).toBe(created.alias.id);
     await expect(getPersonalEmailAlias(context, ids.otherMembership)).rejects.toThrow("membership is not active");

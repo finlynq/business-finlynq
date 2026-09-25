@@ -8,7 +8,7 @@ import nextConfig from "../next.config";
 
 const secret = "business-relay-synthetic-test-secret-32";
 const timestamp = "2026-09-25T00:00:00.000Z";
-const recipient = "in+0123456789abcdef0123456789abcdef@inbound.example.test";
+const recipient = "businessdev-0123456789abcdef0123456789abcdef@mail.finlynq.com";
 const pdf = Buffer.from("%PDF-1.7\nfixture\n%%EOF");
 function payload() {
   return { message_id: "mailpit-1", smtp_message_id: "sender-controlled",
@@ -76,11 +76,16 @@ describe("self-hosted Mailpit relay protocol", () => {
   it("receiving readiness is independent of missing/broken Resend credentials", () => {
     vi.stubEnv("ACCOUNTING_EMAIL_INBOUND_RELAY_SECRET", secret);
     vi.stubEnv("ACCOUNTING_EMAIL_INBOUND_RELAY_SECRET_FILE", "");
-    vi.stubEnv("BUSINESS_FINLYNQ_INBOUND_EMAIL_DOMAIN", "inbound.example.test");
+    vi.stubEnv("BUSINESS_FINLYNQ_INBOUND_EMAIL_DOMAIN", "mail.finlynq.com");
+    vi.stubEnv("BUSINESS_FINLYNQ_INBOUND_EMAIL_PREFIX", "businessdev-");
+    vi.stubEnv("APP_ORIGIN", "https://dev.business.finlynq.com");
     vi.stubEnv("ACCOUNTING_EMAIL_RESEND_API_KEY", "");
     vi.stubEnv("ACCOUNTING_EMAIL_RESEND_API_KEY_FILE", "/nonexistent/outbound-key");
     expect(emailSecretReadiness()).toMatchObject({ apiKey: false, inboundRelay: true });
     expect(emailProviderReadiness()).toMatchObject({ inbound: true, outbound: false });
+    vi.stubEnv("BUSINESS_FINLYNQ_INBOUND_EMAIL_PREFIX", "business-");
+    expect(emailProviderReadiness().inbound).toBe(false);
+    vi.stubEnv("BUSINESS_FINLYNQ_INBOUND_EMAIL_PREFIX", "businessdev-");
     vi.stubEnv("ACCOUNTING_EMAIL_INBOUND_RELAY_SECRET", "short");
     expect(emailProviderReadiness().inbound).toBe(false);
     vi.stubEnv("ACCOUNTING_EMAIL_INBOUND_RELAY_SECRET", `whsec_${"a".repeat(40)}`);
