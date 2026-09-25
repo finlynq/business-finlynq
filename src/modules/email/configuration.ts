@@ -38,7 +38,7 @@ type AliasRow = Readonly<{
   owner_membership_id: string | null;
   legal_entity_id: string | null;
   connection_id: string | null;
-  provider: "RESEND";
+  provider: "SELF_SMTP" | "RESEND";
   label: string;
   purpose: "PAYABLES" | "RECEIVABLES" | "GENERAL";
   address_digest: string;
@@ -173,7 +173,7 @@ export async function createEmailAlias(unparsed: ContextCommand & z.input<typeof
     const inserted = (await client.query<AliasRow>(
       `INSERT INTO email_ingestion_aliases
        (id,organization_id,legal_entity_id,connection_id,provider,label,purpose,address_digest,address_ciphertext,key_version,status,version,hourly_limit,max_payload_bytes,idempotency_key,command_hash,created_by)
-       VALUES ($1,$2,$3,$4,'RESEND',$5,$6,$7,$8,$9,'ACTIVE',1,$10,$11,$12,$13,$14)
+       VALUES ($1,$2,$3,$4,'SELF_SMTP',$5,$6,$7,$8,$9,'ACTIVE',1,$10,$11,$12,$13,$14)
        RETURNING *`,
       [id, unparsed.context.organizationId, command.legalEntityId ?? null, command.connectionId ?? null,
         command.label, command.purpose, addressDigest(address), ciphertext, scope.key_version,
@@ -250,7 +250,7 @@ export async function rotateEmailAlias(unparsed: ContextCommand & z.input<typeof
       `INSERT INTO email_ingestion_aliases
        (id,organization_id,legal_entity_id,connection_id,provider,label,purpose,address_digest,address_ciphertext,key_version,status,version,hourly_limit,max_payload_bytes,idempotency_key,command_hash,created_by)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'ACTIVE',1,$11,$12,$13,$14,$15) RETURNING *`,
-      [id, current.organization_id, current.legal_entity_id, current.connection_id, current.provider,
+      [id, current.organization_id, current.legal_entity_id, current.connection_id, "SELF_SMTP",
         current.label, current.purpose, addressDigest(address), ciphertext, scope.key_version,
         current.hourly_limit, current.max_payload_bytes, key, commandHash, unparsed.context.actorId],
     )).rows[0];
@@ -324,7 +324,7 @@ export async function provisionPersonalEmailAlias(
     const inserted = (await client.query<AliasRow>(
       `INSERT INTO email_ingestion_aliases
        (id,organization_id,owner_membership_id,connection_id,provider,label,purpose,address_digest,address_ciphertext,key_version,status,version,hourly_limit,max_payload_bytes,idempotency_key,command_hash,created_by)
-       VALUES ($1,$2,$3,$4,'RESEND','Personal document inbox','GENERAL',$5,$6,$7,'ACTIVE',1,25,$8,$9,$10,$11)
+       VALUES ($1,$2,$3,$4,'SELF_SMTP','Personal document inbox','GENERAL',$5,$6,$7,'ACTIVE',1,25,$8,$9,$10,$11)
        RETURNING *`,
       [id, unparsed.context.organizationId, command.membershipId, command.connectionId ?? null,
         addressDigest(address), ciphertext, scope.key_version, 10 * 1024 * 1024,
@@ -402,7 +402,7 @@ export async function rotatePersonalEmailAlias(
        (id,organization_id,owner_membership_id,legal_entity_id,connection_id,provider,label,purpose,address_digest,address_ciphertext,key_version,status,version,hourly_limit,max_payload_bytes,idempotency_key,command_hash,created_by)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'ACTIVE',1,$12,$13,$14,$15,$16) RETURNING *`,
       [id, current.organization_id, command.membershipId, current.legal_entity_id, current.connection_id,
-        current.provider, current.label, current.purpose, addressDigest(address), ciphertext, scope.key_version,
+        "SELF_SMTP", current.label, current.purpose, addressDigest(address), ciphertext, scope.key_version,
         current.hourly_limit, current.max_payload_bytes, key, commandHash, unparsed.context.actorId],
     )).rows[0];
     return { alias: await aliasDto(client, inserted), retiredAliasId: current.id, idempotentReplay: false };
@@ -719,7 +719,7 @@ export async function saveEmailDeliverySettings(unparsed: ContextCommand & z.inp
 export function emailProviderReadiness() {
   const secrets = emailSecretReadiness();
   return {
-    inbound: Boolean(secrets.apiKey && secrets.inboundWebhook && process.env.BUSINESS_FINLYNQ_INBOUND_EMAIL_DOMAIN?.trim()),
+    inbound: Boolean(secrets.inboundRelay && process.env.BUSINESS_FINLYNQ_INBOUND_EMAIL_DOMAIN?.trim()),
     outbound: Boolean(secrets.apiKey && secrets.outboundWebhook && outboundDomain()),
     inboundDomain: process.env.BUSINESS_FINLYNQ_INBOUND_EMAIL_DOMAIN?.trim() || null,
     outboundDomain: outboundDomain(),

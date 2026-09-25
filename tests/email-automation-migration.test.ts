@@ -7,8 +7,16 @@ const migration = readFileSync(join(process.cwd(), "migrations/drizzle/0063_ille
 const personalAliasMigration = readFileSync(join(process.cwd(), "migrations/drizzle/0076_cuddly_dreadnoughts.sql"), "utf8");
 const inboundSource = readFileSync(join(process.cwd(), "src/modules/email/inbound.ts"), "utf8");
 const compose = readFileSync(join(process.cwd(), "docker-compose.yml"), "utf8");
+const relayMigration = readFileSync(join(process.cwd(), "migrations/drizzle/0077_self_hosted_inbound_email.sql"), "utf8");
 
 describe("accounting email persistence and MCP boundary", () => {
+  it("allows the self-hosted provider without rewriting historical provenance or weakening tenant isolation", () => {
+    expect(relayMigration).toContain("SET DEFAULT 'SELF_SMTP'");
+    expect(relayMigration.match(/provider IN \('RESEND','SELF_SMTP'\)/g)).toHaveLength(2);
+    expect(relayMigration).toContain("OR status IN ('QUARANTINED','DEAD_LETTER')");
+    expect(relayMigration).not.toMatch(/\b(?:UPDATE|DELETE|DISABLE|GRANT)\b/);
+    expect(relayMigration).not.toContain("invoice_delivery_attempts");
+  });
   it("forces tenant RLS, full-digest routing, immutable evidence, and reviewed grants", () => {
     for (const table of [
       "email_ingestion_aliases", "inbound_email_messages", "inbound_email_attachments",
@@ -44,7 +52,8 @@ describe("accounting email persistence and MCP boundary", () => {
 
   it("mounts separate accounting provider and webhook secrets only through files", () => {
     expect(compose).toContain("ACCOUNTING_EMAIL_RESEND_API_KEY_FILE: /run/secrets/business_finlynq_accounting_resend_api_key");
-    expect(compose).toContain("ACCOUNTING_EMAIL_INBOUND_WEBHOOK_SECRET_FILE: /run/secrets/business_finlynq_accounting_email_inbound_webhook_secret");
+    expect(compose).toContain("ACCOUNTING_EMAIL_INBOUND_RELAY_SECRET_FILE: /run/secrets/business_finlynq_accounting_email_inbound_relay_secret");
+    expect(compose).not.toContain("ACCOUNTING_EMAIL_INBOUND_WEBHOOK_SECRET");
     expect(compose).toContain("ACCOUNTING_EMAIL_OUTBOUND_WEBHOOK_SECRET_FILE: /run/secrets/business_finlynq_accounting_email_outbound_webhook_secret");
     expect(compose).not.toMatch(/^\s+ACCOUNTING_EMAIL_RESEND_API_KEY:/m);
   });

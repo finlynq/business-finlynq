@@ -181,7 +181,7 @@ export const inboundAttachmentSchema = z.object({
   declaredSize: z.number().int().min(1).max(25 * 1024 * 1024).optional(),
 }).strict();
 export const inboundProviderMessageSchema = z.object({
-  provider: z.literal("RESEND"),
+  provider: z.literal("SELF_SMTP"),
   eventId: z.string().trim().min(1).max(500),
   messageId: z.string().trim().min(1).max(500),
   from: emailAddressSchema,
