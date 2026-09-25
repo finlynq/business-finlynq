@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { ingestInboundEmail } from "@/modules/email/inbound";
 import type { InboundProviderMessage } from "@/modules/email/model";
 import { inboundRelaySecret } from "@/modules/email/secrets";
+import { inboundEmailRouting, matchesInboundEmailRouting } from "@/modules/email/routing";
 import { parseRelayMessage, readRelayBody, RelayPayloadError } from "@/modules/email/self-smtp";
 import { verifyRelayWebhook, WebhookSignatureError } from "@/modules/email/signature";
 import { observeRouteHandler } from "@/observability/request-observability";
@@ -14,8 +15,8 @@ async function receiveInboundEmail(request: Request) {
   let message: InboundProviderMessage | undefined;
   try {
     const secret = inboundRelaySecret();
-    const domain = process.env.BUSINESS_FINLYNQ_INBOUND_EMAIL_DOMAIN?.trim().toLowerCase();
-    if (!secret || !domain) {
+    const routing = inboundEmailRouting();
+    if (!secret || !routing) {
       return NextResponse.json({ received: false }, { status: 503, headers: { ...headers, "Retry-After": "30" } });
     }
     if (request.headers.get("content-type")?.split(";", 1)[0].trim().toLowerCase() !== "application/json") {
@@ -27,7 +28,7 @@ async function receiveInboundEmail(request: Request) {
     message = parseRelayMessage(bytes);
     const messageId = request.headers.get("x-mail-message-id");
     if (messageId !== null && messageId !== message.messageId) throw new RelayPayloadError();
-    if (message.to[0].split("@")[1] !== domain) throw new RelayPayloadError();
+    if (!matchesInboundEmailRouting(message.to[0], routing)) throw new RelayPayloadError();
     const result = await ingestInboundEmail(message);
     // 2xx lets the relay delete its copy. Ingestion has already durably stored
     // the content, or intentionally ignored an inactive/unrecognized alias.

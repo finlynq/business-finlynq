@@ -9,10 +9,10 @@ import { POST } from "@/app/api/email/inbound/self-smtp/route";
 import { POST as retiredPOST } from "@/app/api/email/inbound/resend/route";
 
 const testSecret = "business-relay-synthetic-test-secret-32";
-function request(options: { body?: string; signature?: string; timestamp?: string; messageId?: string } = {}) {
+function request(options: { body?: string; signature?: string; timestamp?: string; messageId?: string; recipient?: string } = {}) {
   const body = options.body ?? JSON.stringify({ message_id: "mailpit-1", smtp_message_id: null,
     from: { name: null, address: "sender@example.test" }, to: [],
-    recipient: "in+0123456789abcdef0123456789abcdef@inbound.example.test",
+    recipient: options.recipient ?? "businessdev-0123456789abcdef0123456789abcdef@mail.finlynq.com",
     subject: "Invoice", text: null, html: null, received_at: new Date().toISOString(), attachments: [] });
   const timestamp = options.timestamp ?? new Date().toISOString();
   return new Request("https://example.test/api/email/inbound/self-smtp", { method: "POST", body,
@@ -24,11 +24,25 @@ beforeEach(() => {
   vi.clearAllMocks();
   secret.mockReturnValue(testSecret);
   ingest.mockResolvedValue({ accepted: true, routedRecipients: 1, ignoredRecipients: 0, replays: 0, retryPending: true });
-  vi.stubEnv("BUSINESS_FINLYNQ_INBOUND_EMAIL_DOMAIN", "inbound.example.test");
+  vi.stubEnv("BUSINESS_FINLYNQ_INBOUND_EMAIL_DOMAIN", "mail.finlynq.com");
+  vi.stubEnv("BUSINESS_FINLYNQ_INBOUND_EMAIL_PREFIX", "businessdev-");
+  vi.stubEnv("APP_ORIGIN", "https://dev.business.finlynq.com");
 });
 afterEach(() => { vi.unstubAllEnvs(); vi.restoreAllMocks(); });
 
 describe("self-hosted receiving endpoint", () => {
+  it.each([
+    ["https://dev.business.finlynq.com", "businessdev-"],
+    ["https://stage.business.finlynq.com", "businessstage-"],
+    ["https://business.finlynq.com", "business-"],
+  ])("accepts only its configured alias namespace at %s", async (origin, prefix) => {
+    vi.stubEnv("APP_ORIGIN", origin);
+    vi.stubEnv("BUSINESS_FINLYNQ_INBOUND_EMAIL_PREFIX", prefix);
+    const recipient = `${prefix}${"a".repeat(32)}@mail.finlynq.com`;
+    expect((await POST(request({ recipient }))).status).toBe(200);
+    expect(ingest).toHaveBeenCalledWith(expect.objectContaining({ to: [recipient], cc: [] }));
+  });
+
   it("acknowledges only after durable ingestion, including stored retry-pending mail", async () => {
     let complete!: (value: unknown) => void;
     ingest.mockImplementationOnce(() => new Promise((resolve) => { complete = resolve; }));
@@ -67,6 +81,19 @@ describe("self-hosted receiving endpoint", () => {
 
   it("retires Resend receiving without calling any provider or ingest code", async () => {
     expect((await retiredPOST(request())).status).toBe(410);
+    expect(ingest).not.toHaveBeenCalled();
+  });
+
+  it.each(["business-", "businessstage-", "import-", "importdev-", "in+"])(
+    "rejects the %s namespace even with a valid signature on the shared domain", async (prefix) => {
+      expect((await POST(request({ recipient: `${prefix}${"a".repeat(32)}@mail.finlynq.com` }))).status).toBe(400);
+      expect(ingest).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(["", "business-", "importdev-"])("fails closed with missing/misconfigured prefix %s", async (prefix) => {
+    vi.stubEnv("BUSINESS_FINLYNQ_INBOUND_EMAIL_PREFIX", prefix);
+    expect((await POST(request())).status).toBe(503);
     expect(ingest).not.toHaveBeenCalled();
   });
 });

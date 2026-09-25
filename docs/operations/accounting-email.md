@@ -15,7 +15,8 @@ Do not create a Resend receiving subscription or configure inbound Resend MX.
 | Purpose | Development value |
 | --- | --- |
 | Application | `https://dev.business.finlynq.com` |
-| Inbound domain (proposed; requires DNS/relay activation) | `inbound.dev.business.finlynq.com` |
+| Existing shared inbound domain | `mail.finlynq.com` |
+| Inbound alias prefix | `businessdev-` |
 | Inbound relay endpoint | `https://dev.business.finlynq.com/api/email/inbound/self-smtp` |
 | Outbound domain | `mail.dev.business.finlynq.com` |
 | Resend delivery-event webhook | `https://dev.business.finlynq.com/api/email/events/resend` |
@@ -28,7 +29,8 @@ secret. The old `ACCOUNTING_EMAIL_INBOUND_WEBHOOK_SECRET_FILE` is no longer read
 
 ```dotenv
 ACCOUNTING_EMAIL_INBOUND_RELAY_SECRET_FILE=/etc/business-finlynq-dev/secrets/accounting-email-inbound-relay-secret
-BUSINESS_FINLYNQ_INBOUND_EMAIL_DOMAIN=inbound.dev.business.finlynq.com
+BUSINESS_FINLYNQ_INBOUND_EMAIL_DOMAIN=mail.finlynq.com
+BUSINESS_FINLYNQ_INBOUND_EMAIL_PREFIX=businessdev-
 # Optional outbound invoice delivery only:
 ACCOUNTING_EMAIL_RESEND_API_KEY_FILE=/etc/business-finlynq-dev/secrets/accounting-resend-api-key
 ACCOUNTING_EMAIL_OUTBOUND_WEBHOOK_SECRET_FILE=/etc/business-finlynq-dev/secrets/accounting-email-outbound-webhook-secret
@@ -36,26 +38,36 @@ BUSINESS_FINLYNQ_OUTBOUND_EMAIL_DOMAIN=mail.dev.business.finlynq.com
 ```
 
 Set these in the root-managed environment's `compose.env`. The app receives
-fixed `/run/secrets/...` paths. Missing/blank relay secret or domain keeps
-receiving disabled (503); missing or broken Resend credentials do not disable
+fixed `/run/secrets/...` paths. Missing/invalid relay secret, domain or prefix
+keeps receiving disabled (503). A known deployed `APP_ORIGIN` must match its
+prefix; missing or broken Resend credentials do not disable
 receiving. The settings page reports **receiver configuration**, not proof that
 DNS, the external relay or SMTP delivery has been validated.
 
 ### Relay activation (separate operator change)
 
-The inspected DevManager configuration supports Personal's prod/dev routes,
-not Business routes. **Do not repoint `FINLYNQ_INBOUND_WEBHOOK_URL`,
+DevManager supports independent Business routes, initially disabled.
+**Do not repoint `FINLYNQ_INBOUND_WEBHOOK_URL`,
 `FINLYNQ_DEV_WEBHOOK_URL`, `MAIL_IMPORT_DOMAIN`, or their secrets to Business.**
-Before activating receiving, the relay operator must add independent Business
-routes (or a separately isolated relay instance), preserving Personal's routes:
+Reuse the existing `mail.finlynq.com` receiver and its existing DNS. No DNS
+change is needed. DevManager selects the destination by these local prefixes:
 
-- Match each Business environment's exact dedicated domain and local-part
-  `^in\+[0-9a-f]{32}$`. Existing Business addresses need not be renamed.
+| Application/environment | Local part on `mail.finlynq.com` |
+| --- | --- |
+| Personal production (unchanged) | `import-<existing token>` |
+| Personal development (unchanged) | `importdev-<existing token>` |
+| Business production | `business-<32 hex characters>` |
+| Business stage | `businessstage-<32 hex characters>` |
+| Business development | `businessdev-<32 hex characters>` |
+
+Before activating each Business route:
+
+- Set `BUSINESS_FINLYNQ_INBOUND_EMAIL_PREFIX` to its exact prefix above on the
+  app and `BUSINESS_FINLYNQ_ENV_MAIL_DOMAIN=mail.finlynq.com` on DevManager.
+  DevManager fixes the Business prefix by environment. The app also rejects a
+  signed recipient with the wrong prefix, domain or token length before ingestion.
 - Forward to that environment's `/api/email/inbound/self-smtp` using its own
-  HMAC secret. Do not use the shared Personal domain for Business aliases.
-- Route the domain's MX to the actual self-hosted SMTP receiver, verifying its
-  current hostname/IP and SMTP configuration first. Leave root-domain and
-  Personal MX records, and all outbound SPF/DKIM records, unchanged.
+  HMAC secret. Leave all existing DNS, Personal secrets and outbound records unchanged.
 - Confirm retry-on-failure behavior. DevManager has an optional
   `MAIL_DROP_ON_FAILURE` privacy mode which **deletes mail even on failed
   forwarding**. Business needs `dropOnFailure=false` on its own route/instance,
@@ -103,8 +115,10 @@ Non-2xx must not be treated as successful delivery by the relay.
 Migration 0077 accepts SELF_SMTP while retaining historical RESEND provenance.
 It changes only the default for new aliases and widens reviewed checks; it does
 not rewrite old message history, ownership, addresses, RLS, grants, or audit
-records. New/rotated aliases are SELF_SMTP; historical aliases can route through
-the relay after their domain's MX cutover.
+records. New/rotated aliases are SELF_SMTP and use the environment prefix.
+Historical `in+...` aliases are not silently reassigned to the shared domain:
+rotate any such alias through the normal owner/admin flow before advertising
+it. Their historical data remains intact.
 
 Outbound invoice delivery still uses separate Resend domains/API keys and its
 own delivery-event `whsec_` per environment. Subscribe only the outbound event

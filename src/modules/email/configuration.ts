@@ -24,6 +24,7 @@ import {
 } from "./model";
 import { activeEmailKeyVersion, decryptEmailValue, encryptEmailValue } from "./crypto";
 import { emailSecretReadiness } from "./secrets";
+import { inboundEmailRouting } from "./routing";
 
 type ContextCommand = Readonly<{ context: TenantTransactionContext }>;
 function withoutContext<T extends ContextCommand>(value: T): Omit<T, "context"> {
@@ -56,12 +57,6 @@ type AliasRow = Readonly<{
   retired_at: Date | null;
 }>;
 
-function inboundDomain(): string {
-  const domain = process.env.BUSINESS_FINLYNQ_INBOUND_EMAIL_DOMAIN?.trim().toLocaleLowerCase("en-US");
-  if (!domain) throw Object.assign(new Error("Inbound email is not configured for this environment"), { code: "EMAIL_NOT_CONFIGURED" });
-  return normalizeEmailAddress(`probe@${domain}`).split("@")[1]!;
-}
-
 function outboundDomain(): string | null {
   return process.env.BUSINESS_FINLYNQ_OUTBOUND_EMAIL_DOMAIN?.trim().toLocaleLowerCase("en-US") ?? null;
 }
@@ -71,7 +66,9 @@ function addressDigest(address: string): string {
 }
 
 function newInboundAddress(): string {
-  return normalizeEmailAddress(`in+${randomBytes(16).toString("hex")}@${inboundDomain()}`);
+  const routing = inboundEmailRouting();
+  if (!routing) throw Object.assign(new Error("Inbound email is not configured for this environment"), { code: "EMAIL_NOT_CONFIGURED" });
+  return normalizeEmailAddress(`${routing.prefix}${randomBytes(16).toString("hex")}@${routing.domain}`);
 }
 
 async function assertEmailAdministrator(client: PoolClient, context: TenantTransactionContext): Promise<void> {
@@ -718,10 +715,11 @@ export async function saveEmailDeliverySettings(unparsed: ContextCommand & z.inp
 
 export function emailProviderReadiness() {
   const secrets = emailSecretReadiness();
+  const routing = inboundEmailRouting();
   return {
-    inbound: Boolean(secrets.inboundRelay && process.env.BUSINESS_FINLYNQ_INBOUND_EMAIL_DOMAIN?.trim()),
+    inbound: Boolean(secrets.inboundRelay && routing),
     outbound: Boolean(secrets.apiKey && secrets.outboundWebhook && outboundDomain()),
-    inboundDomain: process.env.BUSINESS_FINLYNQ_INBOUND_EMAIL_DOMAIN?.trim() || null,
+    inboundDomain: routing?.domain ?? null,
     outboundDomain: outboundDomain(),
   };
 }
