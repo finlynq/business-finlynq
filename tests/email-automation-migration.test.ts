@@ -36,9 +36,10 @@ describe("accounting email persistence and MCP boundary", () => {
     expect(personalAliasMigration).toContain("JOIN users actor ON actor.id=actor_membership.user_id AND actor.active");
     expect(personalAliasMigration).toContain("alias.address_digest=selected_address_digest");
     expect(personalAliasMigration).toContain("REVOKE ALL ON FUNCTION app.resolve_inbound_email_alias(text) FROM PUBLIC");
-    expect(inboundSource).toContain("selected_alias.owner_membership_id IS NULL OR actor_membership.id=selected_alias.owner_membership_id");
-    expect(inboundSource).toContain("JOIN users actor ON actor.id=actor_membership.user_id AND actor.active");
-    expect(inboundSource).toContain("FOR SHARE OF selected_alias,actor_membership,actor");
+    expect(inboundSource).toContain("app.lock_active_email_membership(selected_alias.owner_membership_id)");
+    expect(personalAliasMigration).toContain("membership.organization_id=app.current_organization_id()");
+    expect(personalAliasMigration).toContain("membership.user_id=app.current_actor_id()");
+    expect(personalAliasMigration).toContain("FOR SHARE OF membership,actor");
   });
 
   it("mounts separate accounting provider and webhook secrets only through files", () => {

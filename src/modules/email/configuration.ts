@@ -261,17 +261,13 @@ export async function rotateEmailAlias(unparsed: ContextCommand & z.input<typeof
 
 async function assertPersonalAliasMembership(
   client: PoolClient,
-  context: TenantTransactionContext,
   membershipId: string,
 ): Promise<void> {
-  const membership = await client.query(
-    `SELECT 1
-     FROM organization_memberships membership
-     JOIN users actor ON actor.id=membership.user_id AND actor.active
-     WHERE membership.organization_id=$1 AND membership.id=$2 AND membership.user_id=$3 AND membership.active`,
-    [context.organizationId, membershipId, context.actorId],
+  const membership = await client.query<{ allowed: boolean }>(
+    "SELECT app.lock_active_email_membership($1) AS allowed",
+    [membershipId],
   );
-  if (!membership.rows[0]) throw new Error("Your organization membership is not active");
+  if (!membership.rows[0]?.allowed) throw new Error("Your organization membership is not active");
 }
 
 async function activePersonalAlias(
@@ -294,7 +290,7 @@ export async function getPersonalEmailAlias(
 ) {
   const selectedMembershipId = z.uuid().parse(membershipId);
   return withTenantTransaction(context, async (client) => {
-    await assertPersonalAliasMembership(client, context, selectedMembershipId);
+    await assertPersonalAliasMembership(client, selectedMembershipId);
     const row = await activePersonalAlias(client, context.organizationId, selectedMembershipId);
     return row ? aliasDto(client, row) : null;
   });
@@ -307,7 +303,7 @@ export async function provisionPersonalEmailAlias(
   return withTenantTransaction({ ...unparsed.context, reason: command.reason }, async (client) => {
     assertTenantWritesEnabled(unparsed.context);
     await assertWritableOrganization(client, unparsed.context);
-    await assertPersonalAliasMembership(client, unparsed.context, command.membershipId);
+    await assertPersonalAliasMembership(client, command.membershipId);
     await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))", [
       `personal-email-alias:${unparsed.context.organizationId}:${command.membershipId}`,
     ]);
@@ -345,7 +341,7 @@ export async function configurePersonalEmailAlias(
   return withTenantTransaction({ ...unparsed.context, reason: command.reason }, async (client) => {
     assertTenantWritesEnabled(unparsed.context);
     await assertWritableOrganization(client, unparsed.context);
-    await assertPersonalAliasMembership(client, unparsed.context, command.membershipId);
+    await assertPersonalAliasMembership(client, command.membershipId);
     const current = await activePersonalAlias(client, unparsed.context.organizationId, command.membershipId, true);
     if (!current || current.id !== command.aliasId || current.version !== command.expectedVersion) {
       throw new Error("Personal email address changed; reload before updating storage");
@@ -373,7 +369,7 @@ export async function rotatePersonalEmailAlias(
   return withTenantTransaction({ ...unparsed.context, reason: command.reason }, async (client) => {
     assertTenantWritesEnabled(unparsed.context);
     await assertWritableOrganization(client, unparsed.context);
-    await assertPersonalAliasMembership(client, unparsed.context, command.membershipId);
+    await assertPersonalAliasMembership(client, command.membershipId);
     const replay = (await client.query<AliasRow>(
       `SELECT * FROM email_ingestion_aliases
        WHERE organization_id=$1 AND owner_membership_id=$2 AND idempotency_key=$3`,

@@ -88,7 +88,7 @@ beforeEach(() => {
 describe("personal inbound email ownership", () => {
   it("returns only the current actor's active membership-owned alias", async () => {
     mocks.query
-      .mockResolvedValueOnce({ rows: [{ exists: true }] })
+      .mockResolvedValueOnce({ rows: [{ allowed: true }] })
       .mockResolvedValueOnce({ rows: [aliasRow()] });
 
     await expect(getPersonalEmailAlias(context, ids.membership)).resolves.toMatchObject({
@@ -96,7 +96,7 @@ describe("personal inbound email ownership", () => {
       address: "in+opaque@inbound.dev.business.finlynq.com",
       personal: true,
     });
-    expect(mocks.query.mock.calls[0]?.[1]).toEqual([ids.organization, ids.membership, ids.user]);
+    expect(mocks.query.mock.calls[0]?.[1]).toEqual([ids.membership]);
     expect(mocks.query.mock.calls[1]?.[1]).toEqual([ids.organization, ids.membership]);
   });
 
@@ -109,7 +109,7 @@ describe("personal inbound email ownership", () => {
 
   it("binds configuration changes to the exact current alias as well as its version", async () => {
     mocks.query
-      .mockResolvedValueOnce({ rows: [{ exists: true }] })
+      .mockResolvedValueOnce({ rows: [{ allowed: true }] })
       .mockResolvedValueOnce({ rows: [aliasRow()] });
 
     await expect(configurePersonalEmailAlias({
@@ -125,7 +125,7 @@ describe("personal inbound email ownership", () => {
 
   it("provisions a 128-bit opaque address owned by the exact membership", async () => {
     mocks.query.mockImplementation(async (text: string, values?: unknown[]) => {
-      if (text.includes("FROM organization_memberships membership")) return { rows: [{ exists: true }] };
+      if (text.includes("app.lock_active_email_membership")) return { rows: [{ allowed: true }] };
       if (text.includes("pg_advisory_xact_lock")) return { rows: [] };
       if (text.includes("SELECT * FROM email_ingestion_aliases")) return { rows: [] };
       if (text.includes("INSERT INTO email_ingestion_aliases")) {

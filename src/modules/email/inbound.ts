@@ -89,15 +89,10 @@ async function stageForAlias(alias: ResolvedAlias, message: InboundProviderMessa
     const currentAlias = await client.query(
       `SELECT 1
        FROM email_ingestion_aliases selected_alias
-       JOIN organization_memberships actor_membership
-         ON actor_membership.organization_id=selected_alias.organization_id
-        AND actor_membership.active
-        AND actor_membership.user_id=$3
-        AND (selected_alias.owner_membership_id IS NULL OR actor_membership.id=selected_alias.owner_membership_id)
-       JOIN users actor ON actor.id=actor_membership.user_id AND actor.active
        WHERE selected_alias.organization_id=$1 AND selected_alias.id=$2 AND selected_alias.status='ACTIVE'
-       FOR SHARE OF selected_alias,actor_membership,actor`,
-      [alias.organization_id, alias.alias_id, alias.actor_id],
+         AND app.lock_active_email_membership(selected_alias.owner_membership_id)
+       FOR SHARE OF selected_alias`,
+      [alias.organization_id, alias.alias_id],
     );
     if (!currentAlias.rows[0]) return { context, row: null, attachments: [], replay: false, ignored: true };
     const existing = (await client.query<MessageRow>(

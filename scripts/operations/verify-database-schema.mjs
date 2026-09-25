@@ -121,6 +121,7 @@ const runtimeExecuteFunctions = [
   "app.current_actor_id()",
   "app.current_actor_has_permission(text)",
   "app.resolve_inbound_email_alias(text)",
+  "app.lock_active_email_membership(uuid)",
   "app.resolve_outbound_email_attempt(text)",
   "app.mcp_user_is_active(uuid)",
   "app.segment_value_is_valid(uuid, uuid, text, date)",

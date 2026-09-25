@@ -24,3 +24,30 @@ SET search_path=pg_catalog,public,pg_temp AS $$
   LIMIT 1
 $$;
 REVOKE ALL ON FUNCTION app.resolve_inbound_email_alias(text) FROM PUBLIC;
+--> statement-breakpoint
+
+-- Runtime cannot read users or lock identity rows directly. Keep the
+-- active-user check and revocation fence inside this tenant/actor-bound helper.
+CREATE FUNCTION app.lock_active_email_membership(selected_membership_id uuid)
+RETURNS boolean LANGUAGE plpgsql SECURITY DEFINER
+SET search_path=pg_catalog,public,pg_temp AS $$
+BEGIN
+  PERFORM 1
+  FROM organization_memberships membership
+  JOIN users actor ON actor.id=membership.user_id AND actor.active
+  JOIN organizations organization ON organization.id=membership.organization_id
+  WHERE membership.organization_id=app.current_organization_id()
+    AND membership.user_id=app.current_actor_id()
+    AND (selected_membership_id IS NULL OR membership.id=selected_membership_id)
+    AND membership.active AND organization.active
+    AND NOT organization.is_demo AND organization.organization_mode='REAL'
+  FOR SHARE OF membership,actor;
+  RETURN FOUND;
+END
+$$;
+REVOKE ALL ON FUNCTION app.lock_active_email_membership(uuid) FROM PUBLIC;
+DO $$ BEGIN
+  IF EXISTS(SELECT 1 FROM pg_roles WHERE rolname='business_finlynq_app') THEN
+    GRANT EXECUTE ON FUNCTION app.lock_active_email_membership(uuid) TO business_finlynq_app;
+  END IF;
+END $$;
