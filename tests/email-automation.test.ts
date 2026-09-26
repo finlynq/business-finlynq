@@ -2,7 +2,7 @@ import { createHmac } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import { renderInvoicePdf } from "@/modules/email/invoice-pdf";
 import { attachmentSafety, evaluateBookingPolicy, groupAccountingAttachments } from "@/modules/email/policy";
-import { ResendInboundProvider, ResendOutboundProvider } from "@/modules/email/provider";
+import { ResendOutboundProvider } from "@/modules/email/provider";
 import { verifySvixWebhook, WebhookSignatureError } from "@/modules/email/signature";
 import type { InvoiceRenderFacts } from "@/modules/email/model";
 
@@ -62,40 +62,6 @@ describe("accounting email automation", () => {
     expect(() => verifySvixWebhook(input)).not.toThrow();
     expect(() => verifySvixWebhook({ ...input, rawBody: `${rawBody} ` })).toThrow(WebhookSignatureError);
     expect(() => verifySvixWebhook({ ...input, now: now + 301_000 })).toThrow(WebhookSignatureError);
-  });
-
-  it("retrieves received metadata and attachment bytes only from the fixed Resend CDN", async () => {
-    const pdf = Buffer.from("%PDF-1.7\nsynthetic");
-    const fetcher = vi.fn(async (input: string | URL | Request) => {
-      const url = String(input);
-      if (url.includes("/attachments") && url.startsWith("https://api.resend.com")) {
-        return Response.json({ object: "list", has_more: false, data: [{
-          id: "att-1", filename: "invoice.pdf", size: pdf.length,
-          content_type: "application/pdf",
-          download_url: "https://inbound-cdn.resend.com/email-1/attachments/att-1?signature=test",
-        }] });
-      }
-      if (url.startsWith("https://api.resend.com")) {
-        return Response.json({
-          id: "email-1", from: "Billing <billing@supplier.example>",
-          to: ["in+opaque@example.test"], cc: [], subject: "Invoice",
-          text: "Attached", html: null, message_id: "message-1", headers: { "dkim-status": "pass" },
-        });
-      }
-      if (url === "https://inbound-cdn.resend.com/email-1/attachments/att-1?signature=test") {
-        return new Response(pdf, { headers: { "content-length": String(pdf.length) } });
-      }
-      throw new Error(`unexpected URL ${url}`);
-    });
-    const provider = new ResendInboundProvider("re_test", fetcher as typeof fetch);
-    const result = await provider.enrich(JSON.stringify({
-      type: "email.received", created_at: "2026-09-19T00:00:00Z",
-      data: { email_id: "email-1", from: "billing@supplier.example", to: ["in+opaque@example.test"] },
-    }), "event-1");
-    expect(result).toMatchObject({ messageId: "message-1", attachmentOverflow: false });
-    expect(result.attachments[0]).toMatchObject({ filename: "invoice.pdf", declaredSize: pdf.length });
-    expect(result.attachments[0].content?.equals(pdf)).toBe(true);
-    expect(fetcher).toHaveBeenCalledTimes(3);
   });
 
   it("quarantines unsafe attachments and groups one invoice with related receipts", () => {

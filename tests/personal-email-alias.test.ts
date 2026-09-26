@@ -1,5 +1,5 @@
 import type { PoolClient } from "pg";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   query: vi.fn(),
@@ -58,7 +58,7 @@ function aliasRow(overrides: Record<string, unknown> = {}) {
     owner_membership_id: ids.membership,
     legal_entity_id: null,
     connection_id: null,
-    provider: "RESEND",
+    provider: "SELF_SMTP",
     label: "Personal document inbox",
     purpose: "GENERAL",
     address_digest: "a".repeat(64),
@@ -80,10 +80,13 @@ function aliasRow(overrides: Record<string, unknown> = {}) {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  process.env.BUSINESS_FINLYNQ_INBOUND_EMAIL_DOMAIN = "inbound.dev.business.finlynq.com";
+  vi.stubEnv("BUSINESS_FINLYNQ_INBOUND_EMAIL_DOMAIN", "mail.finlynq.com");
+  vi.stubEnv("BUSINESS_FINLYNQ_INBOUND_EMAIL_PREFIX", "businessdev-");
+  vi.stubEnv("APP_ORIGIN", "https://dev.business.finlynq.com");
   const client = { query: mocks.query } as unknown as PoolClient;
   mocks.withTenantTransaction.mockImplementation(async (_context, work) => work(client));
 });
+afterEach(() => vi.unstubAllEnvs());
 
 describe("personal inbound email ownership", () => {
   it("returns only the current actor's active membership-owned alias", async () => {
@@ -123,7 +126,13 @@ describe("personal inbound email ownership", () => {
     expect(mocks.query).toHaveBeenCalledTimes(2);
   });
 
-  it("provisions a 128-bit opaque address owned by the exact membership", async () => {
+  it.each([
+    ["https://dev.business.finlynq.com", "businessdev-"],
+    ["https://stage.business.finlynq.com", "businessstage-"],
+    ["https://business.finlynq.com", "business-"],
+  ])("provisions a membership-owned 128-bit address for %s", async (origin, prefix) => {
+    vi.stubEnv("APP_ORIGIN", origin);
+    vi.stubEnv("BUSINESS_FINLYNQ_INBOUND_EMAIL_PREFIX", prefix);
     mocks.query.mockImplementation(async (text: string, values?: unknown[]) => {
       if (text.includes("app.lock_active_email_membership")) return { rows: [{ allowed: true }] };
       if (text.includes("pg_advisory_xact_lock")) return { rows: [] };
@@ -150,7 +159,7 @@ describe("personal inbound email ownership", () => {
       reason: "Create my personal inbound address",
     });
 
-    expect(result.alias.address).toMatch(/^in\+[a-f0-9]{32}@inbound\.dev\.business\.finlynq\.com$/);
+    expect(result.alias.address).toMatch(new RegExp(`^${prefix}[a-f0-9]{32}@mail\\.finlynq\\.com$`));
     const insert = mocks.query.mock.calls.find(([text]) => String(text).includes("INSERT INTO email_ingestion_aliases"));
     expect(insert?.[1]?.[2]).toBe(ids.membership);
     expect(insert?.[1]?.[10]).toBe(ids.user);

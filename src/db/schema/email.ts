@@ -26,7 +26,7 @@ export const emailIngestionAliases = pgTable("email_ingestion_aliases", {
   ownerMembershipId: uuid("owner_membership_id"),
   legalEntityId: uuid("legal_entity_id"),
   connectionId: uuid("connection_id"),
-  provider: text("provider").notNull().default("RESEND"),
+  provider: text("provider").notNull().default("SELF_SMTP"),
   label: text("label").notNull(),
   purpose: text("purpose").notNull().default("PAYABLES"),
   addressDigest: text("address_digest").notNull(),

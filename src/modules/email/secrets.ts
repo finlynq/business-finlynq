@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 
 type SecretName =
   | "ACCOUNTING_EMAIL_RESEND_API_KEY"
-  | "ACCOUNTING_EMAIL_INBOUND_WEBHOOK_SECRET"
+  | "ACCOUNTING_EMAIL_INBOUND_RELAY_SECRET"
   | "ACCOUNTING_EMAIL_OUTBOUND_WEBHOOK_SECRET";
 
 function optionalSecret(name: SecretName): string | null {
@@ -32,8 +32,12 @@ export function emailResendApiKey(): string | null {
   return optionalSecret("ACCOUNTING_EMAIL_RESEND_API_KEY");
 }
 
-export function inboundWebhookSecret(): string | null {
-  return optionalSecret("ACCOUNTING_EMAIL_INBOUND_WEBHOOK_SECRET");
+export function inboundRelaySecret(): string | null {
+  const secret = optionalSecret("ACCOUNTING_EMAIL_INBOUND_RELAY_SECRET");
+  if (secret && (secret.length < 32 || secret.startsWith("whsec_"))) {
+    throw new Error("Inbound relay requires a dedicated secret of at least 32 characters");
+  }
+  return secret;
 }
 
 export function outboundWebhookSecret(): string | null {
@@ -41,13 +45,12 @@ export function outboundWebhookSecret(): string | null {
 }
 
 export function emailSecretReadiness() {
-  try {
-    return {
-      apiKey: Boolean(emailResendApiKey()),
-      inboundWebhook: Boolean(inboundWebhookSecret()),
-      outboundWebhook: Boolean(outboundWebhookSecret()),
-    };
-  } catch {
-    return { apiKey: false, inboundWebhook: false, outboundWebhook: false };
-  }
+  const ready = (load: () => string | null) => {
+    try { return Boolean(load()); } catch { return false; }
+  };
+  return {
+    apiKey: ready(emailResendApiKey),
+    inboundRelay: ready(inboundRelaySecret),
+    outboundWebhook: ready(outboundWebhookSecret),
+  };
 }
