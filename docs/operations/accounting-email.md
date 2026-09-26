@@ -44,6 +44,15 @@ prefix; missing or broken Resend credentials do not disable
 receiving. The settings page reports **receiver configuration**, not proof that
 DNS, the external relay or SMTP delivery has been validated.
 
+Dev/stage deployment acceptance also compares the inbound domain/prefix, secret
+mount source/read-only mode and mounted bytes with the reviewed Compose config.
+Installing a secret is not enough: an existing container can retain an inert
+mount (or an old inode after rotation). Use the protected deployment service to
+reconcile it; do not manually recreate the app or skip public acceptance.
+If acceptance redirects to `demoError=unavailable`, check the demo reset deadline
+separately: an overdue shared demo rejects new sessions. The normal candidate
+deployment runs its existing ordered demo-bootstrap step before acceptance.
+
 ### Relay activation (separate operator change)
 
 DevManager supports independent Business routes, initially disabled.
