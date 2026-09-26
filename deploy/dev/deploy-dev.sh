@@ -1319,6 +1319,63 @@ document_provider_configuration_matches() {
       "$target" 2>/dev/null)" || return 1
     [[ "$actual_digest" == "$expected_digest" ]] || return 1
   done
+  inbound_relay_configuration_matches "$container" "$rendered"
+}
+
+inbound_relay_configuration_matches() {
+  local container="$1" rendered="$2" setting expected_record actual_record \
+    target source mounts expected_digest actual_digest
+  # Missing keys must match too, so rollback to a pre-relay revision remains
+  # possible without accepting stale settings on a newer running container.
+  for setting in BUSINESS_FINLYNQ_INBOUND_EMAIL_DOMAIN BUSINESS_FINLYNQ_INBOUND_EMAIL_PREFIX \
+    ACCOUNTING_EMAIL_INBOUND_RELAY_SECRET_FILE; do
+    expected_record="$(jq -ce --arg setting "$setting" '
+      .services.app.environment as $environment |
+      if ($environment | has($setting)) then
+        {present: true, value: ($environment[$setting] | tostring)}
+      else
+        {present: false, value: ""}
+      end
+    ' <<<"$rendered")" || return 1
+    actual_record="$(docker inspect --format '{{json .Config.Env}}' "$container" \
+      | jq -ce --arg prefix "$setting=" '
+        [.[] | select(startswith($prefix)) | ltrimstr($prefix)] as $values |
+        if ($values | length) == 1 then
+          {present: true, value: $values[0]}
+        elif ($values | length) == 0 then
+          {present: false, value: ""}
+        else
+          error("duplicate container environment setting")
+        end
+      ')" || return 1
+    [[ "$actual_record" == "$expected_record" ]] || return 1
+  done
+  jq -e '.present == true and .value != ""' <<<"$expected_record" >/dev/null || return 0
+  target="$(jq -er '.value' <<<"$expected_record")" || return 1
+  [[ "$target" == /run/secrets/business_finlynq_accounting_email_inbound_relay_secret ]] || return 1
+  source="$(jq -er --arg target "$target" '
+    . as $config |
+    [.services.app.secrets[] |
+      select((.target // .source) == $target or
+        (.target // .source) == ($target | split("/") | last)) |
+      $config.secrets[.source].file] |
+    if length == 1 then .[0] else error("secret mount source is not unique") end
+  ' <<<"$rendered")" || return 1
+  [[ -f "$source" && ! -L "$source" ]] || return 1
+  mounts="$(docker inspect --format '{{json .Mounts}}' "$container")" || return 1
+  jq -e --arg source "$source" --arg target "$target" '
+    [.[] | select(.Destination == $target)] as $mounts |
+    ($mounts | length) == 1 and
+      $mounts[0].Source == $source and $mounts[0].RW == false
+  ' <<<"$mounts" >/dev/null || return 1
+  # Check bytes as well as the source path: an atomic secret rotation can
+  # leave a running read-only bind attached to the old inode. Never log hashes.
+  expected_digest="$(sha256sum -- "$source")" || return 1
+  expected_digest="${expected_digest%% *}"
+  actual_digest="$(docker exec "$container" node -e \
+    'process.stdout.write(require("node:crypto").createHash("sha256").update(require("node:fs").readFileSync(process.argv[1])).digest("hex"))' \
+    "$target" 2>/dev/null)" || return 1
+  [[ "$actual_digest" == "$expected_digest" ]]
 }
 
 network_alias_has_exact_owner() {

@@ -64,10 +64,11 @@ describe("CI predecessor-upgrade and restore verification", () => {
     );
   });
 
-  it("replays exactly 0000-0024 before preserving a tenant sentinel through 0076", () => {
+  it("replays exactly 0000-0024 before preserving a tenant sentinel through 0077", () => {
     expect(migrationJournal.entries.map((entry) => entry.idx)).toEqual(
-      Array.from({ length: 77 }, (_, index) => index),
+      Array.from({ length: 78 }, (_, index) => index),
     );
+    expect(migrationJournal.entries.at(-1)?.tag).toBe("0077_self_hosted_inbound_email");
     expect(migrationJournal.entries.find((entry) => entry.idx === 25)?.tag).toBe(
       "0025_tenant_rls_completion",
     );
@@ -232,9 +233,9 @@ describe("CI predecessor-upgrade and restore verification", () => {
     expect(lifecycleScript).toContain(
       'run_migrations "$predecessor_database" "$repository_root/migrations/drizzle"',
     );
-    expect(lifecycleScript).toContain('[[ "$upgraded_count" == "77" ]]');
+    expect(lifecycleScript).toContain('[[ "$upgraded_count" == "78" ]]');
     expect(lifecycleScript).toContain(
-      "tenant sentinel was not preserved through migrations 0025 through 0076",
+      "tenant sentinel was not preserved through migrations 0025 through 0077",
     );
     expect(lifecycleScript).toContain("ci.predecessor-audit-after-upgrade");
     expect(lifecycleScript).toContain(

@@ -20,7 +20,7 @@ type ResolvedAlias = Readonly<{
 }>;
 
 type MessageRow = Readonly<{
-  id: string; organization_id: string; alias_id: string; provider: "RESEND";
+  id: string; organization_id: string; alias_id: string; provider: "SELF_SMTP" | "RESEND";
   provider_event_id: string; provider_message_id: string; received_at: Date;
   envelope_ciphertext: string | null; key_version: number; routing_result: string; status: string;
   retry_count: number; next_retry_at: Date | null; error_code: string | null;
@@ -59,7 +59,7 @@ function workerContext(alias: ResolvedAlias, message: InboundProviderMessage): T
     actorId: alias.actor_id,
     sessionMode: "real",
     requestId: `email-inbound:${message.provider}:${message.eventId}:${alias.alias_id}`.slice(0, 200),
-    authMethod: "resend-webhook",
+    authMethod: "self-smtp-webhook",
     sourceSurface: "WORKER",
     reason: "Verified inbound accounting email",
   };
@@ -91,7 +91,7 @@ async function stageForAlias(alias: ResolvedAlias, message: InboundProviderMessa
        FROM email_ingestion_aliases selected_alias
        WHERE selected_alias.organization_id=$1 AND selected_alias.id=$2 AND selected_alias.status='ACTIVE'
          AND app.lock_active_email_membership(selected_alias.owner_membership_id)
-       FOR SHARE OF selected_alias`,
+       FOR UPDATE OF selected_alias`,
       [alias.organization_id, alias.alias_id],
     );
     if (!currentAlias.rows[0]) return { context, row: null, attachments: [], replay: false, ignored: true };
@@ -125,20 +125,20 @@ async function stageForAlias(alias: ResolvedAlias, message: InboundProviderMessa
       text: message.text,
       html: message.html,
     });
-    const initialStatus = rateLimited || oversize || attachmentFlood ? "QUARANTINED" : "STAGED";
+    // Commit retryable state before downstream I/O. A crash after this
+    // transaction must leave work that the normal retry action can resume.
+    const initialStatus = rateLimited || oversize || attachmentFlood ? "QUARANTINED" : "RETRY_PENDING";
     const errorCode = rateLimited ? "RATE_LIMITED" : oversize ? "PAYLOAD_TOO_LARGE"
       : attachmentFlood ? "TOO_MANY_ATTACHMENTS" : null;
     const row = (await client.query<MessageRow>(
       `INSERT INTO inbound_email_messages
-       (id,organization_id,alias_id,provider,provider_event_id,provider_message_id,received_at,sender_auth,envelope_ciphertext,key_version,routing_result,status,error_code,transient_expires_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'ROUTED',$11,$12,now()+interval '30 days') RETURNING *`,
+       (id,organization_id,alias_id,provider,provider_event_id,provider_message_id,received_at,sender_auth,envelope_ciphertext,key_version,routing_result,status,error_code,next_retry_at,transient_expires_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'ROUTED',$11,$12,
+         CASE WHEN $11='RETRY_PENDING' THEN now()+interval '1 minute' ELSE NULL END,now()+interval '30 days') RETURNING *`,
       [id, alias.organization_id, alias.alias_id, message.provider, message.eventId, message.messageId,
         message.receivedAt, message.senderAuth, envelope, scope.key_version, initialStatus, errorCode],
     )).rows[0];
-    if (rateLimited || oversize || attachmentFlood) {
-      return { context, row, attachments: [], replay: false, ignored: false };
-    }
-
+    // Retain even quarantined attachment bytes before acknowledging the relay.
     const groups = groupAccountingAttachments(message.attachments.map((item) => ({ id: item.id, filename: item.filename, mimeType: item.mimeType })));
     const purpose = new Map<string, "INVOICE" | "RECEIPT">();
     for (const group of groups) {
@@ -150,7 +150,9 @@ async function stageForAlias(alias: ResolvedAlias, message: InboundProviderMessa
       const attachmentId = randomUUID();
       const attachmentScope = { id: attachmentId, organization_id: alias.organization_id, key_version: scope.key_version };
       const declaredSize = attachment.declaredSize ?? attachment.content?.length ?? 0;
-      const safety = attachment.mimeType !== "application/pdf"
+      const safety = errorCode
+        ? { allowed: false as const, code: errorCode, reason: "Message quarantined by intake policy" }
+        : attachment.mimeType !== "application/pdf"
         ? { allowed: false as const, code: "ATTACHMENT_TYPE", reason: "Only PDF email attachments are currently supported" }
         : declaredSize > 2 * 1024 * 1024
           ? { allowed: false as const, code: "ATTACHMENT_SIZE", reason: "The attachment size is not supported" }
@@ -173,7 +175,7 @@ async function stageForAlias(alias: ResolvedAlias, message: InboundProviderMessa
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING *`,
         [attachmentId, alias.organization_id, id, `${index}:${attachment.id}`, filename, content,
           scope.key_version, attachment.mimeType, declaredSize, sha256,
-          purpose.get(attachment.id) ?? "SUPPORTING", safety.allowed ? "STAGED" : "QUARANTINED",
+          purpose.get(attachment.id) ?? "SUPPORTING", safety.allowed ? "RETRY_PENDING" : "QUARANTINED",
           safety.allowed ? null : safety.code],
       )).rows[0]);
     }
@@ -287,17 +289,21 @@ export async function ingestInboundEmail(unparsed: InboundProviderMessage): Prom
     const staged = await stageForAlias(alias, message);
     if (staged.ignored || !staged.row) { ignoredRecipients += 1; continue; }
     routedRecipients += 1;
-    if (staged.replay) { replays += 1; continue; }
+    if (staged.replay) {
+      replays += 1;
+      retryPending ||= staged.row.status === "RETRY_PENDING";
+      continue;
+    }
     if (staged.row.status === "QUARANTINED") {
       await recordOperation(staged.context, "INBOUND", "MESSAGE_INGESTED", staged.row.id, "QUARANTINED", {
-        attachmentCount: 0,
+        attachmentCount: staged.attachments.length,
         quarantineCode: staged.row.error_code,
         replay: false,
       });
       continue;
     }
     const results = await Promise.all(staged.attachments
-      .filter((attachment) => attachment.status === "STAGED")
+      .filter((attachment) => attachment.status === "RETRY_PENDING")
       .map((attachment) => processStagedInboundAttachment(staged.context, alias, attachment.id)));
     const status = await finishMessage(staged.context, staged.row.id);
     retryPending ||= status === "RETRY_PENDING" || results.some((result) => result.status === "RETRY_PENDING");

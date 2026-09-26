@@ -26,7 +26,7 @@ const services = configuration.services ?? {};
 const providerSecret = "business_finlynq_resend_api_key";
 const accountingEmailSecrets = [
   "business_finlynq_accounting_resend_api_key",
-  "business_finlynq_accounting_email_inbound_webhook_secret",
+  "business_finlynq_accounting_email_inbound_relay_secret",
   "business_finlynq_accounting_email_outbound_webhook_secret",
 ];
 const turnstileSecret = "business_finlynq_turnstile_secret_key";
@@ -120,14 +120,14 @@ for (const [name, service] of Object.entries(services)) {
 }
 
 if (services.app?.environment?.ACCOUNTING_EMAIL_RESEND_API_KEY
-  || services.app?.environment?.ACCOUNTING_EMAIL_INBOUND_WEBHOOK_SECRET
+  || services.app?.environment?.ACCOUNTING_EMAIL_INBOUND_RELAY_SECRET
   || services.app?.environment?.ACCOUNTING_EMAIL_OUTBOUND_WEBHOOK_SECRET) {
   fail("app exposes accounting email provider credentials inline");
 }
 if (services.app?.environment?.ACCOUNTING_EMAIL_RESEND_API_KEY_FILE
     !== "/run/secrets/business_finlynq_accounting_resend_api_key"
-  || services.app?.environment?.ACCOUNTING_EMAIL_INBOUND_WEBHOOK_SECRET_FILE
-    !== "/run/secrets/business_finlynq_accounting_email_inbound_webhook_secret"
+  || services.app?.environment?.ACCOUNTING_EMAIL_INBOUND_RELAY_SECRET_FILE
+    !== "/run/secrets/business_finlynq_accounting_email_inbound_relay_secret"
   || services.app?.environment?.ACCOUNTING_EMAIL_OUTBOUND_WEBHOOK_SECRET_FILE
     !== "/run/secrets/business_finlynq_accounting_email_outbound_webhook_secret") {
   fail("app accounting email provider secret paths are not fixed mounts");
