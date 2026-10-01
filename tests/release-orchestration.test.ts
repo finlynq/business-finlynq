@@ -1034,7 +1034,7 @@ describe("commit-addressed release orchestration", () => {
     );
     expect(release).toContain('previous_auth_worker_image_id="$(docker inspect --format');
     expect(release).toContain('previous_auth_worker_revision="$(docker inspect --format');
-    expect(release).toContain('"$previous_auth_worker_image_id")" == "$previous_auth_worker_image_id"');
+    expect(release).toContain('"$source_worker_artifact_id" == "$previous_auth_worker_image_id"');
     expect(release).toContain('write_surface_containment_armed="true"');
     expect(release).toMatch(
       /write_surfaces_stopped[\s\S]*write_surface_containment_armed[\s\S]*router_maintenance_confirmed/,

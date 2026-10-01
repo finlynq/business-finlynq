@@ -50,6 +50,19 @@ The production mode is deliberately for updating an existing release: it require
 
 Any failure first tries to retain or restore router maintenance before containing the candidate, and leaves the scheduler paused. Before database mutation, the runner automatically restarts and attests the exact retained app and, when previously running, the exact auth worker before waiting on health; it then reloads the stable router active and records recovery evidence. Failure to prove that recovery remains fail-closed and requires operator action. At or after database mutation, it does not guess compatibility or automatically restore an old app. If the final production monitor fails after scheduler resume, the failure trap re-pauses it before stopping the candidate. A host loss after durable terminal evidence but before the final active sentinel is handled by the same-revision continuous-deployment finalizer only while the `active-commit-authorized` marker is at most one hour old and its exact evidence digest, revision, run, app/router identities, detailed health, scheduler posture, and live route all revalidate. A pending, stale, malformed, or mismatched marker cannot authorize activation. Do not manually resume a failed release or delete a finalization marker. Review `99-failure.json`, service logs, and `SHA256SUMS`; use the application-only rollback tool only after confirming forward-schema compatibility.
 
+A forward repair after database mutation may proceed when the journaled source
+email-worker image has been lost, but only after the protected journal, stopped
+application anchor, and durable router maintenance pass their existing checks,
+and only when no production email-worker container remains. Before removing an
+obsolete stopped worker, attest its exact container/image/revision against the
+failed release evidence and retain its non-secret runtime identity. Never remove
+a running or unexplained worker. The runner preserves the historical worker
+identity in the journal and records the missing artifact separately in
+`13-forward-repair-source-worker.json`; it does not claim the old image was
+restored. The fresh candidate worker must pass the normal immutable-image,
+heartbeat, browser, and production-monitor checks. Ordinary releases and
+pre-mutation recovery still require the exact retained source worker image.
+
 From the exact reviewed checkout, with both secret environment files owned by root or the release operator and mode `0600`:
 
 ```bash
