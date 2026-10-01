@@ -79,6 +79,7 @@ previous_auth_worker_container=""
 previous_auth_worker_was_running="false"
 previous_auth_worker_image_id=""
 previous_auth_worker_revision=""
+previous_auth_worker_image_retained="true"
 scheduler_boundary_bootstrap_required="false"
 scheduler_boundary_bootstrap_source_revision=""
 scheduler_boundary_bootstrap_receipt=""
@@ -1374,6 +1375,37 @@ mark_first_router_database_mutation_started() (
   trap - EXIT INT TERM
 )
 
+verify_previous_auth_worker_artifact() {
+  [[ "$previous_auth_worker_was_running" == true ]] || return 0
+  [[ "$previous_auth_worker_image_id" =~ ^sha256:[a-f0-9]{64}$ \
+    && "$previous_auth_worker_revision" == "$previous_app_revision" ]] \
+    || fail "the pre-cutover authentication worker has an invalid journaled identity"
+  local source_worker_artifact_id
+  if source_worker_artifact_id="$(docker image inspect --format '{{.Id}}' \
+    "$previous_auth_worker_image_id" 2>/dev/null)"; then
+    [[ "$source_worker_artifact_id" == "$previous_auth_worker_image_id" ]] \
+      || fail "the journaled source authentication-worker image identity changed"
+    previous_auth_worker_image_retained="true"
+    return 0
+  fi
+  # Once a protected journal proves database mutation, recovery is forward-only:
+  # the source worker will never be restarted. An absent artifact may be recorded
+  # honestly only after the journal/router checks and with no retained worker at
+  # all. The candidate worker is still recreated and attested by the release.
+  [[ "$first_router_forward_repair_resume" == true \
+    && "$database_mutation_started" == true \
+    && "$first_router_recovery_journal_sha256" =~ ^[a-f0-9]{64}$ ]] \
+    || fail "the pre-cutover authentication worker is not the retained immutable release"
+  local worker_inventory
+  worker_inventory="$(docker ps --all --quiet --no-trunc \
+    --filter label=com.docker.compose.project=business-finlynq \
+    --filter label=com.docker.compose.service=auth_email_worker)" \
+    || fail "forward-repair authentication-worker inventory could not be read"
+  [[ -z "$worker_inventory" ]] \
+    || fail "forward repair with a missing source worker image requires an empty worker inventory"
+  previous_auth_worker_image_retained="false"
+}
+
 load_first_router_forward_repair_journal() {
   local app_container_id app_image_id router_query router_contract router_mode
   local worker_was_running worker_container_id worker_image_id worker_revision
@@ -1508,9 +1540,9 @@ load_first_router_forward_repair_journal() {
     fi
   fi
   if [[ "$worker_was_running" == true ]]; then
-    [[ "$(docker image inspect --format '{{.Id}}' "$worker_image_id" 2>/dev/null)" \
-      == "$worker_image_id" ]] \
-      || fail "journaled source authentication-worker image is unavailable"
+    # Preserve the historical identity even if its artifact was lost. The
+    # post-journal check allows that loss only for contained forward recovery
+    # with no worker container remaining; it never substitutes another image.
     tagged_source_worker_image="$worker_image_id"
   elif [[ "$journal_source_revision" != "$legacy_f8485_revision" ]]; then
     tagged_source_worker_image="$(docker image inspect --format '{{.Id}}' \
@@ -3726,12 +3758,21 @@ if [[ "$mode" == "release" ]]; then
   fi
   [[ "$previous_auth_worker_was_running" == "$MONITOR_EXPECT_AUTH_EMAIL_WORKER" ]] \
     || fail "the pre-cutover authentication-worker runtime does not match its reviewed gate"
-  if [[ "$previous_auth_worker_was_running" == true ]]; then
-    [[ "$previous_auth_worker_image_id" =~ ^sha256:[a-f0-9]{64}$ \
-      && "$previous_auth_worker_revision" == "$previous_app_revision" \
-      && "$(docker image inspect --format '{{.Id}}' \
-        "$previous_auth_worker_image_id")" == "$previous_auth_worker_image_id" ]] \
-      || fail "the pre-cutover authentication worker is not the retained immutable release"
+  verify_previous_auth_worker_artifact
+  if [[ "$previous_auth_worker_image_retained" == false ]]; then
+    jq -n \
+      --arg sourceRevision "$previous_auth_worker_revision" \
+      --arg sourceImageId "$previous_auth_worker_image_id" \
+      --arg journalSha256 "$first_router_recovery_journal_sha256" \
+      --arg candidateRevision "$revision" \
+      --arg candidateImageId "${image_ids[authWorker]}" \
+      '{schemaVersion: 1, product: "business-finlynq", kind: "forward-repair-missing-source-worker",
+        sourceRevision: $sourceRevision, sourceImageId: $sourceImageId,
+        sourceImageRetained: false, sourceWorkerRestartAllowed: false,
+        recoveryJournalSha256: $journalSha256, candidateRevision: $candidateRevision,
+        candidateImageId: $candidateImageId}' \
+      >"$evidence_directory/13-forward-repair-source-worker.json"
+    chmod 0600 -- "$evidence_directory/13-forward-repair-source-worker.json"
   fi
   [[ "$previous_app_id" =~ ^sha256:[a-f0-9]{64}$ ]] || fail "the previous app has no immutable image ID"
   [[ "$previous_app_revision" =~ ^[a-f0-9]{40}$ && ! "$previous_app_revision" =~ ^0+$ ]] || fail "the previous app has no full OCI revision"
