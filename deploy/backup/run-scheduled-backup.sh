@@ -34,5 +34,7 @@ fi
   exit 2
 }
 
-docker compose --profile operations run --rm provision_backup
+# The database is already managed by the release runner. Reconciliation here
+# can recreate it when the pinned release and canonical Compose hashes differ.
+docker compose --profile operations run --rm --no-deps provision_backup
 docker compose --profile operations run --rm --no-deps backup
