@@ -32,6 +32,7 @@ exit "$BACKUP_TEST_BACKUP_STATUS"
       encoding: "utf8",
       timeout: 10_000,
       env: {
+        NODE_ENV: "test",
         PATH: `${directory}:/usr/bin:/bin`,
         BUSINESS_FINLYNQ_IMAGE_REVISION: "a".repeat(40),
         SCHEDULED_BACKUP_TIMEOUT_SECONDS: "5",
