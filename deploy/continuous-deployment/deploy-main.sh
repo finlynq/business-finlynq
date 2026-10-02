@@ -1460,6 +1460,69 @@ candidate_uses_trusted_production_workflows \
 verify_ci_approved_production_signal \
   || fail "origin/main lacks an exact GitHub-hosted quality-gate attestation"
 
+attest_forward_repair_application() {
+  retained_candidate_revision="$candidate_revision"
+  if [[ "$release_forward_repair_superseded" == true ]]; then
+    retained_candidate_revision="$release_transition_candidate_revision"
+  fi
+  current_retained_app_image="$(docker inspect --format '{{.Image}}' \
+    "$retained_app_container")" \
+    || fail "forward repair application image could not be inspected"
+  [[ "$current_retained_app_image" =~ ^sha256:[a-f0-9]{64}$ ]] \
+    || fail "forward repair application image identity is invalid"
+  if [[ "$release_forward_repair_superseded" == true ]]; then
+    [[ "$current_retained_app_image" == "$retained_app_image_id" ]] \
+      || fail "superseded forward repair requires the exact source application anchor"
+  fi
+  # A verified source anchor does not depend on the discarded candidate image.
+  # Resolve the candidate tag only when a retained candidate needs attestation.
+  retained_candidate_image_id=""
+  if [[ "$current_retained_app_image" != "$retained_app_image_id" ]]; then
+    retained_candidate_image_id="$(docker image inspect --format '{{.Id}}' \
+      "business-finlynq-app:$retained_candidate_revision" 2>/dev/null)" \
+      || fail "forward repair lost the exact prior candidate application image"
+    [[ "$retained_candidate_image_id" =~ ^sha256:[a-f0-9]{64}$ \
+      && "$current_retained_app_image" == "$retained_candidate_image_id" ]] \
+      || fail "forward repair retained an unexpected application image"
+  fi
+  docker inspect "$retained_app_container" | jq -e \
+    --arg sourceRevision "$backup_source_revision" \
+    --arg sourceImage "$retained_app_image_id" \
+    --arg candidateRevision "$retained_candidate_revision" \
+    --arg candidateImage "$retained_candidate_image_id" \
+    --arg legacyRevision "$legacy_f8485_revision" '
+      length == 1 and
+      .[0].Config.Labels["com.docker.compose.project"] == "business-finlynq" and
+      .[0].Config.Labels["com.docker.compose.service"] == "app" and
+      .[0].State.Running == false and .[0].HostConfig.ReadonlyRootfs == true and
+      .[0].HostConfig.Privileged == false and
+      .[0].HostConfig.RestartPolicy.Name == "unless-stopped" and
+      ((.[0].HostConfig.CapDrop // []) | sort) == ["ALL"] and
+      ((.[0].HostConfig.SecurityOpt // []) | index("no-new-privileges:true")) != null and
+      ((.[0].Image == $sourceImage and
+        (if $sourceRevision == $legacyRevision then
+           ((.[0].Config.Labels["org.opencontainers.image.revision"] // "") == "")
+         else
+           .[0].Config.Labels["org.opencontainers.image.revision"] == $sourceRevision
+         end)) or
+       (($candidateImage | length) > 0 and .[0].Image == $candidateImage and
+        .[0].Config.Labels["org.opencontainers.image.revision"] == $candidateRevision))
+    ' >/dev/null \
+    || fail "forward repair retained an unexpected application container"
+  if [[ "$release_transition_router_was_preexisting" == true \
+    || "$current_retained_app_image" == "$retained_candidate_image_id" ]]; then
+    network_alias_has_exact_owner business_finlynq_private-frontend release-app \
+      "$retained_app_container" \
+      || fail "forward repair application is not the unique private upstream"
+  else
+    [[ "$current_retained_app_image" == "$retained_app_image_id" \
+      && "$(docker inspect --format \
+        '{{if index .NetworkSettings.Networks "business_finlynq_edge"}}attached{{end}}' \
+        "$retained_app_container")" == "" ]] \
+      || fail "forward repair legacy source application retained the public edge"
+  fi
+}
+
 mapfile -t retained_app_containers < <(docker ps --all --no-trunc --quiet \
   --filter label=com.docker.compose.project=business-finlynq \
   --filter label=com.docker.compose.service=app)
@@ -1470,56 +1533,7 @@ if [[ "$release_forward_repair_pending" == true ]]; then
   retained_app_image_id="$release_transition_app_image_id"
   if [[ "${#retained_app_containers[@]}" == 1 ]]; then
     retained_app_container="${retained_app_containers[0]}"
-    retained_candidate_revision="$candidate_revision"
-    if [[ "$release_forward_repair_superseded" == true ]]; then
-      retained_candidate_revision="$release_transition_candidate_revision"
-    fi
-    retained_candidate_image_id="$(docker image inspect --format '{{.Id}}' \
-      "business-finlynq-app:$retained_candidate_revision" 2>/dev/null)" \
-      || fail "forward repair lost the exact prior candidate application image"
-    docker inspect "$retained_app_container" | jq -e \
-      --arg sourceRevision "$backup_source_revision" \
-      --arg sourceImage "$retained_app_image_id" \
-      --arg candidateRevision "$retained_candidate_revision" \
-      --arg candidateImage "$retained_candidate_image_id" \
-      --arg legacyRevision "$legacy_f8485_revision" '
-        length == 1 and
-        .[0].Config.Labels["com.docker.compose.project"] == "business-finlynq" and
-        .[0].Config.Labels["com.docker.compose.service"] == "app" and
-        .[0].State.Running == false and .[0].HostConfig.ReadonlyRootfs == true and
-        .[0].HostConfig.Privileged == false and
-        .[0].HostConfig.RestartPolicy.Name == "unless-stopped" and
-        ((.[0].HostConfig.CapDrop // []) | sort) == ["ALL"] and
-        ((.[0].HostConfig.SecurityOpt // []) | index("no-new-privileges:true")) != null and
-        ((.[0].Image == $sourceImage and
-          (if $sourceRevision == $legacyRevision then
-             ((.[0].Config.Labels["org.opencontainers.image.revision"] // "") == "")
-           else
-             .[0].Config.Labels["org.opencontainers.image.revision"] == $sourceRevision
-           end)) or
-         (.[0].Image == $candidateImage and
-          .[0].Config.Labels["org.opencontainers.image.revision"] == $candidateRevision))
-      ' >/dev/null \
-      || fail "forward repair retained an unexpected application container"
-    current_retained_app_image="$(docker inspect --format '{{.Image}}' \
-      "$retained_app_container")" \
-      || fail "forward repair application image could not be inspected"
-    if [[ "$release_forward_repair_superseded" == true ]]; then
-      [[ "$current_retained_app_image" == "$retained_app_image_id" ]] \
-        || fail "superseded forward repair requires the exact source application anchor"
-    fi
-    if [[ "$release_transition_router_was_preexisting" == true \
-      || "$current_retained_app_image" == "$retained_candidate_image_id" ]]; then
-      network_alias_has_exact_owner business_finlynq_private-frontend release-app \
-        "$retained_app_container" \
-        || fail "forward repair application is not the unique private upstream"
-    else
-      [[ "$current_retained_app_image" == "$retained_app_image_id" \
-        && "$(docker inspect --format \
-          '{{if index .NetworkSettings.Networks "business_finlynq_edge"}}attached{{end}}' \
-          "$retained_app_container")" == "" ]] \
-        || fail "forward repair legacy source application retained the public edge"
-    fi
+    attest_forward_repair_application
   fi
 else
   [[ "${#retained_app_containers[@]}" == 1 ]] \
