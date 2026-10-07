@@ -977,13 +977,31 @@ export async function configureOrganizationCurrency(input: Readonly<{
   principal: SessionPrincipal;
   requestId: string;
 }> & z.output<typeof organizationCurrencyConfigurationSchema>) {
-  return mutateConfiguration(input, async (client) => {
-    const result = await client.query<{ enabled: boolean }>(
-      "SELECT app.accounting_set_currency_enabled($1,$2) AS enabled",
-      [input.currencyCode, input.enabled],
-    );
-    return { enabled: result.rows[0]?.enabled ?? input.enabled };
-  });
+  try {
+    return await mutateConfiguration(input, async (client) => {
+      const result = await client.query<{ enabled: boolean }>(
+        "SELECT app.accounting_set_currency_enabled($1,$2) AS enabled",
+        [input.currencyCode, input.enabled],
+      );
+      return { enabled: result.rows[0]?.enabled ?? input.enabled };
+    });
+  } catch (error) {
+    if (isRetryableDatabaseError(error)) throw error;
+    const databaseError = error && typeof error === "object"
+      ? error as { code?: unknown; message?: unknown }
+      : null;
+    if (databaseError?.code === "55000" && databaseError.message === "A functional currency cannot be disabled") {
+      throw Object.assign(new Error(`Change or deactivate every active ledger using ${input.currencyCode} before disabling the currency.`, { cause: error }), {
+        code: "ORGANIZATION_CURRENCY_IN_USE",
+      });
+    }
+    if (databaseError?.code === "22023" && databaseError.message === "Unsupported currency code") {
+      throw Object.assign(new Error(`Currency ${input.currencyCode} is not active in the currency catalog.`, { cause: error }), {
+        code: "ORGANIZATION_CURRENCY_UNSUPPORTED",
+      });
+    }
+    throw error;
+  }
 }
 
 export async function recordCurrencyRate(input: Readonly<{
