@@ -34,9 +34,28 @@ test("synthetic demo depreciation journal can be submitted and withdrawn by its 
   // Use the demo's server-derived accounting month so this remains valid when
   // its rolling synthetic calendar changes. Earlier seeded months are closed.
   const accountingMonth = (await page.getByLabel("Accounting date", { exact: true }).inputValue()).slice(0, 7);
+  const assetNumber = `FA-E2E-${crypto.randomUUID().slice(0, 8).toUpperCase()}`;
   try {
     await page.goto("/app/assets");
-    const schedule = page.getByRole("row").filter({ hasText: "FA-CA-1001" })
+    // The public demo persists between releases and retries. Give this run its
+    // own synthetic asset; a prior run may already have drafted the seed asset.
+    await page.getByText("Create an asset or prepaid", { exact: true }).first().click();
+    const form = page.locator('[aria-labelledby="new-asset-title"]');
+    const category = await form.getByRole("option", { name: /^TANGIBLE ·/ }).first().getAttribute("value");
+    if (!category) throw new Error("A tangible synthetic asset category is required");
+    await form.locator('select[name="categoryId"]').selectOption(category);
+    await form.getByLabel("Asset number", { exact: true }).fill(assetNumber);
+    await form.getByLabel("Name", { exact: true }).fill("Synthetic workflow acceptance asset");
+    await form.getByLabel("Acquisition date", { exact: true }).fill(`${accountingMonth}-01`);
+    await form.getByLabel("In-service / recognition start", { exact: true }).fill(`${accountingMonth}-01`);
+    await form.getByLabel("Useful life (months)", { exact: true }).fill("1");
+    await form.getByLabel("Cost", { exact: true }).fill("120.00");
+    await form.getByLabel("Source reference", { exact: true }).fill("Synthetic release acceptance only");
+    const createdResponse = page.waitForResponse((response) => response.url().endsWith("/api/assets/register") && response.request().method() === "POST");
+    await form.getByRole("button", { name: "Create register record", exact: true }).click();
+    const created = await createdResponse;
+    expect(created.ok(), await created.text()).toBe(true);
+    const schedule = page.locator('[aria-labelledby="asset-schedule-title"]').getByRole("row").filter({ hasText: assetNumber })
       .filter({ has: page.locator("td:nth-child(3)", { hasText: new RegExp(`^${accountingMonth}-`) }) })
       .filter({ has: page.getByRole("button", { name: "Create journal draft", exact: true }) }).first();
     await expect(schedule).toBeVisible();
@@ -46,7 +65,7 @@ test("synthetic demo depreciation journal can be submitted and withdrawn by its 
     expect(generated.ok(), await generated.text()).toBe(true);
     const { journalId } = await generated.json() as { journalId: string };
     await page.goto(`/app/journals/${journalId}`);
-    await expect(page.getByRole("heading", { name: /Depreciation · FA-CA-1001/ })).toBeVisible();
+    await expect(page.getByRole("heading", { name: new RegExp(`Depreciation · ${assetNumber}`) })).toBeVisible();
     const summary = page.locator('[aria-labelledby="journal-summary-title"]');
     await expect(summary).toContainText("DRAFT");
 
