@@ -610,6 +610,7 @@ export function DocumentDetails({
         <div><span>Journal entry</span><strong>{document.journalId ? <Link href={`/app/journals/${document.journalId}`}>{journalLinkLabel("View journal entry", document.journalNumber)}</Link> : "Not posted"}</strong></div>
       </div>
       <p className={styles.detailNarrative}>{snapshot.description}</p>
+      <p><Link href={`/app/reports/booking-batches?sourceDocumentId=${document.id}`}>Booking review and posting reports</Link></p>
       {businessSnapshot && (
         <section aria-label="Source document attachments">
           <h3>Source documents</h3>

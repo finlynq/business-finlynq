@@ -45,6 +45,7 @@ const preservedTenantRlsPolicyNames = new Map([
 // disagree. Relations absent here must have no direct or effective grants to
 // the app role, and PUBLIC/role-membership privilege paths are always rejected.
 const runtimeSelectRelations = [
+  "booking_batches", "booking_batch_reports",
   "organizations", "organization_memberships", "roles", "membership_roles",
   "role_permissions", "permissions", "organization_key_versions",
   "legal_entities", "ledgers", "currency_definitions",
@@ -97,6 +98,7 @@ const runtimeInsertUpdateRelations = [
   "customer_delivery_preferences", "invoice_delivery_attempts", "email_operation_events",
 ];
 const runtimeInsertRelations = [
+  "booking_batches", "booking_batch_reports",
   "journal_approvals", "journal_entry_relations", "source_documents", "document_evidence_assets",
   "subledger_events", "open_items", "document_settlement_allocations",
   "open_item_void_events", "tax_determination_snapshots",

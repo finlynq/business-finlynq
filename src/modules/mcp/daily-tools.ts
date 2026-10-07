@@ -1,6 +1,7 @@
 import { taxFilingReadinessSchema } from "@/modules/tax/filing-readiness";
 import { mcpTaxFilingWorkspace } from "./tax-filing-capabilities";
 import "server-only";
+import { BOOKING_MCP_TOOLS } from "./booking-tools";
 import { EVIDENCE_MCP_TOOLS } from "./evidence-tools";
 
 import { z } from "zod";
@@ -298,6 +299,7 @@ function voidSettlementTool(input: Readonly<{
 
 export const DAILY_MCP_TOOLS: readonly McpToolDefinition[] = [
   ...EVIDENCE_MCP_TOOLS,
+  ...BOOKING_MCP_TOOLS,
   defineMcpTool({
     policy: { name: "finlynq_daily_get_accounting_context", group: "DAILY", access: "READ", permission: PERMISSIONS.readMcpLedger },
     title: "Get accounting entry context",
