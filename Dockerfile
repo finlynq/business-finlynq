@@ -99,6 +99,9 @@ RUN npm ci --ignore-scripts \
   && npm cache clean --force
 COPY --chown=pwuser:pwuser playwright.config.ts tsconfig.json ./
 COPY --chown=pwuser:pwuser e2e ./e2e
+# Component browser checks resolve their reviewed source and template fixtures.
+COPY --chown=pwuser:pwuser src ./src
+RUN ./node_modules/.bin/playwright test --list
 
 ENV HOME=/tmp/playwright-home
 ENV npm_config_cache=/tmp/npm-cache
