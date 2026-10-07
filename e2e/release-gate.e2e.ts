@@ -366,7 +366,7 @@ test(`writable demo completes and exactly reverses an AP bill ${fundingMethod} s
   await bill.getByRole("button", { name: "Issue", exact: true }).click();
   await expect(bill).toContainText("POSTED");
   await expect(bill).toContainText("CAD 100.00");
-  await expect(bill).toContainText("OPEN");
+  await expect(bill).toContainText("Open");
 
   await bill.getByRole("button", { name: "Record settlement", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Record settlement" })).toBeVisible();
@@ -379,9 +379,22 @@ test(`writable demo completes and exactly reverses an AP bill ${fundingMethod} s
 
   const payment = page.getByRole("row").filter({ hasText: paymentNumber });
   await expect(payment).toContainText("POSTED");
-  await expect(payment).toContainText("1 open item");
+  await expect(payment).toContainText("Applied to 1 bill");
+  if (evidence.length) {
+    await payment.getByRole("button", { name: "View details", exact: true }).click();
+    const sourceFiles = page.getByRole("region", { name: "Allocated invoice attachments" });
+    await expect(sourceFiles).toContainText(billNumber);
+    for (const attachment of evidence) {
+      const view = sourceFiles.getByRole("link", { name: `View attachment ${attachment.filename}`, exact: true });
+      await expect(view).toBeVisible();
+      const response = await releaseGet(page.request, (await view.getAttribute("href"))!, { headers: await evidenceRequestHeaders(page) });
+      expect(response.status()).toBe(200);
+      expect(response.headers()["content-disposition"]).toMatch(/^inline;/);
+    }
+    await page.getByRole("button", { name: "Close details", exact: true }).click();
+  }
   await expect(bill).toContainText("CAD 0.00");
-  await expect(bill).toContainText("SETTLED");
+  await expect(bill).toContainText("Paid");
   await expect(bill.getByRole("button", { name: "Reverse settlement first" })).toBeDisabled();
 
   await payment.getByRole("button", { name: "Void", exact: true }).click();
@@ -391,7 +404,7 @@ test(`writable demo completes and exactly reverses an AP bill ${fundingMethod} s
   await expect(payment).toContainText("VOIDED");
   await expect(payment).toContainText("Release acceptance payment reversal");
   await expect(bill).toContainText("CAD 100.00");
-  await expect(bill).toContainText("OPEN");
+  await expect(bill).toContainText("Open");
 
   await bill.getByRole("button", { name: "Void", exact: true }).click();
   await expect(page.getByRole("heading", { name: `Void ${billNumber}` })).toBeVisible();
@@ -423,6 +436,45 @@ test(`writable demo completes and exactly reverses an AP bill ${fundingMethod} s
 });
 
 }
+
+test("payment filters follow partial payments, full payment and reversal", async ({ page }) => {
+  const suffix = crypto.randomUUID().slice(0,8).toUpperCase();
+  const number = `BILL-FILTER-${suffix}`;
+  await openDemo(page, "/app/payables/bills");
+  await createBillDraft(page, { number, description: "Payment filter regression", amount: "100.00" });
+  const bill = page.locator("tr[id^=source-]").filter({ hasText: number });
+  await bill.getByRole("button", { name: "Issue", exact: true }).click();
+  await expect(bill).toContainText("Outstanding CAD 100.00");
+  for (const [index, amount] of ["40.00", "60.00"].entries()) {
+    await bill.getByRole("button", { name: "Record settlement", exact: true }).click();
+    await page.getByLabel("Settlement number").fill(`PAY-FILTER-${suffix}-${index}`);
+    await page.getByLabel("Description", { exact: true }).fill("Synthetic payment filter allocation");
+    await page.getByLabel(`Allocation for ${number}`).fill(amount);
+    await page.getByRole("button", { name: "Record and post settlement" }).click();
+    await expect(bill).toContainText(index === 0 ? "Partially paid" : "Paid");
+    await expect(bill).toContainText(index === 0 ? "Outstanding CAD 60.00" : "Outstanding CAD 0.00");
+  }
+  await page.getByRole("combobox", { name: /^Payment status/ }).selectOption("PAID");
+  await page.getByRole("button", { name: "Apply filters", exact: true }).click();
+  await expect(page).toHaveURL(/paymentStatus=PAID/);
+  await expect(bill).toBeVisible();
+  await expect(page.getByRole("row").filter({ hasText: `PAY-FILTER-${suffix}` })).toHaveCount(0);
+  await page.getByRole("combobox", { name: /^Payment status/ }).selectOption("OPEN");
+  await page.getByRole("button", { name: "Apply filters", exact: true }).click();
+  await expect(page).toHaveURL(/paymentStatus=OPEN/);
+  await expect(bill).toHaveCount(0);
+  await page.getByRole("button", { name: "Clear filters", exact: true }).click();
+  const payment = page.getByRole("row").filter({ hasText: `PAY-FILTER-${suffix}-1` });
+  await payment.getByRole("button", { name: "Void", exact: true }).click();
+  await page.getByLabel("Mandatory reason").fill("Synthetic payment reversal restores outstanding amount");
+  await page.getByRole("button", { name: "Void and reverse" }).click();
+  await expect(bill).toContainText("Outstanding CAD 60.00");
+  await expect(bill).toContainText("Partially paid");
+  await page.getByRole("combobox", { name: /^Payment status/ }).selectOption("OPEN");
+  await page.getByRole("button", { name: "Apply filters", exact: true }).click();
+  await expect(bill).toBeVisible();
+  await revokeDemoSession(page);
+});
 
 test("supplier invoice rounding preserves reviewed totals through posting and replay", async ({ page }) => {
   test.skip(process.env.E2E_SOURCE_TAX_REVIEW_ENABLED !== "true", "Requires an authorized synthetic tax reviewer; the public demo accountant has no tax override grant.");
@@ -462,7 +514,7 @@ test("supplier invoice rounding preserves reviewed totals through posting and re
   expect(issued.status(), await issued.text()).toBe(201);
   await expect(bill).toContainText("POSTED");
   await expect(bill).toContainText("CAD 57.77");
-  await expect(bill).toContainText("OPEN");
+  await expect(bill).toContainText("Open");
   const issueReplay = await releasePost(page.request, "/api/payables/bills/issue", { headers, data: issued.request().postDataJSON() });
   expect(issueReplay.status()).toBe(200);
   expect((await issueReplay.json()).idempotentReplay).toBe(true);

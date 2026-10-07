@@ -24,13 +24,15 @@ async function download(request: NextRequest, context: { params: Promise<{ asset
       context: mutationContext(principal, requestIdFor(request), { reason: "Download linked document evidence", sourceSurface: "API" }),
       ...parsed.data,
     });
+    const disposition = request.nextUrl.searchParams.get("disposition") === "inline"
+      && ["application/pdf", "image/png", "image/jpeg"].includes(result.metadata.mimeType) ? "inline" : "attachment";
     // Copy before zeroing the decrypted application buffer.
     const body = new Uint8Array(result.bytes);
     result.bytes.fill(0);
     return new NextResponse(body, { headers: {
       ...headers, "Content-Type": result.metadata.mimeType,
       "Content-Length": String(body.byteLength),
-      "Content-Disposition": `attachment; filename="evidence"; filename*=UTF-8''${encodeURIComponent(result.metadata.filename).replace(/['()*]/g, (c) => "%" + c.charCodeAt(0).toString(16))}`,
+      "Content-Disposition": `${disposition}; filename="evidence"; filename*=UTF-8''${encodeURIComponent(result.metadata.filename).replace(/['()*]/g, (c) => "%" + c.charCodeAt(0).toString(16))}`,
     } });
   } catch (error) {
     const retryAfterSeconds = storageRetryAfterSeconds(error) ?? (isRetryableDatabaseError(error) ? 1 : null);
@@ -51,7 +53,7 @@ async function download(request: NextRequest, context: { params: Promise<{ asset
       });
     }
     return demoSessionLeaseLostResponse(error)
-      ?? NextResponse.json({ error: "Evidence not found or access is no longer available." }, { status: 404, headers });
+      ?? NextResponse.json({ error: "This attachment is unavailable or access has changed. Refresh the transaction and sign in again; ask the document owner to check the file if it still cannot be opened." }, { status: 404, headers });
   }
 }
 

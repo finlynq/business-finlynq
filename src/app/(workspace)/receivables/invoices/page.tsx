@@ -19,6 +19,7 @@ export default async function InvoicesPage({
     search: scalar("q"),
     entityCode: entityParameter === undefined ? entityContext.selectedEntity?.code ?? "" : entityParameter,
     status: scalar("status"),
+    paymentStatus: scalar("paymentStatus") as "ALL" | "OPEN" | "PAID" | undefined,
     currency: scalar("currency"),
     dateFrom: scalar("dateFrom"),
     dateTo: scalar("dateTo"),
