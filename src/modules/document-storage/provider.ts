@@ -255,17 +255,18 @@ export class CloudDrive {
     };
     return { accountId, driveId, rootId, inboxId, archiveId, inboxUrl: await webUrl(inboxId), archiveUrl: await webUrl(archiveId) };
   }
-  async download(fileId: string): Promise<Buffer> {
+  async download(fileId: string, maximumBytes = MAX_EVIDENCE_BYTES): Promise<Buffer> {
+    if (maximumBytes > 8 * 1024 * 1024) throw new StorageError("STORAGE_TOO_LARGE", "PDF preparation is limited to 8 MiB.");
     if (this.provider === "GOOGLE_DRIVE") {
       const response = await this.request(`/drive/v3/files/${encodeURIComponent(fileId)}?alt=media`);
       if (!response.ok) await jsonResponse(response);
-      return boundedResponse(response, MAX_EVIDENCE_BYTES);
+      return boundedResponse(response, maximumBytes);
     }
     // Do not forward the Graph bearer token to the preauthenticated download host.
     const response = await fetch(`${GRAPH}${this.graphPath()}/items/${encodeURIComponent(fileId)}/content`, { headers: { Authorization: `Bearer ${this.token}` }, redirect: "manual", cache: "no-store", signal: AbortSignal.timeout(20000) });
     if (response.status !== 302) {
       if (!response.ok) await jsonResponse(response);
-      return boundedResponse(response, MAX_EVIDENCE_BYTES);
+      return boundedResponse(response, maximumBytes);
     }
     const url = microsoftDownloadUrl(response.headers.get("location"));
     await response.body?.cancel();
@@ -273,7 +274,7 @@ export class CloudDrive {
     try {
       const download = await fetch(url, { redirect: "error", cache: "no-store", signal: AbortSignal.timeout(20000) });
       if (!download.ok) await jsonResponse(download);
-      return await boundedResponse(download, MAX_EVIDENCE_BYTES);
+      return await boundedResponse(download, maximumBytes);
     } catch (error) {
       if (error instanceof StorageError) throw error;
       throw new StorageError("STORAGE_PROVIDER_FAILED", "The storage provider could not complete this request. Retry later.");
@@ -295,8 +296,8 @@ export class CloudDrive {
     }
     return null;
   }
-  async upload(folderId: string, name: string, mimeType: string, bytes: Buffer): Promise<CloudFile> {
-    if (bytes.length > MAX_EVIDENCE_BYTES) throw new StorageError("STORAGE_TOO_LARGE", "Document exceeds the supported size.");
+  async upload(folderId: string, name: string, mimeType: string, bytes: Buffer, maximumBytes = MAX_EVIDENCE_BYTES): Promise<CloudFile> {
+    if (maximumBytes > 8 * 1024 * 1024 || bytes.length > maximumBytes) throw new StorageError("STORAGE_TOO_LARGE", "Document exceeds the supported size.");
     if (this.provider === "ONEDRIVE") {
       const query = new URLSearchParams({ "@microsoft.graph.conflictBehavior": "fail" });
       return this.parseFile(await jsonResponse(await this.request(`${this.graphPath()}/items/${encodeURIComponent(folderId)}:/${encodeURIComponent(name)}:/content?${query}`, {

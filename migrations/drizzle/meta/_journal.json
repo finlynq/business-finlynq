@@ -547,6 +547,41 @@
       "when": 1790348937022,
       "tag": "0077_self_hosted_inbound_email",
       "breakpoints": true
+    },
+    {
+      "idx": 78,
+      "version": "7",
+      "when": 1791363564132,
+      "tag": "0078_journal_workflow_recovery",
+      "breakpoints": true
+    },
+    {
+      "idx": 79,
+      "version": "7",
+      "when": 1791366342171,
+      "tag": "0079_tax_mapping_revision_integrity",
+      "breakpoints": true
+    },
+    {
+      "idx": 80,
+      "version": "7",
+      "when": 1791371837483,
+      "tag": "0080_booking_batch_reports",
+      "breakpoints": true
+    },
+    {
+      "idx": 81,
+      "version": "7",
+      "when": 1791379647875,
+      "tag": "0081_storage_setup_consent",
+      "breakpoints": true
+    },
+    {
+      "idx": 82,
+      "version": "7",
+      "when": 1791380371763,
+      "tag": "0082_tax_registration_scope_versions",
+      "breakpoints": true
     }
   ]
 }

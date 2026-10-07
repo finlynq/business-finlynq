@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { JournalWorkflowControls } from "../../../_components/journal-workflow-controls.client";
 import { CompactDisclosure } from "../../../_components/compact-disclosure.client";
 import { notFound } from "next/navigation";
 import { formatMoney } from "@/kernel/money";
@@ -27,10 +28,11 @@ export default async function JournalDetailPage({
   return (
     <div className="page-content">
       <BackLink href="/app/journals">Back to journals</BackLink>
+      <p><Link href={`/app/reports/booking-batches?journalId=${journal.id}`}>Booking review and posting reports</Link></p>
       <PageHeader
         eyebrow={`${journal.entityCode} · ${journal.ledgerCode} · General ledger`}
         title={`Journal ${journal.number}`}
-        description="Read-only posting evidence. Source-owned journals must be corrected in their originating module; posted lines are never edited in place."
+        description="Review journal evidence and complete the actions available to your role. Source-owned journals are corrected in their originating module; posted lines stay immutable."
         actions={journal.sourceHref ? (
           <Link className="primary-button" href={journal.sourceHref}>
             Open {journal.ownerModule === "receivables" ? "AR" : "AP"} source{journal.sourceNumber ? ` ${journal.sourceNumber}` : ""}
@@ -59,6 +61,13 @@ export default async function JournalDetailPage({
           <div><dt>Posted at</dt><dd>{journal.postedAt ?? "Not posted"}</dd></div>
 </dl></CompactDisclosure>
       </section>
+
+      {!["POSTED", "REVERSED", "DELETED"].includes(journal.status) && (
+        <section className="panel" aria-labelledby="journal-workflow-title">
+          <div className="panel-heading"><h2 id="journal-workflow-title">Journal workflow</h2></div>
+          <JournalWorkflowControls journalId={journal.id} journalNumber={journal.number} workflow={journal.workflow} />
+        </section>
+      )}
 
       {journal.lines.length ? (
         <section className="panel" aria-labelledby="journal-lines-title">

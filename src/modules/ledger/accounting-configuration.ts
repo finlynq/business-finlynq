@@ -1,3 +1,4 @@
+import { canonicalHash } from "@/modules/subledger/document-model";
 import "server-only";
 
 import { randomUUID } from "node:crypto";
@@ -264,6 +265,44 @@ export const taxRegistrationConfigurationSchema = z.object({
   }
 });
 
+export const correctTaxRegistrationScopeSchema = z.object({
+  registrationId: z.uuid(), expectedScopeVersion: z.number().int().positive(),
+  destinationCity: optionalCitySchema, locationCode: optionalLocationCodeSchema,
+  configurationEvidence: z.string().trim().min(8).max(1000), reason: z.string().trim().min(8).max(500),
+  preservePostedEvidence: z.literal(true), idempotencyKey: z.string().trim().min(1).max(200),
+}).strict();
+
+function taxRegistrationFailure(error: unknown): unknown {
+  const candidate = error as { code?: string; constraint?: string; message?: string } | null;
+  const messages: Record<string, string> = {
+    TAX_REGISTRATION_SCOPE_INVALID: "Check the scope correction fields and evidence.",
+    TAX_REGISTRATION_UNAVAILABLE: "This tax registration is unavailable in the selected company or organization.",
+    TAX_REGISTRATION_SCOPE_REPLAY_CONFLICT: "This correction key was used with different fields. Retry identical arguments or use a new key for a new correction.",
+    TAX_REGISTRATION_SCOPE_STALE: "The registration scope changed. Reload its current scope version and review the correction again.",
+    TAX_REGISTRATION_PROVINCE_SCOPE_REQUIRED: "Ontario HST registration scope is CA / ON with no city or location restriction. Keep the actual customer city on the invoice.",
+    TAX_REGISTRATION_CITY_SCOPE_REQUIRED: "Seattle registration automation requires both city Seattle and location code 1726. Other explicit locations require manual tax review.",
+  };
+  if (candidate?.message && Object.hasOwn(messages, candidate.message)) return new OrganizationAdministrationError(messages[candidate.message], 409, candidate.message);
+  if ((candidate?.code === "23505" && candidate.message?.startsWith("A tax configuration overlaps")) || candidate?.constraint === "entity_tax_registrations_regime_window_exclusion") {
+    return new OrganizationAdministrationError("A registration already covers this company, tax regime and validity period. Use Correct registration scope with its current scope version; keep posted evidence unchanged. For a separate validity period, choose non-overlapping dates.", 409, "TAX_REGISTRATION_OVERLAP");
+  }
+  return error;
+}
+
+export async function correctTaxRegistrationScope(input: Readonly<{ principal: SessionPrincipal; requestId: string }> & z.input<typeof correctTaxRegistrationScopeSchema>) {
+  const { principal, requestId, ...fields } = input;
+  const command = correctTaxRegistrationScopeSchema.parse(fields);
+  try {
+    return await mutateConfiguration({ principal, requestId, reason: command.reason }, async (client) => {
+      const result = await client.query<{ result: { registrationId: string; scopeVersion: number; correctionId: string; preservedPostedEvidenceCount: number; idempotentReplay: boolean } }>(
+        "SELECT app.accounting_correct_tax_registration_scope($1::uuid,$2::integer,$3,$4,$5,$6,$7,$8) AS result",
+        [command.registrationId, command.expectedScopeVersion, command.destinationCity, command.locationCode, command.configurationEvidence, command.reason, canonicalHash(command.idempotencyKey), canonicalHash(command)],
+      );
+      return result.rows[0].result;
+    });
+  } catch (error) { throw taxRegistrationFailure(error); }
+}
+
 export function taxRegistrationAutomationStatus(input: Readonly<{
   regimeKey: string;
   destinationCountry: string;
@@ -404,6 +443,8 @@ export type AccountingConfigurationDto = Readonly<{
     validFrom: string;
     validTo: string | null;
     automationStatus: "AUTOMATED" | "MANUAL_REVIEW";
+    scopeVersion: number;
+    scopeHistory: readonly { version: number; destinationCity: string | null; locationCode: string | null; configurationEvidence: string | null; reason: string; createdAt: string | null }[];
   }>[];
 }>;
 
@@ -567,15 +608,23 @@ export async function loadAccountingConfiguration(
         destination_country: string | null; destination_region: string | null;
         destination_city: string | null; location_code: string | null;
         configuration_evidence: string | null; valid_from: string; valid_to: string | null;
+        original_destination_city: string | null; original_location_code: string | null; original_configuration_evidence: string | null;
+        scope_version: number; scope_history: AccountingConfigurationDto["taxRegistrations"][number]["scopeHistory"];
       }>(
         `SELECT registration.id, registration.legal_entity_id,
            entity.code AS entity_code, registration.regime_key,
            registration.registration_ciphertext, registration.key_version,
            registration.destination_country, registration.destination_region,
-           registration.destination_city, registration.location_code,
-           registration.configuration_evidence,
+           CASE WHEN scope.id IS NOT NULL THEN scope.destination_city ELSE registration.destination_city END AS destination_city,
+           CASE WHEN scope.id IS NOT NULL THEN scope.location_code ELSE registration.location_code END AS location_code,
+           coalesce(scope.configuration_evidence,registration.configuration_evidence) AS configuration_evidence,
+           registration.destination_city AS original_destination_city, registration.location_code AS original_location_code, registration.configuration_evidence AS original_configuration_evidence,
+           coalesce(scope.version,1) AS scope_version,
+           coalesce((SELECT jsonb_agg(jsonb_build_object('version',history.version,'destinationCity',history.destination_city,'locationCode',history.location_code,'configurationEvidence',history.configuration_evidence,'reason',history.reason,'createdAt',history.created_at) ORDER BY history.version)
+             FROM tax_registration_scope_versions history WHERE history.organization_id=registration.organization_id AND history.registration_id=registration.id),'[]'::jsonb) AS scope_history,
            registration.valid_from::text, registration.valid_to::text
          FROM entity_tax_registrations registration
+         LEFT JOIN LATERAL (SELECT * FROM tax_registration_scope_versions WHERE organization_id=registration.organization_id AND registration_id=registration.id ORDER BY version DESC LIMIT 1) scope ON true
          JOIN legal_entities entity
            ON entity.organization_id = registration.organization_id
           AND entity.id = registration.legal_entity_id
@@ -733,6 +782,8 @@ export async function loadAccountingConfiguration(
             destinationCity: row.destination_city,
             locationCode: row.location_code,
             configurationEvidence: row.configuration_evidence,
+            scopeVersion: row.scope_version ?? 1,
+            scopeHistory: [{ version: 1, destinationCity: row.original_destination_city ?? null, locationCode: row.original_location_code ?? null, configurationEvidence: row.original_configuration_evidence ?? null, reason: "Original registration", createdAt: null }, ...(row.scope_history ?? [])],
             validFrom: row.valid_from,
             validTo: row.valid_to,
             automationStatus: taxRegistrationAutomationStatus({
@@ -926,13 +977,31 @@ export async function configureOrganizationCurrency(input: Readonly<{
   principal: SessionPrincipal;
   requestId: string;
 }> & z.output<typeof organizationCurrencyConfigurationSchema>) {
-  return mutateConfiguration(input, async (client) => {
-    const result = await client.query<{ enabled: boolean }>(
-      "SELECT app.accounting_set_currency_enabled($1,$2) AS enabled",
-      [input.currencyCode, input.enabled],
-    );
-    return { enabled: result.rows[0]?.enabled ?? input.enabled };
-  });
+  try {
+    return await mutateConfiguration(input, async (client) => {
+      const result = await client.query<{ enabled: boolean }>(
+        "SELECT app.accounting_set_currency_enabled($1,$2) AS enabled",
+        [input.currencyCode, input.enabled],
+      );
+      return { enabled: result.rows[0]?.enabled ?? input.enabled };
+    });
+  } catch (error) {
+    if (isRetryableDatabaseError(error)) throw error;
+    const databaseError = error && typeof error === "object"
+      ? error as { code?: unknown; message?: unknown }
+      : null;
+    if (databaseError?.code === "55000" && databaseError.message === "A functional currency cannot be disabled") {
+      throw Object.assign(new Error(`Change or deactivate every active ledger using ${input.currencyCode} before disabling the currency.`, { cause: error }), {
+        code: "ORGANIZATION_CURRENCY_IN_USE",
+      });
+    }
+    if (databaseError?.code === "22023" && databaseError.message === "Unsupported currency code") {
+      throw Object.assign(new Error(`Currency ${input.currencyCode} is not active in the currency catalog.`, { cause: error }), {
+        code: "ORGANIZATION_CURRENCY_UNSUPPORTED",
+      });
+    }
+    throw error;
+  }
 }
 
 export async function recordCurrencyRate(input: Readonly<{
@@ -954,7 +1023,7 @@ export async function configureTaxRegistration(input: Readonly<{
   principal: SessionPrincipal;
   requestId: string;
 }> & z.output<typeof taxRegistrationConfigurationSchema>) {
-  return mutateConfiguration(input, async (client) => {
+  try { return await mutateConfiguration(input, async (client) => {
     const registrationId = randomUUID();
     const activeKey = await loadActiveOrganizationKey(client, input.principal.organizationId);
     try {
@@ -990,7 +1059,7 @@ export async function configureTaxRegistration(input: Readonly<{
     } finally {
       activeKey.dek.fill(0);
     }
-  });
+  }); } catch (error) { throw taxRegistrationFailure(error); }
 }
 
 export async function configureSegment(input: Readonly<{

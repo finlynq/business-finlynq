@@ -6,6 +6,8 @@ import { formatMoney } from "@/kernel/money";
 import { currentPrincipal } from "@/modules/identity/session";
 import { accountKeyDisplayTitle } from "@/modules/ledger/account-key-display";
 import { loadTenantJournalWorkspace, type TenantJournalDto } from "@/modules/ledger/tenant-workspace";
+import { journalFilterParameters, journalFilterText, type JournalFilterSearchParams } from "@/modules/ledger/journal-register-filters";
+import { JournalRegisterFilters } from "../../_components/journal-register-filters";
 import { currentWorkspaceEntityContext } from "@/modules/workspace/entity-context";
 import { normalizeRegisterPage } from "@/modules/workspace/register-pagination";
 import { JournalRegisterAction } from "../../_components/journal-register-action.client";
@@ -27,19 +29,22 @@ function sourceModuleHref(journal: TenantJournalDto): string | null {
   return journal.sourceNumber ? `${base}?q=${encodeURIComponent(journal.sourceNumber)}` : base;
 }
 
-export default async function JournalsPage({ searchParams }: { searchParams: Promise<{ q?: string; page?: string }> }) {
+export default async function JournalsPage({ searchParams }: { searchParams: Promise<JournalFilterSearchParams> }) {
   const principal = await currentPrincipal();
   if (!principal) redirect("/login?next=%2Fapp%2Fjournals&reason=expired");
   const parameters = await searchParams;
-  const query = parameters.q?.trim() ?? "";
-  const page = normalizeRegisterPage(parameters.page);
+  const query = journalFilterText(parameters.q).slice(0, 100);
+  const page = normalizeRegisterPage(journalFilterText(parameters.page));
   const entityContext = await currentWorkspaceEntityContext(principal);
   const workspace = await loadTenantJournalWorkspace(
     principal,
     query,
     entityContext.selectedEntity?.id ?? null,
     page,
+    parameters,
   );
+  const filterParameters = journalFilterParameters(workspace.filterState.values, query);
+  const hasFilters = Object.values(filterParameters).some(Boolean);
   return (
     <div className="page-content">
       <PageHeader
@@ -57,11 +62,10 @@ export default async function JournalsPage({ searchParams }: { searchParams: Pro
         <EmptyState title="Accounting setup is not complete">Create a legal entity, primary ledger, fiscal calendar, and chart of accounts before entering journals.</EmptyState>
       )}
       {workspace.readiness === "READY" && (
-        <form className="subledger-toolbar" method="get" aria-label="Filter journal register">
-          <label className="full-field"><span>Journal, description, entity, or type</span><input type="search" name="q" defaultValue={query} maxLength={100} /></label>
-          <button className="secondary-button" type="submit">Search</button>
-          {query && <Link className="text-link compact-button" href="/app/journals">Clear</Link>}
-        </form>
+        <JournalRegisterFilters search={query} state={workspace.filterState} options={workspace.filterOptions} />
+      )}
+      {workspace.readiness === "READY" && workspace.filterState.errors.length === 0 && (
+        <p role="status">{workspace.matchingJournalCount.toLocaleString()} matching journal{workspace.matchingJournalCount === 1 ? "" : "s"}</p>
       )}
       {workspace.journals.length ? (
         <section className="panel" aria-label="Journal register">
@@ -85,11 +89,11 @@ export default async function JournalsPage({ searchParams }: { searchParams: Pro
                         <Link className="text-link compact-button" href={`/app/journals/${journal.id}`}>View journal entry</Link>
                         {journal.canPost && journal.expectedContentHash && (
                           <JournalRegisterAction
-                            key={`${journal.id}:post`}
+                            key={`${journal.id}:post:${journal.expectedContentHash}:${journal.expectedApprovalVersion}`}
                             journalId={journal.id}
                             journalNumber={journal.number}
                             journalDescription={journal.description}
-                            action={{ kind: "post", expectedContentHash: journal.expectedContentHash }}
+                            action={{ kind: "post", expectedContentHash: journal.expectedContentHash, expectedApprovalVersion: journal.expectedApprovalVersion ?? undefined }}
                           />
                         )}
                         {(journal.canReverse || journal.canUnpost || journal.canDelete) && <CompactDisclosure summary="Corrections" className="inline-disclosure">                        {journal.canReverse && reversalPeriods.length > 0 && (
@@ -149,11 +153,19 @@ export default async function JournalsPage({ searchParams }: { searchParams: Pro
           <RegisterPaginationNav
             basePath="/app/journals"
             pagination={workspace.pagination}
-            parameters={{ q: query || undefined }}
+            parameters={filterParameters}
           />
         </section>
       ) : workspace.readiness === "READY" ? (
-        <EmptyState title="No journals found">{query ? "Clear the search query or search by journal, description, entity, or type." : "Create the first authorized journal draft for this ledger."}</EmptyState>
+        <>
+          <EmptyState title={workspace.filterState.errors.length ? "Check the selected filters" : "No journals found"}>
+            {workspace.filterState.errors.length ? "Correct the date, amount, or selection errors above to find journals."
+              : workspace.pagination.hasPrevious ? "There are no journals on this page. Return to a previous page or change the filters."
+              : hasFilters ? "No journals match these filters in the current entity scope. Widen the date or amount range, remove a filter, or clear all filters."
+              : "Create the first authorized journal draft for this ledger."}
+          </EmptyState>
+          <RegisterPaginationNav basePath="/app/journals" pagination={workspace.pagination} parameters={filterParameters} />
+        </>
       ) : null}
     </div>
   );

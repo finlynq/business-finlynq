@@ -4,7 +4,7 @@ import type { PoolClient } from "pg";
 import { z } from "zod";
 import type { TenantTransactionContext } from "@/db/transaction";
 import { activeKeyVersion, decryptStorageValue, encryptStorageValue, loadConnection, type ConnectionRow } from "./store";
-import { filingMetadataSchema, inboxStatusSchema } from "./model";
+import { filingMetadataSchema, inboxStatusSchema, noAccountingRelatedEvidenceSchema, noAccountingTreatmentSchema } from "./model";
 import { StorageError, type CloudFile } from "./provider";
 import { classifyInboxFile } from "./file-types";
 
@@ -50,6 +50,8 @@ export const processingSchema = z.object({
   destinationId: z.string().optional(),
   reason: z.string().optional(),
   statementImport: statementCompletionSchema.optional(),
+  noAccountingReview: z.object({ treatment: noAccountingTreatmentSchema, reason: z.string(), reviewedBy: z.uuid(),
+    reviewedAt: z.string(), sourceSha256: z.string().regex(/^[a-f0-9]{64}$/), relatedEvidence: noAccountingRelatedEvidenceSchema.nullable(), accountingMutation: z.literal("NONE") }).strict().optional(),
   email: z.object({
     messageSha256: z.string().regex(/^[a-f0-9]{64}$/),
     bodySha256: z.string().regex(/^[a-f0-9]{64}$/),
@@ -94,6 +96,14 @@ const sourceMetadataSchema = z.object({
   errorCode: z.string().regex(/^STORAGE_[A-Z0-9_]+$/).optional(),
   routingTarget: z.literal("BANKING_IMPORT_REVIEW").optional(),
   sourceMessages: z.array(sourceMessageLineageSchema).max(20).optional(),
+  pdfPreparation: z.object({
+    transformation: z.literal("QPDF_LOSSLESS_FLATE_STREAM_COMPRESSION"),
+    pageCount: z.number().int().min(1).max(10), verified: z.literal(true),
+    verification: z.literal("ALL_PAGE_COMMANDS_IMAGES_TEXT_GEOMETRY_AND_RENDERED_PIXELS"),
+    originalSha256: z.string().regex(/^[a-f0-9]{64}$/), originalByteSize: z.number().int().positive().max(8 * 1024 * 1024),
+    optimizedSha256: z.string().regex(/^[a-f0-9]{64}$/), optimizedByteSize: z.number().int().positive().max(2 * 1024 * 1024),
+    originalFilename: z.string().min(1).max(180), originalProviderFileId: z.string().min(1).max(512), originalArchiveFolderId: z.string().min(1).max(512),
+  }).strict().optional(),
 }).strict();
 export type InboxSourceMetadata = z.infer<typeof sourceMetadataSchema>;
 
@@ -108,9 +118,10 @@ export async function itemMetadata(client: PoolClient, row: InboxRow) {
     sourcePath: metadata.sourcePath ?? metadata.name, mimeType: row.mime_type, byteSize: Number(row.byte_size), status: row.status, sha256: row.sha256,
     leaseUntil: row.lease_until?.toISOString() ?? null, assetId: row.asset_id, sourceDocumentId: row.source_document_id,
     canonicalName: processing.name ?? null, filingMetadata: processing.metadata ?? null,
+    noAccountingReview: processing.noAccountingReview ?? null,
     reason: processing.reason ?? (successfulEmailProcessing ? null : metadata.reason ?? null),
     errorCode: successfulEmailProcessing ? null : metadata.errorCode ?? null, routingTarget: metadata.routingTarget ?? null,
-    sourceMessages: metadata.sourceMessages ?? [],
+    sourceMessages: metadata.sourceMessages ?? [], pdfPreparation: metadata.pdfPreparation ?? null,
     createdAt: row.created_at.toISOString() };
 }
 
@@ -308,6 +319,7 @@ export async function discoverFile(client: PoolClient, context: TenantTransactio
           name: previous.name,
           sourcePath: previous.sourcePath ?? previous.name,
           ...(previous.sourceMessages ? { sourceMessages: previous.sourceMessages } : {}),
+          ...(previous.pdfPreparation && existing.content_version === file.version && Number(existing.byte_size) === file.size ? { pdfPreparation: previous.pdfPreparation } : {}),
         }
       : nextMetadata;
     if (existing.content_version === file.version
@@ -318,7 +330,10 @@ export async function discoverFile(client: PoolClient, context: TenantTransactio
     }
     const metadata = await encryptStorageValue(client, existing, "document_inbox_items", "metadata_ciphertext", comparable);
     const row = (await client.query<InboxRow>(`UPDATE document_inbox_items SET content_version=$3,metadata_ciphertext=$4,mime_type=$5,byte_size=$6,status=$7,
-      sha256=NULL,claim_id=NULL,claimed_by=NULL,claimed_session_id=NULL,lease_until=NULL,processing_ciphertext=NULL WHERE organization_id=$1 AND id=$2 RETURNING *`,
+      sha256=NULL,claim_id=NULL,claimed_by=NULL,claimed_session_id=NULL,lease_until=NULL,processing_ciphertext=NULL,
+      upload_key=CASE WHEN content_version IS DISTINCT FROM $3 OR byte_size IS DISTINCT FROM $6 THEN NULL ELSE upload_key END,
+      upload_hash=CASE WHEN content_version IS DISTINCT FROM $3 OR byte_size IS DISTINCT FROM $6 THEN NULL ELSE upload_hash END
+      WHERE organization_id=$1 AND id=$2 RETURNING *`,
     [context.organizationId, existing.id, file.version, metadata, support.supported ? support.canonicalMimeType : file.mimeType, file.size, support.supported ? "PENDING" : "NEEDS_REVIEW"])).rows[0];
     return { row, outcome: support.supported ? "discovered" : "unsupported" };
   }

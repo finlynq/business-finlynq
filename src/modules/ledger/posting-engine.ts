@@ -9,6 +9,7 @@ export type PostJournalCommand = Readonly<{
   context: TenantTransactionContext;
   journalId: string;
   expectedContentHash?: string;
+  expectedApprovalVersion?: number;
 }>;
 
 export type PostJournalResult = Readonly<{
@@ -29,6 +30,7 @@ type LockedJournal = {
   ledger_id: string;
   status: "DRAFT" | "SUBMITTED" | "APPROVED" | "POSTED" | "REVERSED";
   content_hash: string | null;
+  approval_version: number | null;
   journal_number: number | null;
   journal_type_key: string;
   owner_module: string;
@@ -41,7 +43,7 @@ async function lockJournal(
 ): Promise<LockedJournal> {
   const result = await client.query<LockedJournal>(
     `SELECT entry.id, entry.organization_id, entry.ledger_id, entry.status,
-       entry.content_hash, entry.journal_number, entry.journal_type_key,
+       entry.content_hash, entry.approval_version, entry.journal_number, entry.journal_type_key,
        journal_type.owner_module
      FROM journal_entries entry
      JOIN journal_type_definitions journal_type
@@ -94,6 +96,12 @@ export async function postJournalInTransaction(
   command: PostingBoundary,
 ): Promise<PostJournalResult> {
   const expectedContentHash = normalizeExpectedContentHash(command.expectedContentHash);
+  if (command.expectedApprovalVersion !== undefined &&
+      (!Number.isSafeInteger(command.expectedApprovalVersion) || command.expectedApprovalVersion < 1)) {
+    throw Object.assign(new Error("Expected approval version must be a positive integer"), {
+      code: "INVALID_APPROVAL_VERSION",
+    });
+  }
   await assertActorHasActivePermission(client, {
     organizationId: command.context.organizationId,
     actorId: command.context.actorId,
@@ -113,9 +121,23 @@ export async function postJournalInTransaction(
     throw new Error(`Journal cannot post from status ${journal.status}`);
   }
 
+  if (journal.status === "APPROVED" && command.expectedApprovalVersion === undefined) {
+    throw Object.assign(new Error("Read the journal and supply its exact approval version before posting."), {
+      code: "STALE_VERSION",
+    });
+  }
+  if (command.expectedApprovalVersion !== undefined &&
+      command.expectedApprovalVersion !== journal.approval_version) {
+    throw Object.assign(new Error("Journal approval version changed after review. Refresh the journal before posting."), {
+      code: "STALE_VERSION",
+    });
+  }
+
   const contentHash = await computeCanonicalContentHash(client, journal.id);
   if (expectedContentHash !== undefined && expectedContentHash !== contentHash) {
-    throw new Error("Journal content changed after the expected hash was calculated");
+    throw Object.assign(new Error("Journal content changed after the expected hash was calculated"), {
+      code: "STALE_CONTENT_HASH",
+    });
   }
 
   if (journal.status === "POSTED") {

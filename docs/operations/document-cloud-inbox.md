@@ -4,6 +4,14 @@ The current self-service workflow uses OneDrive's dedicated application folder. 
 
 No hosted model API worker is included. Shared services in `src/modules/document-storage` support browser controls and MCP; a future worker can call them with its own authorized actor context. `access-policy.ts` describes each provider's actual grant; `boundaries.ts` applies connection-specific checks in addition to that grant.
 
+## MCP setup and PDF preparation
+
+`finlynq_setup_prepare_document_storage` prepares a company and module connection and returns a stable status handle and browser handoff. An organization administrator with the selected module's manage permission must approve colleague sharing in the signed-in browser. Consent is encrypted and audited before a grant or folder is reused. A same-company OneDrive app-folder grant owned by that administrator may be reused to provision separate Inbox and Archive folders; if the grant has expired, the browser handoff renews it. `finlynq_setup_get_document_storage_setup` returns READY with the connection ID and folder URLs, or an actionable pending status. Repeated requests with the same idempotency key return the same setup; using it for a different scope is rejected.
+
+Normal inbox evidence remains limited to 2,097,152 bytes (2 MiB). Browser Upload and `finlynq_daily_prepare_pdf_document` accept an unsigned PDF source up to 8,388,608 bytes (8 MiB) for lossless preparation. The source is scanned, qpdf compresses eligible streams, and every page's decoded commands, image pixels, text, geometry, and rendered pixels are compared. The prepared copy must fit the normal 2 MiB limit and is scanned again. The unmodified source is retained under the connection's Archive / Original PDFs folder, inheriting that cloud account's retention policy. Encrypted inbox metadata records both SHA-256 values, byte sizes, transform, page count, verification, original provider ID, and archive folder ID. Equal source content is deduplicated to one inbox item across retries. A changed cloud copy invalidates its upload replay key and preparation provenance.
+
+Signed, encrypted, interactive, malformed, unreducible, or excessive PDFs are refused with a specific remedy. A pre-existing oversized NEEDS_REVIEW item is not optimized in place; download that original from the connected Inbox and use Upload or the preparation tool. The oversized item stays in review and cannot be read or completed through the normal 2 MiB evidence path. Inspect it before manually clearing it from the cloud Inbox. No accounting entry is created by PDF preparation.
+
 ## Provider feasibility (official documentation checked 2026-09-04)
 
 | Provider model | Provider-enforced access | Existing folder and direct external drops | Implementation status |

@@ -7,6 +7,7 @@ import { requireWorkspacePrincipal } from "@/modules/workspace/access";
 export const metadata: Metadata = { title: "Reports" };
 
 const reports = [
+  { code: "BR", title: "Booking reports", href: "/app/reports/booking-batches", description: "Review agent-prepared batches, source evidence and actual posting outcomes.", use: "Trace draft reviews, held entries and immutable posted results." },
   { code: "TB", title: "Trial balance", href: "/app/reports/trial-balance", description: "Review opening balances, debits, credits and closing balances across your chart of accounts.", use: "Use it to check ledger balance and export account totals." },
   { code: "BS", title: "Balance sheet", href: "/app/reports/balance-sheet", description: "See assets, liabilities, equity and unclosed earnings at a selected date.", use: "Use it to understand the entity’s financial position." },
   { code: "PL", title: "Profit & loss", href: "/app/reports/profit-and-loss", description: "Compare posted revenue and expenses over a fiscal period or custom date range.", use: "Use it to review performance and net income." },
@@ -16,7 +17,7 @@ const reports = [
 export default async function ReportsPage() {
   await requireWorkspacePrincipal("/app/reports");
   return <div className="page-content">
-    <PageHeader eyebrow="Review & close" title="Reports" description="Choose the question you want to answer. Each report uses posted ledger activity, with its own entity, period and currency clearly shown." />
+    <PageHeader eyebrow="Review & close" title="Reports" description="Review ledger activity or inspect an agent booking batch. Each report shows its company, period and currency." />
     <section className={styles.cards} aria-label="Accounting reports">
       {reports.map((report) => <article className={styles.card} key={report.code}>
         <span className={styles.cardMark} aria-hidden="true">{report.code}</span>

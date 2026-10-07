@@ -6,7 +6,7 @@ import { identityLookupHash } from "@/security/identity-secret";
 
 export async function consumeLedgerMutationRateLimit(
   principal: SessionPrincipal,
-  action: "create" | "post" | "reverse" | "unpost" | "delete" | "period" | "party",
+  action: "create" | "submit" | "approve" | "post" | "withdraw" | "reject" | "reverse" | "unpost" | "delete" | "period" | "party",
 ): Promise<Readonly<{ allowed: boolean; retryAfterSeconds: number }>> {
   // Public demo users come from a reusable sandbox pool. Their user IDs are
   // therefore infrastructure identities, not individual actors; sharing the
