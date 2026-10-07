@@ -1,5 +1,7 @@
 "use client";
 
+import { SourceAttachments } from "./source-attachments";
+import { subledgerPaymentStatus } from "@/modules/subledger/register-filter";
 import { CompactDisclosure } from "./compact-disclosure.client";
 
 import Link from "next/link";
@@ -612,21 +614,18 @@ export function DocumentDetails({
       {businessSnapshot && (
         <section aria-label="Source document attachments">
           <h3>Source documents</h3>
-          {document.attachments?.length ? <ul>{document.attachments.map((attachment) => (
-            <li key={attachment.assetId}>
-              <a href={attachment.downloadUrl}>{attachment.filename}</a>
-              {" · "}{attachment.purpose.toLowerCase()}{" · "}{attachment.byteSize.toLocaleString()} bytes
-              {" · "}version {attachment.sourceVersion}
-              <details><summary>File audit details</summary>
-                <p>SHA-256: <code>{attachment.sha256}</code></p>
-                <p>Uploaded {attachment.uploadedAt} by {attachment.uploadedBy}</p>
-                <p>Scanned {attachment.scannedAt} · {attachment.scannerVersion}</p>
-              </details>
-            </li>
-          ))}</ul> : <p>No source files attached. PDF invoices and receipts can be added through the MCP evidence tools while this document is a draft.</p>}
+          <SourceAttachments attachments={document.attachments} />
         </section>
       )}
 
+      {settlementSnapshot && <section aria-label="Allocated invoice attachments"><h3>Applied invoice files</h3>
+        {settlementSnapshot.allocations.map((allocation) => {
+          const source = document.allocationSources?.find((candidate) => candidate.openItemId === allocation.openItemId);
+          return <section key={allocation.openItemId}><h4>{source ? `${workspace.businessKind === "SUPPLIER_BILL" ? "Bill" : "Invoice"} ${source.sourceNumber}` : "Allocated invoice unavailable"}</h4>
+            <p>Files belong to the allocated invoice{source ? `, source version ${source.sourceVersion}` : ""}.</p>
+            <SourceAttachments attachments={source?.attachments} /></section>;
+        })}
+      </section>}
       {businessSnapshot ? (
         <>
           <div className={styles.detailGrid}>
@@ -711,7 +710,7 @@ export function DocumentDetails({
               <caption className="sr-only">Open-item allocations</caption>
               <thead><tr><th scope="col">Allocated source</th><th scope="col">Transaction amount</th><th scope="col">Functional amount</th><th scope="col">Realized FX</th></tr></thead>
               <tbody>{settlementSnapshot.allocations.map((allocation) => {
-                const item = workspace.openItems.find((candidate) => candidate.id === allocation.openItemId);
+                const item = document.allocationSources?.find((candidate) => candidate.openItemId === allocation.openItemId) ?? workspace.openItems.find((candidate) => candidate.id === allocation.openItemId);
                 const sourceDocument = workspace.documents.find((candidate) => candidate.openItemId === allocation.openItemId);
                 return <tr key={allocation.openItemId}><td>{item?.sourceNumber ?? sourceDocument?.sourceNumber ?? allocation.openItemId}</td><td className={styles.amountCell}>{displayExactMoney(settlementSnapshot.currency, allocation.transactionAmount)}</td><td className={styles.amountCell}>{displayExactMoney(settlementSnapshot.functionalCurrency, allocation.settlementFunctionalAmount)}</td><td className={styles.amountCell}>{displayExactMoney(settlementSnapshot.functionalCurrency, allocation.realizedFxFunctional)}</td></tr>;
               })}</tbody>
@@ -856,7 +855,7 @@ export function ArApWorkspace({
       workspace.registerFilter.search || workspace.registerFilter.entityCode ||
       workspace.registerFilter.status || workspace.registerFilter.currency ||
       workspace.registerFilter.dateFrom || workspace.registerFilter.dateTo ||
-      workspace.registerFilter.due !== "ALL"
+      workspace.registerFilter.due !== "ALL" || (workspace.registerFilter.paymentStatus ?? "ALL") !== "ALL"
     ),
   ) || (workspace.pagination?.page ?? 1) > 1;
 
@@ -869,6 +868,7 @@ export function ArApWorkspace({
     if (filter.search.trim()) parameters.set("q", filter.search.trim());
     parameters.set("entity", filter.entityCode);
     if (filter.status) parameters.set("status", filter.status);
+    if (filter.paymentStatus && filter.paymentStatus !== "ALL") parameters.set("paymentStatus", filter.paymentStatus);
     if (filter.currency) parameters.set("currency", filter.currency);
     if (filter.dateFrom) parameters.set("dateFrom", filter.dateFrom);
     if (filter.dateTo) parameters.set("dateTo", filter.dateTo);
@@ -893,6 +893,7 @@ export function ArApWorkspace({
       dateFrom: "",
       dateTo: "",
       due: "ALL",
+      paymentStatus: "ALL",
     };
     setRegisterFilter(cleared);
     startTransition(() => router.push(registerHref(cleared)));
@@ -1812,7 +1813,7 @@ export function ArApWorkspace({
             <div className={styles.filterHeading}>
               <h2 id="subledger-register-filter-title">Transaction register</h2>
               <span className={styles.resultCount} aria-live="polite">
-                {workspace.documents.length} transaction{workspace.documents.length === 1 ? "" : "s"} on page {workspace.pagination?.page ?? 1}
+                {workspace.documents.length} of {workspace.registerTotalCount ?? workspace.documents.length} transactions on page {workspace.pagination?.page ?? 1}
               </span>
             </div>
             <form onSubmit={applyRegisterFilters}>
@@ -1842,6 +1843,9 @@ export function ArApWorkspace({
                   <option value="VOIDED">Voided</option>
                 </select>
               </label>
+              <label><span>Payment status</span><select value={registerFilter.paymentStatus ?? "ALL"} onChange={(event) => updateRegisterFilter({ paymentStatus: event.target.value as "ALL" | "OPEN" | "PAID" })}>
+                <option value="ALL">All</option><option value="OPEN">Open</option><option value="PAID">Paid</option>
+              </select></label>
               <label>
                 <span>Due state</span>
                 <select value={registerFilter.due} onChange={(event) => updateRegisterFilter({ due: event.target.value as SubledgerDueFilter })}>
@@ -1922,16 +1926,16 @@ export function ArApWorkspace({
                           </td>
                           <td className={styles.statusCell}>
                             <StatusPill status={document.status} />
-                            {document.openStatus && <small><StatusPill status={document.openStatus} /></small>}
+                            {subledgerPaymentStatus(document) && <small>{subledgerPaymentStatus(document)}</small>}
                           </td>
                           <td className={styles.amountCell}>
                             <strong>{displayExactMoney(document.snapshot.currency, amount)}</strong>
                             {businessSnapshot && (
                               <small>
-                                Open {document.openAmount === null ? "Not issued" : displayExactMoney(document.snapshot.currency, document.openAmount)} · Tax {displayExactMoney(businessSnapshot.currency, businessSnapshot.taxTotal)}
+                                Outstanding {document.openAmount === null ? "Not issued" : displayExactMoney(document.snapshot.currency, document.openAmount)} · Tax {displayExactMoney(businessSnapshot.currency, businessSnapshot.taxTotal)}
                               </small>
                             )}
-                            {settlementSnapshot && <small>{settlementSnapshot.allocations.length} open item{settlementSnapshot.allocations.length === 1 ? "" : "s"}</small>}
+                            {settlementSnapshot && <small>Applied to {settlementSnapshot.allocations.length} {businessLabel}{settlementSnapshot.allocations.length === 1 ? "" : "s"}</small>}
                           </td>
                           <td className={styles.journalCell}>
                             {document.journalId
@@ -1961,6 +1965,7 @@ export function ArApWorkspace({
                   q: workspace.registerFilter?.search || undefined,
                   entity: workspace.registerFilter?.entityCode ?? "",
                   status: workspace.registerFilter?.status || undefined,
+                  paymentStatus: workspace.registerFilter?.paymentStatus === "ALL" ? undefined : workspace.registerFilter?.paymentStatus,
                   currency: workspace.registerFilter?.currency || undefined,
                   dateFrom: workspace.registerFilter?.dateFrom || undefined,
                   dateTo: workspace.registerFilter?.dateTo || undefined,

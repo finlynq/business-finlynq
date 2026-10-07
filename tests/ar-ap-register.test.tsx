@@ -17,7 +17,7 @@ import {
   businessDraftFxMutationFields,
   DocumentDetails,
 } from "@/app/_components/ar-ap-workspace.client";
-import { filterSubledgerDocuments } from "@/modules/subledger/register-filter";
+import { filterSubledgerDocuments, subledgerPaymentStatus } from "@/modules/subledger/register-filter";
 
 function invoice(overrides: Partial<SubledgerWorkspaceDocumentDto> = {}): SubledgerWorkspaceDocumentDto {
   return {
@@ -380,4 +380,19 @@ describe("scalable AR/AP transaction register", () => {
     expect(markup).toContain("a".repeat(64));
     expect(markup).not.toContain(source.openItemId);
   });
+});
+
+it("separates Open/Paid balances from document and due-date status", () => {
+  const unpaid = invoice({ sourceNumber: "UNPAID", openAmount: "100.00", snapshot: { ...invoice().snapshot, grossTotal: "100.00", dueOn: null } as unknown as SubledgerWorkspaceDocumentDto["snapshot"] });
+  const partial = invoice({ sourceNumber: "PARTIAL", openAmount: "60.00", openStatus: "PARTIALLY_SETTLED", snapshot: { ...invoice().snapshot, grossTotal: "100.00" } as SubledgerWorkspaceDocumentDto["snapshot"] });
+  const paid = invoice({ sourceNumber: "PAID", openAmount: "0.00", openStatus: "SETTLED" });
+  const draft = invoice({ sourceNumber: "DRAFT", status: "DRAFT", openAmount: null });
+  const reversed = invoice({ sourceNumber: "REVERSED", status: "VOIDED", openAmount: "0", openStatus: "REVERSED" });
+  const documents = [unpaid, partial, paid, draft, reversed, receipt()];
+  expect(subledgerPaymentStatus(partial)).toBe("Partially paid");
+  expect(filterSubledgerDocuments(documents, { ...allFilter, paymentStatus: "OPEN" }, "2026-08-27").map((row) => row.sourceNumber)).toEqual(["UNPAID", "PARTIAL"]);
+  expect(filterSubledgerDocuments(documents, { ...allFilter, paymentStatus: "PAID", currency: "CAD", entityCode: "CA01" }, "2026-08-27").map((row) => row.sourceNumber)).toEqual(["PAID"]);
+  expect(filterSubledgerDocuments(documents, allFilter, "2026-08-27")).toHaveLength(6);
+  expect(subledgerPaymentStatus({ ...paid, openAmount: "60", openStatus: "PARTIALLY_SETTLED" })).toBe("Partially paid");
+  expect(filterSubledgerDocuments(documents, { ...allFilter, paymentStatus: "OPEN", currency: "USD" }, "2026-08-27")).toHaveLength(0);
 });
