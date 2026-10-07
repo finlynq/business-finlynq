@@ -99,7 +99,7 @@ export async function captureBookingSnapshot(client: PoolClient, context: Tenant
   const company = (await client.query<{display_name:string;code:string}>(`SELECT e.display_name,e.code FROM legal_entities e JOIN ledgers l ON l.organization_id=e.organization_id AND l.legal_entity_id=e.id WHERE e.organization_id=$1 AND e.id=$2 AND l.id=$3`,[context.organizationId,definition.legalEntityId,definition.ledgerId])).rows[0];
   if (!company) throw new Error("Booking company and ledger are unavailable");
   const entries: BookingEntry[] = [];
-  for (const selected of definition.records) { const entry = await captureEntry(client,context,definition,selected); if (failures[selected.id] && !entry.linesArePosted) entry.heldReason = failures[selected.id]; entries.push(entry); }
+  for (const selected of definition.records) { const entry = await captureEntry(client,context,definition,selected); if (phase === "REVIEW" && (entry.id !== selected.id || entry.version !== selected.expectedVersion)) entry.differences.push("Select the exact current source version for a new review"); if (failures[selected.id] && !entry.linesArePosted) entry.heldReason = failures[selected.id]; entries.push(entry); }
   for (const group of definition.clearingGroups) {
     const valid = (await client.query(`SELECT id FROM account_combinations WHERE organization_id=$1 AND entity_id=$2 AND ledger_id=$3 AND id=ANY($4::uuid[])`,[context.organizationId,definition.legalEntityId,definition.ledgerId,group.accountCombinationIds])).rows;
     if (new Set(valid.map((row)=>row.id)).size !== new Set(group.accountCombinationIds).size) throw new Error("Clearing accounts must belong to the booking company and ledger");

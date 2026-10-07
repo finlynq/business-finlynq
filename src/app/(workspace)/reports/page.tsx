@@ -17,7 +17,7 @@ const reports = [
 export default async function ReportsPage() {
   await requireWorkspacePrincipal("/app/reports");
   return <div className="page-content">
-    <PageHeader eyebrow="Review & close" title="Reports" description="Choose the question you want to answer. Each report uses posted ledger activity, with its own entity, period and currency clearly shown." />
+    <PageHeader eyebrow="Review & close" title="Reports" description="Review ledger activity or inspect an agent booking batch. Each report shows its company, period and currency." />
     <section className={styles.cards} aria-label="Accounting reports">
       {reports.map((report) => <article className={styles.card} key={report.code}>
         <span className={styles.cardMark} aria-hidden="true">{report.code}</span>
