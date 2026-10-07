@@ -111,7 +111,7 @@ async function createBillDraft(
   const line = page.getByRole("group", { name: "Line 1" });
   await line.getByLabel("Description").fill(`${input.description} line`);
   await line.getByLabel("Net amount").fill(input.amount);
-  await line.getByLabel("Tax treatment").selectOption("OUT_OF_SCOPE");
+  await line.getByRole("combobox", { name: /^Tax treatment/ }).selectOption("OUT_OF_SCOPE");
   await page.getByRole("button", { name: "Save draft" }).click();
 
   const bill = page.getByRole("row").filter({ hasText: input.number });
