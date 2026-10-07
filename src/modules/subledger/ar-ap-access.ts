@@ -1,3 +1,5 @@
+import { isAuthorizationDeniedError } from "@/modules/identity/authorization-error";
+import { BusinessDocumentValidationError } from "./validation-errors";
 import type { PoolClient } from "pg";
 import type { TenantTransactionContext } from "@/db/transaction";
 import { assertActorHasActivePermission } from "@/modules/identity/authorization";
@@ -39,9 +41,16 @@ export async function assertPermission(
   context: TenantTransactionContext,
   permission: Permission,
 ): Promise<void> {
-  await assertActorHasActivePermission(client, {
-    organizationId: context.organizationId,
-    actorId: context.actorId,
-    permission,
-  });
+  try {
+    await assertActorHasActivePermission(client, {
+      organizationId: context.organizationId,
+      actorId: context.actorId,
+      permission,
+    });
+  } catch (error) {
+    if (permission === PERMISSIONS.overrideTaxDeterminations && isAuthorizationDeniedError(error)) {
+      throw new BusinessDocumentValidationError("SOURCE_TAX_AUTHORIZATION_REQUIRED", "Your role does not permit source-tax rounding or overrides. Ask an authorized tax reviewer to verify and save this invoice.");
+    }
+    throw error;
+  }
 }

@@ -424,6 +424,57 @@ test(`writable demo completes and exactly reverses an AP bill ${fundingMethod} s
 
 }
 
+test("supplier invoice rounding preserves reviewed totals through posting and replay", async ({ page }) => {
+  test.skip(process.env.E2E_SOURCE_TAX_REVIEW_ENABLED !== "true", "Requires an authorized synthetic tax reviewer; the public demo accountant has no tax override grant.");
+  const billNumber = `BILL-E2E-ROUND-${crypto.randomUUID().slice(0, 8).toUpperCase()}`;
+  await openDemo(page, "/app/payables/bills");
+  await page.getByRole("button", { name: /New bill/ }).click();
+  await page.getByLabel("Bill number").fill(billNumber);
+  await page.getByLabel("Description", { exact: true }).first().fill("Verified supplier rounding regression");
+  const charge = page.getByRole("group", { name: "Line 1" });
+  await charge.getByLabel("Description").fill("Original subscription charge");
+  await charge.getByLabel("Net amount").fill("85.00");
+  await page.getByRole("button", { name: /Add line/ }).click();
+  const credit = page.getByRole("group", { name: "Line 2" });
+  await credit.getByLabel("Description").fill("Original cancellation credit");
+  await credit.getByLabel("Line type").selectOption("ADJUSTMENT");
+  await credit.getByLabel("Net amount").fill("-33.87");
+  await credit.getByLabel("Match verified invoice tax rounding").check();
+  await credit.getByLabel("Printed line tax amount").fill("-4.41");
+  await credit.getByLabel("Rounding evidence reference").fill(billNumber);
+  await credit.getByLabel("Rounding review reason").fill("Verified the original cancellation tax on the supplier invoice");
+  await credit.getByLabel("I verified the original invoice and this rounding difference.").check();
+  const savedResponse = page.waitForResponse((response) => response.url().endsWith("/api/payables/bills") && response.request().method() === "POST");
+  await page.getByRole("button", { name: "Save draft" }).click();
+  const saved = await savedResponse;
+  expect(saved.status(), await saved.text()).toBe(201);
+  const created = await saved.json();
+  expect(created.document.snapshot).toMatchObject({ subtotal: "51.13", taxTotal: "6.64", grossTotal: "57.77" });
+  const headers = await evidenceRequestHeaders(page);
+  const replay = await releasePost(page.request, "/api/payables/bills", { headers, data: saved.request().postDataJSON() });
+  expect(replay.status()).toBe(200);
+  expect((await replay.json()).idempotentReplay).toBe(true);
+  const bill = page.getByRole("row").filter({ hasText: billNumber });
+  await expect(bill).toContainText("DRAFT");
+  const issuedResponse = page.waitForResponse((response) => response.url().endsWith("/api/payables/bills/issue"));
+  await bill.getByRole("button", { name: "Issue", exact: true }).click();
+  const issued = await issuedResponse;
+  expect(issued.status(), await issued.text()).toBe(201);
+  await expect(bill).toContainText("POSTED");
+  await expect(bill).toContainText("CAD 57.77");
+  await expect(bill).toContainText("OPEN");
+  const issueReplay = await releasePost(page.request, "/api/payables/bills/issue", { headers, data: issued.request().postDataJSON() });
+  expect(issueReplay.status()).toBe(200);
+  expect((await issueReplay.json()).idempotentReplay).toBe(true);
+  const stale = await releasePost(page.request, "/api/payables/bills/issue", { headers,
+    data: { ...issued.request().postDataJSON(), idempotencyKey: crypto.randomUUID() } });
+  expect(stale.status()).toBe(409);
+  await bill.getByRole("button", { name: "View details", exact: true }).click();
+  await expect(page.getByText("Original cancellation credit", { exact: true })).toBeVisible();
+  await expect(page.getByText(/Automatic 13%.*4.40.*Source override 13%.*4.41/)).toBeVisible();
+  await revokeDemoSession(page);
+});
+
 test("concurrent demo visitors share one company and see each other's changes", async ({ browser }, testInfo) => {
   test.setTimeout(90_000);
   const baseURL = testInfo.project.use.baseURL;

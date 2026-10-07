@@ -259,6 +259,37 @@ run("cloud inbox PostgreSQL lifecycle", () => {
     const download = await downloadDocumentEvidence({ context: requestContext(), ...invoiceDownload }); expect(download.bytes).toEqual(png);
     await expect(completeInboxDocument(requestContext(), { ...complete, reason: "Changed completion arguments" })).rejects.toThrow(/different arguments/);
   });
+  it("files reviewed zero usage invoices with supporting purchase evidence without creating accounting", async () => {
+    const related = (await owner.query("SELECT id,version,content_hash FROM source_documents WHERE organization_id=$1 AND source_number=$2 ORDER BY version DESC LIMIT 1", [ids.org,draftInput.sourceNumber])).rows[0];
+    const before = (await owner.query("SELECT (SELECT count(*)::int FROM source_documents WHERE organization_id=$1) AS sources,(SELECT count(*)::int FROM journal_entries WHERE organization_id=$1) AS journals,(SELECT count(*)::int FROM open_items WHERE organization_id=$1) AS items", [ids.org])).rows[0];
+    for (const treatment of ["PREPAID_USAGE_REVIEWED_SEPARATELY", "OFFSETTING_CREDITS"] as const) {
+      const row = await discover(`zero-${treatment}.png`, treatment);
+      const claim = randomUUID(); await claimInboxDocument(requestContext(), { itemId: row.id, claimId: claim });
+      const read = await readInboxDocument(requestContext(), { itemId: row.id, claimId: claim });
+      const command = { itemId: row.id, claimId: claim, sha256: read.sha256,
+        metadata: { documentType: "PURCHASE_INVOICE" as const, documentDate: "2026-10-01", counterparty: "Synthetic prepaid provider", reference: `ZERO-${treatment}`, currency: "USD", total: "0.00" },
+        action: { type: "REVIEWED_NO_ACCOUNTING" as const, confirmed: true as const, treatment,
+          relatedEvidence: { type: "SOURCE_DOCUMENT" as const, sourceDocumentId: related.id, expectedVersion: related.version, expectedContentHash: related.content_hash } },
+        reason: "Reviewed original zero invoice; no new payable or expense is authorized" };
+      await expect(completeInboxDocument(requestContext(), { ...command, metadata: { ...command.metadata, total: "1.00" } })).rejects.toMatchObject({ code: "STORAGE_ZERO_INVOICE_REVIEW" });
+      await expect(completeInboxDocument(requestContext(), { ...command, action: { ...command.action, relatedEvidence: { ...command.action.relatedEvidence, expectedVersion: related.version + 1 } } })).rejects.toMatchObject({ code: "STORAGE_RELATED_EVIDENCE_STALE" });
+      cloud.moveFailsOnce = true;
+      const saved = await completeInboxDocument(requestContext(), command);
+      expect(saved.item).toMatchObject({ sourceDocumentId: null, filingMetadata: command.metadata,
+        noAccountingReview: { treatment, reason: command.reason, sourceSha256: read.sha256, accountingMutation: "NONE", relatedEvidence: command.action.relatedEvidence } });
+      const replay = await completeInboxDocument(requestContext(), command);
+      expect(replay.idempotentReplay).toBe(true);
+      expect(replay.item.status).toBe("FILED");
+      expect(replay.item.filingMetadata?.documentType).toBe("PURCHASE_INVOICE");
+      await expect(completeInboxDocument(requestContext(), { ...command, reason: "Changed review reason" })).rejects.toMatchObject({ code: "STORAGE_COMPLETION_CONFLICT" });
+      const duplicate = await discover(`duplicate-${treatment}.png`, `new-bytes-${treatment}`);
+      const duplicateClaim = randomUUID(); await claimInboxDocument(requestContext(), { itemId: duplicate.id, claimId: duplicateClaim });
+      const duplicateRead = await readInboxDocument(requestContext(), { itemId: duplicate.id, claimId: duplicateClaim });
+      await expect(completeInboxDocument(requestContext(), { ...command, itemId: duplicate.id, claimId: duplicateClaim, sha256: duplicateRead.sha256 })).rejects.toMatchObject({ code: "STORAGE_POSSIBLE_DUPLICATE" });
+    }
+    const after = (await owner.query("SELECT (SELECT count(*)::int FROM source_documents WHERE organization_id=$1) AS sources,(SELECT count(*)::int FROM journal_entries WHERE organization_id=$1) AS journals,(SELECT count(*)::int FROM open_items WHERE organization_id=$1) AS items", [ids.org])).rows[0];
+    expect(after).toEqual(before);
+  });
   it("archives structured CSV evidence with a canonical MIME and rejects MIME values outside the database allowlist", async () => {
     const csv = Buffer.from("date,description,amount\n2026-09-01,Opening balance,100.00\n");
     const row = await discoverDocument("statement.csv", "application/csv", csv);

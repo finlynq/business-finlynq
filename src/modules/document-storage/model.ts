@@ -39,6 +39,11 @@ export const filingMetadataSchema = z.object({
     context.addIssue({ code: "custom", message: "Currency and total must be provided together", path: ["currency"] });
   }
 });
+export const noAccountingRelatedEvidenceSchema = z.discriminatedUnion("type", [
+  z.object({ type: z.literal("SOURCE_DOCUMENT"), sourceDocumentId: z.uuid(), expectedVersion: z.number().int().positive(), expectedContentHash: z.string().regex(/^[a-f0-9]{64}$/) }).strict(),
+  z.object({ type: z.literal("JOURNAL"), journalId: z.uuid(), expectedContentHash: z.string().regex(/^[a-f0-9]{64}$/) }).strict(),
+]);
+export const noAccountingTreatmentSchema = z.enum(["PREPAID_USAGE_REVIEWED_SEPARATELY", "OFFSETTING_CREDITS", "OTHER_REVIEWED_ZERO"]);
 export const completeInboxSchema = claimInboxSchema.extend({
   sha256: z.string().regex(/^[a-f0-9]{64}$/), metadata: filingMetadataSchema,
   action: z.discriminatedUnion("type", [
@@ -53,6 +58,8 @@ export const completeInboxSchema = claimInboxSchema.extend({
       previewHash: z.string().regex(/^[a-f0-9]{64}$/),
       confirmed: z.literal(true),
     }).strict(),
+    z.object({ type: z.literal("REVIEWED_NO_ACCOUNTING"), confirmed: z.literal(true),
+      treatment: noAccountingTreatmentSchema, relatedEvidence: noAccountingRelatedEvidenceSchema.optional() }).strict(),
     z.object({ type: z.literal("ARCHIVE_ONLY") }).strict(),
   ]), reason: z.string().trim().min(5).max(500),
 }).strict();

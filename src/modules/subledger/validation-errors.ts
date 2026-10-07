@@ -46,9 +46,13 @@ export type BusinessDocumentValidationCode =
   | "SIGNED_LINE_REQUIRES_ADJUSTMENT"
   | "NEGATIVE_SALES_LINE_UNSUPPORTED"
   | "SUPPLIER_CREDIT_NOTE_REQUIRED"
-  | "ZERO_GROSS_UNSUPPORTED";
+  | "ZERO_GROSS_UNSUPPORTED"
+  | "SOURCE_TAX_ROUNDING_REVIEW_REQUIRED"
+  | "SOURCE_TAX_AUTHORIZATION_REQUIRED";
 
 const BUSINESS_DOCUMENT_REMEDIATION: Readonly<Record<BusinessDocumentValidationCode, string>> = {
+  SOURCE_TAX_AUTHORIZATION_REQUIRED:
+    "An active organization role must explicitly grant tax.determinations.override to create, edit, or issue an evidenced tax adjustment. Ask an organization owner to review the role assignment; invoice totals must remain unchanged.",
   SIGNED_LINE_REQUIRES_ADJUSTMENT:
     "Mark the negative supplier-bill line as ADJUSTMENT and retain its source description, account, tax facts, and evidence reference.",
   NEGATIVE_SALES_LINE_UNSUPPORTED:
@@ -56,7 +60,9 @@ const BUSINESS_DOCUMENT_REMEDIATION: Readonly<Record<BusinessDocumentValidationC
   SUPPLIER_CREDIT_NOTE_REQUIRED:
     "Record a net supplier credit through the dedicated supplier credit-note workflow when available; do not coerce it into a supplier bill.",
   ZERO_GROSS_UNSUPPORTED:
-    "Remove or correct offsetting lines. FinLynQ does not create zero-gross AR/AP open items.",
+    "For a verified zero-amount invoice with no new payable, use the document inbox REVIEWED_NO_ACCOUNTING action with the original metadata and a review reason. FinLynQ does not create zero-gross AR/AP open items.",
+  SOURCE_TAX_ROUNDING_REVIEW_REQUIRED:
+    "Verify source evidence and tax treatment. Use sourceTaxRounding only for a supported supplier-line difference of at most one currency minor unit; larger discrepancies need a separately reviewed sourceTaxOverride. Do not change invoice net amounts or invent line splits.",
 };
 
 export class BusinessDocumentValidationError extends Error {
