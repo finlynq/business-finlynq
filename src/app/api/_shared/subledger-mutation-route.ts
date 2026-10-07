@@ -42,6 +42,11 @@ type MutationRouteOptions<TBody, TResult extends MutationResult, TParams> = Read
   invalidMessage: string;
   failureMessage: string;
   auditReason?: (body: TBody) => string;
+  domainError?: (error: unknown) => Readonly<{
+    error: string;
+    code: string;
+    status: 400 | 403 | 409 | 428;
+  }> | undefined;
   authorize?: (
     body: TBody,
     principal: SessionPrincipal,
@@ -181,6 +186,11 @@ export function createMutationRoute<TBody, TResult extends MutationResult, TPara
       } catch (error) {
         const expiredSession = demoSessionLeaseLostResponse(error);
         if (expiredSession) return expiredSession;
+        const domainError = options.domainError?.(error);
+        if (domainError) {
+          const { status, ...details } = domainError;
+          return NextResponse.json(details, { status, headers: noStoreHeaders });
+        }
         if (isAuthorizationDeniedError(error)) {
           return jsonError(
             options.forbiddenMessage ?? options.unauthorizedMessage ??

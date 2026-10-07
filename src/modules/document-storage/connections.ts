@@ -91,7 +91,7 @@ export async function disconnectStorage(context: TenantTransactionContext, conne
 export async function listStorageConnections(context: TenantTransactionContext) {
   realStorageContext(context);
   return withTenantTransaction(context, async (client) => {
-    const rows = (await client.query<ConnectionRow>("SELECT * FROM document_storage_connections WHERE organization_id=$1 ORDER BY created_at DESC", [context.organizationId])).rows;
+    const rows = (await client.query<ConnectionRow>("SELECT * FROM document_storage_connections WHERE organization_id=$1 AND (app.current_actor_has_permission(owner_module || '.read') OR app.current_actor_has_permission(owner_module || '.manage')) ORDER BY created_at DESC", [context.organizationId])).rows;
     return Promise.all(rows.map(async (row) => {
       const location = row.config_ciphertext ? await connectionLocation(client, row) : null;
       return { id: row.id, label: row.label, provider: row.provider, module: row.owner_module, legalEntityId: row.legal_entity_id,

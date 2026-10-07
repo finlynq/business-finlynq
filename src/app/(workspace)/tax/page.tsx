@@ -24,7 +24,7 @@ function requiresReview(status: string): boolean {
   return status.includes("REVIEW");
 }
 
-export default async function TaxPage({ searchParams }: { searchParams: Promise<{ status?: string; view?: string }> }) {
+export default async function TaxPage({ searchParams }: { searchParams: Promise<{ status?: string; view?: string; refresh?: string }> }) {
   const principal = await requireWorkspacePrincipal("/app/tax");
   const parameters = await searchParams;
   const reviewOnly = parameters.status === "review";
@@ -77,7 +77,7 @@ export default async function TaxPage({ searchParams }: { searchParams: Promise<
           <div><dt>Reconciliation review</dt><dd>{filingReviewCount}</dd></div>
         </dl>
 
-        {view === "prepare" && <TaxFilingWorkspace workspace={filingWorkspace} />}
+        {view === "prepare" && <TaxFilingWorkspace key={parameters.refresh ?? "new"} workspace={filingWorkspace} refreshFilingId={parameters.refresh} />}
 
         {view === "templates" && <section className="panel" aria-labelledby="tax-template-rules-title">
           <div className="panel-heading">
@@ -131,10 +131,16 @@ export default async function TaxPage({ searchParams }: { searchParams: Promise<
                 return <ExpandableTableRow key={filing.id} columns={6} label={`comparison for ${filing.entityCode} ${filing.periodStart}–${filing.periodEnd}`} cells={<>
                   <td><strong>{filing.periodStart} – {filing.periodEnd}</strong><small>{filing.filingType === "PREPARED" ? "Prepared declaration" : `Historical · ${filing.externalReference ?? "No reference"}`}</small></td>
                   <td><strong>{filing.entityCode}</strong><small>{filing.ledgerCode}</small></td>
-                  <td><strong>{filing.templateName}</strong><small>Template v{filing.templateVersion} · configuration v{filing.configurationVersion ?? "legacy"}</small></td>
-                  <td><StatusPill status={filing.status} /><small>{filing.lifecycleState ?? "HISTORICAL"}{filing.canonical ? " · CANONICAL" : " · not canonical"}</small><small>Reason: {filing.lifecycleReason ?? "Legacy workpaper"}{filing.replacementFilingId ? ` · replacement ${filing.replacementFilingId}` : ""}{filing.canonicalReason ? ` · canonical: ${filing.canonicalReason}` : ""}</small></td>
+                  <td><strong>{filing.templateName}</strong><small>Template v{filing.templateVersion} · mapping v{filing.mappingVersion} · configuration v{filing.configurationVersion ?? "legacy"}</small></td>
+                  <td><StatusPill status={filing.status} />{filing.freshness.mayBeStale && <small>Comparison may be stale</small>}<small>{filing.lifecycleState ?? "HISTORICAL"}{filing.canonical ? " · CANONICAL" : " · not canonical"}</small><small>Reason: {filing.lifecycleReason ?? "Legacy workpaper"}{filing.replacementFilingId ? ` · replacement ${filing.replacementFilingId}` : ""}{filing.canonicalReason ? ` · canonical: ${filing.canonicalReason}` : ""}</small></td>
                   <td><strong>{variances.length} field{variances.length === 1 ? "" : "s"}</strong><small>{failedRules.length} rule exception{failedRules.length === 1 ? "" : "s"}</small></td>
                   </>}>
+                      <p>Snapshot captured: <time dateTime={new Date(filing.capturedAt).toISOString()}>{new Date(filing.capturedAt).toISOString()}</time>. Period {filing.periodStart} – {filing.periodEnd}. Template v{filing.templateVersion}, mapping v{filing.mappingVersion}, configuration v{filing.configurationVersion ?? "legacy"}.</p>
+                      <p><strong>{filing.freshness.mayBeStale ? "Comparison may be stale" : "Comparison matches the current ledger snapshot"}</strong></p>
+                      {filing.freshness.reasons.length > 0 && <ul>{filing.freshness.reasons.map((reason) => <li key={reason}>{reason}</li>)}</ul>}
+                      {filing.freshness.readiness.coverage.required && <p>Current posted book net income: {formatMoney(filing.freshness.readiness.coverage.currentBookNetIncome, currency)}. Unmapped net income effect: {formatMoney(filing.freshness.readiness.coverage.omittedNetIncome, currency)}. Variances compare the saved posted-balance calculation with reported values; review missing coverage and configuration changes before interpreting them as tax adjustments.</p>}
+                      <div className="form-actions">{filingWorkspace.canPrepareFilings && <Link className="secondary-button" href={`/app/tax?refresh=${filing.id}#tax-workpaper`}>Refresh / reconcile</Link>}<Link href="/app/tax#tax-mappings">Review account mappings</Link><Link href="/app/tax#tax-configuration">Review filing configuration and canonical selection</Link></div>
+                      {filing.refreshedFromFilingId && <p>Refreshed from workpaper {filing.refreshedFromFilingId}. Canonical selection requires a separate authorized action.</p>}
                       <div className="table-scroll" tabIndex={0} aria-label={`Workpaper comparison for ${filing.entityCode}`}>
                         <table>
                           <thead><tr><th>Line</th><th>System</th><th>Filed</th><th>Difference</th><th>Status</th></tr></thead>

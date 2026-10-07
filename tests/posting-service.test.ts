@@ -41,6 +41,7 @@ function fakeClient(input: Readonly<{
   databaseHash?: string | null;
   storedHash?: string | null;
   journalNumber?: number | null;
+  approvalVersion?: number;
   ownerModule?: string;
   journalTypeKey?: string;
 }> = {}) {
@@ -58,6 +59,7 @@ function fakeClient(input: Readonly<{
           ledger_id: ids.ledger,
           status,
           content_hash: input.storedHash ?? null,
+          approval_version: input.approvalVersion ?? 1,
           journal_number: input.journalNumber ?? null,
           journal_type_key: input.journalTypeKey ?? "ledger.manual",
           owner_module: input.ownerModule ?? "ledger",
@@ -189,6 +191,39 @@ describe("posting service authorization and content integrity", () => {
       }),
     ).rejects.toThrow("Journal content changed");
     expect(query.mock.calls.some(([statement]) => statement.includes("UPDATE journal_entries"))).toBe(false);
+  });
+
+  it("requires the frozen approval version before posting an approved journal", async () => {
+    const { client, query } = fakeClient({ status: "APPROVED", approvalVersion: 3, storedHash: canonicalHash });
+    transactionMocks.withTenantTransaction.mockImplementation(
+      async (_context, work: (transactionClient: PoolClient) => Promise<unknown>) => work(client),
+    );
+    await expect(postJournal({ context, journalId: ids.journal, expectedContentHash: canonicalHash }))
+      .rejects.toMatchObject({ code: "STALE_VERSION" });
+    expect(query.mock.calls.some(([statement]) => statement.includes("UPDATE journal_entries"))).toBe(false);
+  });
+
+  it("rejects a stale approval version even when resubmitted content is identical", async () => {
+    const { client, query } = fakeClient({ status: "APPROVED", approvalVersion: 3, storedHash: canonicalHash });
+    transactionMocks.withTenantTransaction.mockImplementation(
+      async (_context, work: (transactionClient: PoolClient) => Promise<unknown>) => work(client),
+    );
+    await expect(postJournal({ context, journalId: ids.journal,
+      expectedContentHash: canonicalHash, expectedApprovalVersion: 1,
+    })).rejects.toMatchObject({ code: "STALE_VERSION" });
+    expect(query.mock.calls.some(([statement]) => statement.includes("UPDATE journal_entries"))).toBe(false);
+  });
+
+  it("posts an approved frozen version and validates the same version on replay", async () => {
+    for (const status of ["APPROVED", "POSTED"] as const) {
+      const { client } = fakeClient({ status, approvalVersion: 3, storedHash: canonicalHash, journalNumber: 42 });
+      transactionMocks.withTenantTransaction.mockImplementation(
+        async (_context, work: (transactionClient: PoolClient) => Promise<unknown>) => work(client),
+      );
+      await expect(postJournal({ context, journalId: ids.journal,
+        expectedContentHash: canonicalHash, expectedApprovalVersion: 3,
+      })).resolves.toMatchObject({ status: "POSTED", journalNumber: 42, idempotentReplay: status === "POSTED" });
+    }
   });
 
   it("cannot post a source-owned journal through the general-ledger boundary", async () => {

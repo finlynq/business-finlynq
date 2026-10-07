@@ -1,4 +1,7 @@
+import { taxFilingReadinessSchema } from "@/modules/tax/filing-readiness";
+import { mcpTaxFilingWorkspace } from "./tax-filing-capabilities";
 import "server-only";
+import { BOOKING_MCP_TOOLS } from "./booking-tools";
 import { EVIDENCE_MCP_TOOLS } from "./evidence-tools";
 
 import { z } from "zod";
@@ -11,10 +14,11 @@ import {
   unpostJournal,
 } from "@/modules/ledger/journal-administration-service";
 import { postJournal } from "@/modules/ledger/posting-service";
-import { approveSubmittedJournal, submitJournalForApproval } from "@/modules/ledger/journal-workflow-service";
+import { approveSubmittedJournal, submitJournalForApproval, withdrawSubmittedJournal, rejectSubmittedJournal, recoverJournalSchema } from "@/modules/ledger/journal-workflow-service";
+import { journalFilterInputSchema } from "@/modules/ledger/journal-register-filters";
+import { JOURNAL_WORKFLOW_TOOL_POLICIES, mcpJournalWorkflow, readMcpJournal, refreshedJournalTransition } from "./journal-workflow";
 import {
   loadManualJournalOptions,
-  loadTenantJournalDetail,
   loadTenantJournalWorkspace,
 } from "@/modules/ledger/tenant-workspace";
 import {
@@ -81,7 +85,7 @@ import {
   transitionTaxFilingLifecycle,
   transitionTaxFilingLifecycleSchema,
 } from "@/modules/tax/filing-service";
-import { loadTaxFilingWorkspace, previewTaxFilingConfigurationDependencies } from "@/modules/tax/filing-workspace";
+import { loadTaxFilingWorkspace, previewTaxFilingConfigurationDependencies, previewTaxFilingReadiness } from "@/modules/tax/filing-workspace";
 import {
   exportTaxFilingWorkpaper,
   listTaxFilingWorkpapers,
@@ -295,6 +299,7 @@ function voidSettlementTool(input: Readonly<{
 
 export const DAILY_MCP_TOOLS: readonly McpToolDefinition[] = [
   ...EVIDENCE_MCP_TOOLS,
+  ...BOOKING_MCP_TOOLS,
   defineMcpTool({
     policy: { name: "finlynq_daily_get_accounting_context", group: "DAILY", access: "READ", permission: PERMISSIONS.readMcpLedger },
     title: "Get accounting entry context",
@@ -308,16 +313,22 @@ export const DAILY_MCP_TOOLS: readonly McpToolDefinition[] = [
   defineMcpTool({
     policy: { name: "finlynq_daily_list_journals", group: "DAILY", access: "READ", permission: PERMISSIONS.readMcpLedger },
     title: "List journals",
-    description: "Find journal entries in the connected organization by human search text and optional entity. Returns register rows and canonical content hashes used by later workflow actions.",
-    inputSchema: z.object({ search: z.string().trim().max(100).default(""), entityId: z.uuid().nullable().default(null), page: z.number().int().min(1).max(10000).default(1) }).strict(),
-    invoke: (args, runtime) => loadTenantJournalWorkspace(runtime.sessionPrincipal, args.search, args.entityId, args.page),
+    description: "Find journals by text, entity, and structured filters before pagination. Returns exact content hashes, approval versions, posting policy, and connection-aware workflow actions with stable disabled reasons. Amount filters use functional-currency journal totals.",
+    inputSchema: z.object({ search: z.string().trim().max(100).default(""), entityId: z.uuid().nullable().default(null), page: z.number().int().min(1).max(10000).default(1), filters: journalFilterInputSchema.optional() }).strict(),
+    invoke: async (args, runtime) => {
+      const workspace = await loadTenantJournalWorkspace(runtime.sessionPrincipal, args.search, args.entityId, args.page, args.filters);
+      return { ...workspace, journals: workspace.journals.map((journal) => {
+        const workflow = mcpJournalWorkflow(journal.workflow, runtime.snapshot);
+        return { ...journal, workflow, canPost: workflow?.actions.post.allowed === true };
+      }) };
+    },
   }),
   defineMcpTool({
     policy: { name: "finlynq_daily_get_journal", group: "DAILY", access: "READ", permission: PERMISSIONS.readMcpLedger },
     title: "Get journal details",
-    description: "Get one journal header and all lines by journal ID. Use this to verify exact amounts and the current workflow state before submit, approve, post, or reverse.",
+    description: "Get one journal header, lines, exact frozen content hash and approval version, posting policy, and authorized next actions. SUBMITTED journals need independent approval even under AUTO_POST; eligible creators may withdraw, and independent approvers may reject for correction. Disabled reasons explain the next step.",
     inputSchema: z.object({ journalId: z.uuid() }).strict(),
-    invoke: (args, runtime) => loadTenantJournalDetail(runtime.sessionPrincipal, args.journalId),
+    invoke: (args, runtime) => readMcpJournal(runtime, args.journalId),
   }),
   defineMcpTool({
     policy: { name: "finlynq_daily_create_journal", group: "DAILY", access: "WRITE", permission: PERMISSIONS.draftJournal },
@@ -327,26 +338,44 @@ export const DAILY_MCP_TOOLS: readonly McpToolDefinition[] = [
     invoke: (args, runtime) => createManualJournal({ context: mcpMutationContext(runtime.principal, runtime.requestId, args.description), ...args, origin: "MCP" }),
   }),
   defineMcpTool({
-    policy: { name: "finlynq_daily_submit_journal", group: "DAILY", access: "WRITE", permission: PERMISSIONS.submitJournal },
+    policy: JOURNAL_WORKFLOW_TOOL_POLICIES.submit,
     title: "Submit journal for approval",
-    description: "Freeze a manual journal draft for approval. Supply the content hash returned by journal reads when available so concurrent changes fail closed.",
+    description: "Freeze a manual journal draft for independent approval. Read workflow actions first: AUTO_POST does not bypass an existing submission. Supply the content hash from the current journal read; the response includes refreshed state and actions.",
     inputSchema: z.object({ journalId: z.uuid(), expectedContentHash: z.string().regex(/^[a-f0-9]{64}$/i).optional() }).strict(),
-    invoke: (args, runtime) => submitJournalForApproval({ context: mcpMutationContext(runtime.principal, runtime.requestId, "Submit journal for approval"), ...args }),
+    idempotent: true,
+    invoke: async (args, runtime) => refreshedJournalTransition(runtime, await submitJournalForApproval({ context: mcpMutationContext(runtime.principal, runtime.requestId, "Submit journal for approval"), ...args })),
   }),
   defineMcpTool({
-    policy: { name: "finlynq_daily_approve_journal", group: "DAILY", access: "WRITE", permission: PERMISSIONS.approveJournal },
+    policy: JOURNAL_WORKFLOW_TOOL_POLICIES.approve,
     title: "Approve submitted journal",
     description: "Approve the exact frozen journal version. The journal creator cannot approve their own journal; supply both the frozen content hash and approval version.",
     inputSchema: z.object({ journalId: z.uuid(), expectedContentHash: z.string().regex(/^[a-f0-9]{64}$/i), expectedApprovalVersion: z.number().int().positive(), reason: z.string().trim().min(5).max(500) }).strict(),
-    invoke: (args, runtime) => approveSubmittedJournal({ context: mcpMutationContext(runtime.principal, runtime.requestId, args.reason), ...args }),
+    idempotent: true,
+    invoke: async (args, runtime) => refreshedJournalTransition(runtime, await approveSubmittedJournal({ context: mcpMutationContext(runtime.principal, runtime.requestId, args.reason), ...args })),
   }),
   defineMcpTool({
-    policy: { name: "finlynq_daily_post_journal", group: "DAILY", access: "WRITE", permission: PERMISSIONS.postJournal },
+    policy: JOURNAL_WORKFLOW_TOOL_POLICIES.post,
     title: "Post journal",
-    description: "Post a manual ledger journal using FinLynQ's balance, period, account, workflow, permission, and content-hash controls. This creates permanent accounting history.",
-    inputSchema: z.object({ journalId: z.uuid(), expectedContentHash: z.string().regex(/^[a-f0-9]{64}$/i), reason: z.string().trim().min(5).max(500) }).strict(),
-    invoke: (args, runtime) => postJournal({ context: mcpMutationContext(runtime.principal, runtime.requestId, args.reason), journalId: args.journalId, expectedContentHash: args.expectedContentHash }),
+    description: "Post a manual ledger journal using FinLynQ's balance, period, account, workflow, permission, and content-hash controls. This creates permanent accounting history. expectedApprovalVersion from the journal read is required when posting an approved version.",
+    inputSchema: z.object({ journalId: z.uuid(), expectedContentHash: z.string().regex(/^[a-f0-9]{64}$/i), expectedApprovalVersion: z.number().int().positive().optional(), reason: z.string().trim().min(5).max(500) }).strict(),
+    idempotent: true,
+    invoke: async (args, runtime) => refreshedJournalTransition(runtime, await postJournal({ context: mcpMutationContext(runtime.principal, runtime.requestId, args.reason), journalId: args.journalId, expectedContentHash: args.expectedContentHash, expectedApprovalVersion: args.expectedApprovalVersion })),
   }),
+  ...(["withdraw", "reject"] as const).map((action) => defineMcpTool({
+    policy: JOURNAL_WORKFLOW_TOOL_POLICIES[action],
+    title: action === "withdraw" ? "Withdraw submitted journal" : "Reject submitted journal for correction",
+    description: action === "withdraw"
+      ? "Creator-only withdrawal of the exact frozen submitted journal back to draft, preserving its original ID, asset-schedule linkage, and immutable audit trail. Requires submit permission, frozen hash and approval version, permanent reason, and a unique idempotency key. Closed periods and accounting dependencies fail closed. Returns refreshed state and actions."
+      : "An independent approver can reject the exact frozen submission back to draft for correction. Preserves the original journal, asset-schedule linkage, and immutable audit trail. Requires approval permission, frozen hash and approval version, permanent reason, and a unique idempotency key. Self-rejection, closed periods, and dependencies fail closed. Returns refreshed state and actions.",
+    inputSchema: recoverJournalSchema,
+    idempotent: true,
+    destructive: true,
+    invoke: async (args, runtime) => refreshedJournalTransition(runtime, await
+      (action === "withdraw" ? withdrawSubmittedJournal : rejectSubmittedJournal)({
+        context: mcpMutationContext(runtime.principal, runtime.requestId, args.reason),
+        ...args,
+      })),
+  })),
   defineMcpTool({
     policy: { name: "finlynq_daily_reverse_journal", group: "DAILY", access: "WRITE", permission: PERMISSIONS.reverseJournal },
     title: "Reverse posted journal",
@@ -451,8 +480,8 @@ export const DAILY_MCP_TOOLS: readonly McpToolDefinition[] = [
   editDocumentTool({ name: "finlynq_daily_edit_sales_invoice", title: "Edit sales invoice draft", description: "Create a new immutable version of an existing sales-invoice draft. The exact current version is required. Set fxResolutionMode to PRESERVE and omit fx to carry the full current provenance when currency and accounting date are unchanged. Set RESOLVE and omit fx to run the organization's stored-first provider policy again. Set EXPLICIT and supply fx rate, source, and effective time for a client override; no permitted automatic observation fails with FX_RATE_UNAVAILABLE before persistence.", kind: "SALES_INVOICE", permission: PERMISSIONS.manageReceivables }),
   issueDocumentTool({ name: "finlynq_daily_issue_sales_invoice", title: "Issue sales invoice", description: "Issue and post the exact current sales-invoice draft, creating its tax evidence, journal, subledger event, and customer open item atomically.", kind: "SALES_INVOICE", permission: PERMISSIONS.postReceivables }),
   voidDocumentTool({ name: "finlynq_daily_void_sales_invoice", title: "Void sales invoice", description: "Void an issued sales invoice by creating immutable document and journal reversals in the selected open period.", kind: "SALES_INVOICE", permission: PERMISSIONS.voidReceivables }),
-  createDocumentTool({ name: "finlynq_daily_create_supplier_bill", title: "Create supplier bill draft", description: "Create an idempotent supplier-bill draft with exact invoice facts. Positive bills may include negative lines only when lineType is ADJUSTMENT; tax is reversed line by line. Net credits and zero-gross bills are rejected with an explicit remediation. Omit fx to resolve automatically: FinLynQ uses an eligible tenant-owned stored direct rate first, then the organization's selected provider source. Bank of Canada and ECB use official reference rates; Yahoo also requires its operator gate. If no permitted observation exists, the tool fails with FX_RATE_UNAVAILABLE before persistence. Supply explicit fx rate, source, and effective time to override automatic resolution for this bill.", kind: "SUPPLIER_BILL", permission: PERMISSIONS.managePayables }),
-  editDocumentTool({ name: "finlynq_daily_edit_supplier_bill", title: "Edit supplier bill draft", description: "Create a new immutable version of an existing supplier-bill draft. Positive bills may include negative lines only when lineType is ADJUSTMENT; tax is reversed line by line. Net credits and zero-gross bills are rejected with an explicit remediation. The exact current version is required. Set fxResolutionMode to PRESERVE and omit fx to carry the full current provenance when currency and accounting date are unchanged. Set RESOLVE and omit fx to run the organization's stored-first provider policy again. Set EXPLICIT and supply fx rate, source, and effective time for a client override; no permitted automatic observation fails with FX_RATE_UNAVAILABLE before persistence.", kind: "SUPPLIER_BILL", permission: PERMISSIONS.managePayables }),
+  createDocumentTool({ name: "finlynq_daily_create_supplier_bill", title: "Create supplier bill draft", description: "Create an idempotent supplier-bill draft with exact invoice facts. Positive bills may include negative lines only when lineType is ADJUSTMENT; tax is reversed line by line. Net credits and zero-gross bills are rejected with an explicit remediation. For a verified per-line rounding difference, provide tax.sourceTaxRounding {amount, reason, evidenceReference, reviewed}; the limit is one currency minor unit and tax.determinations.override is required. Negative adjustment taxes retain their sign, original net and engine evidence. Larger differences require separately reviewed sourceTaxOverride evidence. Omit fx to resolve automatically: FinLynQ uses an eligible tenant-owned stored direct rate first, then the organization's selected provider source. Bank of Canada and ECB use official reference rates; Yahoo also requires its operator gate. If no permitted observation exists, the tool fails with FX_RATE_UNAVAILABLE before persistence. Supply explicit fx rate, source, and effective time to override automatic resolution for this bill.", kind: "SUPPLIER_BILL", permission: PERMISSIONS.managePayables }),
+  editDocumentTool({ name: "finlynq_daily_edit_supplier_bill", title: "Edit supplier bill draft", description: "Create a new immutable version of an existing supplier-bill draft. Positive bills may include negative lines only when lineType is ADJUSTMENT; tax is reversed line by line. Net credits and zero-gross bills are rejected with an explicit remediation. For a verified per-line rounding difference, provide tax.sourceTaxRounding {amount, reason, evidenceReference, reviewed}; the limit is one currency minor unit and tax.determinations.override is required. Negative adjustment taxes retain their sign, original net and engine evidence. Larger differences require separately reviewed sourceTaxOverride evidence. The exact current version is required. Set fxResolutionMode to PRESERVE and omit fx to carry the full current provenance when currency and accounting date are unchanged. Set RESOLVE and omit fx to run the organization's stored-first provider policy again. Set EXPLICIT and supply fx rate, source, and effective time for a client override; no permitted automatic observation fails with FX_RATE_UNAVAILABLE before persistence.", kind: "SUPPLIER_BILL", permission: PERMISSIONS.managePayables }),
   issueDocumentTool({ name: "finlynq_daily_issue_supplier_bill", title: "Issue supplier bill", description: "Issue and post the exact current supplier-bill draft, creating its tax evidence, journal, subledger event, and supplier open item atomically.", kind: "SUPPLIER_BILL", permission: PERMISSIONS.postPayables }),
   voidDocumentTool({ name: "finlynq_daily_void_supplier_bill", title: "Void supplier bill", description: "Void an issued supplier bill by creating immutable document and journal reversals in the selected open period.", kind: "SUPPLIER_BILL", permission: PERMISSIONS.voidPayables }),
   settlementTool({ name: "finlynq_daily_record_customer_receipt", title: "Record customer receipt", description: "Record an actual customer receipt and allocate it to specific receivable open items. Omit fx for stored-first automatic resolution under the organization's provider policy; no permitted observation fails with FX_RATE_UNAVAILABLE before persistence. Supply explicit fx rate, source, and effective time to override automatic resolution for this transaction. This records settlement evidence; it does not initiate a bank payment.", kind: "CUSTOMER_RECEIPT", permission: PERMISSIONS.settleReceivables }),
@@ -513,7 +542,7 @@ export const DAILY_MCP_TOOLS: readonly McpToolDefinition[] = [
     title: "Get tax filing workspace",
     description: "Return the reviewed shared filing templates, eligible company ledgers and accounts, latest client mapping versions, and immutable filing workpaper history visible to the connected user. This does not submit a return to a tax authority.",
     inputSchema: emptySchema,
-    invoke: (_args, runtime) => loadTaxFilingWorkspace(runtime.sessionPrincipal),
+    invoke: async (_args, runtime) => mcpTaxFilingWorkspace(await loadTaxFilingWorkspace(runtime.sessionPrincipal), runtime),
   }),
   defineMcpTool({
     policy: { name: "finlynq_daily_preview_tax_filing_configuration_dependencies", group: "DAILY", access: "READ", permission: PERMISSIONS.readTax },
@@ -523,9 +552,16 @@ export const DAILY_MCP_TOOLS: readonly McpToolDefinition[] = [
     invoke: (args, runtime) => previewTaxFilingConfigurationDependencies(runtime.sessionPrincipal, args.configurationId),
   }),
   defineMcpTool({
+    policy: { name: "finlynq_daily_preview_tax_filing_readiness", group: "DAILY", access: "READ", permission: PERMISSIONS.readTax },
+    title: "Check tax comparison freshness and mapping coverage",
+    description: "Check the exact effective configuration, posted income and expense coverage, and omitted amounts before calculation. Returns actionable mapping/configuration blockers. To refresh, read the original workpaper inputs and create a new HISTORICAL_IMPORT with refreshFromFilingId; retain source reference and review reported/manual values, including missing versus explicit zero. Originals and canonical selections remain unchanged.",
+    inputSchema: taxFilingReadinessSchema,
+    invoke: (args, runtime) => previewTaxFilingReadiness(runtime.sessionPrincipal, args),
+  }),
+  defineMcpTool({
     policy: { name: "finlynq_daily_create_tax_filing_workpaper", group: "DAILY", access: "WRITE", permission: PERMISSIONS.prepareTaxFilings },
     title: "Prepare or reconcile tax filing workpaper",
-    description: "Create an immutable tax filing workpaper from posted ledger activity and the latest mapping version. PREPARED calculates a current declaration; HISTORICAL_IMPORT compares supplied reported values. This does not transmit or pay a return.",
+    description: "Create an immutable tax filing workpaper from posted ledger activity using the exact template and mapping pinned by the effective filing configuration. Saving a mapping does not activate it; a separately authorized configuration review is required before preparation. PREPARED calculates a current declaration; HISTORICAL_IMPORT compares supplied reported values. This does not transmit or pay a return.",
     inputSchema: createTaxFilingSchema,
     idempotent: true,
     invoke: (args, runtime) => createTaxFiling({

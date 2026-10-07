@@ -1,3 +1,4 @@
+import { mcpTaxFilingWorkspace } from "./tax-filing-capabilities";
 import "server-only";
 
 import { z } from "zod";
@@ -9,6 +10,8 @@ import {
   configureOrganizationCurrency,
   configureSegment,
   configureTaxRegistration,
+  correctTaxRegistrationScope,
+  correctTaxRegistrationScopeSchema,
   createAccountCombination,
   createFiscalPeriods,
   createLegalEntity,
@@ -92,6 +95,13 @@ const createPartySchema = z.object({
 
 export const SETUP_MCP_TOOLS: readonly McpToolDefinition[] = [
   defineMcpTool({
+    policy: { name: "finlynq_setup_correct_tax_registration_scope", group: "SETUP", access: "WRITE", permission: PERMISSIONS.manageOrganizationSettings },
+    title: "Correct registration scope",
+    description: "Append an audited scope correction to an existing company tax registration using its exact current scopeVersion from accounting configuration. Keep the original reference, country, province/regime and validity window. Ontario HST uses destinationCity=null and locationCode=null; customer cities remain on source invoices. City-specific regimes retain strict sourcing checks. Requires explicit preservePostedEvidence=true, evidence, reason and a stable idempotency key. Prior scope versions and posted tax snapshots remain immutable; revalidate unposted drafts. An overlap when adding a registration should be resolved through this correction, not by creating a competing validity window.",
+    inputSchema: correctTaxRegistrationScopeSchema, idempotent: true,
+    invoke: (args, runtime) => correctTaxRegistrationScope({ principal: runtime.sessionPrincipal, requestId: runtime.requestId, ...args }),
+  }),
+  defineMcpTool({
     policy: { name: "finlynq_setup_get_configuration", group: "SETUP", access: "READ", permission: PERMISSIONS.readOrganizationSettings },
     title: "Get accounting configuration",
     description: "Return organization currencies, FX rates, FX provider policy, legal entities, ledgers, tax registrations, segments, values, chart accounts, account combinations, and posting policies. Supply the intended accounting date to receive each combination's effective dates and validOnAccountingDate result before a write.",
@@ -106,10 +116,10 @@ export const SETUP_MCP_TOOLS: readonly McpToolDefinition[] = [
     title: "Get tax filing configuration",
     description: "Return reviewed shared filing templates, eligible company ledgers and accounts, and the latest client mapping versions. Use these stable IDs before appending a mapping version; filing workpaper history remains on the Daily tool.",
     inputSchema: emptySchema,
-    invoke: (_args, runtime) => loadTaxFilingWorkspace(
+    invoke: async (_args, runtime) => mcpTaxFilingWorkspace(await loadTaxFilingWorkspace(
       runtime.sessionPrincipal,
       { includeFilings: false },
-    ),
+    ), runtime),
   }),
   defineMcpTool({
     policy: { name: "finlynq_setup_list_parties", group: "SETUP", access: "READ", permission: PERMISSIONS.readParties },

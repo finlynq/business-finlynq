@@ -64,9 +64,6 @@ export function classifyInboxFile(file: Pick<CloudFile, "folder" | "shortcut" | 
   if (!Number.isSafeInteger(file.size) || file.size < 1) {
     return { supported: false, code: "STORAGE_EMPTY_FILE", reason: "The document is empty. Add a non-empty file and sync again." };
   }
-  if (file.size > MAX_EVIDENCE_BYTES) {
-    return { supported: false, code: "STORAGE_TOO_LARGE", reason: `The document exceeds the ${MAX_EVIDENCE_BYTES} byte (2 MiB) inbox limit.` };
-  }
   if (file.name.length < 1 || file.name.length > 180 || /[\\/\p{Cc}\p{Cf}]/u.test(file.name) || file.name === "." || file.name === "..") {
     return { supported: false, code: "STORAGE_FILENAME_INVALID", reason: "The filename must contain 1 to 180 safe characters." };
   }
@@ -77,6 +74,9 @@ export function classifyInboxFile(file: Pick<CloudFile, "folder" | "shortcut" | 
   const mimeType = normalizedMimeType(file.mimeType);
   if (!definition.mimeTypes.has(mimeType)) {
     return { supported: false, code: "STORAGE_MIME_MISMATCH", reason: `The .${extension(file.name)} filename does not match the provider MIME type. Correct the filename or export the file again.` };
+  }
+  if (file.size > MAX_EVIDENCE_BYTES) {
+    return { supported: false, code: "STORAGE_TOO_LARGE", reason: `Source size ${file.size} bytes exceeds the ${MAX_EVIDENCE_BYTES} byte (2 MiB) inbox limit. For an unsigned PDF up to 8 MiB, use Prepare and upload PDF to make a verified lossless copy, then retry. For other files, split or export a smaller source and retry.` };
   }
   return { supported: true, format: definition.format, canonicalMimeType: definition.canonicalMimeType };
 }

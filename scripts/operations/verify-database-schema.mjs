@@ -45,6 +45,7 @@ const preservedTenantRlsPolicyNames = new Map([
 // disagree. Relations absent here must have no direct or effective grants to
 // the app role, and PUBLIC/role-membership privilege paths are always rejected.
 const runtimeSelectRelations = [
+  "booking_batches", "booking_batch_reports",
   "organizations", "organization_memberships", "roles", "membership_roles",
   "role_permissions", "permissions", "organization_key_versions",
   "legal_entities", "ledgers", "currency_definitions",
@@ -59,7 +60,7 @@ const runtimeSelectRelations = [
   "journal_entry_relations", "parties", "party_addresses", "party_accounts",
   "subledger_events", "open_items", "document_settlement_allocations",
   "open_item_void_events", "open_item_balances", "tax_pack_versions",
-  "entity_tax_registrations", "tax_determination_snapshots", "tax_filing_templates",
+  "entity_tax_registrations", "tax_registration_scope_versions", "tax_determination_snapshots", "tax_filing_templates",
   "tax_account_mapping_sets", "tax_account_mapping_lines", "tax_filings",
   "tax_filing_configurations", "tax_filing_lifecycle_events",
   "tax_filing_canonical_selections", "tax_filing_asset_adjustments",
@@ -97,6 +98,7 @@ const runtimeInsertUpdateRelations = [
   "customer_delivery_preferences", "invoice_delivery_attempts", "email_operation_events",
 ];
 const runtimeInsertRelations = [
+  "booking_batches", "booking_batch_reports",
   "journal_approvals", "journal_entry_relations", "source_documents", "document_evidence_assets",
   "subledger_events", "open_items", "document_settlement_allocations",
   "open_item_void_events", "tax_determination_snapshots",
@@ -135,6 +137,7 @@ const runtimeExecuteFunctions = [
   "app.accounting_add_currency_rate(text, text, numeric, timestamp with time zone, text)",
   "app.accounting_set_fx_provider_policy(integer, text, integer, boolean)",
   "app.accounting_add_tax_registration(uuid, uuid, text, text, integer, text, text, text, text, text, date, date)",
+  "app.accounting_correct_tax_registration_scope(uuid, integer, text, text, text, text, text, text)",
   "app.accounting_configure_segment(text, text, boolean, boolean, text)",
   "app.accounting_add_segment_value(text, text, text, date, date)",
   "app.accounting_create_account_combination(uuid, uuid, uuid, uuid, uuid, uuid, uuid, uuid, uuid, uuid, uuid, uuid, uuid, uuid, uuid)",
@@ -213,6 +216,7 @@ const runtimeExecuteFunctions = [
   "app.organization_revoke_member_sessions(uuid)",
   "app.organization_revoke_member_sessions_and_trust(uuid)",
   "app.admin_control_journal_transaction(text, uuid, text, text)",
+  "app.journal_workflow_recovery_replayed(uuid, text, text, text)",
 ];
 const universallyUnsafeTablePrivileges = new Set([
   "DELETE", "REFERENCES", "TRIGGER", "TRUNCATE",

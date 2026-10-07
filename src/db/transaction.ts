@@ -125,9 +125,14 @@ export async function queryDatabase<Row extends QueryResultRow = QueryResultRow>
   return getPool().query<Row>(text, [...values]);
 }
 
+export type TenantTransactionOptions = Readonly<{
+  isolationLevel?: "READ COMMITTED" | "REPEATABLE READ";
+}>;
+
 export async function withTenantTransaction<T>(
   untrustedContext: TenantTransactionContext,
   work: (client: PoolClient) => Promise<T>,
+  options: TenantTransactionOptions = {},
 ): Promise<T> {
   const context = validateTenantTransactionContext(untrustedContext);
   const client = await getPool().connect();
@@ -135,7 +140,9 @@ export async function withTenantTransaction<T>(
 
   try {
     await client.query("BEGIN");
-    await client.query("SET TRANSACTION ISOLATION LEVEL READ COMMITTED");
+    await client.query(options.isolationLevel === "REPEATABLE READ"
+      ? "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ"
+      : "SET TRANSACTION ISOLATION LEVEL READ COMMITTED");
     await client.query("SET LOCAL statement_timeout = '15s'");
     await client.query("SELECT set_config('app.organization_id', $1, true)", [context.organizationId]);
     await client.query("SELECT set_config('app.actor_id', $1, true)", [context.actorId]);

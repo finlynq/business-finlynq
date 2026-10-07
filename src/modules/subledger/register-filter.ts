@@ -1,3 +1,4 @@
+import { exact } from "@/kernel/money";
 import type { SubledgerWorkspaceDocumentDto } from "./workspace";
 
 export type SubledgerDueFilter =
@@ -16,6 +17,7 @@ export type SubledgerRegisterFilter = Readonly<{
   dateFrom: string;
   dateTo: string;
   due: SubledgerDueFilter;
+  paymentStatus?: "ALL" | "OPEN" | "PAID";
 }>;
 
 export function subledgerDocumentDate(document: SubledgerWorkspaceDocumentDto): string {
@@ -26,6 +28,15 @@ export function subledgerDocumentDate(document: SubledgerWorkspaceDocumentDto): 
 
 export function subledgerDocumentDueDate(document: SubledgerWorkspaceDocumentDto): string | null {
   return "dueOn" in document.snapshot ? document.snapshot.dueOn : null;
+}
+
+export function subledgerPaymentStatus(document: SubledgerWorkspaceDocumentDto): "Open" | "Partially paid" | "Paid" | null {
+  if (document.status !== "POSTED" || document.openAmount === null || document.openStatus === "REVERSED"
+    || (document.snapshot.kind !== "SUPPLIER_BILL" && document.snapshot.kind !== "SALES_INVOICE")) return null;
+  const remaining = exact(document.openAmount);
+  if (remaining.isZero()) return "Paid";
+  if (remaining.isNegative()) return null;
+  return remaining.lessThan(document.snapshot.grossTotal) ? "Partially paid" : "Open";
 }
 
 function matchesDueState(
@@ -59,6 +70,9 @@ export function filterSubledgerDocuments(
     if (filter.currency && document.snapshot.currency !== filter.currency) return false;
     if (filter.dateFrom && date < filter.dateFrom) return false;
     if (filter.dateTo && date > filter.dateTo) return false;
+    const paymentStatus = subledgerPaymentStatus(document);
+    if (filter.paymentStatus === "OPEN" && paymentStatus !== "Open" && paymentStatus !== "Partially paid") return false;
+    if (filter.paymentStatus === "PAID" && paymentStatus !== "Paid") return false;
     if (!matchesDueState(document, filter.due, currentDate)) return false;
     if (!search) return true;
     return [
