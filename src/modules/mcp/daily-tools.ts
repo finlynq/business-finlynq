@@ -1,3 +1,5 @@
+import { taxFilingReadinessSchema } from "@/modules/tax/filing-readiness";
+import { mcpTaxFilingWorkspace } from "./tax-filing-capabilities";
 import "server-only";
 import { EVIDENCE_MCP_TOOLS } from "./evidence-tools";
 
@@ -82,7 +84,7 @@ import {
   transitionTaxFilingLifecycle,
   transitionTaxFilingLifecycleSchema,
 } from "@/modules/tax/filing-service";
-import { loadTaxFilingWorkspace, previewTaxFilingConfigurationDependencies } from "@/modules/tax/filing-workspace";
+import { loadTaxFilingWorkspace, previewTaxFilingConfigurationDependencies, previewTaxFilingReadiness } from "@/modules/tax/filing-workspace";
 import {
   exportTaxFilingWorkpaper,
   listTaxFilingWorkpapers,
@@ -538,7 +540,7 @@ export const DAILY_MCP_TOOLS: readonly McpToolDefinition[] = [
     title: "Get tax filing workspace",
     description: "Return the reviewed shared filing templates, eligible company ledgers and accounts, latest client mapping versions, and immutable filing workpaper history visible to the connected user. This does not submit a return to a tax authority.",
     inputSchema: emptySchema,
-    invoke: (_args, runtime) => loadTaxFilingWorkspace(runtime.sessionPrincipal),
+    invoke: async (_args, runtime) => mcpTaxFilingWorkspace(await loadTaxFilingWorkspace(runtime.sessionPrincipal), runtime),
   }),
   defineMcpTool({
     policy: { name: "finlynq_daily_preview_tax_filing_configuration_dependencies", group: "DAILY", access: "READ", permission: PERMISSIONS.readTax },
@@ -548,9 +550,16 @@ export const DAILY_MCP_TOOLS: readonly McpToolDefinition[] = [
     invoke: (args, runtime) => previewTaxFilingConfigurationDependencies(runtime.sessionPrincipal, args.configurationId),
   }),
   defineMcpTool({
+    policy: { name: "finlynq_daily_preview_tax_filing_readiness", group: "DAILY", access: "READ", permission: PERMISSIONS.readTax },
+    title: "Check tax comparison freshness and mapping coverage",
+    description: "Check the exact effective configuration, posted income and expense coverage, and omitted amounts before calculation. Returns actionable mapping/configuration blockers. To refresh, read the original workpaper inputs and create a new HISTORICAL_IMPORT with refreshFromFilingId; retain source reference and review reported/manual values, including missing versus explicit zero. Originals and canonical selections remain unchanged.",
+    inputSchema: taxFilingReadinessSchema,
+    invoke: (args, runtime) => previewTaxFilingReadiness(runtime.sessionPrincipal, args),
+  }),
+  defineMcpTool({
     policy: { name: "finlynq_daily_create_tax_filing_workpaper", group: "DAILY", access: "WRITE", permission: PERMISSIONS.prepareTaxFilings },
     title: "Prepare or reconcile tax filing workpaper",
-    description: "Create an immutable tax filing workpaper from posted ledger activity and the latest mapping version. PREPARED calculates a current declaration; HISTORICAL_IMPORT compares supplied reported values. This does not transmit or pay a return.",
+    description: "Create an immutable tax filing workpaper from posted ledger activity using the exact template and mapping pinned by the effective filing configuration. Saving a mapping does not activate it; a separately authorized configuration review is required before preparation. PREPARED calculates a current declaration; HISTORICAL_IMPORT compares supplied reported values. This does not transmit or pay a return.",
     inputSchema: createTaxFilingSchema,
     idempotent: true,
     invoke: (args, runtime) => createTaxFiling({

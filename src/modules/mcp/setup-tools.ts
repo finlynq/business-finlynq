@@ -1,3 +1,4 @@
+import { mcpTaxFilingWorkspace } from "./tax-filing-capabilities";
 import "server-only";
 
 import { z } from "zod";
@@ -106,10 +107,10 @@ export const SETUP_MCP_TOOLS: readonly McpToolDefinition[] = [
     title: "Get tax filing configuration",
     description: "Return reviewed shared filing templates, eligible company ledgers and accounts, and the latest client mapping versions. Use these stable IDs before appending a mapping version; filing workpaper history remains on the Daily tool.",
     inputSchema: emptySchema,
-    invoke: (_args, runtime) => loadTaxFilingWorkspace(
+    invoke: async (_args, runtime) => mcpTaxFilingWorkspace(await loadTaxFilingWorkspace(
       runtime.sessionPrincipal,
       { includeFilings: false },
-    ),
+    ), runtime),
   }),
   defineMcpTool({
     policy: { name: "finlynq_setup_list_parties", group: "SETUP", access: "READ", permission: PERMISSIONS.readParties },

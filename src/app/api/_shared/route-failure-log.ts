@@ -28,6 +28,7 @@ export type RouteFailureOperation =
   | "session-mfa-enrollment-start"
   | "session-revocation"
   | "subledger-mutation"
+  | "tax-filing-preview"
   | "tax-filing-create"
   | "tax-filing-configuration-save"
   | "tax-filing-canonical-select"

@@ -554,6 +554,13 @@
       "when": 1791363564132,
       "tag": "0078_journal_workflow_recovery",
       "breakpoints": true
+    },
+    {
+      "idx": 79,
+      "version": "7",
+      "when": 1791366342171,
+      "tag": "0079_tax_mapping_revision_integrity",
+      "breakpoints": true
     }
   ]
 }
