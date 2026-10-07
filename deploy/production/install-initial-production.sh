@@ -43,7 +43,7 @@ readonly production_signal_certificate_identity="https://github.com/finlynq/busi
 readonly production_signal_workflow_path=".github/workflows/signal-production-deployment.yml"
 readonly production_signal_workflow_sha256="36326ed7f59c4aab5310d4ca58dd86ef0539d653bbf3723a74f53e83fa7df071"
 readonly quality_gate_workflow_path=".github/workflows/ci.yml"
-readonly quality_gate_workflow_sha256="f95156035a623e15e82fa780224df7260475d0528f7142d4e1f3ed8486484f76"
+readonly quality_gate_workflow_sha256="b44e2aad29279ad645da801412ad65e5b68f7cd5f77588eea8bc9d897f2e3b54"
 readonly github_cli="/usr/bin/gh"
 readonly clean_path="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 

@@ -480,11 +480,14 @@ export async function loadSubledgerWorkspace(
         `SELECT registration.legal_entity_id,
            registration.id AS registration_id, registration.regime_key,
            registration.destination_country, registration.destination_region,
-           registration.destination_city, registration.location_code,
+           CASE WHEN scope.id IS NOT NULL THEN scope.destination_city ELSE registration.destination_city END AS destination_city,
+           CASE WHEN scope.id IS NOT NULL THEN scope.location_code ELSE registration.location_code END AS location_code,
            registration.valid_to::text AS registration_valid_to,
            version.effective_from::text AS pack_effective_from,
            version.effective_to::text AS pack_effective_to
          FROM entity_tax_registrations registration
+         LEFT JOIN LATERAL (SELECT id,destination_city,location_code FROM tax_registration_scope_versions
+           WHERE organization_id=registration.organization_id AND registration_id=registration.id ORDER BY version DESC LIMIT 1) scope ON true
          LEFT JOIN LATERAL (
            SELECT pack.effective_from, pack.effective_to
            FROM tax_pack_versions pack

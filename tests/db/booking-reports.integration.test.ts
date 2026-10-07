@@ -11,6 +11,8 @@ import type { BookingRecord } from "@/modules/booking-reports/model";
 import { LocalRootKeyProvider,serializeWrappedKey,encryptField,serializeEncryptedField } from "@/security/organization-encryption";
 import { loadOrganizationRootKek } from "@/security/root-secret";
 import { buildBusinessDocumentSnapshot } from "@/modules/subledger/document-model";
+import { correctTaxRegistrationScope } from "@/modules/ledger/accounting-configuration";
+import type { SessionPrincipal } from "@/modules/identity/session";
 import { appendSourceDocument } from "@/modules/subledger/ar-ap-persistence";
 import { issueBusinessDocument,recordCustomerReceiptOrSupplierPayment } from "@/modules/subledger/ar-ap-service";
 const run=process.env.TEST_DATABASE_URL&&process.env.TEST_APP_DATABASE_URL?describe:describe.skip;
@@ -44,7 +46,7 @@ run("immutable booking reports and authorized posting",()=>{
  const encrypted=serializeEncryptedField(encryptField("Synthetic supplier",dek,{organizationId:id.org,table:"parties",column:"display_name_ciphertext",recordId:id.party,keyVersion:1}));
  await owner.query("INSERT INTO parties(id,organization_id,party_number,display_name_ciphertext,display_name_key_version,search_token) VALUES($1,$2,'SUPPLIER',$3,1,'hmac-sha256-v1:'||repeat('a',64))",[id.party,id.org,encrypted]);
  const registration=serializeEncryptedField(encryptField("Synthetic GST reference",dek,{organizationId:id.org,table:"entity_tax_registrations",column:"registration_ciphertext",recordId:id.taxRegistration,keyVersion:1}));
- await owner.query("INSERT INTO entity_tax_registrations(id,organization_id,legal_entity_id,regime_key,destination_country,destination_region,registration_ciphertext,key_version,valid_from) VALUES($1,$2,$3,'ca.on.hst','CA','ON',$4,'1','2025-01-01')",[id.taxRegistration,id.org,id.entity,registration]);
+ await owner.query("INSERT INTO entity_tax_registrations(id,organization_id,legal_entity_id,regime_key,destination_country,destination_region,destination_city,registration_ciphertext,key_version,valid_from) VALUES($1,$2,$3,'ca.on.hst','CA','ON','Ottawa',$4,'1','2025-01-01')",[id.taxRegistration,id.org,id.entity,registration]);
  }finally{root.fill(0);dek.fill(0);}
  await owner.query("INSERT INTO gl_accounts(id,organization_id,ledger_id,code,display_name,class,control_kind,postable,active,valid_from) VALUES($1,$3,$4,'2100','Supplier payable','LIABILITY','AP',true,true,'2025-01-01'),($2,$3,$4,'2300','Shareholder or card liability','LIABILITY','NONE',true,true,'2025-01-01')",[id.payable,id.liability,id.org,id.ledger]);
  await owner.query("INSERT INTO account_combinations(id,organization_id,ledger_id,entity_id,account_id) VALUES($1,$3,$4,$5,$6),($2,$3,$4,$5,$7)",[id.payableCombination,id.liabilityCombination,id.org,id.ledger,id.entity,id.payable,id.liability]);
@@ -90,6 +92,19 @@ run("immutable booking reports and authorized posting",()=>{
  expect(roundedReview.snapshot.entries[0].taxDetails[1]).toMatchObject({tax:"-4.41",rounding:"-0.01",evidence:"synthetic-invoice.pdf"});expect(roundedReview.snapshot.entries[0].taxDetails[0].treatment).toContain("NONRECOVERABLE");
  const roundedOutcome=await postBookingBatch(context(),{batchId:roundedReview.batchId,reviewReportId:roundedReview.reportId,expectedReviewHash:roundedReview.hash,confirmed:true,reason:"Book reviewed rounded invoice",idempotencyKey:randomUUID()}) as BookingReport;
  expect(roundedOutcome.status).toBe("POSTED");expect(roundedOutcome.snapshot.entries[0]).toMatchObject({gross:"57.77",tax:"6.64",net:"51.13",linesArePosted:true});
+ const historical={...rounded,sourceNumber:"SYNTHETIC-HISTORICAL"};
+ await withTenantTransaction(context(),client=>appendSourceDocument(client,{context:context(),ownerModule:"payables",sourceType:"payables.supplier-bill",sourceNumber:historical.sourceNumber,legalEntityId:id.entity,version:1,status:"DRAFT",snapshot:historical,idempotencyKey:randomUUID(),commandHash:"c".repeat(64)}));
+ const issuedRounded=await issueBusinessDocument({context:context(),kind:"SUPPLIER_BILL",sourceNumber:historical.sourceNumber,expectedVersion:1,idempotencyKey:randomUUID()});
+ const postedTaxBefore=(await owner.query("SELECT id,fact_snapshot,evidence_snapshot,decision_hash FROM tax_determination_snapshots WHERE organization_id=$1 AND source_document_id=$2 ORDER BY id",[id.org,issuedRounded.document.id])).rows;
+ expect(postedTaxBefore).toHaveLength(2);
+ expect((await owner.query("SELECT count(*)::int AS n FROM journal_entries WHERE organization_id=$1 AND source_document_id=$2 AND status='POSTED'",[id.org,issuedRounded.document.id])).rows[0].n).toBeGreaterThan(0);
+ const adminSession=randomUUID();
+ await owner.query("INSERT INTO role_permissions(organization_id,role_id,permission_key) VALUES($1,$2,'organization.settings.manage')",[id.org,id.role]);
+ await owner.query(`INSERT INTO auth_sessions(id,token_hash,user_id,organization_id,membership_id,auth_method,session_mode,user_agent_hash,idle_timeout_seconds,idle_expires_at,expires_at,mfa_verified_at,step_up_expires_at) VALUES ($1::uuid,$1::text,$2,$3,$4,'PASSWORD','REAL',repeat('c',64),7200,now()+interval '2 hours',now()+interval '24 hours',now(),now()+interval '2 hours')`,[adminSession,id.actor,id.org,id.member]);
+ const principal:SessionPrincipal={sessionId:adminSession,userId:id.actor,organizationId:id.org,membershipId:id.member,organizationName:"Synthetic tax regression",roleLabel:"Synthetic tax role",displayName:"Tester",initials:"T",sessionMode:"real",authMethod:"PASSWORD",expiresAt:new Date(Date.now()+3600000),mfaVerifiedAt:new Date(),stepUpExpiresAt:new Date(Date.now()+3600000),organizationWritesEnabled:true};
+ const corrected=await correctTaxRegistrationScope({principal,requestId:randomUUID(),registrationId:id.taxRegistration,expectedScopeVersion:1,destinationCity:null,locationCode:null,configurationEvidence:"Ontario HST applies province-wide",reason:"Correct legacy city after posting",preservePostedEvidence:true,idempotencyKey:randomUUID()});
+ expect(corrected.scopeVersion).toBe(2);expect(corrected.preservedPostedEvidenceCount).toBeGreaterThan(0);
+ expect((await owner.query("SELECT id,fact_snapshot,evidence_snapshot,decision_hash FROM tax_determination_snapshots WHERE organization_id=$1 AND source_document_id=$2 ORDER BY id",[id.org,issuedRounded.document.id])).rows).toEqual(postedTaxBefore);
  await owner.query("DELETE FROM role_permissions WHERE organization_id=$1 AND role_id=$2 AND permission_key='payables.read'",[id.org,id.role]);await expect(readBookingReport(context(),{batchId:result.batchId})).rejects.toThrow();
  },30000);
 });

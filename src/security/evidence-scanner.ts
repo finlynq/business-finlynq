@@ -47,8 +47,8 @@ async function clamCommand(command: "VERSION" | "INSTREAM", bytes?: Buffer): Pro
   });
 }
 
-export async function scanEvidence(bytes: Buffer): Promise<{ version: string; scannedAt: string }> {
-  if (bytes.length < 1 || bytes.length > MAX_EVIDENCE_BYTES) throw new Error("Invalid evidence size");
+export async function scanEvidence(bytes: Buffer, maximumBytes = MAX_EVIDENCE_BYTES): Promise<{ version: string; scannedAt: string }> {
+  if (maximumBytes > 8 * 1024 * 1024 || bytes.length < 1 || bytes.length > maximumBytes) throw new Error("Invalid evidence size");
   const version = await clamCommand("VERSION");
   // VERSION includes the signature database's timestamp. Refuse stale engines,
   // even if freshclam failed after the daemon started.

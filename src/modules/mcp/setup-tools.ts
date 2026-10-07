@@ -10,6 +10,8 @@ import {
   configureOrganizationCurrency,
   configureSegment,
   configureTaxRegistration,
+  correctTaxRegistrationScope,
+  correctTaxRegistrationScopeSchema,
   createAccountCombination,
   createFiscalPeriods,
   createLegalEntity,
@@ -92,6 +94,13 @@ const createPartySchema = z.object({
 }).strict();
 
 export const SETUP_MCP_TOOLS: readonly McpToolDefinition[] = [
+  defineMcpTool({
+    policy: { name: "finlynq_setup_correct_tax_registration_scope", group: "SETUP", access: "WRITE", permission: PERMISSIONS.manageOrganizationSettings },
+    title: "Correct registration scope",
+    description: "Append an audited scope correction to an existing company tax registration using its exact current scopeVersion from accounting configuration. Keep the original reference, country, province/regime and validity window. Ontario HST uses destinationCity=null and locationCode=null; customer cities remain on source invoices. City-specific regimes retain strict sourcing checks. Requires explicit preservePostedEvidence=true, evidence, reason and a stable idempotency key. Prior scope versions and posted tax snapshots remain immutable; revalidate unposted drafts. An overlap when adding a registration should be resolved through this correction, not by creating a competing validity window.",
+    inputSchema: correctTaxRegistrationScopeSchema, idempotent: true,
+    invoke: (args, runtime) => correctTaxRegistrationScope({ principal: runtime.sessionPrincipal, requestId: runtime.requestId, ...args }),
+  }),
   defineMcpTool({
     policy: { name: "finlynq_setup_get_configuration", group: "SETUP", access: "READ", permission: PERMISSIONS.readOrganizationSettings },
     title: "Get accounting configuration",

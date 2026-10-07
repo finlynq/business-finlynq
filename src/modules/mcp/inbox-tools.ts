@@ -4,7 +4,8 @@ import { z } from "zod";
 import { PERMISSIONS } from "@/modules/identity/permissions";
 import { listStorageConnections } from "@/modules/document-storage/connections";
 import { uploadInboxDocument } from "@/modules/document-storage/upload";
-import { uploadInboxSchema } from "@/modules/document-storage/model";
+import { prepareAndUploadPdf } from "@/modules/document-storage/prepare-pdf-upload";
+import { preparePdfUploadSchema, uploadInboxSchema } from "@/modules/document-storage/model";
 import { claimInboxDocument, completeInboxDocument, listDocumentInbox, readInboxDocument, retryDocumentFiling, reviewInboxDocument, syncDocumentInbox } from "@/modules/document-storage/inbox";
 import { claimInboxSchema, completeInboxSchema, listInboxSchema, readInboxSchema, retryFilingSchema, reviewInboxSchema, syncInboxSchema } from "@/modules/document-storage/model";
 import { mcpMutationContext } from "./oauth-store";
@@ -22,11 +23,14 @@ export function formatInboxPage(result: unknown): CallToolResult {
   return { content, structuredContent: envelope };
 }
 export const INBOX_MCP_TOOLS = [
+  defineMcpTool({ policy: { name: "finlynq_daily_prepare_pdf_document", group: "DAILY", access: "WRITE", permissionsAny: manage },
+    title: "Prepare and upload an oversized PDF", description: "For an unsigned PDF larger than 2 MiB and up to 8 MiB, scan the original, losslessly compress unfiltered streams, verify every page's commands, images, text, geometry and pixels, retain the original in the company cloud Archive, and upload the verified copy to Inbox. Supply exact source size, SHA-256, canonical base64 and stable idempotencyKey. Signed, encrypted, malformed or unreducible PDFs return an explicit remedy. No accounting mutation occurs during preparation.",
+    openWorld: true, inputSchema: preparePdfUploadSchema, invoke: (args, runtime) => prepareAndUploadPdf(context(runtime, "Prepare oversized PDF"), args) }),
   defineMcpTool({ policy: { name: "finlynq_daily_upload_inbox_document", group: "DAILY", access: "WRITE", permissionsAny: manage },
     title: "Upload a document to the cloud inbox", description: "Upload PDF, PNG, JPEG, CSV, TSV, TXT, XLS, XLSX, or EML bytes up to 2 MiB to the selected connected cloud inbox after extension, MIME, content validation, and malware scanning. FinLynQ retains metadata only. Supply canonical base64, exact size and SHA-256, and a stable idempotencyKey. Then claim/read/complete the returned item. Reuse identical arguments on retries.",
     openWorld: true, inputSchema: uploadInboxSchema, invoke: (args, runtime) => uploadInboxDocument(context(runtime, "Upload cloud inbox document"), args) }),
   defineMcpTool({ policy: { name: "finlynq_daily_list_document_storage", group: "DAILY", access: "READ", permissionsAny: read },
-    title: "List connected document inboxes", description: "List authorized company/module cloud inboxes, their provider-enforced access description, connection status, and last sync. New self-service connections use OneDrive's app folder; existing Google grants are legacy whole-drive access, not folder-scoped. Arbitrary folders and pasted share-link authorization are unavailable. Connect/reconnect in Document storage settings. No credentials are returned.",
+    title: "List connected document inboxes", description: "List authorized company/module cloud inboxes, their provider-enforced access description, connection status, and last sync. New self-service connections use OneDrive's app folder; existing Google grants are legacy whole-drive access, not folder-scoped. Arbitrary folders and pasted share-link authorization are unavailable. Use finlynq_setup_prepare_document_storage and its signed-in consent handoff to provision another company/module inbox; poll finlynq_setup_get_document_storage_setup, or reconnect in Document storage settings. No credentials are returned.",
     inputSchema: z.object({}).strict(), invoke: (_args, runtime) => listStorageConnections(context(runtime, "List document storage")) }),
   defineMcpTool({ policy: { name: "finlynq_daily_sync_document_inbox", group: "DAILY", access: "WRITE", permissionsAny: manage },
     title: "Sync a cloud document inbox", description: "Recursively discover up to 50 files per call from one authorized cloud inbox. Traversal is bounded by configured depth and provider-call limits and excludes shortcuts and FinLynQ Archive/output locations. Repeat while hasMore is true; pass restart=true only to discard an invalid or stale scan cursor. Counts distinguish discovered, unchanged, skipped, unsupported, and failed entries.",
