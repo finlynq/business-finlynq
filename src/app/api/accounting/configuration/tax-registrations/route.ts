@@ -7,6 +7,8 @@ import {
 } from "@/app/api/_shared/organization-administration-route";
 import {
   configureTaxRegistration,
+  correctTaxRegistrationScope,
+  correctTaxRegistrationScopeSchema,
   taxRegistrationConfigurationSchema,
 } from "@/modules/ledger/accounting-configuration";
 
@@ -22,5 +24,15 @@ export async function POST(request: NextRequest) {
       ...body.data,
     });
     return NextResponse.json(result, { status: 201, headers: organizationAdminHeaders });
+  });
+}
+
+export async function PATCH(request: NextRequest) {
+  return organizationAdminMutationRoute(request, async (requestId) => {
+    const access = await prepareOrganizationAdminMutation(request, "accounting-tax-registration-scope");
+    if (access.response) return access.response;
+    const body = await readOrganizationAdminJson(request, correctTaxRegistrationScopeSchema);
+    if (body.response) return body.response;
+    return NextResponse.json(await correctTaxRegistrationScope({ principal: access.principal, requestId, ...body.data }), { headers: organizationAdminHeaders });
   });
 }

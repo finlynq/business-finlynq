@@ -61,6 +61,27 @@ export const entityTaxRegistrations = pgTable(
   ],
 );
 
+export const taxRegistrationScopeVersions = pgTable("tax_registration_scope_versions", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  organizationId: uuid("organization_id").notNull().references(() => organizations.id, { onDelete: "restrict" }),
+  registrationId: uuid("registration_id").notNull(),
+  version: integer("version").notNull(),
+  destinationCity: text("destination_city"), locationCode: text("location_code"),
+  configurationEvidence: text("configuration_evidence").notNull(), reason: text("reason").notNull(),
+  historicalEvidenceCount: integer("historical_evidence_count").notNull(),
+  idempotencyKey: text("idempotency_key").notNull(), commandHash: text("command_hash").notNull(),
+  createdBy: uuid("created_by").notNull(), createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  uniqueIndex("tax_registration_scope_org_id_unique").on(table.organizationId, table.id),
+  uniqueIndex("tax_registration_scope_version_unique").on(table.organizationId, table.registrationId, table.version),
+  uniqueIndex("tax_registration_scope_replay_unique").on(table.organizationId, table.idempotencyKey),
+  foreignKey({ columns: [table.organizationId, table.registrationId], foreignColumns: [entityTaxRegistrations.organizationId, entityTaxRegistrations.id], name: "tax_registration_scope_registration_fk" }).onDelete("restrict"),
+  check("tax_registration_scope_version_check", sql`${table.version} >= 2 AND ${table.historicalEvidenceCount} >= 0`),
+  check("tax_registration_scope_hash_check", sql`${table.idempotencyKey} ~ '^[a-f0-9]{64}$' AND ${table.commandHash} ~ '^[a-f0-9]{64}$'`),
+  check("tax_registration_scope_evidence_check", sql`length(${table.configurationEvidence}) BETWEEN 8 AND 1000 AND length(${table.reason}) BETWEEN 8 AND 500`),
+  check("tax_registration_scope_destination_check", sql`(${table.destinationCity} IS NULL OR length(${table.destinationCity}) BETWEEN 1 AND 100) AND (${table.locationCode} IS NULL OR length(${table.locationCode}) BETWEEN 1 AND 40)`),
+]);
+
 export const taxDeterminationSnapshots = pgTable(
   "tax_determination_snapshots",
   {

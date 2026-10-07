@@ -1,3 +1,4 @@
+import { registrationDestinationMatches } from "@/modules/tax/registration-scope";
 import type { PoolClient } from "pg";
 import { z } from "zod";
 import { resolveSettlementFunding } from "./settlement-funding";
@@ -335,13 +336,17 @@ export async function assertBusinessDocumentTaxRegistrationBindings(
   }
 
   const result = await client.query<EntityTaxRegistrationRow>(
-    `SELECT id, regime_key, destination_country, destination_region,
-       destination_city, location_code, valid_from::text, valid_to::text
-     FROM entity_tax_registrations
-     WHERE organization_id = $1
-       AND legal_entity_id = $2
-       AND id = ANY($3::uuid[])
-     ORDER BY id`,
+    `SELECT registration.id, registration.regime_key, registration.destination_country, registration.destination_region,
+       CASE WHEN scope.id IS NOT NULL THEN scope.destination_city ELSE registration.destination_city END AS destination_city,
+       CASE WHEN scope.id IS NOT NULL THEN scope.location_code ELSE registration.location_code END AS location_code,
+       registration.valid_from::text, registration.valid_to::text
+     FROM entity_tax_registrations registration
+     LEFT JOIN LATERAL (SELECT id,destination_city,location_code FROM tax_registration_scope_versions
+       WHERE organization_id=registration.organization_id AND registration_id=registration.id ORDER BY version DESC LIMIT 1) scope ON true
+     WHERE registration.organization_id = $1
+       AND registration.legal_entity_id = $2
+       AND registration.id = ANY($3::uuid[])
+     ORDER BY registration.id`,
     [context.organizationId, snapshot.legalEntityId, [...registrationIds].sort()],
   );
   const registrations = new Map(result.rows.map((row) => [row.id, row]));
@@ -358,12 +363,7 @@ export async function assertBusinessDocumentTaxRegistrationBindings(
     if (registration.regime_key !== line.taxDecision.packKey) {
       throw new Error(`Tax registration pack does not match source line ${line.lineNumber}`);
     }
-    if (
-      registration.destination_country !== facts.destinationCountry
-      || registration.destination_region !== facts.destinationRegion
-      || registration.destination_city !== optionalTaxFact(facts.destinationCity)
-      || registration.location_code !== optionalTaxFact(facts.locationCode)
-    ) {
+    if (!registrationDestinationMatches(registration, facts)) {
       throw new Error(`Tax registration destination does not match source line ${line.lineNumber}`);
     }
     if (

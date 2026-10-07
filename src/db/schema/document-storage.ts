@@ -1,4 +1,4 @@
-import { bigint, boolean, check, foreignKey, index, integer, pgTable, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
+import { type AnyPgColumn, bigint, boolean, check, foreignKey, index, integer, pgTable, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 import { organizations } from "./identity";
 
@@ -12,7 +12,14 @@ export const documentStorageConnections = pgTable("document_storage_connections"
   createdBy: uuid("created_by").notNull(), createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   lastSyncedAt: timestamp("last_synced_at", { withTimezone: true }), syncCursor: text("sync_cursor"),
   oauthStateHash: text("oauth_state_hash"),
-}, (table) => [uniqueIndex("document_storage_connections_org_id_unique").on(table.organizationId, table.id)]);
+  setupKey: text("setup_key"), setupHash: text("setup_hash"),
+  reuseConnectionId: uuid("reuse_connection_id").references((): AnyPgColumn => documentStorageConnections.id, { onDelete: "restrict" }),
+  sharingConsentCiphertext: text("sharing_consent_ciphertext"),
+}, (table) => [
+  uniqueIndex("document_storage_connections_org_id_unique").on(table.organizationId, table.id),
+  uniqueIndex("document_storage_connections_setup_unique").on(table.organizationId, table.createdBy, table.setupKey),
+  check("document_storage_connections_setup_check", sql`(${table.setupKey} IS NULL AND ${table.setupHash} IS NULL AND ${table.reuseConnectionId} IS NULL AND ${table.sharingConsentCiphertext} IS NULL) OR (${table.setupKey} ~ '^[a-f0-9]{64}$' AND ${table.setupHash} ~ '^[a-f0-9]{64}$')`),
+]);
 
 export const documentStorageOauth = pgTable("document_storage_oauth", {
   id: uuid("id").defaultRandom().primaryKey(), organizationId: uuid("organization_id").notNull().references(() => organizations.id, { onDelete: "restrict" }),

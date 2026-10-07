@@ -120,7 +120,7 @@ function washingtonDocument(
   }, "USD");
 }
 
-function ontarioDocument(registrationId?: string) {
+function ontarioDocument(registrationId?: string, destinationCity?: string) {
   return buildBusinessDocumentSnapshot({
     kind: "SALES_INVOICE",
     sourceNumber: "INV-ON-1001",
@@ -150,6 +150,7 @@ function ontarioDocument(registrationId?: string) {
         category: "STANDARD",
         destinationCountry: "CA",
         destinationRegion: "ON",
+        ...(destinationCity ? { destinationCity } : {}),
         ...(registrationId ? { registrationId } : {}),
       },
     }],
@@ -1237,6 +1238,26 @@ describe("AR/AP tax-registration binding", () => {
       context,
       ontarioDocument(taxRegistrationId),
     )).rejects.toThrow("Tax registration is not active on the document date");
+  });
+
+  it("accepts one Ontario HST registration for customers in different Ontario cities", async () => {
+    for (const city of ["Toronto", "Ottawa", "Kingston"]) {
+      const { client } = registrationClient([{ ...validOntarioRegistration, destination_city: "Toronto" }]);
+      await expect(assertBusinessDocumentTaxRegistrationBindings(
+        client, context, ontarioDocument(taxRegistrationId, city),
+      )).resolves.toBeUndefined();
+    }
+  });
+
+  it("keeps Washington city and location registration bindings strict", async () => {
+    const { client } = registrationClient([{
+      ...validOntarioRegistration, id: washingtonTaxRegistrationId,
+      regime_key: "us.wa.sales-use", destination_country: "US", destination_region: "WA",
+      destination_city: "Tacoma", location_code: "1726",
+    }]);
+    await expect(assertBusinessDocumentTaxRegistrationBindings(
+      client, context, washingtonDocument("SALES_INVOICE", washingtonTaxRegistrationId),
+    )).rejects.toThrow("Tax registration destination does not match source line 1");
   });
 
   it("accepts an exact active registration and locks it in tenant scope", async () => {

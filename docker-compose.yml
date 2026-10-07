@@ -373,7 +373,7 @@ services:
         DatabaseDirectory /var/lib/clamav
         TemporaryDirectory /tmp
         LogTime yes
-        StreamMaxLength 2M
+        StreamMaxLength 8M
         MaxFileSize 16M
         MaxScanSize 32M
         MaxRecursion 10

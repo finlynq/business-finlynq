@@ -14,6 +14,7 @@ import {
 } from "@modelcontextprotocol/server";
 import { DAILY_MCP_TOOLS } from "./daily-tools";
 import { ASSET_MCP_TOOLS } from "./asset-tools";
+import { STORAGE_SETUP_MCP_TOOLS } from "./storage-setup-tools";
 import { INBOX_MCP_TOOLS } from "./inbox-tools";
 import { STATEMENT_MCP_TOOLS } from "./statement-tools";
 import { loadMcpAuthorizationSnapshot } from "./connection-policy";
@@ -27,7 +28,7 @@ import { SHARED_MCP_TOOLS } from "./shared-tools";
 import { EMAIL_MCP_TOOLS } from "./email-tools";
 import { registerMcpTools } from "./tool-types";
 
-export const ALL_MCP_TOOLS = [...SHARED_MCP_TOOLS, ...DAILY_MCP_TOOLS, ...ASSET_MCP_TOOLS, ...INBOX_MCP_TOOLS, ...STATEMENT_MCP_TOOLS, ...SETUP_MCP_TOOLS, ...EMAIL_MCP_TOOLS] as const;
+export const ALL_MCP_TOOLS = [...SHARED_MCP_TOOLS, ...DAILY_MCP_TOOLS, ...ASSET_MCP_TOOLS, ...INBOX_MCP_TOOLS, ...STORAGE_SETUP_MCP_TOOLS, ...STATEMENT_MCP_TOOLS, ...SETUP_MCP_TOOLS, ...EMAIL_MCP_TOOLS] as const;
 
 export const MCP_TOOL_CATALOG_REVISION = createHash("sha256").update(JSON.stringify(
   [...ALL_MCP_TOOLS]
