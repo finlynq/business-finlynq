@@ -1,5 +1,7 @@
 "use client";
 
+import { SourceAttachments } from "./source-attachments";
+import { subledgerPaymentStatus } from "@/modules/subledger/register-filter";
 import { CompactDisclosure } from "./compact-disclosure.client";
 
 import Link from "next/link";
@@ -59,6 +61,8 @@ export type DocumentLineDraft = Readonly<{
   recoverablePercent: string;
   evidenceReference: string;
   sourceTaxOverrideEnabled: boolean;
+  sourceTaxRoundingEnabled: boolean;
+  sourceTaxRoundingReviewed: boolean;
   sourceTaxRatePercent: string;
   sourceTaxAmount: string;
   sourceTaxJurisdiction: string;
@@ -272,14 +276,16 @@ export function businessDocumentLineDraftsFromSnapshot(
       : "",
     evidenceReference: line.tax.evidenceReference ?? "",
     sourceTaxOverrideEnabled: line.tax.sourceTaxOverride !== undefined,
+    sourceTaxRoundingEnabled: line.tax.sourceTaxRounding !== undefined,
+    sourceTaxRoundingReviewed: line.tax.sourceTaxRounding?.reviewed ?? false,
     sourceTaxRatePercent: line.tax.sourceTaxOverride?.ratePercent ?? "",
-    sourceTaxAmount: line.tax.sourceTaxOverride?.amount ?? "",
+    sourceTaxAmount: line.tax.sourceTaxOverride?.amount ?? line.tax.sourceTaxRounding?.amount ?? "",
     sourceTaxJurisdiction: line.tax.sourceTaxOverride?.jurisdiction ?? "",
     sourceTaxComponentKey: line.tax.sourceTaxOverride?.componentKey ?? "HST_SOURCE",
     sourceTaxEffectiveFrom: line.tax.sourceTaxOverride?.effectiveFrom ?? snapshot.documentDate,
     sourceTaxEffectiveTo: line.tax.sourceTaxOverride?.effectiveTo ?? "",
-    sourceTaxReason: line.tax.sourceTaxOverride?.reason ?? "",
-    sourceTaxEvidenceReference: line.tax.sourceTaxOverride?.evidenceReference ?? "",
+    sourceTaxReason: line.tax.sourceTaxOverride?.reason ?? line.tax.sourceTaxRounding?.reason ?? "",
+    sourceTaxEvidenceReference: line.tax.sourceTaxOverride?.evidenceReference ?? line.tax.sourceTaxRounding?.evidenceReference ?? "",
     sourceTaxReviewedTreatment: line.tax.sourceTaxOverride?.reviewedTreatment ?? "",
     sourceTaxAdjustmentReason: line.tax.sourceTaxOverride?.adjustmentReason ?? "",
     sourceTaxAdjustmentEvidenceReference: line.tax.sourceTaxOverride?.adjustmentEvidenceReference ?? "",
@@ -288,7 +294,7 @@ export function businessDocumentLineDraftsFromSnapshot(
 
 export function businessDocumentLineTaxMutationFields(
   line: Pick<DocumentLineDraft,
-    | "recoverablePercent" | "evidenceReference" | "sourceTaxOverrideEnabled"
+    | "recoverablePercent" | "evidenceReference" | "sourceTaxOverrideEnabled" | "sourceTaxRoundingEnabled" | "sourceTaxRoundingReviewed"
     | "sourceTaxRatePercent" | "sourceTaxAmount" | "sourceTaxJurisdiction"
     | "sourceTaxComponentKey" | "sourceTaxEffectiveFrom" | "sourceTaxEffectiveTo"
     | "sourceTaxReason" | "sourceTaxEvidenceReference" | "sourceTaxReviewedTreatment"
@@ -301,6 +307,7 @@ export function businessDocumentLineTaxMutationFields(
     ...(ownerModule === "payables" && line.recoverablePercent
       ? { recoverablePercent: line.recoverablePercent }
       : {}),
+    ...(line.sourceTaxRoundingEnabled ? { sourceTaxRounding: { amount: line.sourceTaxAmount, reason: line.sourceTaxReason, evidenceReference: line.sourceTaxEvidenceReference, reviewed: line.sourceTaxRoundingReviewed } } : {}),
     ...(line.sourceTaxOverrideEnabled ? {
       sourceTaxOverride: {
         ratePercent: line.sourceTaxRatePercent,
@@ -436,6 +443,8 @@ function defaultDocumentDraft(
       recoverablePercent: workspace.ownerModule === "payables" ? "100" : "",
       evidenceReference: "",
       sourceTaxOverrideEnabled: false,
+      sourceTaxRoundingEnabled: false,
+      sourceTaxRoundingReviewed: false,
       sourceTaxRatePercent: "",
       sourceTaxAmount: "",
       sourceTaxJurisdiction: `${entity?.tax.destinationCountry ?? ""}-${entity?.tax.destinationRegion ?? ""}`,
@@ -601,24 +610,22 @@ export function DocumentDetails({
         <div><span>Journal entry</span><strong>{document.journalId ? <Link href={`/app/journals/${document.journalId}`}>{journalLinkLabel("View journal entry", document.journalNumber)}</Link> : "Not posted"}</strong></div>
       </div>
       <p className={styles.detailNarrative}>{snapshot.description}</p>
+      <p><Link href={`/app/reports/booking-batches?sourceDocumentId=${document.id}`}>Booking review and posting reports</Link></p>
       {businessSnapshot && (
         <section aria-label="Source document attachments">
           <h3>Source documents</h3>
-          {document.attachments?.length ? <ul>{document.attachments.map((attachment) => (
-            <li key={attachment.assetId}>
-              <a href={attachment.downloadUrl}>{attachment.filename}</a>
-              {" · "}{attachment.purpose.toLowerCase()}{" · "}{attachment.byteSize.toLocaleString()} bytes
-              {" · "}version {attachment.sourceVersion}
-              <details><summary>File audit details</summary>
-                <p>SHA-256: <code>{attachment.sha256}</code></p>
-                <p>Uploaded {attachment.uploadedAt} by {attachment.uploadedBy}</p>
-                <p>Scanned {attachment.scannedAt} · {attachment.scannerVersion}</p>
-              </details>
-            </li>
-          ))}</ul> : <p>No source files attached. PDF invoices and receipts can be added through the MCP evidence tools while this document is a draft.</p>}
+          <SourceAttachments attachments={document.attachments} />
         </section>
       )}
 
+      {settlementSnapshot && <section aria-label="Allocated invoice attachments"><h3>Applied invoice files</h3>
+        {settlementSnapshot.allocations.map((allocation) => {
+          const source = document.allocationSources?.find((candidate) => candidate.openItemId === allocation.openItemId);
+          return <section key={allocation.openItemId}><h4>{source ? `${workspace.businessKind === "SUPPLIER_BILL" ? "Bill" : "Invoice"} ${source.sourceNumber}` : "Allocated invoice unavailable"}</h4>
+            <p>Files belong to the allocated invoice{source ? `, source version ${source.sourceVersion}` : ""}.</p>
+            <SourceAttachments attachments={source?.attachments} /></section>;
+        })}
+      </section>}
       {businessSnapshot ? (
         <>
           <div className={styles.detailGrid}>
@@ -703,7 +710,7 @@ export function DocumentDetails({
               <caption className="sr-only">Open-item allocations</caption>
               <thead><tr><th scope="col">Allocated source</th><th scope="col">Transaction amount</th><th scope="col">Functional amount</th><th scope="col">Realized FX</th></tr></thead>
               <tbody>{settlementSnapshot.allocations.map((allocation) => {
-                const item = workspace.openItems.find((candidate) => candidate.id === allocation.openItemId);
+                const item = document.allocationSources?.find((candidate) => candidate.openItemId === allocation.openItemId) ?? workspace.openItems.find((candidate) => candidate.id === allocation.openItemId);
                 const sourceDocument = workspace.documents.find((candidate) => candidate.openItemId === allocation.openItemId);
                 return <tr key={allocation.openItemId}><td>{item?.sourceNumber ?? sourceDocument?.sourceNumber ?? allocation.openItemId}</td><td className={styles.amountCell}>{displayExactMoney(settlementSnapshot.currency, allocation.transactionAmount)}</td><td className={styles.amountCell}>{displayExactMoney(settlementSnapshot.functionalCurrency, allocation.settlementFunctionalAmount)}</td><td className={styles.amountCell}>{displayExactMoney(settlementSnapshot.functionalCurrency, allocation.realizedFxFunctional)}</td></tr>;
               })}</tbody>
@@ -848,7 +855,7 @@ export function ArApWorkspace({
       workspace.registerFilter.search || workspace.registerFilter.entityCode ||
       workspace.registerFilter.status || workspace.registerFilter.currency ||
       workspace.registerFilter.dateFrom || workspace.registerFilter.dateTo ||
-      workspace.registerFilter.due !== "ALL"
+      workspace.registerFilter.due !== "ALL" || (workspace.registerFilter.paymentStatus ?? "ALL") !== "ALL"
     ),
   ) || (workspace.pagination?.page ?? 1) > 1;
 
@@ -861,6 +868,7 @@ export function ArApWorkspace({
     if (filter.search.trim()) parameters.set("q", filter.search.trim());
     parameters.set("entity", filter.entityCode);
     if (filter.status) parameters.set("status", filter.status);
+    if (filter.paymentStatus && filter.paymentStatus !== "ALL") parameters.set("paymentStatus", filter.paymentStatus);
     if (filter.currency) parameters.set("currency", filter.currency);
     if (filter.dateFrom) parameters.set("dateFrom", filter.dateFrom);
     if (filter.dateTo) parameters.set("dateTo", filter.dateTo);
@@ -885,6 +893,7 @@ export function ArApWorkspace({
       dateFrom: "",
       dateTo: "",
       due: "ALL",
+      paymentStatus: "ALL",
     };
     setRegisterFilter(cleared);
     startTransition(() => router.push(registerHref(cleared)));
@@ -965,6 +974,7 @@ export function ArApWorkspace({
       fxRoundingAccountCombinationId: preferredAccount(entity?.roundingAccounts ?? [], "7190"),
       lines: draft.lines.map((line) => ({
         ...line,
+        sourceTaxRoundingReviewed: false,
         accountCombinationId: preferredAccount(
           entity?.lineAccounts ?? [],
           workspace.ownerModule === "receivables" ? "4100" : "6100",
@@ -977,7 +987,7 @@ export function ArApWorkspace({
     const party = currentParty(documentEntity, partyAccountId);
     setDocumentDraft((draft) => {
       const currency = party?.transactionCurrency ?? draft.currency;
-      if (currency === draft.currency) return { ...draft, partyAccountId };
+      if (currency === draft.currency) return { ...draft, partyAccountId, lines: draft.lines.map((line) => ({ ...line, sourceTaxRoundingReviewed: false })) };
       const fxEvidence = suggestedEvidence(
         workspace,
         currency,
@@ -988,6 +998,7 @@ export function ArApWorkspace({
         ...draft,
         partyAccountId,
         currency,
+        lines: draft.lines.map((line) => ({ ...line, sourceTaxRoundingReviewed: false })),
         fxMode: "AUTO",
         fxRate: fxEvidence.rate,
         fxSource: fxEvidence.source,
@@ -1008,6 +1019,7 @@ export function ArApWorkspace({
       return {
         ...draft,
         currency,
+        lines: draft.lines.map((line) => ({ ...line, sourceTaxRoundingReviewed: false })),
         fxMode: "AUTO",
         fxRate: fxEvidence.rate,
         fxSource: fxEvidence.source,
@@ -1018,7 +1030,7 @@ export function ArApWorkspace({
 
   function chooseDocumentAccountingDate(accountingDate: string): void {
     setDocumentDraft((draft) => {
-      if (draft.fxMode === "EXPLICIT") return { ...draft, accountingDate };
+      if (draft.fxMode === "EXPLICIT") return { ...draft, accountingDate, lines: draft.lines.map((line) => ({ ...line, sourceTaxRoundingReviewed: false })) };
       const fxEvidence = suggestedEvidence(
         workspace,
         draft.currency,
@@ -1028,6 +1040,7 @@ export function ArApWorkspace({
       return {
         ...draft,
         accountingDate,
+        lines: draft.lines.map((line) => ({ ...line, sourceTaxRoundingReviewed: false })),
         fxMode: "AUTO",
         fxRate: fxEvidence.rate,
         fxSource: fxEvidence.source,
@@ -1039,7 +1052,7 @@ export function ArApWorkspace({
   function updateLine(key: string, patch: Partial<DocumentLineDraft>): void {
     setDocumentDraft((draft) => ({
       ...draft,
-      lines: draft.lines.map((line) => line.key === key ? { ...line, ...patch } : line),
+      lines: draft.lines.map((line) => line.key === key ? { ...line, sourceTaxRoundingReviewed: false, ...patch } : line),
     }));
   }
 
@@ -1385,7 +1398,7 @@ export function ArApWorkspace({
               </label>
               <label className="full-field">
                 <span>Document date</span>
-                <input type="date" value={documentDraft.documentDate} onChange={(event) => setDocumentDraft((draft) => ({ ...draft, documentDate: event.target.value, dueOn: addDays(event.target.value, 30) }))} required />
+                <input type="date" value={documentDraft.documentDate} onChange={(event) => setDocumentDraft((draft) => ({ ...draft, documentDate: event.target.value, dueOn: addDays(event.target.value, 30), lines: draft.lines.map((line) => ({ ...line, sourceTaxRoundingReviewed: false })) }))} required />
               </label>
               <label className="full-field">
                 <span>Accounting period</span>
@@ -1498,6 +1511,8 @@ export function ArApWorkspace({
                     : "",
                   evidenceReference: "",
                   sourceTaxOverrideEnabled: false,
+                  sourceTaxRoundingEnabled: false,
+                  sourceTaxRoundingReviewed: false,
                   sourceTaxRatePercent: "",
                   sourceTaxAmount: "",
                   sourceTaxJurisdiction: `${documentEntity.tax.destinationCountry}-${documentEntity.tax.destinationRegion}`,
@@ -1554,12 +1569,22 @@ export function ArApWorkspace({
                     <input value={line.evidenceReference} onChange={(event) => updateLine(line.key, { evidenceReference: event.target.value })} maxLength={200} required={taxEvidenceReferenceRequired(documentEntity.tax.packKey, line.category)} />
                     <small>Optional line-specific invoice, exemption, resale, or marketplace evidence reference.</small>
                   </label>
+                  {workspace.ownerModule === "payables" && <>
+                    <label className="full-field checkbox-field"><input type="checkbox" checked={line.sourceTaxRoundingEnabled} onChange={(event) => updateLine(line.key, { sourceTaxRoundingEnabled: event.target.checked, sourceTaxOverrideEnabled: false, sourceTaxRoundingReviewed: false })} /><span>Match verified invoice tax rounding</span><small>Preserves the engine tax treatment and account mappings. Requires permission to review tax and original invoice evidence. Maximum difference: one currency minor unit per line.</small></label>
+                    {line.sourceTaxRoundingEnabled && <div className="full-field form-grid form-grid-three">
+                      <label><span>Printed line tax amount</span><input inputMode="decimal" value={line.sourceTaxAmount} onChange={(event) => updateLine(line.key, { sourceTaxAmount: event.target.value, sourceTaxRoundingReviewed: false })} required /></label>
+                      <label><span>Rounding evidence reference</span><input value={line.sourceTaxEvidenceReference} maxLength={200} onChange={(event) => updateLine(line.key, { sourceTaxEvidenceReference: event.target.value, sourceTaxRoundingReviewed: false })} required /></label>
+                      <label><span>Rounding review reason</span><input value={line.sourceTaxReason} minLength={8} maxLength={500} onChange={(event) => updateLine(line.key, { sourceTaxReason: event.target.value, sourceTaxRoundingReviewed: false })} required /></label>
+                      <label className="checkbox-field"><input type="checkbox" checked={line.sourceTaxRoundingReviewed} onChange={(event) => updateLine(line.key, { sourceTaxRoundingReviewed: event.target.checked })} /><span>I verified the original invoice and this rounding difference.</span></label>
+                    </div>}
+                  </>}
                   <label className="full-field checkbox-field">
                     <input
                       type="checkbox"
                       checked={line.sourceTaxOverrideEnabled}
                       onChange={(event) => updateLine(line.key, {
                         sourceTaxOverrideEnabled: event.target.checked,
+                        sourceTaxRoundingEnabled: false,
                         sourceTaxEffectiveFrom: line.sourceTaxEffectiveFrom || documentDraft.documentDate,
                       })}
                     />
@@ -1788,7 +1813,7 @@ export function ArApWorkspace({
             <div className={styles.filterHeading}>
               <h2 id="subledger-register-filter-title">Transaction register</h2>
               <span className={styles.resultCount} aria-live="polite">
-                {workspace.documents.length} transaction{workspace.documents.length === 1 ? "" : "s"} on page {workspace.pagination?.page ?? 1}
+                {workspace.documents.length} of {workspace.registerTotalCount ?? workspace.documents.length} transactions on page {workspace.pagination?.page ?? 1}
               </span>
             </div>
             <form onSubmit={applyRegisterFilters}>
@@ -1818,6 +1843,9 @@ export function ArApWorkspace({
                   <option value="VOIDED">Voided</option>
                 </select>
               </label>
+              <label><span>Payment status</span><select value={registerFilter.paymentStatus ?? "ALL"} onChange={(event) => updateRegisterFilter({ paymentStatus: event.target.value as "ALL" | "OPEN" | "PAID" })}>
+                <option value="ALL">All</option><option value="OPEN">Open</option><option value="PAID">Paid</option>
+              </select></label>
               <label>
                 <span>Due state</span>
                 <select value={registerFilter.due} onChange={(event) => updateRegisterFilter({ due: event.target.value as SubledgerDueFilter })}>
@@ -1898,16 +1926,16 @@ export function ArApWorkspace({
                           </td>
                           <td className={styles.statusCell}>
                             <StatusPill status={document.status} />
-                            {document.openStatus && <small><StatusPill status={document.openStatus} /></small>}
+                            {subledgerPaymentStatus(document) && <small>{subledgerPaymentStatus(document)}</small>}
                           </td>
                           <td className={styles.amountCell}>
                             <strong>{displayExactMoney(document.snapshot.currency, amount)}</strong>
                             {businessSnapshot && (
                               <small>
-                                Open {document.openAmount === null ? "Not issued" : displayExactMoney(document.snapshot.currency, document.openAmount)} · Tax {displayExactMoney(businessSnapshot.currency, businessSnapshot.taxTotal)}
+                                Outstanding {document.openAmount === null ? "Not issued" : displayExactMoney(document.snapshot.currency, document.openAmount)} · Tax {displayExactMoney(businessSnapshot.currency, businessSnapshot.taxTotal)}
                               </small>
                             )}
-                            {settlementSnapshot && <small>{settlementSnapshot.allocations.length} open item{settlementSnapshot.allocations.length === 1 ? "" : "s"}</small>}
+                            {settlementSnapshot && <small>Applied to {settlementSnapshot.allocations.length} {businessLabel}{settlementSnapshot.allocations.length === 1 ? "" : "s"}</small>}
                           </td>
                           <td className={styles.journalCell}>
                             {document.journalId
@@ -1937,6 +1965,7 @@ export function ArApWorkspace({
                   q: workspace.registerFilter?.search || undefined,
                   entity: workspace.registerFilter?.entityCode ?? "",
                   status: workspace.registerFilter?.status || undefined,
+                  paymentStatus: workspace.registerFilter?.paymentStatus === "ALL" ? undefined : workspace.registerFilter?.paymentStatus,
                   currency: workspace.registerFilter?.currency || undefined,
                   dateFrom: workspace.registerFilter?.dateFrom || undefined,
                   dateTo: workspace.registerFilter?.dateTo || undefined,

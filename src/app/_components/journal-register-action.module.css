@@ -129,3 +129,6 @@
     width: min(310px, 78vw);
   }
 }
+
+.workflow { display: grid; gap: 10px; align-content: start; }
+.workflowReason { margin: 0; max-width: 48rem; color: var(--muted); font-size: 12px; line-height: 1.5; }

@@ -10,10 +10,13 @@ import { validatedCloudBytes } from "./evidence";
 import { StorageError } from "./provider";
 import { assertDirectChild, assertStorageFolder } from "./boundaries";
 import { decodeInboxUpload } from "./file-types";
+import type { PdfPreparationVerification } from "./pdf-preparation";
 
-export async function uploadInboxDocument(context: TenantTransactionContext, input: z.input<typeof uploadInboxSchema>) {
+export type PdfUploadProvenance = PdfPreparationVerification & Readonly<{ originalFilename: string; originalProviderFileId: string; originalArchiveFolderId: string }>;
+
+export async function uploadInboxDocument(context: TenantTransactionContext, input: z.input<typeof uploadInboxSchema>, preparation?: PdfUploadProvenance) {
   const command = uploadInboxSchema.parse(input);
-  const uploadKey = canonicalHash(command.idempotencyKey); const uploadHash = canonicalHash(command);
+  const uploadKey = canonicalHash(command.idempotencyKey); const uploadHash = canonicalHash(preparation ? { command, preparation } : command);
   // Authorize before accepting/scanning document content.
   await withTenantTransaction(context, async (client) => {
     await assertStorageWrite(client, context); await loadConnection(client, context, command.connectionId, "manage");
@@ -56,6 +59,7 @@ export async function uploadInboxDocument(context: TenantTransactionContext, inp
         sourceFolderId: location.inboxId,
         sourceDepth: 0,
         ...(routingTarget ? { routingTarget } : {}),
+        ...(preparation ? { pdfPreparation: preparation } : {}),
       });
       const updated = (await client.query<InboxRow>("UPDATE document_inbox_items SET upload_key=$3,upload_hash=$4,metadata_ciphertext=$5,mime_type=$6 WHERE organization_id=$1 AND id=$2 RETURNING *", [context.organizationId, row.id, uploadKey, uploadHash, metadata, decoded.canonicalMimeType])).rows[0];
       return { item: await itemMetadata(client, updated), idempotentReplay: false };

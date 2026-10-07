@@ -83,7 +83,7 @@ export async function issueBusinessDocument(
     if (snapshot.kind !== command.kind || snapshot.ownerModule !== policy.ownerModule) {
       throw new Error("Draft snapshot does not match its source-document owner module");
     }
-    if (snapshot.lines.some((line) => line.tax.sourceTaxOverride !== undefined)) {
+    if (snapshot.lines.some((line) => line.tax.sourceTaxOverride !== undefined || line.tax.sourceTaxRounding !== undefined)) {
       await assertPermission(client, unparsedCommand.context, PERMISSIONS.overrideTaxDeterminations);
     }
     assertSnapshotTaxDecisionsCurrent(snapshot);

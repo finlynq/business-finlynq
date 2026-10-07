@@ -277,3 +277,44 @@ describe("signed supplier-bill adjustments", () => {
     expect(parsed.lines[0]).not.toHaveProperty("lineType");
   });
 });
+
+describe("reviewed supplier source-tax rounding", () => {
+  function roundedBill(reviewed = true, amount = "-4.41") {
+    const bill = supplierBill();
+    return { ...bill, lines: [
+      { ...bill.lines[0]!, netAmount: "85.00" },
+      { ...bill.lines[1]!, netAmount: "-33.87", tax: { ...bill.lines[1]!.tax,
+        sourceTaxRounding: { amount, reviewed, reason: "Verified printed cancellation-credit tax", evidenceReference: "synthetic-invoice-sha256:line-2" } } },
+    ] };
+  }
+  it("preserves source net 51.13, tax 6.64 and gross 57.77 with the negative rounding evidence", () => {
+    const snapshot = buildBusinessDocumentSnapshot(roundedBill(), "CAD");
+    expect(snapshot).toMatchObject({ subtotal: "51.13", taxTotal: "6.64", grossTotal: "57.77", grossFunctional: "57.77" });
+    expect(snapshot.lines[1]?.taxDecision).toMatchObject({ status: "APPLIED", totalTax: "-4.41", sourceOverride: { automatedAmount: "-4.40", calculatedAmount: "-4.40", sourceAmount: "-4.41", adjustmentAmount: "-0.01", state: "REVIEWED" } });
+    const lines = buildIssueJournalLines(snapshot, id(30), new Map([[1,id(31)],[2,id(32)]]));
+    expect(lines).toEqual(expect.arrayContaining([
+      expect.objectContaining({ accountCombinationId: id(4), creditTransaction: "57.77" }),
+      expect.objectContaining({ accountCombinationId: id(5), creditTransaction: "4.41" }),
+      expect.objectContaining({ accountCombinationId: id(7), creditTransaction: "33.87" }),
+    ]));
+    const input = { ...roundedBill(), idempotencyKey: "synthetic-rounding-replay" };
+    expect(subledgerCommandFingerprints("payables", "draft-create", input).current).toBe(subledgerCommandFingerprints("payables", "draft-create", structuredClone(input)).current);
+    expect(buildBusinessDocumentSnapshot(roundedBill(false), "CAD").lines[1]?.taxDecision.status).toBe("MANUAL_REVIEW_REQUIRED");
+  });
+  it("rejects out-of-tolerance, opposite-sign and missing-evidence requests", () => {
+    expect(() => buildBusinessDocumentSnapshot(roundedBill(true, "-4.42"), "CAD")).toThrow(/rounding limit/);
+    expect(() => buildBusinessDocumentSnapshot(roundedBill(true, "4.41"), "CAD")).toThrow(/same sign/);
+    const bill = roundedBill();
+    const tax = bill.lines[1]!.tax;
+    if (!("sourceTaxRounding" in tax)) throw new Error("Rounding fixture requires source tax evidence");
+    tax.sourceTaxRounding.evidenceReference = "";
+    expect(() => buildBusinessDocumentSnapshot(bill, "CAD")).toThrow();
+  });
+  it("allocates rounded tax consistently for partial recovery", () => {
+    const bill = roundedBill();
+    const changed = { ...bill, lines: bill.lines.map((line) => ({ ...line, tax: { ...line.tax, recoverablePercent: "50" } })) };
+    const snapshot = buildBusinessDocumentSnapshot(changed, "CAD");
+    expect(snapshot.grossTotal).toBe("57.77");
+    expect(snapshot.lines[1]?.taxDecision.components.map((component) => component.amount)).toEqual(["-2.21", "-2.20"]);
+  });
+});

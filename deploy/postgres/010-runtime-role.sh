@@ -248,13 +248,13 @@ BEGIN
     'segment_values', 'account_combinations',
     'accounting_hierarchies', 'accounting_hierarchy_nodes',
     'journal_type_definitions',
-    'source_documents', 'document_evidence_assets', 'journal_entries', 'journal_approvals',
+    'source_documents', 'document_evidence_assets', 'booking_batches', 'booking_batch_reports', 'journal_entries', 'journal_approvals',
     'journal_transaction_controls',
     'journal_lines', 'journal_entry_relations', 'parties',
     'party_addresses', 'party_accounts', 'subledger_events', 'open_items',
     'document_settlement_allocations', 'open_item_void_events',
     'open_item_balances',
-    'tax_pack_versions', 'entity_tax_registrations',
+    'tax_pack_versions', 'entity_tax_registrations', 'tax_registration_scope_versions',
     'tax_determination_snapshots', 'tax_filing_templates',
     'tax_account_mapping_sets', 'tax_account_mapping_lines', 'tax_filings',
     'tax_filing_configurations', 'tax_filing_lifecycle_events',
@@ -305,7 +305,7 @@ BEGIN
   END LOOP;
 
   FOREACH selected_name IN ARRAY ARRAY[
-    'journal_approvals', 'journal_entry_relations', 'source_documents', 'document_evidence_assets',
+    'journal_approvals', 'journal_entry_relations', 'source_documents', 'document_evidence_assets', 'booking_batches', 'booking_batch_reports',
     'subledger_events', 'open_items', 'document_settlement_allocations',
     'open_item_void_events',
     'tax_determination_snapshots', 'tax_account_mapping_sets',
@@ -357,6 +357,7 @@ BEGIN
     'app.accounting_add_currency_rate(text,text,numeric,timestamp with time zone,text)',
     'app.accounting_set_fx_provider_policy(integer,text,integer,boolean)',
     'app.accounting_add_tax_registration(uuid,uuid,text,text,integer,text,text,text,text,text,date,date)',
+    'app.accounting_correct_tax_registration_scope(uuid,integer,text,text,text,text,text,text)',
     'app.accounting_configure_segment(text,text,boolean,boolean,text)',
     'app.accounting_add_segment_value(text,text,text,date,date)',
     'app.accounting_create_account_combination(uuid,uuid,uuid,uuid,uuid,uuid,uuid,uuid,uuid,uuid,uuid,uuid,uuid,uuid,uuid)',
@@ -434,7 +435,8 @@ BEGIN
     'app.organization_set_member_active(uuid,integer,boolean)',
     'app.organization_revoke_member_sessions(uuid)',
     'app.organization_revoke_member_sessions_and_trust(uuid)',
-    'app.admin_control_journal_transaction(text,uuid,text,text)'
+    'app.admin_control_journal_transaction(text,uuid,text,text)',
+    'app.journal_workflow_recovery_replayed(uuid,text,text,text)'
   ] LOOP
     IF to_regprocedure(selected_signature) IS NOT NULL THEN
       EXECUTE format('GRANT EXECUTE ON FUNCTION %s TO business_finlynq_app', selected_signature);

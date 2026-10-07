@@ -81,6 +81,20 @@ describe("document evidence retry response", () => {
     const response = await GET(request(), { params: Promise.resolve({ assetId }) });
     expect(response.status).toBe(404);
     expect(response.headers.get("retry-after")).toBeNull();
-    expect(await response.json()).toEqual({ error: "Evidence not found or access is no longer available." });
+    expect(await response.json()).toEqual({ error: "This attachment is unavailable or access has changed. Refresh the transaction and sign in again; ask the document owner to check the file if it still cannot be opened." });
   });
+});
+
+it("views supported files inline against the exact source version and keeps other types as downloads", async () => {
+  for (const [mimeType, disposition] of [["application/pdf", "inline"], ["image/png", "inline"], ["text/html", "attachment"]]) {
+    mocks.principal.mockResolvedValue({ organizationId: "org", userId: "user", sessionId: "session", sessionMode: "real" });
+    mocks.download.mockResolvedValue({ bytes: Buffer.from("synthetic evidence"), metadata: { mimeType, filename: "synthetic.txt" } });
+    const input = new NextRequest(`https://finlynq.test/api/document-evidence/${assetId}?sourceDocumentId=${sourceDocumentId}&disposition=inline`);
+    const response = await GET(input, { params: Promise.resolve({ assetId }) });
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-disposition")).toMatch(new RegExp(`^${disposition};`));
+    expect(response.headers.get("content-security-policy")).toContain("sandbox");
+    expect(response.headers.get("cache-control")).toBe("private, no-store");
+    expect(mocks.download).toHaveBeenLastCalledWith(expect.objectContaining({ assetId, sourceDocumentId }));
+  }
 });

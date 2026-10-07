@@ -44,6 +44,7 @@ describe("server-driven register pagination", () => {
         dateFrom: "2026-01-01",
         dateTo: "2026-12-31",
         due: "OVERDUE",
+        paymentStatus: "ALL",
       },
       page: 3,
     });

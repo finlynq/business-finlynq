@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { Pool, type PoolClient } from "pg";
 import { closeDatabasePool } from "@/db/transaction";
+import { submitJournalForApproval, withdrawSubmittedJournal } from "@/modules/ledger/journal-workflow-service";
 import { DEMO_MEMBERSHIP_ID, DEMO_ORGANIZATION_ID, DEMO_USER_ID } from "@/modules/demo/constants";
 import type { SessionPrincipal } from "@/modules/identity/session";
 import { generateAssetScheduleJournal, loadAssetWorkspace } from "@/modules/assets/service";
@@ -157,6 +158,18 @@ runDatabaseTests("asset register PostgreSQL controls", () => {
       idempotencyKey,
     });
     expect(replay).toMatchObject({ journalId: created.journalId, scheduleEntryId: schedule!.id, idempotentReplay: true });
+
+    const submitted = await submitJournalForApproval({ context: { ...context, requestId: randomUUID() }, journalId: created.journalId });
+    const withdrawal = { context: { ...context, requestId: randomUUID() }, journalId: created.journalId,
+      expectedContentHash: submitted.contentHash, expectedApprovalVersion: submitted.approvalVersion,
+      reason: context.reason, idempotencyKey: randomUUID(),
+    };
+    expect(await withdrawSubmittedJournal(withdrawal)).toMatchObject({ journalId: created.journalId, status: "DRAFT", idempotentReplay: false });
+    const resubmitted = await submitJournalForApproval({ context: { ...context, requestId: randomUUID() }, journalId: created.journalId });
+    expect(resubmitted.contentHash).toBe(submitted.contentHash);
+    expect(resubmitted.approvalVersion).toBeGreaterThan(submitted.approvalVersion);
+    expect(await withdrawSubmittedJournal({ ...withdrawal, context: { ...context, requestId: randomUUID() } }))
+      .toMatchObject({ status: "SUBMITTED", approvalVersion: resubmitted.approvalVersion, idempotentReplay: true });
 
     const persisted = await owner.query<{
       status: string; journal_entry_id: string; journal_count: number;

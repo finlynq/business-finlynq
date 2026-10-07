@@ -6,6 +6,7 @@ import { isDemoSessionLeaseLostError } from "@/db/errors";
 import {
   withTenantTransaction,
   type TenantTransactionContext,
+  type TenantTransactionOptions,
 } from "@/db/transaction";
 import { safeAppPath } from "@/modules/identity/safe-redirect";
 
@@ -32,9 +33,10 @@ export function withWorkspaceTenantRead<T>(
   context: TenantTransactionContext,
   nextPath: string,
   work: (client: PoolClient) => Promise<T>,
+  options?: TenantTransactionOptions,
 ): Promise<T> {
   return withWorkspaceSessionExpiryRedirect(
     nextPath,
-    () => withTenantTransaction(context, work),
+    () => options ? withTenantTransaction(context, work, options) : withTenantTransaction(context, work),
   );
 }

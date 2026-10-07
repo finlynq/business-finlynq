@@ -14,10 +14,32 @@ export const connectStorageSchema = z.object({
   sharedWithOrganization: z.literal(true),
   accessAcknowledged: z.literal(true),
 }).strict();
+export const prepareStorageSetupSchema = z.object({
+  provider: providerSchema, legalEntityId: z.uuid(), module: moduleSchema,
+  label: z.string().trim().min(1).max(100),
+  reuseConnectionId: z.uuid().optional(),
+  idempotencyKey: z.string().trim().min(1).max(200),
+}).strict();
+export const storageSetupStatusSchema = z.object({ connectionId: z.uuid() }).strict();
+export const approveStorageSetupSchema = storageSetupStatusSchema.extend({
+  expectedSetupHash: z.string().regex(/^[a-f0-9]{64}$/),
+  sharedWithOrganization: z.literal(true), accessAcknowledged: z.literal(true),
+}).strict();
 export const syncInboxSchema = z.object({ connectionId: z.uuid(), restart: z.boolean().default(false) }).strict();
 export const uploadInboxSchema = uploadEvidenceSchema.omit({ module: true, mimeType: true }).extend({
   connectionId: z.uuid(),
   mimeType: inboxUploadMimeTypeSchema,
+}).strict();
+export const MAX_PDF_PREPARATION_BYTES = 8 * 1024 * 1024;
+export const preparePdfUploadSchema = z.object({
+  connectionId: z.uuid(),
+  filename: uploadEvidenceSchema.shape.filename.refine((name) => /\.pdf$/i.test(name), "Choose a PDF file"),
+  mimeType: z.literal("application/pdf"),
+  byteSize: z.number().int().positive().max(MAX_PDF_PREPARATION_BYTES),
+  sha256: uploadEvidenceSchema.shape.sha256,
+  contentBase64: z.string().min(4).max(4 * Math.ceil(MAX_PDF_PREPARATION_BYTES / 3))
+    .regex(/^[A-Za-z0-9+/]*={0,2}$/).refine((value) => value.length % 4 === 0, "Invalid base64 length"),
+  idempotencyKey: z.string().trim().min(1).max(200),
 }).strict();
 export const listInboxSchema = z.object({
   connectionId: z.uuid().optional(), status: inboxStatusSchema.optional(),
@@ -39,6 +61,11 @@ export const filingMetadataSchema = z.object({
     context.addIssue({ code: "custom", message: "Currency and total must be provided together", path: ["currency"] });
   }
 });
+export const noAccountingRelatedEvidenceSchema = z.discriminatedUnion("type", [
+  z.object({ type: z.literal("SOURCE_DOCUMENT"), sourceDocumentId: z.uuid(), expectedVersion: z.number().int().positive(), expectedContentHash: z.string().regex(/^[a-f0-9]{64}$/) }).strict(),
+  z.object({ type: z.literal("JOURNAL"), journalId: z.uuid(), expectedContentHash: z.string().regex(/^[a-f0-9]{64}$/) }).strict(),
+]);
+export const noAccountingTreatmentSchema = z.enum(["PREPAID_USAGE_REVIEWED_SEPARATELY", "OFFSETTING_CREDITS", "OTHER_REVIEWED_ZERO"]);
 export const completeInboxSchema = claimInboxSchema.extend({
   sha256: z.string().regex(/^[a-f0-9]{64}$/), metadata: filingMetadataSchema,
   action: z.discriminatedUnion("type", [
@@ -53,6 +80,8 @@ export const completeInboxSchema = claimInboxSchema.extend({
       previewHash: z.string().regex(/^[a-f0-9]{64}$/),
       confirmed: z.literal(true),
     }).strict(),
+    z.object({ type: z.literal("REVIEWED_NO_ACCOUNTING"), confirmed: z.literal(true),
+      treatment: noAccountingTreatmentSchema, relatedEvidence: noAccountingRelatedEvidenceSchema.optional() }).strict(),
     z.object({ type: z.literal("ARCHIVE_ONLY") }).strict(),
   ]), reason: z.string().trim().min(5).max(500),
 }).strict();

@@ -1,5 +1,6 @@
 "use client";
 
+import { TaxRegistrationScope } from "./tax-registration-scope.client";
 import { CompactDisclosure } from "./compact-disclosure.client";
 
 import { SectionTabs } from "./section-tabs.client";
@@ -990,7 +991,7 @@ export function AccountingSettings({
       </section>
 
       <section className="panel form-panel" id="tax-packs" aria-labelledby="tax-pack-configuration-title">
-        <div className="panel-heading"><span className="eyebrow">Tax safety</span><h2 id="tax-pack-configuration-title">Registrations, sourcing facts & installed packs</h2><p>Registration references are encrypted with the organization key. Configuration is effective-dated and append-only from this screen, so a new row preserves the prior setup instead of rewriting it.</p></div>
+        <div className="panel-heading"><span className="eyebrow">Tax safety</span><h2 id="tax-pack-configuration-title">Registrations, sourcing facts & installed packs</h2><p>Registration references are encrypted with the organization key. Registrations use non-overlapping validity dates. Correct an existing registration’s scope below; each correction preserves the original setup and posted tax evidence.</p></div>
         <div className="table-scroll" tabIndex={0} aria-label="Entity tax registration history">
           <table><thead><tr><th>Entity & pack</th><th>Registration</th><th>Explicit destination</th><th>Validity</th><th>Decision path</th><th>Evidence</th></tr></thead><tbody>{configuration.taxRegistrations.length ? configuration.taxRegistrations.map((registration) => (
             <tr key={registration.id}>
@@ -999,7 +1000,7 @@ export function AccountingSettings({
               <td>{registration.destinationCountry && registration.destinationRegion ? `${registration.destinationCountry}-${registration.destinationRegion}` : "Not configured"}<small>{[registration.destinationCity, registration.locationCode].filter(Boolean).join(" · ") || "No city/location code"}</small></td>
               <td>{registration.validFrom}<small>{registration.validTo ? `through ${registration.validTo}` : "open-ended"}</small></td>
               <td><span className={`status-pill ${registration.automationStatus === "AUTOMATED" ? "status-success" : "status-warning"}`}>{registration.automationStatus === "AUTOMATED" ? "Automated" : "Manual review"}</span></td>
-              <td>{registration.configurationEvidence ?? "Legacy row — evidence required"}</td>
+              <td>{registration.configurationEvidence ?? "Legacy row — evidence required"}<TaxRegistrationScope key={`${registration.id}:${registration.scopeVersion}`} registration={registration} canCorrect={configuration.canManageSettings} /></td>
             </tr>
           )) : <tr><td colSpan={6}>No tax registration has been configured. Documents remain in manual tax review.</td></tr>}</tbody></table>
         </div>
@@ -1021,7 +1022,7 @@ export function AccountingSettings({
             }, "The effective-dated tax registration was added; earlier rows were preserved.");
           }}>
 
-            <p className="panel-note">Enter sourcing facts explicitly. The system never fills Seattle or location code 1726 from the entity address. The current Washington pack automates only an explicit US-WA / Seattle / 1726 combination; every other combination stays in manual review.</p>
+            <p className="panel-note">Ontario HST registration is province-wide; preserve each customer’s actual city on their invoice. Enter city-specific sourcing facts explicitly for other regimes. The system never fills Seattle or location code 1726 from the entity address. The current Washington pack automates only an explicit US-WA / Seattle / 1726 combination; every other combination stays in manual review.</p>
             <div className="form-grid form-grid-three">
               <label><span>Legal entity</span><select value={taxEntityId} onChange={(event) => setTaxEntityId(event.target.value)} required>{configuration.entities.map((entity) => <option key={entity.id} value={entity.id}>{entity.code} — {entity.displayName}</option>)}</select></label>
               <label><span>Installed tax pack</span><select value={taxPackKey} onChange={(event) => setTaxPackKey(event.target.value)} required>{configuration.taxPacks.map((pack) => <option key={`${pack.key}-${pack.version}`} value={pack.key}>{pack.key} ({pack.version})</option>)}</select></label>

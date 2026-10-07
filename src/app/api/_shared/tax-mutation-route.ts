@@ -63,7 +63,7 @@ export function createTaxMutationRoute<TBody, TResult extends { idempotentReplay
         if (expiredSession) return expiredSession;
         if (error instanceof TaxFilingError) {
           return NextResponse.json(
-            { error: error.message, code: error.code, requestId },
+            { error: error.message, code: error.code, details: error.safeDetails, requestId },
             { status: error.status, headers },
           );
         }

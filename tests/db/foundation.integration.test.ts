@@ -6,6 +6,7 @@ import { createManualJournal, reversePostedJournal } from "@/modules/ledger/jour
 import { transitionFiscalPeriod } from "@/modules/ledger/period-service";
 import { setLedgerPostingPolicy } from "@/modules/ledger/posting-policy-service";
 import { postJournal } from "@/modules/ledger/posting-service";
+import { approveSubmittedJournal, rejectSubmittedJournal, submitJournalForApproval, withdrawSubmittedJournal } from "@/modules/ledger/journal-workflow-service";
 import { deleteJournal, unpostJournal } from "@/modules/ledger/journal-administration-service";
 import {
   loadTenantJournalDetail,
@@ -75,6 +76,7 @@ runDatabaseTests("PostgreSQL accounting controls", () => {
       await client.query("BEGIN");
       await client.query("SELECT set_config('app.organization_id', $1, true)", [ids.orgA]);
       await client.query("SELECT set_config('app.actor_id', $1, true)", [ids.actor]);
+      await client.query("SELECT set_config('app.request_id', $1, true)", [randomUUID()]);
       const result = await callback(client);
       await client.query("COMMIT");
       return result;
@@ -88,13 +90,13 @@ runDatabaseTests("PostgreSQL accounting controls", () => {
 
   async function createAdministrativeJournal(
     description: string,
-    options: Readonly<{ periodId?: string; post?: boolean }> = {},
+    options: Readonly<{ periodId?: string; post?: boolean; actorId?: string }> = {},
   ) {
     const periodId = options.periodId ?? ids.controlPeriod;
     const created = await createManualJournal({
       context: {
         organizationId: ids.orgA,
-        actorId: ids.actor,
+        actorId: options.actorId ?? ids.actor,
         requestId: randomUUID(),
         authMethod: "password",
         sourceSurface: "UI",
@@ -128,7 +130,7 @@ runDatabaseTests("PostgreSQL accounting controls", () => {
       await postJournal({
         context: {
           organizationId: ids.orgA,
-          actorId: ids.actor,
+          actorId: options.actorId ?? ids.actor,
           requestId: randomUUID(),
           authMethod: "password+mfa",
           sourceSurface: "UI",
@@ -1299,38 +1301,25 @@ runDatabaseTests("PostgreSQL accounting controls", () => {
       ),
     ).rejects.toThrow(/immutable/);
 
-    await asTenant(async (client) => {
-      const candidate = await client.query<{ content_hash: string; approval_version: number }>(
-        `SELECT content_hash, approval_version
-         FROM journal_entries
-         WHERE id = $1`,
-        [ids.closedJournal],
-      );
-      await client.query(
-        `INSERT INTO journal_approvals (
-           organization_id, ledger_id, journal_entry_id, journal_version,
-           content_hash, decision, actor_id, reason
-         ) VALUES ($1, $2, $3, $4, $5, 'APPROVED', $6, 'Integration approval')`,
-        [
-          ids.orgA,
-          ids.ledger,
-          ids.closedJournal,
-          candidate.rows[0]?.approval_version,
-          candidate.rows[0]?.content_hash,
-          ids.actor,
-        ],
-      );
-      await client.query(
-        `UPDATE journal_entries
-         SET status = 'APPROVED', approved_by = $1, approved_at = now()
-         WHERE id = $2`,
-        [ids.actor, ids.closedJournal],
-      );
+    const frozen = await asTenant((client) => client.query<{ content_hash: string; approval_version: number }>(
+      "SELECT content_hash, approval_version FROM journal_entries WHERE id = $1", [ids.closedJournal],
+    ));
+    await expect(asTenant((client) => client.query(
+      `INSERT INTO journal_approvals(organization_id, ledger_id, journal_entry_id, journal_version, content_hash, decision, actor_id, reason)
+       VALUES ($1,$2,$3,$4,$5,'APPROVED',$6,'Attempt self approval at the database boundary')`,
+      [ids.orgA, ids.ledger, ids.closedJournal, frozen.rows[0].approval_version, frozen.rows[0].content_hash, ids.actor],
+    ))).rejects.toMatchObject({ code: "42501" });
+    const context = { organizationId: ids.orgA, actorId: ids.actor, requestId: randomUUID(), authMethod: "password", sourceSurface: "UI" as const, reason: "Withdraw the frozen test journal to validate FX controls" };
+    await expect(approveSubmittedJournal({ context, journalId: ids.closedJournal,
+      expectedContentHash: frozen.rows[0].content_hash, expectedApprovalVersion: frozen.rows[0].approval_version,
+      reason: context.reason,
+    })).rejects.toMatchObject({ code: "CREATOR_CANNOT_APPROVE" });
+    await expect(asTenant((client) => client.query("UPDATE journal_entries SET status = 'DRAFT' WHERE id = $1", [ids.closedJournal])))
+      .rejects.toThrow(/Recovery requires/);
+    await withdrawSubmittedJournal({ context, journalId: ids.closedJournal,
+      expectedContentHash: frozen.rows[0].content_hash, expectedApprovalVersion: frozen.rows[0].approval_version,
+      reason: context.reason, idempotencyKey: randomUUID(),
     });
-
-    await asTenant((client) =>
-      client.query("UPDATE journal_entries SET status = 'DRAFT' WHERE id = $1", [ids.closedJournal]),
-    );
 
     await expect(
       asTenant(async (client) => {
@@ -1537,6 +1526,45 @@ runDatabaseTests("PostgreSQL accounting controls", () => {
       ...journal,
       idempotencyKey: "demo-boundary-write",
     })).rejects.toThrow(/live shared|organization mode|organization/i);
+  });
+
+  it("recovers submitted journals with monotonic versions, exact replay, and independent approval", async () => {
+    const created = await createAdministrativeJournal("Version-safe workflow recovery", { post: false, actorId: ids.makerActor, periodId: ids.workflowPeriod });
+    const reason = "Review and correct the synthetic journal workflow";
+    const context = { organizationId: ids.orgA, actorId: ids.actor, requestId: randomUUID(), authMethod: "password", sourceSurface: "MCP" as const, reason };
+    const first = await submitJournalForApproval({ context, journalId: created.journalId });
+    await expect(asTenant((client) => client.query(
+      "UPDATE journal_entries SET status = 'POSTED', approval_version = NULL WHERE id = $1", [created.journalId],
+    ))).rejects.toThrow(/exact frozen/);
+    const rejectCommand = { context: { ...context, requestId: randomUUID() }, journalId: created.journalId,
+      expectedContentHash: first.contentHash, expectedApprovalVersion: first.approvalVersion, reason, idempotencyKey: randomUUID() };
+    const recoveredClicks = await Promise.all([rejectCommand, { ...rejectCommand, context: { ...context, requestId: randomUUID() } }]
+      .map((command) => rejectSubmittedJournal(command)));
+    expect(recoveredClicks.map((result) => result.idempotentReplay).sort()).toEqual([false, true]);
+    const recovered = recoveredClicks.find((result) => !result.idempotentReplay);
+    expect(recovered).toMatchObject({ journalId: created.journalId, status: "DRAFT", contentHash: null, approvalVersion: null, idempotentReplay: false });
+    const second = await submitJournalForApproval({ context: { ...context, requestId: randomUUID() }, journalId: created.journalId });
+    expect(second.contentHash).toBe(first.contentHash);
+    expect(second.approvalVersion).toBeGreaterThan(first.approvalVersion);
+    expect(await rejectSubmittedJournal({ ...rejectCommand, context: { ...context, requestId: randomUUID() } }))
+      .toMatchObject({ status: "SUBMITTED", approvalVersion: second.approvalVersion, idempotentReplay: true });
+    await expect(approveSubmittedJournal({ context: { ...context, requestId: randomUUID() }, journalId: created.journalId,
+      expectedContentHash: first.contentHash, expectedApprovalVersion: first.approvalVersion, reason,
+    })).rejects.toMatchObject({ code: "STALE_VERSION" });
+    await expect(postJournal({ context: { ...context, requestId: randomUUID() }, journalId: created.journalId,
+      expectedContentHash: second.contentHash, expectedApprovalVersion: second.approvalVersion,
+    })).rejects.toThrow(/approved|approval/i);
+    const approved = await approveSubmittedJournal({ context: { ...context, requestId: randomUUID() }, journalId: created.journalId,
+      expectedContentHash: second.contentHash, expectedApprovalVersion: second.approvalVersion, reason,
+    });
+    expect(approved.status).toBe("APPROVED");
+    const posted = await postJournal({ context: { ...context, requestId: randomUUID() }, journalId: created.journalId,
+      expectedContentHash: second.contentHash, expectedApprovalVersion: second.approvalVersion,
+    });
+    expect(posted).toMatchObject({ status: "POSTED", idempotentReplay: false });
+    const audit = await asTenant((client) => client.query("SELECT action, safe_metadata FROM audit_events WHERE entity_id = $1 AND action LIKE 'journal.workflow.%' ORDER BY occurred_at", [created.journalId]));
+    expect(audit.rows.map((row) => row.action)).toEqual(["journal.workflow.submit", "journal.workflow.reject", "journal.workflow.submit"]);
+    expect(audit.rows[1].safe_metadata.approvalVersion).toBe(first.approvalVersion);
   });
 
   it("creates journals concurrently with bound idempotency, role-aware auto-post, and one full reversal", async () => {

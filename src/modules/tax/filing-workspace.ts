@@ -1,5 +1,9 @@
 import "server-only";
 
+import { loadTaxFilingReadiness, taxFilingReadinessSchema, type TaxFilingReadiness, type TaxFilingReadinessInput } from "./filing-readiness";
+import { taxFilingSnapshot } from "./filing-snapshot";
+import { taxFilingCapabilities, type TaxFilingCapabilities } from "./filing-capabilities";
+
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import type { TenantTransactionContext } from "@/db/transaction";
@@ -111,6 +115,15 @@ export type TaxFilingConfigurationDto = Readonly<{
 
 export type TaxFilingSummaryDto = Readonly<{
   id: string;
+  ledgerId: string;
+  mappingSetId: string;
+  mappingVersion: number;
+  capturedAt: string;
+  manualValues: Readonly<Record<string, string>>;
+  reportedValues: Readonly<Record<string, string>>;
+  manualInputsNeedReview: boolean;
+  refreshedFromFilingId: string | null;
+  freshness: Readonly<{ mayBeStale: boolean; reasons: readonly string[]; readiness: TaxFilingReadiness }>;
   legalEntityId: string;
   entityCode: string;
   ledgerCode: string;
@@ -146,6 +159,8 @@ export type TaxFilingWorkspaceDto = Readonly<{
   registrations?: readonly TaxFilingRegistrationDto[];
   configurations?: readonly TaxFilingConfigurationDto[];
   filings: readonly TaxFilingSummaryDto[];
+  capabilities?: TaxFilingCapabilities;
+  canManageLifecycle?: boolean;
   canManageMappings: boolean;
   canPrepareFilings: boolean;
   canManageConfigurations?: boolean;
@@ -154,6 +169,13 @@ export type TaxFilingWorkspaceDto = Readonly<{
 
 type TaxFilingSummaryRow = Readonly<{
   id: string;
+  ledger_id: string;
+  mapping_set_id: string;
+  mapping_version: number;
+  calculated_values: unknown;
+  mapped_field_keys: string[];
+  template_snapshot: unknown;
+  reported_values: unknown;
   legal_entity_id: string;
   entity_code: string;
   ledger_code: string;
@@ -478,7 +500,12 @@ export async function loadTaxFilingWorkspace(
     const filingRows = options.includeFilings === false
       ? []
       : (await client.query<TaxFilingSummaryRow>(
-        `SELECT filing.id, filing.legal_entity_id, entity.code AS entity_code,
+        `SELECT filing.id, filing.ledger_id, filing.mapping_set_id,
+         (filing.template_snapshot->>'mappingVersion')::int AS mapping_version,
+         filing.template_snapshot,filing.reported_values,filing.calculated_values,
+         ARRAY(SELECT line.field_key FROM tax_account_mapping_lines line
+           WHERE line.organization_id=filing.organization_id AND line.mapping_set_id=filing.mapping_set_id) AS mapped_field_keys,
+         filing.legal_entity_id, entity.code AS entity_code,
          ledger.code AS ledger_code, filing.template_id,
          template.name AS template_name, template.version AS template_version,
          filing.filing_type, filing.status, filing.period_start::text,
@@ -525,8 +552,29 @@ export async function loadTaxFilingWorkspace(
        LIMIT 50`,
         [principal.organizationId],
       )).rows;
-    const filings = filingRows.map<TaxFilingSummaryDto>((row) => ({
+    const readinessCache = new Map<string, Promise<TaxFilingReadiness>>();
+    const filings = await Promise.all(filingRows.map(async (row): Promise<TaxFilingSummaryDto> => {
+      const reconciliation = reconciliationArraySchema.parse(row.reconciliation_snapshot);
+      const saved = taxFilingSnapshot(row.template_snapshot, row.reported_values, row.calculated_values, row.mapped_field_keys);
+      const scope = { legalEntityId: row.legal_entity_id, ledgerId: row.ledger_id, templateId: row.template_id,
+        periodStart: row.period_start, periodEnd: row.period_end };
+      const cacheKey = JSON.stringify(scope);
+      if (!readinessCache.has(cacheKey)) readinessCache.set(cacheKey, loadTaxFilingReadiness(client, principal.organizationId, scope));
+      const readiness = await readinessCache.get(cacheKey)!;
+      const reasons = [...readiness.blockers.map((blocker) => blocker.message)];
+      if (!saved.ledgerFingerprint) reasons.push("This older workpaper has no ledger snapshot fingerprint. Refresh to verify current posted balances.");
+      else if (saved.ledgerFingerprint !== readiness.ledgerFingerprint) reasons.push("Posted ledger activity for this period has changed since this comparison was captured.");
+      if (readiness.configuration && (readiness.configuration.id !== row.configuration_id
+          || readiness.configuration.mappingSetId !== row.mapping_set_id)) {
+        reasons.push("The effective filing configuration or mapping has changed since this comparison.");
+      }
+      return {
       id: row.id,
+      ledgerId: row.ledger_id, mappingSetId: row.mapping_set_id, mappingVersion: row.mapping_version,
+      capturedAt: saved.capturedAt ?? row.created_at, manualValues: saved.manualValues,
+      reportedValues: saved.reportedValues, manualInputsNeedReview: saved.manualInputsNeedReview,
+      refreshedFromFilingId: saved.refreshedFromFilingId,
+      freshness: { mayBeStale: reasons.length > 0, reasons, readiness },
       legalEntityId: row.legal_entity_id,
       entityCode: row.entity_code,
       ledgerCode: row.ledger_code,
@@ -548,9 +596,10 @@ export async function loadTaxFilingWorkspace(
       canonical: row.canonical,
       canonicalVersion: row.canonical_version,
       canonicalReason: row.canonical_reason,
-      reconciliation: reconciliationArraySchema.parse(row.reconciliation_snapshot),
+      reconciliation,
       validations: validationArraySchema.parse(row.validation_snapshot),
       createdAt: row.created_at,
+      };
     }));
 
     return {
@@ -566,8 +615,10 @@ export async function loadTaxFilingWorkspace(
       canPrepareFilings,
       canManageConfigurations,
       canManageCanonical,
+      canManageLifecycle: canManageCanonical,
+      capabilities: taxFilingCapabilities(writable, { manageMappings: canManageMappings, prepareFilings: canPrepareFilings, manageConfigurations: canManageConfigurations, manageCanonical: canManageCanonical, manageLifecycle: canManageCanonical }),
     };
-  });
+  }, { isolationLevel: "REPEATABLE READ" });
 }
 
 export async function previewTaxAccountMappings(
@@ -701,4 +752,13 @@ export async function previewTaxFilingConfigurationDependencies(
       consequence: "Configuration changes append a prospective revision; referenced templates, mappings, registrations, configurations, and workpapers remain immutable.",
     };
   });
+}
+
+export async function previewTaxFilingReadiness(principal: SessionPrincipal, input: TaxFilingReadinessInput) {
+  const command = taxFilingReadinessSchema.parse(input);
+  return withWorkspaceTenantRead(readContext(principal), "/app/tax", async (client) => {
+    await assertActorHasActivePermission(client, { organizationId: principal.organizationId,
+      actorId: principal.userId, permission: PERMISSIONS.readTax });
+    return loadTaxFilingReadiness(client, principal.organizationId, command);
+  }, { isolationLevel: "REPEATABLE READ" });
 }

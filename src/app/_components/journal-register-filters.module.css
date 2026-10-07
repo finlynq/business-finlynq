@@ -1,0 +1,17 @@
+.filters { display: grid; gap: 12px; margin-bottom: 20px; }
+.form { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; padding: 18px; border: 1px solid #dbe4ec; border-radius: 12px; background: #fff; }
+.form > label, .amounts label { display: grid; align-content: start; gap: 6px; min-width: 0; }
+.form label > span, .form legend { font-size: 13px; font-weight: 650; }
+.form input:not([type="checkbox"]), .form select { width: 100%; min-width: 0; min-height: 42px; padding: 8px 10px; border: 1px solid #bdccd9; border-radius: 7px; font: inherit; background: #fff; color: inherit; }
+.search, .statuses, .amounts, .controls { grid-column: 1 / -1; }
+.statuses, .amounts { padding: 10px 12px; border: 1px solid #dbe4ec; border-radius: 8px; min-width: 0; }
+.statuses { display: flex; flex-wrap: wrap; gap: 8px 20px; }
+.statuses label { display: inline-flex; align-items: center; gap: 7px; min-height: 32px; }
+.statuses input { width: 18px; height: 18px; }
+.amounts { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+.basis { grid-column: 1 / -1; margin: 0; color: #52677b; font-size: 13px; }
+.controls, .active { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; }
+.chip { display: inline-flex; align-items: center; padding: 6px 10px; border: 1px solid #c5d5e3; border-radius: 18px; background: #edf4fa; color: #244e73; font-size: 13px; min-height: 36px; }
+.errors { color: #982421; padding: 12px 16px; border: 1px solid #e8b9b7; border-radius: 8px; background: #fff5f4; }
+.errors ul { margin-bottom: 0; }
+@media (max-width: 760px) { .form, .amounts { grid-template-columns: 1fr; } .statuses label, .chip { min-height: 44px; } }

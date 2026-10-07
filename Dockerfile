@@ -94,11 +94,17 @@ ARG BUSINESS_FINLYNQ_IMAGE_REVISION=unknown
 LABEL org.opencontainers.image.revision=$BUSINESS_FINLYNQ_IMAGE_REVISION
 
 WORKDIR /app
-COPY package.json package-lock.json ./
+COPY --chown=pwuser:pwuser --chmod=0644 package.json package-lock.json ./
 RUN npm ci --ignore-scripts \
   && npm cache clean --force
-COPY --chown=pwuser:pwuser playwright.config.ts tsconfig.json ./
+COPY --chown=pwuser:pwuser --chmod=0644 playwright.config.ts tsconfig.json ./
 COPY --chown=pwuser:pwuser e2e ./e2e
+# Component browser checks resolve their reviewed source and template fixtures.
+COPY --chown=pwuser:pwuser src ./src
+RUN ./node_modules/.bin/playwright test --list
+# Resolve a production component as the unprivileged acceptance user, too.
+USER pwuser
+RUN node -e 'require("esbuild").buildSync({entryPoints:["src/app/_components/journal-workflow-controls.client.tsx"],bundle:true,write:false,outfile:"/tmp/acceptance-component.js",loader:{".css":"local-css"},platform:"browser",jsx:"automatic"})'
 
 ENV HOME=/tmp/playwright-home
 ENV npm_config_cache=/tmp/npm-cache
@@ -146,7 +152,7 @@ FROM node:24-alpine@sha256:e67514e5d0f6c46656005e1b693b2ec9d52e80b641307de684d4a
 ARG BUSINESS_FINLYNQ_IMAGE_REVISION=unknown
 LABEL org.opencontainers.image.revision=$BUSINESS_FINLYNQ_IMAGE_REVISION
 
-RUN apk add --no-cache curl libc6-compat poppler-utils \
+RUN apk add --no-cache curl libc6-compat poppler-utils qpdf \
   && addgroup --system --gid 1001 nodejs \
   && adduser --system --uid 1001 nextjs
 

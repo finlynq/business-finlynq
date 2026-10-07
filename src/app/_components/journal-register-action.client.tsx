@@ -9,6 +9,7 @@ import styles from "./journal-register-action.module.css";
 type PostAction = Readonly<{
   kind: "post";
   expectedContentHash: string;
+  expectedApprovalVersion?: number;
 }>;
 
 type ReverseAction = Readonly<{
@@ -85,6 +86,8 @@ export function JournalRegisterAction({
     let endpoint = `/api/ledger/journals/${encodeURIComponent(journalId)}/post`;
     let body: Readonly<Record<string, unknown>> = {
       expectedContentHash: action.kind === "post" ? action.expectedContentHash : undefined,
+      ...(action.kind === "post" && action.expectedApprovalVersion !== undefined
+        ? { expectedApprovalVersion: action.expectedApprovalVersion } : {}),
     };
     if (action.kind === "reverse") {
       const normalizedReason = reason.trim();
