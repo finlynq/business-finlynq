@@ -104,7 +104,7 @@ COPY --chown=pwuser:pwuser src ./src
 RUN ./node_modules/.bin/playwright test --list
 # Resolve a production component as the unprivileged acceptance user, too.
 USER pwuser
-RUN node -e 'require("esbuild").buildSync({entryPoints:["src/app/_components/journal-workflow-controls.client.tsx"],bundle:true,write:false,platform:"browser",jsx:"automatic"})'
+RUN node -e 'require("esbuild").buildSync({entryPoints:["src/app/_components/journal-workflow-controls.client.tsx"],bundle:true,write:false,outfile:"/tmp/acceptance-component.js",loader:{".css":"local-css"},platform:"browser",jsx:"automatic"})'
 
 ENV HOME=/tmp/playwright-home
 ENV npm_config_cache=/tmp/npm-cache
