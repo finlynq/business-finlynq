@@ -7,6 +7,7 @@ import { requireWorkspacePrincipal } from "@/modules/workspace/access";
 export const metadata: Metadata = { title: "Reports" };
 
 const reports = [
+  { code: "BR", title: "Booking reports", href: "/app/reports/booking-batches", description: "Review agent-prepared batches, source evidence and actual posting outcomes.", use: "Trace draft reviews, held entries and immutable posted results." },
   { code: "TB", title: "Trial balance", href: "/app/reports/trial-balance", description: "Review opening balances, debits, credits and closing balances across your chart of accounts.", use: "Use it to check ledger balance and export account totals." },
   { code: "BS", title: "Balance sheet", href: "/app/reports/balance-sheet", description: "See assets, liabilities, equity and unclosed earnings at a selected date.", use: "Use it to understand the entity’s financial position." },
   { code: "PL", title: "Profit & loss", href: "/app/reports/profit-and-loss", description: "Compare posted revenue and expenses over a fiscal period or custom date range.", use: "Use it to review performance and net income." },

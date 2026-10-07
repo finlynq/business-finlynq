@@ -31,6 +31,7 @@ export default async function McpSettingsPage() {
         actions={<Link className="secondary-button" href="/docs/remote-mcp">Connection guide</Link>}
       />
       <SettingsNavigation active="mcp" />
+      <p><Link href="/app/reports/booking-batches">Review booking reports from agent activity</Link></p>
       {!realUser && <DemoNotice>Remote OAuth connections are disabled in the public demo.</DemoNotice>}
       <McpSettings
         endpoint={mcpResourceUrl().href}

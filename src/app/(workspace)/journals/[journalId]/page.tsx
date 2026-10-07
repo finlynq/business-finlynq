@@ -28,6 +28,7 @@ export default async function JournalDetailPage({
   return (
     <div className="page-content">
       <BackLink href="/app/journals">Back to journals</BackLink>
+      <p><Link href={`/app/reports/booking-batches?journalId=${journal.id}`}>Booking review and posting reports</Link></p>
       <PageHeader
         eyebrow={`${journal.entityCode} · ${journal.ledgerCode} · General ledger`}
         title={`Journal ${journal.number}`}

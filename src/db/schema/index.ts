@@ -12,3 +12,4 @@ export * from "./mcp";
 export * from "./parties";
 export * from "./platform-administration";
 export * from "./tax";
+export * from "./booking-reports";
