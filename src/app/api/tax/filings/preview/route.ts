@@ -10,6 +10,7 @@ import { previewTaxFilingReadiness } from "@/modules/tax/filing-workspace";
 
 const headers = { "Cache-Control": "private, no-store", "X-Robots-Tag": "noindex, nofollow" };
 async function preview(request: NextRequest) {
+  const requestId = requestIdFor(request);
   try {
     const principal = await requestPrincipal(request);
     if (!principal) return NextResponse.json({ error: "Sign in to check tax mapping coverage." }, { status: 401, headers });
@@ -19,7 +20,7 @@ async function preview(request: NextRequest) {
   } catch (error) {
     const expired = demoSessionLeaseLostResponse(error);
     if (expired) return expired;
-    if (!isAuthorizationDeniedError(error)) logRouteFailure("tax-filing-preview", requestIdFor(request), error);
+    if (!isAuthorizationDeniedError(error)) logRouteFailure("tax-filing-preview", requestId, error);
     return NextResponse.json({ error: "Tax coverage could not be checked. Reload and try again." },
       { status: isAuthorizationDeniedError(error) ? 403 : 503, headers });
   }
