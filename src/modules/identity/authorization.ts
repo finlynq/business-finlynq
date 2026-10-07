@@ -1,3 +1,4 @@
+import { AuthorizationDeniedError } from "./authorization-error";
 import type { PoolClient } from "pg";
 import type { Permission } from "./permissions";
 
@@ -51,7 +52,7 @@ export async function assertActorHasActivePermission(
   request: ActorPermissionRequest,
 ): Promise<void> {
   if (!(await actorHasActivePermission(client, request))) {
-    throw new Error("Posting permission is required for an active organization member");
+    throw new AuthorizationDeniedError("Posting permission is required for an active organization member");
   }
 }
 

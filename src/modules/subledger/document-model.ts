@@ -1,3 +1,4 @@
+import { applySourceTaxRounding, sourceTaxRoundingSchema } from "./source-tax-rounding";
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import { evidenceReferencesSchema } from "./evidence-model";
@@ -413,6 +414,7 @@ export const taxInputSchema = z.object({
   registrationId: z.string().trim().min(1).max(200).optional(),
   evidenceReference: z.string().trim().min(1).max(200).optional(),
   recoverablePercent: z.string().trim().regex(/^\d+(?:\.\d{1,9})?$/).optional(),
+  sourceTaxRounding: sourceTaxRoundingSchema.optional(),
   sourceTaxOverride: z.object({
     ratePercent: z.string().trim().regex(/^\d+(?:\.\d{1,9})?$/),
     amount: signedNonZeroAmountSchema,
@@ -441,7 +443,7 @@ export const taxInputSchema = z.object({
       context.addIssue({ code: "custom", path: ["effectiveTo"], message: "Source-tax effective end cannot precede its start" });
     }
   }).optional(),
-}).strict();
+}).strict().refine((tax) => !(tax.sourceTaxRounding && tax.sourceTaxOverride), { message: "Choose source-tax rounding or a full source-tax override, not both" });
 
 export const businessDocumentLineInputSchema = z.object({
   description: z.string().trim().min(1).max(500),
@@ -850,6 +852,7 @@ function decideLineTax(
   facts: TaxFacts,
 ): TaxDecision {
   const baseDecision = decideTax(tax.packKey, facts);
+  if (tax.sourceTaxRounding) return applySourceTaxRounding(baseDecision, tax.sourceTaxRounding);
   const override = tax.sourceTaxOverride;
   if (!override) return baseDecision;
   if (facts.category !== "STANDARD") {

@@ -1,4 +1,5 @@
 import "server-only";
+import { reviewZeroInvoice } from "./reviewed-zero-invoice";
 import { createHash, createHmac } from "node:crypto";
 import { z } from "zod";
 import type { PoolClient } from "pg";
@@ -350,7 +351,17 @@ export async function completeInboxDocument(context: TenantTransactionContext, i
           throw new StorageError("STORAGE_ENTITY_MISMATCH", "The statement account mapping must belong to the inbox company.");
         }
       }
-      if (command.action.type === "ARCHIVE_ONLY" && ["PURCHASE_INVOICE", "SALES_INVOICE"].includes(command.metadata.documentType)) throw new StorageError("STORAGE_INVOICE_ASSOCIATION", "Link this invoice to a draft or send it for review before filing it.");
+      const noAccountingReview = await reviewZeroInvoice(client, context, connection.legal_entity_id, command);
+      if (noAccountingReview) {
+        businessKey = await duplicateBusinessKey(client, context, { entity: connection.legal_entity_id,
+          treatment: "ZERO_INVOICE", counterparty: command.metadata.counterparty.normalize("NFKC").trim().toUpperCase(),
+          reference: command.metadata.reference!.normalize("NFKC").trim().toUpperCase(), currency: command.metadata.currency });
+        await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))", [`inbox-checksum:${context.organizationId}:${verified.sha256}`]);
+        await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))", [`inbox-duplicate:${context.organizationId}:${businessKey}`]);
+        const duplicate = (await client.query("SELECT id FROM document_inbox_items WHERE organization_id=$1 AND (business_key=$2 OR sha256=$3) AND completion_hash IS NOT NULL AND id<>$4 LIMIT 1", [context.organizationId,businessKey,verified.sha256,row.id])).rows[0];
+        if (duplicate) throw new StorageError("STORAGE_POSSIBLE_DUPLICATE", "This zero invoice or source file has already been filed. Review the original completed inbox item; do not repeat accounting or change the source metadata.");
+      }
+      if (command.action.type === "ARCHIVE_ONLY" && ["PURCHASE_INVOICE", "SALES_INVOICE"].includes(command.metadata.documentType)) throw new StorageError("STORAGE_INVOICE_ASSOCIATION", "Link this invoice to a draft or send it for review. For a verified zero-total purchase invoice with no new payable, use REVIEWED_NO_ACCOUNTING with original metadata and a review reason.");
       const original = await itemMetadata(client, row);
       const assetId = await insertCloudEvidence(client, context, connection, row.id, { ...file, name: original.filename, mimeType: verified.mimeType }, verified.sha256, verified.scan, completionHash);
       let sourceDocumentId: string | null = null;
@@ -403,6 +414,7 @@ export async function completeInboxDocument(context: TenantTransactionContext, i
         metadata: command.metadata,
         ...archive,
         ...(durableStatementImport ? { statementImport: durableStatementImport } : {}),
+        ...(noAccountingReview ? { noAccountingReview } : {}),
       });
       const updated = (await client.query<InboxRow>(`UPDATE document_inbox_items SET status='READY_TO_FILE',sha256=$3,asset_id=$4,source_document_id=$5,
         completion_hash=$6,processing_ciphertext=$7,business_key=$8,lease_until=NULL WHERE organization_id=$1 AND id=$2 RETURNING *`, [context.organizationId, row.id, verified.sha256, assetId, sourceDocumentId, completionHash, processing, businessKey])).rows[0];

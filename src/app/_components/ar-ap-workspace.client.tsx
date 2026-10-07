@@ -59,6 +59,8 @@ export type DocumentLineDraft = Readonly<{
   recoverablePercent: string;
   evidenceReference: string;
   sourceTaxOverrideEnabled: boolean;
+  sourceTaxRoundingEnabled: boolean;
+  sourceTaxRoundingReviewed: boolean;
   sourceTaxRatePercent: string;
   sourceTaxAmount: string;
   sourceTaxJurisdiction: string;
@@ -272,14 +274,16 @@ export function businessDocumentLineDraftsFromSnapshot(
       : "",
     evidenceReference: line.tax.evidenceReference ?? "",
     sourceTaxOverrideEnabled: line.tax.sourceTaxOverride !== undefined,
+    sourceTaxRoundingEnabled: line.tax.sourceTaxRounding !== undefined,
+    sourceTaxRoundingReviewed: line.tax.sourceTaxRounding?.reviewed ?? false,
     sourceTaxRatePercent: line.tax.sourceTaxOverride?.ratePercent ?? "",
-    sourceTaxAmount: line.tax.sourceTaxOverride?.amount ?? "",
+    sourceTaxAmount: line.tax.sourceTaxOverride?.amount ?? line.tax.sourceTaxRounding?.amount ?? "",
     sourceTaxJurisdiction: line.tax.sourceTaxOverride?.jurisdiction ?? "",
     sourceTaxComponentKey: line.tax.sourceTaxOverride?.componentKey ?? "HST_SOURCE",
     sourceTaxEffectiveFrom: line.tax.sourceTaxOverride?.effectiveFrom ?? snapshot.documentDate,
     sourceTaxEffectiveTo: line.tax.sourceTaxOverride?.effectiveTo ?? "",
-    sourceTaxReason: line.tax.sourceTaxOverride?.reason ?? "",
-    sourceTaxEvidenceReference: line.tax.sourceTaxOverride?.evidenceReference ?? "",
+    sourceTaxReason: line.tax.sourceTaxOverride?.reason ?? line.tax.sourceTaxRounding?.reason ?? "",
+    sourceTaxEvidenceReference: line.tax.sourceTaxOverride?.evidenceReference ?? line.tax.sourceTaxRounding?.evidenceReference ?? "",
     sourceTaxReviewedTreatment: line.tax.sourceTaxOverride?.reviewedTreatment ?? "",
     sourceTaxAdjustmentReason: line.tax.sourceTaxOverride?.adjustmentReason ?? "",
     sourceTaxAdjustmentEvidenceReference: line.tax.sourceTaxOverride?.adjustmentEvidenceReference ?? "",
@@ -288,7 +292,7 @@ export function businessDocumentLineDraftsFromSnapshot(
 
 export function businessDocumentLineTaxMutationFields(
   line: Pick<DocumentLineDraft,
-    | "recoverablePercent" | "evidenceReference" | "sourceTaxOverrideEnabled"
+    | "recoverablePercent" | "evidenceReference" | "sourceTaxOverrideEnabled" | "sourceTaxRoundingEnabled" | "sourceTaxRoundingReviewed"
     | "sourceTaxRatePercent" | "sourceTaxAmount" | "sourceTaxJurisdiction"
     | "sourceTaxComponentKey" | "sourceTaxEffectiveFrom" | "sourceTaxEffectiveTo"
     | "sourceTaxReason" | "sourceTaxEvidenceReference" | "sourceTaxReviewedTreatment"
@@ -301,6 +305,7 @@ export function businessDocumentLineTaxMutationFields(
     ...(ownerModule === "payables" && line.recoverablePercent
       ? { recoverablePercent: line.recoverablePercent }
       : {}),
+    ...(line.sourceTaxRoundingEnabled ? { sourceTaxRounding: { amount: line.sourceTaxAmount, reason: line.sourceTaxReason, evidenceReference: line.sourceTaxEvidenceReference, reviewed: line.sourceTaxRoundingReviewed } } : {}),
     ...(line.sourceTaxOverrideEnabled ? {
       sourceTaxOverride: {
         ratePercent: line.sourceTaxRatePercent,
@@ -436,6 +441,8 @@ function defaultDocumentDraft(
       recoverablePercent: workspace.ownerModule === "payables" ? "100" : "",
       evidenceReference: "",
       sourceTaxOverrideEnabled: false,
+      sourceTaxRoundingEnabled: false,
+      sourceTaxRoundingReviewed: false,
       sourceTaxRatePercent: "",
       sourceTaxAmount: "",
       sourceTaxJurisdiction: `${entity?.tax.destinationCountry ?? ""}-${entity?.tax.destinationRegion ?? ""}`,
@@ -965,6 +972,7 @@ export function ArApWorkspace({
       fxRoundingAccountCombinationId: preferredAccount(entity?.roundingAccounts ?? [], "7190"),
       lines: draft.lines.map((line) => ({
         ...line,
+        sourceTaxRoundingReviewed: false,
         accountCombinationId: preferredAccount(
           entity?.lineAccounts ?? [],
           workspace.ownerModule === "receivables" ? "4100" : "6100",
@@ -977,7 +985,7 @@ export function ArApWorkspace({
     const party = currentParty(documentEntity, partyAccountId);
     setDocumentDraft((draft) => {
       const currency = party?.transactionCurrency ?? draft.currency;
-      if (currency === draft.currency) return { ...draft, partyAccountId };
+      if (currency === draft.currency) return { ...draft, partyAccountId, lines: draft.lines.map((line) => ({ ...line, sourceTaxRoundingReviewed: false })) };
       const fxEvidence = suggestedEvidence(
         workspace,
         currency,
@@ -988,6 +996,7 @@ export function ArApWorkspace({
         ...draft,
         partyAccountId,
         currency,
+        lines: draft.lines.map((line) => ({ ...line, sourceTaxRoundingReviewed: false })),
         fxMode: "AUTO",
         fxRate: fxEvidence.rate,
         fxSource: fxEvidence.source,
@@ -1008,6 +1017,7 @@ export function ArApWorkspace({
       return {
         ...draft,
         currency,
+        lines: draft.lines.map((line) => ({ ...line, sourceTaxRoundingReviewed: false })),
         fxMode: "AUTO",
         fxRate: fxEvidence.rate,
         fxSource: fxEvidence.source,
@@ -1018,7 +1028,7 @@ export function ArApWorkspace({
 
   function chooseDocumentAccountingDate(accountingDate: string): void {
     setDocumentDraft((draft) => {
-      if (draft.fxMode === "EXPLICIT") return { ...draft, accountingDate };
+      if (draft.fxMode === "EXPLICIT") return { ...draft, accountingDate, lines: draft.lines.map((line) => ({ ...line, sourceTaxRoundingReviewed: false })) };
       const fxEvidence = suggestedEvidence(
         workspace,
         draft.currency,
@@ -1028,6 +1038,7 @@ export function ArApWorkspace({
       return {
         ...draft,
         accountingDate,
+        lines: draft.lines.map((line) => ({ ...line, sourceTaxRoundingReviewed: false })),
         fxMode: "AUTO",
         fxRate: fxEvidence.rate,
         fxSource: fxEvidence.source,
@@ -1039,7 +1050,7 @@ export function ArApWorkspace({
   function updateLine(key: string, patch: Partial<DocumentLineDraft>): void {
     setDocumentDraft((draft) => ({
       ...draft,
-      lines: draft.lines.map((line) => line.key === key ? { ...line, ...patch } : line),
+      lines: draft.lines.map((line) => line.key === key ? { ...line, sourceTaxRoundingReviewed: false, ...patch } : line),
     }));
   }
 
@@ -1385,7 +1396,7 @@ export function ArApWorkspace({
               </label>
               <label className="full-field">
                 <span>Document date</span>
-                <input type="date" value={documentDraft.documentDate} onChange={(event) => setDocumentDraft((draft) => ({ ...draft, documentDate: event.target.value, dueOn: addDays(event.target.value, 30) }))} required />
+                <input type="date" value={documentDraft.documentDate} onChange={(event) => setDocumentDraft((draft) => ({ ...draft, documentDate: event.target.value, dueOn: addDays(event.target.value, 30), lines: draft.lines.map((line) => ({ ...line, sourceTaxRoundingReviewed: false })) }))} required />
               </label>
               <label className="full-field">
                 <span>Accounting period</span>
@@ -1498,6 +1509,8 @@ export function ArApWorkspace({
                     : "",
                   evidenceReference: "",
                   sourceTaxOverrideEnabled: false,
+                  sourceTaxRoundingEnabled: false,
+                  sourceTaxRoundingReviewed: false,
                   sourceTaxRatePercent: "",
                   sourceTaxAmount: "",
                   sourceTaxJurisdiction: `${documentEntity.tax.destinationCountry}-${documentEntity.tax.destinationRegion}`,
@@ -1554,12 +1567,22 @@ export function ArApWorkspace({
                     <input value={line.evidenceReference} onChange={(event) => updateLine(line.key, { evidenceReference: event.target.value })} maxLength={200} required={taxEvidenceReferenceRequired(documentEntity.tax.packKey, line.category)} />
                     <small>Optional line-specific invoice, exemption, resale, or marketplace evidence reference.</small>
                   </label>
+                  {workspace.ownerModule === "payables" && <>
+                    <label className="full-field checkbox-field"><input type="checkbox" checked={line.sourceTaxRoundingEnabled} onChange={(event) => updateLine(line.key, { sourceTaxRoundingEnabled: event.target.checked, sourceTaxOverrideEnabled: false, sourceTaxRoundingReviewed: false })} /><span>Match verified invoice tax rounding</span><small>Preserves the engine tax treatment and account mappings. Requires permission to review tax and original invoice evidence. Maximum difference: one currency minor unit per line.</small></label>
+                    {line.sourceTaxRoundingEnabled && <div className="full-field form-grid form-grid-three">
+                      <label><span>Printed line tax amount</span><input inputMode="decimal" value={line.sourceTaxAmount} onChange={(event) => updateLine(line.key, { sourceTaxAmount: event.target.value, sourceTaxRoundingReviewed: false })} required /></label>
+                      <label><span>Rounding evidence reference</span><input value={line.sourceTaxEvidenceReference} maxLength={200} onChange={(event) => updateLine(line.key, { sourceTaxEvidenceReference: event.target.value, sourceTaxRoundingReviewed: false })} required /></label>
+                      <label><span>Rounding review reason</span><input value={line.sourceTaxReason} minLength={8} maxLength={500} onChange={(event) => updateLine(line.key, { sourceTaxReason: event.target.value, sourceTaxRoundingReviewed: false })} required /></label>
+                      <label className="checkbox-field"><input type="checkbox" checked={line.sourceTaxRoundingReviewed} onChange={(event) => updateLine(line.key, { sourceTaxRoundingReviewed: event.target.checked })} /><span>I verified the original invoice and this rounding difference.</span></label>
+                    </div>}
+                  </>}
                   <label className="full-field checkbox-field">
                     <input
                       type="checkbox"
                       checked={line.sourceTaxOverrideEnabled}
                       onChange={(event) => updateLine(line.key, {
                         sourceTaxOverrideEnabled: event.target.checked,
+                        sourceTaxRoundingEnabled: false,
                         sourceTaxEffectiveFrom: line.sourceTaxEffectiveFrom || documentDraft.documentDate,
                       })}
                     />

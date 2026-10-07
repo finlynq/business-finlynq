@@ -4,7 +4,7 @@ import type { PoolClient } from "pg";
 import { z } from "zod";
 import type { TenantTransactionContext } from "@/db/transaction";
 import { activeKeyVersion, decryptStorageValue, encryptStorageValue, loadConnection, type ConnectionRow } from "./store";
-import { filingMetadataSchema, inboxStatusSchema } from "./model";
+import { filingMetadataSchema, inboxStatusSchema, noAccountingRelatedEvidenceSchema, noAccountingTreatmentSchema } from "./model";
 import { StorageError, type CloudFile } from "./provider";
 import { classifyInboxFile } from "./file-types";
 
@@ -50,6 +50,8 @@ export const processingSchema = z.object({
   destinationId: z.string().optional(),
   reason: z.string().optional(),
   statementImport: statementCompletionSchema.optional(),
+  noAccountingReview: z.object({ treatment: noAccountingTreatmentSchema, reason: z.string(), reviewedBy: z.uuid(),
+    reviewedAt: z.string(), sourceSha256: z.string().regex(/^[a-f0-9]{64}$/), relatedEvidence: noAccountingRelatedEvidenceSchema.nullable(), accountingMutation: z.literal("NONE") }).strict().optional(),
   email: z.object({
     messageSha256: z.string().regex(/^[a-f0-9]{64}$/),
     bodySha256: z.string().regex(/^[a-f0-9]{64}$/),
@@ -108,6 +110,7 @@ export async function itemMetadata(client: PoolClient, row: InboxRow) {
     sourcePath: metadata.sourcePath ?? metadata.name, mimeType: row.mime_type, byteSize: Number(row.byte_size), status: row.status, sha256: row.sha256,
     leaseUntil: row.lease_until?.toISOString() ?? null, assetId: row.asset_id, sourceDocumentId: row.source_document_id,
     canonicalName: processing.name ?? null, filingMetadata: processing.metadata ?? null,
+    noAccountingReview: processing.noAccountingReview ?? null,
     reason: processing.reason ?? (successfulEmailProcessing ? null : metadata.reason ?? null),
     errorCode: successfulEmailProcessing ? null : metadata.errorCode ?? null, routingTarget: metadata.routingTarget ?? null,
     sourceMessages: metadata.sourceMessages ?? [],
