@@ -11,13 +11,15 @@ describe("working-entity page defaults", () => {
     const register = source("src/app/(workspace)/journals/page.tsx");
     const draft = source("src/app/(workspace)/journals/new/page.tsx");
     const loader = source("src/modules/ledger/tenant-workspace.ts");
+    const filters = source("src/modules/ledger/journal-register-filters.ts");
 
     expect(register).toContain("currentWorkspaceEntityContext(principal)");
     expect(register).toContain("entityContext.selectedEntity?.id ?? null");
     expect(draft).toContain("entity.id === entityContext.selectedEntity?.id");
     expect(draft).toContain("initialEntityId={selectedEntity?.id ?? null}");
     expect(loader).toContain("WHERE entry.organization_id = $1");
-    expect(loader).toContain("entry.legal_entity_id = $4::uuid");
+    expect(loader).toContain("organizationId: principal.organizationId, selectedEntityId");
+    expect(filters).toContain("entry.legal_entity_id = $4::uuid");
   });
 
   it("uses the validated context only as a report default and preserves explicit filters", () => {

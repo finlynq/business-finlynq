@@ -40,6 +40,7 @@ vi.mock("@/modules/workspace/entity-context", () => ({
   })),
 }));
 
+import { parseJournalFilters } from "@/modules/ledger/journal-register-filters";
 import JournalsPage from "@/app/(workspace)/journals/page";
 import {
   JournalRegisterAction,
@@ -58,6 +59,8 @@ const reversalPeriod = {
 };
 
 const baseJournal = {
+  expectedApprovalVersion: null,
+  workflow: null,
   ledgerId: reversalPeriod.ledgerId,
   accountingDate: "2026-08-27",
   entityCode: "CA01",
@@ -139,6 +142,10 @@ beforeEach(() => {
     canDraft: true,
     canPost: true,
     canReverse: true,
+    filterState: parseJournalFilters(),
+    filterOptions: { fiscalYears: [], periods: [], accounts: [], journalTypes: [], sourceModules: [], currencies: [] },
+    matchingJournalCount: 4,
+    pagination: { page: 1, pageSize: 50, hasNext: false, hasPrevious: false },
     reversalPeriods: [reversalPeriod],
     journals: [
       {
@@ -220,6 +227,7 @@ describe("journal register actions", () => {
       "",
       mocks.selectedEntityId,
       1,
+      {},
     );
     const tree = elements(page);
     const actionElements = tree.filter((element) => element.type === JournalRegisterAction);
@@ -288,6 +296,10 @@ describe("journal register actions", () => {
       canDraft: true,
       canPost: true,
       canReverse: true,
+      filterState: parseJournalFilters(),
+      filterOptions: { fiscalYears: [], periods: [], accounts: [], journalTypes: [], sourceModules: [], currencies: [] },
+      matchingJournalCount: 1,
+      pagination: { page: 1, pageSize: 50, hasNext: false, hasPrevious: false },
       reversalPeriods: [reversalPeriod],
     };
     mocks.loadWorkspace.mockResolvedValueOnce({
@@ -308,7 +320,18 @@ describe("journal register actions", () => {
 
     const postPage = await JournalsPage({ searchParams: Promise.resolve({}) });
     const postAction = elements(postPage).find((element) => element.type === JournalRegisterAction);
-    expect(postAction?.key).toBe(`${journalId}:post`);
+    expect(postAction?.key).toBe(`${journalId}:post:${"b".repeat(64)}:null`);
+    mocks.loadWorkspace.mockResolvedValueOnce({
+      ...workspace,
+      journals: [{ ...baseJournal, id: journalId, number: "Draft", description: "Approved journal",
+        typeKey: "ledger.manual", ownerModule: "ledger", status: "APPROVED",
+        expectedContentHash: "b".repeat(64), expectedApprovalVersion: 3, canPost: true, canReverse: false }],
+    });
+    const approvedPage = await JournalsPage({ searchParams: Promise.resolve({}) });
+    const approvedAction = elements(approvedPage).find((element) => element.type === JournalRegisterAction);
+    expect(approvedAction?.key).toBe(`${journalId}:post:${"b".repeat(64)}:3`);
+    expect(approvedAction?.key).not.toBe(postAction?.key);
+    expect((approvedAction?.props as JournalRegisterActionProps).action).toMatchObject({ expectedApprovalVersion: 3 });
 
     const postedJournal = {
       ...baseJournal,

@@ -434,7 +434,8 @@ BEGIN
     'app.organization_set_member_active(uuid,integer,boolean)',
     'app.organization_revoke_member_sessions(uuid)',
     'app.organization_revoke_member_sessions_and_trust(uuid)',
-    'app.admin_control_journal_transaction(text,uuid,text,text)'
+    'app.admin_control_journal_transaction(text,uuid,text,text)',
+    'app.journal_workflow_recovery_replayed(uuid,text,text,text)'
   ] LOOP
     IF to_regprocedure(selected_signature) IS NOT NULL THEN
       EXECUTE format('GRANT EXECUTE ON FUNCTION %s TO business_finlynq_app', selected_signature);

@@ -213,6 +213,7 @@ const runtimeExecuteFunctions = [
   "app.organization_revoke_member_sessions(uuid)",
   "app.organization_revoke_member_sessions_and_trust(uuid)",
   "app.admin_control_journal_transaction(text, uuid, text, text)",
+  "app.journal_workflow_recovery_replayed(uuid, text, text, text)",
 ];
 const universallyUnsafeTablePrivileges = new Set([
   "DELETE", "REFERENCES", "TRIGGER", "TRUNCATE",

@@ -11,10 +11,11 @@ import {
   unpostJournal,
 } from "@/modules/ledger/journal-administration-service";
 import { postJournal } from "@/modules/ledger/posting-service";
-import { approveSubmittedJournal, submitJournalForApproval } from "@/modules/ledger/journal-workflow-service";
+import { approveSubmittedJournal, submitJournalForApproval, withdrawSubmittedJournal, rejectSubmittedJournal, recoverJournalSchema } from "@/modules/ledger/journal-workflow-service";
+import { journalFilterInputSchema } from "@/modules/ledger/journal-register-filters";
+import { JOURNAL_WORKFLOW_TOOL_POLICIES, mcpJournalWorkflow, readMcpJournal, refreshedJournalTransition } from "./journal-workflow";
 import {
   loadManualJournalOptions,
-  loadTenantJournalDetail,
   loadTenantJournalWorkspace,
 } from "@/modules/ledger/tenant-workspace";
 import {
@@ -308,16 +309,22 @@ export const DAILY_MCP_TOOLS: readonly McpToolDefinition[] = [
   defineMcpTool({
     policy: { name: "finlynq_daily_list_journals", group: "DAILY", access: "READ", permission: PERMISSIONS.readMcpLedger },
     title: "List journals",
-    description: "Find journal entries in the connected organization by human search text and optional entity. Returns register rows and canonical content hashes used by later workflow actions.",
-    inputSchema: z.object({ search: z.string().trim().max(100).default(""), entityId: z.uuid().nullable().default(null), page: z.number().int().min(1).max(10000).default(1) }).strict(),
-    invoke: (args, runtime) => loadTenantJournalWorkspace(runtime.sessionPrincipal, args.search, args.entityId, args.page),
+    description: "Find journals by text, entity, and structured filters before pagination. Returns exact content hashes, approval versions, posting policy, and connection-aware workflow actions with stable disabled reasons. Amount filters use functional-currency journal totals.",
+    inputSchema: z.object({ search: z.string().trim().max(100).default(""), entityId: z.uuid().nullable().default(null), page: z.number().int().min(1).max(10000).default(1), filters: journalFilterInputSchema.optional() }).strict(),
+    invoke: async (args, runtime) => {
+      const workspace = await loadTenantJournalWorkspace(runtime.sessionPrincipal, args.search, args.entityId, args.page, args.filters);
+      return { ...workspace, journals: workspace.journals.map((journal) => {
+        const workflow = mcpJournalWorkflow(journal.workflow, runtime.snapshot);
+        return { ...journal, workflow, canPost: workflow?.actions.post.allowed === true };
+      }) };
+    },
   }),
   defineMcpTool({
     policy: { name: "finlynq_daily_get_journal", group: "DAILY", access: "READ", permission: PERMISSIONS.readMcpLedger },
     title: "Get journal details",
-    description: "Get one journal header and all lines by journal ID. Use this to verify exact amounts and the current workflow state before submit, approve, post, or reverse.",
+    description: "Get one journal header, lines, exact frozen content hash and approval version, posting policy, and authorized next actions. SUBMITTED journals need independent approval even under AUTO_POST; eligible creators may withdraw, and independent approvers may reject for correction. Disabled reasons explain the next step.",
     inputSchema: z.object({ journalId: z.uuid() }).strict(),
-    invoke: (args, runtime) => loadTenantJournalDetail(runtime.sessionPrincipal, args.journalId),
+    invoke: (args, runtime) => readMcpJournal(runtime, args.journalId),
   }),
   defineMcpTool({
     policy: { name: "finlynq_daily_create_journal", group: "DAILY", access: "WRITE", permission: PERMISSIONS.draftJournal },
@@ -327,26 +334,44 @@ export const DAILY_MCP_TOOLS: readonly McpToolDefinition[] = [
     invoke: (args, runtime) => createManualJournal({ context: mcpMutationContext(runtime.principal, runtime.requestId, args.description), ...args, origin: "MCP" }),
   }),
   defineMcpTool({
-    policy: { name: "finlynq_daily_submit_journal", group: "DAILY", access: "WRITE", permission: PERMISSIONS.submitJournal },
+    policy: JOURNAL_WORKFLOW_TOOL_POLICIES.submit,
     title: "Submit journal for approval",
-    description: "Freeze a manual journal draft for approval. Supply the content hash returned by journal reads when available so concurrent changes fail closed.",
+    description: "Freeze a manual journal draft for independent approval. Read workflow actions first: AUTO_POST does not bypass an existing submission. Supply the content hash from the current journal read; the response includes refreshed state and actions.",
     inputSchema: z.object({ journalId: z.uuid(), expectedContentHash: z.string().regex(/^[a-f0-9]{64}$/i).optional() }).strict(),
-    invoke: (args, runtime) => submitJournalForApproval({ context: mcpMutationContext(runtime.principal, runtime.requestId, "Submit journal for approval"), ...args }),
+    idempotent: true,
+    invoke: async (args, runtime) => refreshedJournalTransition(runtime, await submitJournalForApproval({ context: mcpMutationContext(runtime.principal, runtime.requestId, "Submit journal for approval"), ...args })),
   }),
   defineMcpTool({
-    policy: { name: "finlynq_daily_approve_journal", group: "DAILY", access: "WRITE", permission: PERMISSIONS.approveJournal },
+    policy: JOURNAL_WORKFLOW_TOOL_POLICIES.approve,
     title: "Approve submitted journal",
     description: "Approve the exact frozen journal version. The journal creator cannot approve their own journal; supply both the frozen content hash and approval version.",
     inputSchema: z.object({ journalId: z.uuid(), expectedContentHash: z.string().regex(/^[a-f0-9]{64}$/i), expectedApprovalVersion: z.number().int().positive(), reason: z.string().trim().min(5).max(500) }).strict(),
-    invoke: (args, runtime) => approveSubmittedJournal({ context: mcpMutationContext(runtime.principal, runtime.requestId, args.reason), ...args }),
+    idempotent: true,
+    invoke: async (args, runtime) => refreshedJournalTransition(runtime, await approveSubmittedJournal({ context: mcpMutationContext(runtime.principal, runtime.requestId, args.reason), ...args })),
   }),
   defineMcpTool({
-    policy: { name: "finlynq_daily_post_journal", group: "DAILY", access: "WRITE", permission: PERMISSIONS.postJournal },
+    policy: JOURNAL_WORKFLOW_TOOL_POLICIES.post,
     title: "Post journal",
-    description: "Post a manual ledger journal using FinLynQ's balance, period, account, workflow, permission, and content-hash controls. This creates permanent accounting history.",
-    inputSchema: z.object({ journalId: z.uuid(), expectedContentHash: z.string().regex(/^[a-f0-9]{64}$/i), reason: z.string().trim().min(5).max(500) }).strict(),
-    invoke: (args, runtime) => postJournal({ context: mcpMutationContext(runtime.principal, runtime.requestId, args.reason), journalId: args.journalId, expectedContentHash: args.expectedContentHash }),
+    description: "Post a manual ledger journal using FinLynQ's balance, period, account, workflow, permission, and content-hash controls. This creates permanent accounting history. expectedApprovalVersion from the journal read is required when posting an approved version.",
+    inputSchema: z.object({ journalId: z.uuid(), expectedContentHash: z.string().regex(/^[a-f0-9]{64}$/i), expectedApprovalVersion: z.number().int().positive().optional(), reason: z.string().trim().min(5).max(500) }).strict(),
+    idempotent: true,
+    invoke: async (args, runtime) => refreshedJournalTransition(runtime, await postJournal({ context: mcpMutationContext(runtime.principal, runtime.requestId, args.reason), journalId: args.journalId, expectedContentHash: args.expectedContentHash, expectedApprovalVersion: args.expectedApprovalVersion })),
   }),
+  ...(["withdraw", "reject"] as const).map((action) => defineMcpTool({
+    policy: JOURNAL_WORKFLOW_TOOL_POLICIES[action],
+    title: action === "withdraw" ? "Withdraw submitted journal" : "Reject submitted journal for correction",
+    description: action === "withdraw"
+      ? "Creator-only withdrawal of the exact frozen submitted journal back to draft, preserving its original ID, asset-schedule linkage, and immutable audit trail. Requires submit permission, frozen hash and approval version, permanent reason, and a unique idempotency key. Closed periods and accounting dependencies fail closed. Returns refreshed state and actions."
+      : "An independent approver can reject the exact frozen submission back to draft for correction. Preserves the original journal, asset-schedule linkage, and immutable audit trail. Requires approval permission, frozen hash and approval version, permanent reason, and a unique idempotency key. Self-rejection, closed periods, and dependencies fail closed. Returns refreshed state and actions.",
+    inputSchema: recoverJournalSchema,
+    idempotent: true,
+    destructive: true,
+    invoke: async (args, runtime) => refreshedJournalTransition(runtime, await
+      (action === "withdraw" ? withdrawSubmittedJournal : rejectSubmittedJournal)({
+        context: mcpMutationContext(runtime.principal, runtime.requestId, args.reason),
+        ...args,
+      })),
+  })),
   defineMcpTool({
     policy: { name: "finlynq_daily_reverse_journal", group: "DAILY", access: "WRITE", permission: PERMISSIONS.reverseJournal },
     title: "Reverse posted journal",

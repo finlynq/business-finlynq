@@ -158,6 +158,19 @@ const mocks = vi.hoisted(() => {
   const client = {
     query: vi.fn(async (statement: string, _params?: readonly unknown[]) => {
       void _params;
+      if (statement.includes("AS canonical_hash")) {
+        return { rows: journalRows.map((row) => ({
+          ...row, content_hash: row.canonical_content_hash,
+          canonical_hash: row.canonical_content_hash, approval_version: null,
+          created_by: "20000000-0000-4000-8000-000000000002",
+          manual_mode: "REVIEW_REQUIRED", purpose: "ROUTINE", ledger_active: true,
+          has_dependencies: false, valid_lines: true, has_approval: false, deleted: false,
+        })) };
+      }
+      if (statement.includes("SELECT DISTINCT permission.permission_key")) {
+        return { rows: ["ledger.journal.submit", "ledger.journal.approve", "ledger.journal.post", "ledger.journal.post_adjustment"]
+          .map((permission_key) => ({ permission_key })) };
+      }
       if (statement.includes("FROM organization_memberships membership")) {
         return { rows: [{ is_demo: true }] };
       }
@@ -171,6 +184,7 @@ const mocks = vi.hoisted(() => {
       if (statement.includes("SELECT entity.id AS entity_id, combination.id AS combination_id")) {
         return { rows: manualAccountRows };
       }
+      if (statement.includes("AS matching_journal_count")) return { rows: [{ matching_journal_count: String(journalRows.length) }] };
       if (statement.includes("WITH current_postings AS")) return { rows: accountPostingRows };
       if (statement.includes("FROM journal_entries entry")) return { rows: journalRows };
       if (statement.includes("FROM fiscal_periods period")) return { rows: periodRows };
@@ -184,6 +198,10 @@ const mocks = vi.hoisted(() => {
     withTenantTransaction: vi.fn(async (_context: unknown, work: (databaseClient: unknown) => unknown) => work(client)),
   };
 });
+
+vi.mock("@/modules/ledger/journal-filter-options", () => ({
+  loadJournalFilterOptions: vi.fn(async () => ({ fiscalYears: [], periods: [], accounts: [], journalTypes: [], sourceModules: [], currencies: [] })),
+}));
 
 vi.mock("@/db/transaction", () => ({
   withTenantTransaction: mocks.withTenantTransaction,
@@ -350,6 +368,20 @@ describe("tenant journal action capabilities", () => {
       sourceNumber: "INV-1001",
       correctionRoute: "/app/receivables/invoices",
     });
+  });
+
+  it("uses one filtered predicate and parameter set for both matching count and paginated rows", async () => {
+    const filters = { dateFrom: "2025-01-01", dateTo: "2025-01-31", status: ["SUBMITTED", "APPROVED"], minAmount: "10.000000001", currency: "CAD" };
+    const entityId = "30000000-0000-4000-8000-000000000020";
+    const workspace = await loadTenantJournalWorkspace(principal, "depreciation", entityId, 2, filters);
+    expect(workspace.matchingJournalCount).toBe(4);
+    const count = mocks.client.query.mock.calls.find(([sql]) => sql.includes("AS matching_journal_count"))!;
+    const page = mocks.client.query.mock.calls.find(([sql]) => sql.includes("AS canonical_content_hash"))!;
+    const countPredicate = count[0].slice(count[0].lastIndexOf("       WHERE ") + 13);
+    expect(page[0]).toContain(countPredicate);
+    expect(page[1]).toEqual([...count[1]!, 51, 50]);
+    expect(count[1]).toEqual([principal.organizationId, "depreciation", "%depreciation%", entityId,
+      "2025-01-01", "2025-01-31", ["SUBMITTED", "APPROVED"], "CAD", "10.000000001"]);
   });
 
   it("fails closed before row actions when tenant writes are disabled", async () => {
