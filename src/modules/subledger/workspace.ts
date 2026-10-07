@@ -109,6 +109,7 @@ export type SubledgerOpenItemDto = Readonly<{
 
 export type SubledgerWorkspaceDocumentDto = Readonly<{
   attachments?: readonly DocumentEvidenceMetadata[];
+  allocationSources?: readonly Readonly<{ openItemId: string; sourceDocumentId: string; sourceNumber: string; sourceVersion: number; attachments: readonly DocumentEvidenceMetadata[] }>[];
   id: string;
   sourceNumber: string;
   sourceType: string;
@@ -144,6 +145,7 @@ export type SubledgerWorkspaceDto = Readonly<{
   openItems: readonly SubledgerOpenItemDto[];
   registerFilter: SubledgerRegisterFilter;
   pagination: RegisterPagination;
+  registerTotalCount?: number;
   preferredEntityId: string | null;
 }>;
 
@@ -203,6 +205,7 @@ type TaxRow = Readonly<{
 }>;
 
 type DocumentRow = Readonly<{
+  total_count?: number;
   id: string;
   source_type: string;
   source_number: string;
@@ -324,6 +327,7 @@ export function normalizeSubledgerRegisterRequest(
         ? candidate.entityCode!
         : "",
       status,
+      paymentStatus: candidate.paymentStatus === "OPEN" || candidate.paymentStatus === "PAID" ? candidate.paymentStatus : "ALL",
       currency: /^[A-Z]{3}$/.test(candidate.currency ?? "") ? candidate.currency! : "",
       dateFrom: date(candidate.dateFrom),
       dateTo: date(candidate.dateTo),
@@ -551,7 +555,7 @@ export async function loadSubledgerWorkspace(
     }
     const searchPattern = `%${normalizedSearch.replace(/[\\%_]/g, "\\$&")}%`;
     const documentsResult = await client.query<DocumentRow>(
-        `SELECT current.id, current.source_type, current.source_number,
+        `WITH matching_documents AS (SELECT current.id, current.source_type, current.source_number,
            current.version, current.status, current.snapshot,
            current.created_at, current.void_reason,
            linked_journal.id AS journal_id,
@@ -628,6 +632,12 @@ export async function loadSubledgerWorkspace(
              OR ($11 = 'DUE_TODAY' AND current.snapshot ? 'dueOn' AND balance.open_transaction_amount > 0 AND (current.snapshot ->> 'dueOn') = $12)
              OR ($11 = 'DUE_LATER' AND current.snapshot ? 'dueOn' AND balance.open_transaction_amount > 0 AND (current.snapshot ->> 'dueOn') > $12)
            )
+           AND ($15 = 'ALL' OR (
+             current.status = 'POSTED' AND current.snapshot ->> 'kind' IN ('SUPPLIER_BILL','SALES_INVOICE')
+             AND balance.derived_status <> 'REVERSED'
+             AND (($15 = 'OPEN' AND balance.open_transaction_amount > 0)
+               OR ($15 = 'PAID' AND balance.open_transaction_amount = 0))
+           ))
            AND NOT EXISTS (
              SELECT 1 FROM source_documents newer
              WHERE newer.organization_id = current.organization_id
@@ -635,8 +645,10 @@ export async function loadSubledgerWorkspace(
                AND newer.source_number = current.source_number
                AND newer.version > current.version
          )
-         ORDER BY current.created_at DESC, current.source_number
-         LIMIT $13 OFFSET $14`,
+         )
+         SELECT page.*, totals.total_count FROM (SELECT count(*)::int AS total_count FROM matching_documents) totals
+         LEFT JOIN LATERAL (SELECT * FROM matching_documents
+           ORDER BY created_at DESC, source_number LIMIT $13 OFFSET $14) page ON true`,
         [
           principal.organizationId,
           ownerModule,
@@ -652,6 +664,7 @@ export async function loadSubledgerWorkspace(
           currentDate,
           registerPageSize + 1,
           (page - 1) * registerPageSize,
+          registerFilter.paymentStatus ?? "ALL",
         ],
       );
     const openItemsResult = await client.query<OpenItemRow>(
@@ -795,13 +808,34 @@ export async function loadSubledgerWorkspace(
     const entityById = new Map(entities.map((entity) => [entity.id, entity]));
     const partyAccountById = new Map(entities.flatMap((entity) =>
       entity.partyAccounts.map((account) => [account.id, account] as const)));
-    const documentPage = registerPageWindow(documentsResult.rows, page);
+    const documentPage = registerPageWindow(documentsResult.rows.filter((row) => row.id !== null), page);
     const documents: SubledgerWorkspaceDocumentDto[] = [];
     for (const row of documentPage.rows) {
       const snapshot = subledgerSourceSnapshotSchema.parse(row.snapshot);
       const party = partyAccountById.get(snapshot.partyAccountId);
       const entity = entityById.get(snapshot.legalEntityId);
+      const allocationSources: NonNullable<SubledgerWorkspaceDocumentDto["allocationSources"]>[number][] = [];
+      if (snapshot.kind === "SUPPLIER_PAYMENT" || snapshot.kind === "CUSTOMER_RECEIPT") {
+        const related = await client.query<{ open_item_id: string; id: string; source_number: string; version: number; snapshot: unknown }>(
+          `SELECT item.id AS open_item_id, source.id, source.source_number, source.version, source.snapshot
+           FROM open_items item JOIN subledger_events event
+             ON event.organization_id=item.organization_id AND event.id=item.source_event_id
+           JOIN source_documents source ON source.organization_id=event.organization_id AND source.id=event.source_document_id
+           WHERE item.organization_id=$1 AND item.id=ANY($2::uuid[]) AND source.owner_module=$3 AND source.legal_entity_id=$4`,
+          [principal.organizationId, snapshot.allocations.map((allocation) => allocation.openItemId), ownerModule, snapshot.legalEntityId],
+        );
+        for (const source of related.rows) {
+          const original = subledgerSourceSnapshotSchema.parse(source.snapshot);
+          if (original.kind !== "SUPPLIER_BILL" && original.kind !== "SALES_INVOICE") continue;
+          allocationSources.push({ openItemId: source.open_item_id, sourceDocumentId: source.id, sourceNumber: source.source_number,
+            sourceVersion: source.version, attachments: await loadDocumentEvidence(client, {
+              organizationId: principal.organizationId, ownerModule, id: source.id, sourceNumber: source.source_number,
+              version: source.version, evidence: original.evidence,
+            }) });
+        }
+      }
       documents.push({
+        allocationSources,
         attachments: await loadDocumentEvidence(client, {
           organizationId: principal.organizationId, ownerModule, id: row.id,
           sourceNumber: row.source_number, version: row.version,
@@ -867,6 +901,7 @@ export async function loadSubledgerWorkspace(
       openItems,
       registerFilter,
       pagination: documentPage.pagination,
+      registerTotalCount: documentsResult.rows[0]?.total_count ?? documentPage.rows.length,
       preferredEntityId: entities.some((entity) => entity.id === preferredEntityId)
         ? preferredEntityId
         : entities[0]?.id ?? null,
