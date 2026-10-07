@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto";
 import type { PoolClient } from "pg";
 import { z } from "zod";
 import { withTenantTransaction } from "@/db/transaction";
+import { loadTaxFilingReadiness } from "./filing-readiness";
 import { createCommandFingerprint } from "@/kernel/command-fingerprint";
 import { exact } from "@/kernel/money";
 import { assertActorHasActivePermission } from "@/modules/identity/authorization";
@@ -70,6 +71,7 @@ export const createTaxFilingSchema = z.object({
   ledgerId: z.uuid(),
   templateId: z.uuid(),
   configurationId: z.uuid().optional(),
+  refreshFromFilingId: z.uuid().optional(),
   filingType: z.enum(["PREPARED", "HISTORICAL_IMPORT"]),
   periodStart: z.iso.date(),
   periodEnd: z.iso.date(),
@@ -143,6 +145,7 @@ export class TaxFilingError extends Error {
     message: string,
     public readonly status: 400 | 403 | 404 | 409,
     public readonly code: string,
+    public readonly safeDetails?: unknown,
   ) {
     super(message);
     this.name = "TaxFilingError";
@@ -161,6 +164,8 @@ async function withAuthorizedTaxWrite<T>(input: Readonly<{
   permission: Permission;
   reason: string;
   sourceSurface?: "API" | "IMPORT" | "MCP";
+  isolationLevel?: "REPEATABLE READ";
+  idempotencyKey?: string;
 }>, work: (client: PoolClient) => Promise<T>): Promise<T> {
   const context = mutationContext(input.principal, input.requestId, {
     reason: input.reason,
@@ -174,8 +179,16 @@ async function withAuthorizedTaxWrite<T>(input: Readonly<{
       actorId: input.principal.userId,
       permission: input.permission,
     });
+    if (input.idempotencyKey) {
+      await client.query("SELECT pg_advisory_xact_lock(hashtextextended('tax-command:' || $1::text || ':' || $2::text, 0))", [context.organizationId, input.idempotencyKey]);
+    }
+    // Governance rows are append-only: row locks would require forbidden UPDATE
+    // grants. Serialize canonical/lifecycle decisions with one shared fence.
+    if (input.permission === PERMISSIONS.manageTaxFilingCanonical) {
+      await client.query("SELECT pg_advisory_xact_lock(hashtextextended('tax-governance:' || $1::text, 0))", [context.organizationId]);
+    }
     return work(client);
-  });
+  }, input.isolationLevel ? { isolationLevel: input.isolationLevel } : undefined);
 }
 
 type TemplateRow = Readonly<{
@@ -280,6 +293,7 @@ export async function saveTaxAccountMappings(input: Readonly<{
     principal: input.principal,
     requestId: input.requestId,
     permission: PERMISSIONS.manageTaxMappings,
+    idempotencyKey: command.idempotencyKey,
     reason: command.reason,
     sourceSurface: input.sourceSurface,
   }, async (client) => {
@@ -442,6 +456,7 @@ export async function deactivateTaxAccountMappings(input: Readonly<{
     principal: input.principal,
     requestId: input.requestId,
     permission: PERMISSIONS.manageTaxMappings,
+    idempotencyKey: command.idempotencyKey,
     reason: command.reason,
     sourceSurface: input.sourceSurface,
   }, async (client) => {
@@ -511,6 +526,7 @@ export async function saveTaxFilingConfiguration(input: Readonly<{
     principal: input.principal,
     requestId: input.requestId,
     permission: PERMISSIONS.manageTaxFilingConfiguration,
+    idempotencyKey: command.idempotencyKey,
     reason: command.reason,
     sourceSurface: input.sourceSurface,
   }, async (client) => {
@@ -540,8 +556,8 @@ export async function saveTaxFilingConfiguration(input: Readonly<{
     if (template.template_key === "ca.gst-hst.return" && !command.registrationId) {
       throw new TaxFilingError("A GST/HST filing configuration requires an effective entity registration.", 400, "CONFIGURATION_REGISTRATION_REQUIRED");
     }
-    const mapping = (await client.query<{ id: string }>(
-      `SELECT mapping.id FROM tax_account_mapping_sets mapping
+    const mapping = (await client.query<{ id: string; effective_from: string; effective_to: string | null }>(
+      `SELECT mapping.id,mapping.effective_from::text,mapping.effective_to::text FROM tax_account_mapping_sets mapping
        WHERE mapping.organization_id=$1 AND mapping.id=$2
          AND mapping.legal_entity_id=$3 AND mapping.ledger_id=$4
          AND mapping.template_id=$5 AND mapping.state='ACTIVE'
@@ -551,6 +567,10 @@ export async function saveTaxFilingConfiguration(input: Readonly<{
       [input.principal.organizationId, command.mappingSetId, command.legalEntityId, command.ledgerId, command.templateId],
     )).rows[0];
     if (!mapping) throw new TaxFilingError("Choose the exact current active mapping version for this template.", 409, "CONFIGURATION_MAPPING_STALE");
+    if (mapping.effective_from > command.effectiveFrom
+      || (mapping.effective_to && (!command.effectiveTo || command.effectiveTo > mapping.effective_to))) {
+      throw new TaxFilingError("The configuration window must fit within the selected mapping's effective dates.", 400, "CONFIGURATION_MAPPING_WINDOW_INVALID");
+    }
     if (command.registrationId) {
       const registration = (await client.query(
         `SELECT 1 FROM entity_tax_registrations registration
@@ -579,7 +599,7 @@ export async function saveTaxFilingConfiguration(input: Readonly<{
          AND NOT EXISTS (SELECT 1 FROM tax_filing_configurations successor
            WHERE successor.organization_id=configuration.organization_id
              AND successor.supersedes_configuration_id=configuration.id)
-       ORDER BY configuration.version DESC LIMIT 1 FOR UPDATE`,
+       ORDER BY configuration.version DESC LIMIT 1`,
       [input.principal.organizationId, command.legalEntityId, command.filingTypeKey, command.registrationId],
     )).rows[0];
     if ((current?.version ?? 0) !== command.expectedConfigurationVersion) {
@@ -699,6 +719,7 @@ export async function createTaxFiling(input: Readonly<{
     principal: input.principal,
     requestId: input.requestId,
     permission: PERMISSIONS.prepareTaxFilings,
+    isolationLevel: "REPEATABLE READ",
     reason,
     sourceSurface: input.sourceSurface
       ?? (command.filingType === "HISTORICAL_IMPORT" ? "IMPORT" : "API"),
@@ -746,6 +767,33 @@ export async function createTaxFiling(input: Readonly<{
         failedValidationCount: validations.filter((rule) => rule.status === "FAIL").length,
         idempotentReplay: true,
       };
+    }
+
+    if (command.refreshFromFilingId) {
+      const source = (await client.query<{ external_reference: string | null; source_file_name: string | null }>(
+        `SELECT filing.external_reference,filing.source_file_name FROM tax_filings filing
+         JOIN tax_filing_templates original ON original.id=filing.template_id
+         JOIN tax_filing_templates selected ON selected.id=$7 AND selected.template_key=original.template_key
+         WHERE filing.organization_id=$1 AND filing.id=$2 AND filing.legal_entity_id=$3
+           AND filing.ledger_id=$4 AND filing.period_start=$5::date AND filing.period_end=$6::date`,
+        [input.principal.organizationId, command.refreshFromFilingId, command.legalEntityId,
+          command.ledgerId, command.periodStart, command.periodEnd, command.templateId],
+      )).rows[0];
+      if (!source || command.filingType !== "HISTORICAL_IMPORT") {
+        throw new TaxFilingError("Refresh must create a historical comparison for the original company, ledger, filing type and period.", 409, "REFRESH_SCOPE_MISMATCH");
+      }
+      if ((source.external_reference && source.external_reference !== command.externalReference)
+        || source.source_file_name !== (command.sourceFileName ?? null)) {
+        throw new TaxFilingError("Keep the original source reference and file name when refreshing a comparison.", 409, "REFRESH_SOURCE_MISMATCH");
+      }
+    }
+    const readiness = await loadTaxFilingReadiness(client, input.principal.organizationId, {
+      legalEntityId: command.legalEntityId, ledgerId: command.ledgerId, templateId: command.templateId,
+      configurationId: command.configurationId, periodStart: command.periodStart, periodEnd: command.periodEnd,
+    });
+    if (!readiness.ready) {
+      const blocker = readiness.blockers[0]!;
+      throw new TaxFilingError(blocker.message, 409, blocker.code, readiness);
     }
 
     const [template, ledger] = await Promise.all([
@@ -904,6 +952,11 @@ export async function createTaxFiling(input: Readonly<{
       mappingVersion: mappingSet.version,
       configurationId: configuration.id,
       configurationVersion: configuration.version,
+      capturedAt: readiness.checkedAt,
+      ledgerFingerprint: readiness.ledgerFingerprint,
+      mappingCoverage: readiness.coverage,
+      manualValues: command.manualValues,
+      refreshedFromFilingId: command.refreshFromFilingId ?? null,
     };
     const filingId = randomUUID();
     await client.query(
@@ -990,6 +1043,7 @@ export async function setTaxFilingCanonical(input: Readonly<{
     principal: input.principal,
     requestId: input.requestId,
     permission: PERMISSIONS.manageTaxFilingCanonical,
+    idempotencyKey: command.idempotencyKey,
     reason: command.reason,
     sourceSurface: input.sourceSurface,
   }, async (client) => {
@@ -1016,7 +1070,7 @@ export async function setTaxFilingCanonical(input: Readonly<{
          ON lifecycle.organization_id=filing.organization_id AND lifecycle.filing_id=filing.id
          AND NOT EXISTS (SELECT 1 FROM tax_filing_lifecycle_events successor
            WHERE successor.organization_id=lifecycle.organization_id AND successor.supersedes_event_id=lifecycle.id)
-       WHERE filing.organization_id=$1 AND filing.id=$2 FOR UPDATE OF filing`,
+       WHERE filing.organization_id=$1 AND filing.id=$2`,
       [input.principal.organizationId, command.filingId],
     )).rows[0];
     if (!filing) throw new TaxFilingError("The filing workpaper was not found.", 404, "FILING_NOT_FOUND");
@@ -1035,7 +1089,7 @@ export async function setTaxFilingCanonical(input: Readonly<{
          AND NOT EXISTS (SELECT 1 FROM tax_filing_canonical_selections successor
            WHERE successor.organization_id=selection.organization_id
              AND successor.supersedes_selection_id=selection.id)
-       ORDER BY selection.version DESC LIMIT 1 FOR UPDATE`,
+       ORDER BY selection.version DESC LIMIT 1`,
       [input.principal.organizationId, filing.legal_entity_id, filing.registration_id,
         filing.filing_type_key, filing.period_start, filing.period_end],
     )).rows[0];
@@ -1080,6 +1134,7 @@ export async function transitionTaxFilingLifecycle(input: Readonly<{
     principal: input.principal,
     requestId: input.requestId,
     permission: PERMISSIONS.manageTaxFilingCanonical,
+    idempotencyKey: command.idempotencyKey,
     reason: command.reason,
     sourceSurface: input.sourceSurface,
   }, async (client) => {
@@ -1098,7 +1153,7 @@ export async function transitionTaxFilingLifecycle(input: Readonly<{
        WHERE lifecycle.organization_id=$1 AND lifecycle.filing_id=$2
          AND NOT EXISTS (SELECT 1 FROM tax_filing_lifecycle_events successor
            WHERE successor.organization_id=lifecycle.organization_id AND successor.supersedes_event_id=lifecycle.id)
-       FOR UPDATE`,
+       `,
       [input.principal.organizationId, command.filingId],
     )).rows[0];
     if (!current) throw new TaxFilingError("The filing lifecycle was not found.", 404, "FILING_NOT_FOUND");

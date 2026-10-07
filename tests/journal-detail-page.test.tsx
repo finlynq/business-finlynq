@@ -50,7 +50,7 @@ const mocks = vi.hoisted(() => ({
   },
 }));
 
-vi.mock("next/navigation", () => ({ notFound: vi.fn(() => { throw new Error("not found"); }) }));
+vi.mock("next/navigation", () => ({ notFound: vi.fn(() => { throw new Error("not found"); }), useRouter: () => ({ refresh: vi.fn() }) }));
 vi.mock("@/modules/workspace/access", () => ({
   requireWorkspacePrincipal: vi.fn(async () => mocks.principal),
 }));
@@ -58,6 +58,7 @@ vi.mock("@/modules/ledger/tenant-workspace", () => ({
   loadTenantJournalDetail: vi.fn(async () => mocks.detail),
 }));
 
+import { loadTenantJournalDetail, type TenantJournalDetailDto } from "@/modules/ledger/tenant-workspace";
 import JournalDetailPage from "@/app/(workspace)/journals/[journalId]/page";
 
 describe("journal detail page", () => {
@@ -78,4 +79,32 @@ describe("journal detail page", () => {
     expect(markup).toContain("/app/receivables/invoices?q=INV-1001");
     expect(markup.toLowerCase()).not.toContain(">delete<");
   });
+  it("shows workflow recovery on a submitted generated journal and reloads posting evidence with its permanent number", async () => {
+    const blocked = { allowed: false, reasonCode: "APPROVAL_REQUIRED" as const, reason: "An independent authorized approver must approve this submitted version." };
+    const allowed = { allowed: true, reasonCode: null, reason: null };
+    const detail: TenantJournalDetailDto = {
+      ...mocks.detail, number: "Submitted", description: "Generated depreciation journal", typeKey: "ledger.manual",
+      ownerModule: "ledger", origin: "API", status: "SUBMITTED", sourceHref: null, sourceNumber: null, postedAt: null,
+      expectedContentHash: "a".repeat(64), expectedApprovalVersion: 3,
+      workflow: { status: "SUBMITTED", contentHash: "a".repeat(64), approvalVersion: 3,
+        manualPostingMode: "AUTO_POST", actorIsCreator: true, independentApprovalRequired: true,
+        actions: { submit: blocked, approve: blocked, post: blocked, withdraw: allowed, reject: blocked } },
+    };
+    vi.mocked(loadTenantJournalDetail).mockResolvedValueOnce(detail);
+    const submitted = renderToStaticMarkup(await JournalDetailPage({ params: Promise.resolve({ journalId: detail.id }) }));
+    expect(submitted).toContain("Generated depreciation journal");
+    expect(submitted).toContain("Journal workflow");
+    expect(submitted).toContain(">Withdraw submission</summary>");
+    expect(submitted).toContain("A different user with journal approval permission");
+    expect(submitted).not.toContain(">Post journal</summary>");
+
+    vi.mocked(loadTenantJournalDetail).mockResolvedValueOnce({ ...detail, number: "52", status: "POSTED",
+      postedAt: "2026-08-21T16:00:00.000Z", workflow: { ...detail.workflow!, status: "POSTED" } });
+    const posted = renderToStaticMarkup(await JournalDetailPage({ params: Promise.resolve({ journalId: detail.id }) }));
+    expect(posted).toContain("Journal 52");
+    expect(posted).toContain("POSTED");
+    expect(posted).not.toContain("Withdraw submission");
+    expect(posted).not.toContain("Journal workflow");
+  });
+
 });

@@ -34,6 +34,20 @@ import {
   type DisplayedAccountSegment,
 } from "./account-key-display";
 
+import {
+  buildJournalRegisterPredicate,
+  parseJournalFilters,
+  type JournalFilterSearchParams,
+  type JournalFilterState,
+  type JournalFilterOptions,
+} from "./journal-register-filters";
+import { loadJournalFilterOptions } from "./journal-filter-options";
+
+import {
+  getJournalWorkflowEligibility,
+  type JournalWorkflowEligibility,
+} from "./journal-workflow-eligibility";
+
 export type TenantReadiness = "EMPTY_ORGANIZATION" | "ENCRYPTION_SETUP_REQUIRED" | "READY";
 
 export type TenantJournalDto = Readonly<{
@@ -54,6 +68,8 @@ export type TenantJournalDto = Readonly<{
   creditFunctional: string;
   sourceNumber: string | null;
   expectedContentHash: string | null;
+  expectedApprovalVersion: number | null;
+  workflow: JournalWorkflowEligibility | null;
   reversalOfNumber: string | null;
   reversedByNumber: string | null;
   accountKeys: readonly Readonly<{
@@ -78,6 +94,9 @@ export type TenantJournalDto = Readonly<{
 
 export type TenantJournalDetailDto = Readonly<{
   id: string;
+  expectedContentHash: string | null;
+  expectedApprovalVersion: number | null;
+  workflow: JournalWorkflowEligibility | null;
   number: string;
   accountingDate: string;
   entityCode: string;
@@ -134,6 +153,9 @@ export type TenantJournalWorkspaceDto = Readonly<{
   canReverse: boolean;
   canAdminister: boolean;
   requiresMfaStepUp: boolean;
+  filterState: JournalFilterState;
+  filterOptions: JournalFilterOptions;
+  matchingJournalCount: number;
   reversalPeriods: readonly TenantJournalReversalPeriodDto[];
   journals: readonly TenantJournalDto[];
   pagination: RegisterPagination;
@@ -313,9 +335,11 @@ export async function loadTenantJournalWorkspace(
   search = "",
   selectedEntityId: string | null = null,
   requestedPage = 1,
+  filterParameters: JournalFilterSearchParams = {},
 ): Promise<TenantJournalWorkspaceDto> {
   const normalizedSearch = search.trim().slice(0, 100);
   const page = normalizeRegisterPage(requestedPage);
+  const filterState = parseJournalFilters(filterParameters);
   return withWorkspaceTenantRead(readContext(principal), "/app/journals", async (client) => {
     const membership = await assertActiveSessionMembership(client, principal);
     const canReadLedger = await actorHasActivePermission(client, {
@@ -325,7 +349,22 @@ export async function loadTenantJournalWorkspace(
     });
     if (!canReadLedger) throw new Error("Ledger read permission is required");
     const readiness = await tenantReadiness(client, principal.organizationId);
-    const pattern = `%${normalizedSearch.replace(/[\\%_]/g, "\\$&")}%`;
+    const predicate = buildJournalRegisterPredicate({
+      organizationId: principal.organizationId, selectedEntityId, search: normalizedSearch, filterState,
+    });
+    const filterOptions = await loadJournalFilterOptions(client, principal.organizationId, selectedEntityId);
+    const count = await client.query<{ matching_journal_count: string }>(
+      `SELECT count(*)::text AS matching_journal_count
+       FROM journal_entries entry
+       JOIN legal_entities entity ON entity.organization_id = entry.organization_id AND entity.id = entry.legal_entity_id
+       JOIN fiscal_periods entry_period ON entry_period.organization_id = entry.organization_id
+         AND entry_period.ledger_id = entry.ledger_id AND entry_period.id = entry.period_id
+       JOIN journal_type_definitions journal_type ON journal_type.id = entry.journal_type_definition_id
+         AND journal_type.key = entry.journal_type_key AND journal_type.version = entry.journal_type_version
+       WHERE ${predicate.sql}`,
+      predicate.parameters,
+    );
+    const matchingJournalCount = Number(count.rows[0].matching_journal_count);
     const journals = await client.query<{
       id: string;
       ledger_id: string;
@@ -457,31 +496,14 @@ export async function loadTenantJournalWorkspace(
          ORDER BY reversal.created_at DESC, reversal.id DESC
          LIMIT 1
        ) reversed_by ON true
-       WHERE entry.organization_id = $1
-         AND NOT EXISTS (
-           SELECT 1 FROM journal_transaction_controls control
-           WHERE control.organization_id = entry.organization_id
-             AND control.journal_entry_id = entry.id
-             AND control.outcome = 'DELETED'
-         )
-         AND ($4::uuid IS NULL OR entry.legal_entity_id = $4::uuid)
-         AND ($2 = '' OR entry.description ILIKE $3 ESCAPE '\\'
-              OR entry.journal_type_key ILIKE $3 ESCAPE '\\'
-              OR entity.code ILIKE $3 ESCAPE '\\'
-              OR coalesce(entry.journal_number::text, 'draft') ILIKE $3 ESCAPE '\\')
+       WHERE ${predicate.sql}
        ORDER BY entry.accounting_date DESC, entry.created_at DESC, entry.id DESC
-       LIMIT $5 OFFSET $6`,
-      [
-        principal.organizationId,
-        normalizedSearch,
-        pattern,
-        selectedEntityId,
-        registerPageSize + 1,
-        (page - 1) * registerPageSize,
-      ],
+       LIMIT $${predicate.parameters.length + 1} OFFSET $${predicate.parameters.length + 2}`,
+      [...predicate.parameters, registerPageSize + 1, (page - 1) * registerPageSize],
     );
     const journalPage = registerPageWindow(journals.rows, page);
     const journalIds = journalPage.rows.map((row) => row.id);
+    const workflows = await getJournalWorkflowEligibility(client, principal, journalIds);
     const accountPostingRows = journalIds.length > 0
       ? await client.query<{
           journal_entry_id: string;
@@ -636,7 +658,6 @@ export async function loadTenantJournalWorkspace(
         ? period.starts_on
         : today > period.ends_on ? period.ends_on : today,
     }));
-    const contentHashPattern = /^[a-f0-9]{64}$/i;
     return {
       demoOnly: membership.isDemo,
       readiness,
@@ -645,9 +666,13 @@ export async function loadTenantJournalWorkspace(
       canReverse: canPost && canReverse,
       canAdminister,
       requiresMfaStepUp: canAdminister && !hasRecentStepUp(principal),
+      filterState,
+      filterOptions,
+      matchingJournalCount,
       reversalPeriods,
       pagination: journalPage.pagination,
       journals: journalPage.rows.map((row) => {
+        const workflow = workflows.get(row.id) ?? null;
         const accountPostings = (postingsByJournal.get(row.id) ?? []).map((posting) => ({
           ...presentAccountKey(posting.canonical_key, row.account_segment_definitions),
           debitFunctional: posting.debit_functional,
@@ -672,17 +697,16 @@ export async function loadTenantJournalWorkspace(
           debitFunctional: row.total_debit_functional,
           creditFunctional: row.total_credit_functional ?? row.total_debit_functional,
           sourceNumber: row.source_number,
-          expectedContentHash: row.canonical_content_hash,
+          expectedContentHash: workflow?.contentHash ?? null,
+          expectedApprovalVersion: workflow?.approvalVersion ?? null,
+          workflow,
           reversalOfNumber: row.reversal_of_number === null ? null : String(row.reversal_of_number),
           reversedByNumber: row.reversed_by_number === null ? null : String(row.reversed_by_number),
           accountKeys: (row.canonical_account_keys ?? []).map((canonicalKey) => (
             presentAccountKey(canonicalKey, row.account_segment_definitions)
           )),
           accountPostings,
-          canPost: canPost && row.owner_module === "ledger" && row.journal_type_key === "ledger.manual" &&
-            row.status === "DRAFT" && (row.period_state === "OPEN" ||
-              (row.period_state === "ADJUSTMENT_ONLY" && canPostAdjustment)) &&
-            contentHashPattern.test(row.canonical_content_hash ?? ""),
+          canPost: workflow?.actions.post.allowed === true,
           canReverse: canPost && canReverse && row.owner_module === "ledger" &&
             row.journal_type_key === "ledger.manual" && row.status === "POSTED" &&
             row.reversed_by_number === null && reversalPeriods.some((period) => period.ledgerId === row.ledger_id),
@@ -696,7 +720,7 @@ export async function loadTenantJournalWorkspace(
         };
       }),
     };
-  });
+  }, { isolationLevel: "REPEATABLE READ" });
 }
 
 export async function loadTenantJournalDetail(
@@ -777,6 +801,8 @@ export async function loadTenantJournalDetail(
     );
     const header = headerResult.rows[0];
     if (!header) return null;
+    const workflows = await getJournalWorkflowEligibility(client, principal, [journalId]);
+    const workflow = workflows.get(journalId) ?? null;
 
     const lineResult = await client.query<{
       id: string;
@@ -854,6 +880,9 @@ export async function loadTenantJournalDetail(
 
     return {
       id: header.id,
+      expectedContentHash: workflow?.contentHash ?? null,
+      expectedApprovalVersion: workflow?.approvalVersion ?? null,
+      workflow,
       number: header.journal_number === null ? "Draft" : String(header.journal_number),
       accountingDate: header.accounting_date,
       entityCode: header.entity_code,
@@ -900,7 +929,7 @@ export async function loadTenantJournalDetail(
         };
       }),
     };
-  });
+  }, { isolationLevel: "REPEATABLE READ" });
 }
 
 export async function loadTenantPartyDirectory(

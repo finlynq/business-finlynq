@@ -1,5 +1,6 @@
 import { NextRequest } from "next/server";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { parseJournalFilters } from "@/modules/ledger/journal-register-filters";
 import { demoSearchIndex } from "@/modules/demo/dashboard-data";
 
 const mocks = vi.hoisted(() => {
@@ -30,6 +31,10 @@ const mocks = vi.hoisted(() => {
       canDraft: false,
       canPost: false,
       canReverse: false,
+      filterState: parseJournalFilters(),
+      filterOptions: { fiscalYears: [], periods: [], accounts: [], journalTypes: [], sourceModules: [], currencies: [] },
+      matchingJournalCount: 0,
+      pagination: { page: 1, pageSize: 50, hasPrevious: false, hasNext: false },
       reversalPeriods: [],
       journals: [],
     })),
@@ -382,6 +387,7 @@ describe("real organization workspace isolation", () => {
       "",
       "30000000-0000-4000-8000-000000000001",
       1,
+      {},
     );
     expect(mocks.loadTenantPartyDirectory).toHaveBeenCalledWith(mocks.principal, "", 1);
   });

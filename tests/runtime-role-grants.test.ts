@@ -66,6 +66,7 @@ describe("runtime role reconciliation contract", () => {
     expect(script).toContain("app.auth_issue_oidc_user_session(uuid,uuid,uuid,text,text,text,text,text,text)");
     expect(script).toContain("app.auth_accept_oidc_organization_signup(text,text,boolean,uuid,text,text,text,text,text,text,text)");
     expect(script).toContain("app.admin_control_journal_transaction(text,uuid,text,text)");
+    expect(script).toContain("app.journal_workflow_recovery_replayed(uuid,text,text,text)");
     for (const signature of [
       "app.auth_skip_mfa_enrollment(text,text)",
       "app.auth_issue_password_user_session(uuid,uuid,uuid,text,text,text,text)",

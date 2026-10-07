@@ -17,6 +17,7 @@ export type McpToolRuntime = Readonly<{
   snapshot: McpAuthorizationSnapshot;
   requestId: string;
   requestUrl?: string;
+  deployedToolNames?: readonly string[];
   sessionPrincipal: ReturnType<typeof mcpSessionPrincipal>;
 }>;
 
@@ -251,6 +252,7 @@ export function registerMcpTools(
           snapshot,
           requestId: execution.requestId,
           requestUrl,
+          deployedToolNames: definitions.map((tool) => tool.policy.name),
           sessionPrincipal: mcpSessionPrincipal(
             snapshot.principal,
             stepUpExpiresAt,

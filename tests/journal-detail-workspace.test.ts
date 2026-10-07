@@ -6,6 +6,9 @@ const mocks = vi.hoisted(() => ({
   queries: [] as { statement: string; params: readonly unknown[] | undefined }[],
   query: vi.fn(async (statement: string, params?: readonly unknown[]) => {
     mocks.queries.push({ statement, params });
+    if (statement.includes("AS canonical_hash") || statement.includes("SELECT DISTINCT permission.permission_key")) {
+      return { rows: [] };
+    }
     if (statement.includes("FROM organization_memberships membership")) {
       return { rows: [{ is_demo: false }] };
     }
@@ -117,7 +120,9 @@ describe("tenant journal detail", () => {
       permission: PERMISSIONS.readMcpLedger,
     });
     expect(mocks.queries.slice(1).every((query) => query.params?.[0] === principal.organizationId)).toBe(true);
-    expect(mocks.queries.slice(1).every((query) => query.params?.[1] === journalId)).toBe(true);
+    const journalQueries = mocks.queries.filter((query) => query.statement.includes("WHERE line.organization_id = $1 AND line.journal_entry_id = $2") || query.statement.includes("WHERE entry.organization_id = $1 AND entry.id = $2"));
+    expect(journalQueries.every((query) => query.params?.[1] === journalId)).toBe(true);
+    expect(detail?.workflow).toBeNull();
     expect(detail).toMatchObject({
       number: "41",
       debitFunctional: "113",

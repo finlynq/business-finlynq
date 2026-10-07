@@ -278,6 +278,10 @@ test("demo session protects workspace routes and is revoked by sign-out", async 
   await expect(page.getByRole("region", { name: "Asset register overview" })).toBeVisible();
   await expect(page.getByRole("heading", { level: 2, name: "Asset and prepaid register" })).toBeVisible();
   await expect(page.getByRole("heading", { level: 2, name: "Register-to-GL reconciliation" })).toBeVisible();
+  await page.goto("/app/tax");
+  await expect(page.getByRole("heading", { level: 1, name: "Tax returns & review" })).toBeVisible();
+  await page.goto("/app/tax?view=history");
+  await expect(page.getByRole("heading", { level: 2, name: "Prepared and imported returns" })).toBeVisible();
   await page.goto("/app/journals");
 
   // The public demo is shared and writable, so visitor-created journals can
@@ -287,7 +291,7 @@ test("demo session protects workspace routes and is revoked by sign-out", async 
   const journalFilter = page.getByRole("form", { name: "Filter journal register" });
   await journalFilter.getByRole("searchbox", { name: "Journal, description, entity, or type" })
     .fill("Synthetic Canadian software accrual");
-  await journalFilter.getByRole("button", { name: "Search", exact: true }).click();
+  await journalFilter.getByRole("button", { name: "Apply filters", exact: true }).click();
   const seededJournal = page.getByRole("row").filter({ hasText: "Synthetic Canadian software accrual" });
   await expect(seededJournal).toBeVisible();
 
