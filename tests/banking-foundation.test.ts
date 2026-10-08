@@ -168,7 +168,8 @@ describe("banking persistence and workflow contract", () => {
     expect(seed).toMatch(/UPDATE bank_sync_runs SET[\s\S]*status = 'SUCCEEDED'/);
     expect(service).toContain("line.transaction_currency = $6");
     expect(migration).toContain("line.transaction_currency = reconciliation.currency_code");
-    expect(service).not.toContain("ELSE line.debit_functional - line.credit_functional");
+    expect(service).toContain("ELSE line.debit_functional - line.credit_functional");
+    expect(service).toContain("AND (line.transaction_currency = $6 OR ledger.functional_currency = $6)");
     expect(migration).toContain("guard_bank_combination_mapping_state");
     expect(migration).toContain("guard_bank_gl_account_mapping_state");
     expect(migration).toContain("guard_bank_ledger_mapping_state");

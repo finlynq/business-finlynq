@@ -7,6 +7,9 @@ import { loadOrganizationRootKek } from "@/security/root-secret";
 import { encryptStorageValue } from "@/modules/document-storage/store";
 import { claimInboxDocument, completeInboxDocument, listDocumentInbox, readInboxDocument, retryDocumentFiling, reviewInboxDocument, syncDocumentInbox } from "@/modules/document-storage/inbox";
 import { downloadBankStatementEvidence, downloadDocumentEvidence } from "@/modules/subledger/evidence-service";
+import { readFiledStatement } from "@/modules/document-storage/filed-statement";
+import { importFiledStatement } from "@/modules/document-storage/filed-statement";
+import { previewBankStatementExtraction } from "@/modules/banking/statement-import-model";
 import { uploadInboxDocument } from "@/modules/document-storage/upload";
 import { itemSourceMetadata } from "@/modules/document-storage/inbox-store";
 import { disconnectStorage, finishStorageConnection, listStorageConnections, startStorageConnection } from "@/modules/document-storage/connections";
@@ -73,7 +76,7 @@ vi.mock("@/modules/subledger/ar-ap-accounting", async (original) => ({
 }));
 
 const run = process.env.TEST_DATABASE_URL && process.env.TEST_APP_DATABASE_URL ? describe : describe.skip;
-const ids = { org: randomUUID(), other: randomUUID(), actor: randomUUID(), reader: randomUUID(), entity: randomUUID(), role: randomUUID(), membership: randomUUID(), readerMembership: randomUUID(), session: randomUUID(), secondSession: randomUUID(), readerSession: randomUUID(), connection: randomUUID() };
+const ids = { org: randomUUID(), other: randomUUID(), actor: randomUUID(), reader: randomUUID(), entity: randomUUID(), role: randomUUID(), membership: randomUUID(), readerMembership: randomUUID(), session: randomUUID(), secondSession: randomUUID(), readerSession: randomUUID(), connection: randomUUID(), bankLedger: randomUUID(), bankCash: randomUUID(), bankCashCombination: randomUUID() };
 const context = { organizationId: ids.org, actorId: ids.actor, sessionId: ids.session, sessionMode: "real" as const, requestId: randomUUID(), authMethod: "password+mfa", sourceSurface: "MCP" as const, reason: "Cloud inbox test" };
 function requestContext(overrides: Partial<typeof context> = {}) { return { ...context, ...overrides, requestId: randomUUID() }; }
 const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jZ1kAAAAASUVORK5CYII=", "base64");
@@ -132,11 +135,15 @@ run("cloud inbox PostgreSQL lifecycle", () => {
     await owner.query("INSERT INTO users(id,email_lookup_hash,email_ciphertext,password_hash,active) VALUES ($1,$2,'encrypted','test',true),($3,$4,'encrypted-reader','test',true)", [ids.actor, ids.actor, ids.reader, ids.reader]);
     await owner.query("INSERT INTO organization_memberships(id,organization_id,user_id,active) VALUES ($1,$2,$3,true),($4,$2,$5,true)", [ids.membership, ids.org, ids.actor, ids.readerMembership, ids.reader]);
     await owner.query("INSERT INTO roles(id,organization_id,key,display_name) VALUES ($1,$2,'INBOX_TEST','Inbox test')", [ids.role, ids.org]);
-    await owner.query("INSERT INTO role_permissions(organization_id,role_id,permission_key) SELECT $1,$2,unnest(ARRAY['payables.read','payables.manage','banking.read','organization.settings.manage'])", [ids.org, ids.role]);
+    await owner.query("INSERT INTO role_permissions(organization_id,role_id,permission_key) SELECT $1,$2,unnest(ARRAY['payables.read','payables.manage','banking.read','banking.sync','banking.reconcile.prepare','banking.connections.manage','organization.settings.manage'])", [ids.org, ids.role]);
     await owner.query("INSERT INTO membership_roles(organization_id,membership_id,role_id,assigned_by) VALUES ($1,$2,$3,$4),($1,$5,$3,$4)", [ids.org, ids.membership, ids.role, ids.actor, ids.readerMembership]);
     for (const [session, actor, membership] of [[ids.session, ids.actor, ids.membership], [ids.secondSession, ids.actor, ids.membership], [ids.readerSession, ids.reader, ids.readerMembership]]) await owner.query(`INSERT INTO auth_sessions(id,token_hash,user_id,organization_id,membership_id,auth_method,session_mode,user_agent_hash,idle_timeout_seconds,idle_expires_at,expires_at,mfa_verified_at,step_up_expires_at)
       VALUES ($1::uuid,$1::text,$2,$3,$4,'PASSWORD','REAL',repeat('a',64),7200,now()+interval '2 hours',now()+interval '24 hours',now(),now()+interval '2 hours')`, [session, actor, ids.org, membership]);
     await owner.query("INSERT INTO legal_entities(id,organization_id,code,display_name,country_code,region_code,active) VALUES ($1,$2,'INBOX','Inbox company','US','WA',true)", [ids.entity, ids.org]);
+    await owner.query("INSERT INTO organization_currencies(organization_id,currency_code,enabled,created_by) VALUES ($1,'USD',true,$2)", [ids.org, ids.actor]);
+    await owner.query("INSERT INTO ledgers(id,organization_id,legal_entity_id,code,display_name,kind,accounting_profile,functional_currency,active) VALUES ($1,$2,$3,'BANK','Bank import ledger','PRIMARY','US_GAAP_NONPUBLIC','USD',true)", [ids.bankLedger, ids.org, ids.entity]);
+    await owner.query("INSERT INTO gl_accounts(id,organization_id,ledger_id,code,display_name,class,control_kind,postable,active,valid_from) VALUES ($1,$2,$3,'1010','Bank import cash','ASSET','NONE',true,true,'2020-01-01')", [ids.bankCash, ids.org, ids.bankLedger]);
+    await owner.query("INSERT INTO account_combinations(id,organization_id,ledger_id,entity_id,account_id,active) VALUES ($1,$2,$3,$4,$5,true)", [ids.bankCashCombination, ids.org, ids.bankLedger, ids.entity, ids.bankCash]);
     const root = loadOrganizationRootKek(); const dek = randomBytes(32);
     try { const wrapped = new LocalRootKeyProvider(root).wrapOrganizationKey(ids.org, 1, dek); await owner.query("INSERT INTO organization_key_versions(organization_id,version,key_provider,wrapped_dek,active) VALUES ($1,1,$2,$3,true)", [ids.org, wrapped.provider, serializeWrappedKey(wrapped)]); }
     finally { root.fill(0); dek.fill(0); }
@@ -616,6 +623,50 @@ run("cloud inbox PostgreSQL lifecycle", () => {
     expect((await owner.query("SELECT max(version)::int AS n FROM source_documents WHERE organization_id=$1", [ids.org])).rows[0].n).toBe(2);
     receiptDownload = { assetId: saved.item.assetId!, sourceDocumentId: saved.item.sourceDocumentId! };
     expect((await downloadDocumentEvidence({ context: requestContext(), ...receiptDownload })).bytes).toEqual(Buffer.concat([png, Buffer.from("receipt")]));
+  });
+  it("reads an already FILED CSV linked to a supplier bill without another upload", async () => {
+    const csv = Buffer.from("posted,amount\n2026-09-04,-10.00\n");
+    const row = await discoverDocument("filed-bank-evidence.csv", "text/csv", csv);
+    const claim = randomUUID();
+    await claimInboxDocument(requestContext(), { itemId: row.id, claimId: claim });
+    const read = await readInboxDocument(requestContext(), { itemId: row.id, claimId: claim });
+    const uploadsBefore = cloud.uploads;
+    const saved = await completeInboxDocument(requestContext(), {
+      itemId: row.id, claimId: claim, sha256: read.sha256,
+      metadata: { documentType: "OTHER", documentDate: "2026-09-04", counterparty: "Test Bank" },
+      action: { type: "LINK_DRAFT", kind: "SUPPLIER_BILL", sourceNumber: draftInput.sourceNumber,
+        expectedVersion: 2, purpose: "SUPPORTING" },
+      reason: "Retain the original bank export as supporting evidence",
+    });
+    expect(saved.item.status).toBe("FILED");
+    const identity = { itemId: row.id, assetId: saved.item.assetId!, sourceDocumentId: saved.item.sourceDocumentId!, sha256: read.sha256 };
+    const page = await readFiledStatement(requestContext(), { ...identity, page: 1 });
+    expect(page).toMatchObject({ ...identity, page: 1, pageCount: 1, contentKind: "DELIMITED_TEXT" });
+    expect(page.text).toContain("-10.00");
+    expect(cloud.uploads).toBe(uploadsBefore);
+    await expect(readFiledStatement(requestContext({ organizationId: ids.other }), { ...identity, page: 1 })).rejects.toThrow();
+    const extraction = {
+      extractionVersion: "finlynq.statement.v1" as const, importMode: "TRANSACTION_EXPORT" as const,
+      institution: "Synthetic bank", maskedAccount: "••1234", accountKind: "CASH" as const,
+      currency: "USD", statementStartOn: "2026-09-04", statementEndOn: "2026-09-04",
+      rows: [{ rowNumber: 1, postedOn: "2026-09-04", direction: "DECREASE" as const,
+        sourceKind: "FEE" as const, amount: "10.00" }],
+    };
+    const preview = previewBankStatementExtraction(extraction);
+    expect(preview.readyToImport).toBe(true);
+    const before = (await owner.query("SELECT count(*)::int AS sources,(SELECT count(*)::int FROM journal_entries WHERE organization_id=$1) AS journals FROM source_documents WHERE organization_id=$1", [ids.org])).rows[0];
+    const importInput = { ...identity, extraction, mapping: { mode: "CREATE_OR_REUSE_ACCOUNT" as const,
+      legalEntityId: ids.entity, ledgerId: ids.bankLedger, accountCombinationId: ids.bankCashCombination },
+      previewHash: preview.previewHash, confirmed: true as const,
+      reason: "Import the reviewed filed bank-fee export from original evidence" };
+    const imported = await importFiledStatement(requestContext(), importInput);
+    expect(imported).toMatchObject({ evidenceAssetId: identity.assetId, importedRowCount: 1 });
+    expect(await importFiledStatement(requestContext(), importInput)).toMatchObject({
+      statementImportId: imported.statementImportId, idempotentReplay: true, importedRowCount: 1,
+    });
+    const after = (await owner.query("SELECT count(*)::int AS sources,(SELECT count(*)::int FROM journal_entries WHERE organization_id=$1) AS journals FROM source_documents WHERE organization_id=$1", [ids.org])).rows[0];
+    expect(after).toEqual(before);
+    expect(cloud.uploads).toBe(uploadsBefore);
   });
   it("downloads invoice/receipt pairs and repeated assets concurrently for multiple users", async () => {
     cloud.activeDownloads = 0; cloud.maximumConcurrentDownloads = 0; cloud.downloadDelayMilliseconds = 40;
