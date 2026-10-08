@@ -66,6 +66,17 @@ describe("remote MCP advertised tool catalog", () => {
     expect(new Set(names).size).toBe(names.length);
   });
 
+  it("advertises a bounded filing retry and exact readback handle", () => {
+    const retry = advertisedSchema("finlynq_daily_retry_document_filing");
+    const status = advertisedSchema("finlynq_daily_get_document_filing_status");
+    expect(retry.tool.policy).toMatchObject({ group: "DAILY", access: "WRITE" });
+    expect(status.tool.policy).toMatchObject({ group: "DAILY", access: "READ" });
+    expect(retry.schema.required).toEqual(["itemId"]);
+    expect(status.schema.required).toEqual(["itemId"]);
+    expect(retry.tool.description).toContain("filingPending");
+    expect(status.tool.description).toContain("FILED");
+  });
+
   it("advertises all immutable evidence operations with their complete schemas", () => {
     for (const [name, expected] of Object.entries(evidenceContracts)) {
       const { tool, schema } = advertisedSchema(name);
