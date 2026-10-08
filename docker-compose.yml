@@ -373,15 +373,15 @@ services:
         DatabaseDirectory /var/lib/clamav
         TemporaryDirectory /tmp
         LogTime yes
-        StreamMaxLength 8M
-        MaxFileSize 16M
-        MaxScanSize 32M
+        StreamMaxLength 21M
+        MaxFileSize 32M
+        MaxScanSize 96M
         MaxRecursion 10
         MaxFiles 1000
-        MaxScanTime 10000
+        MaxScanTime 45000
         MaxThreads 2
         MaxQueue 4
-        ReadTimeout 15
+        ReadTimeout 45
         CommandReadTimeout 5
         ConcurrentDatabaseReload no
         SelfCheck 600
