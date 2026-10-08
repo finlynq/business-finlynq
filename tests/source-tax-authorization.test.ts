@@ -4,6 +4,8 @@ import { describe, expect, it } from "vitest";
 import type { PoolClient } from "pg";
 import { assertPermission } from "@/modules/subledger/ar-ap-access";
 import { PERMISSIONS } from "@/modules/identity/permissions";
+import { draftRequiresSourceTaxReviewPermission } from "@/modules/subledger/source-tax-review";
+import { businessDocumentLineInputSchema } from "@/modules/subledger/document-model";
 
 const root = process.cwd();
 const draftCommands = readFileSync(join(root, "src/modules/subledger/ar-ap-draft-commands.ts"), "utf8");
@@ -13,15 +15,30 @@ const permissions = readFileSync(join(root, "src/modules/identity/permissions.ts
 describe("controlled source-tax authorization boundary", () => {
   it("requires the dedicated permission for create, edit, and issue operations", () => {
     expect(permissions).toContain('overrideTaxDeterminations: "tax.determinations.override"');
-    expect(draftCommands.match(/PERMISSIONS\.overrideTaxDeterminations/g)).toHaveLength(2);
+    expect(draftCommands.match(/draftRequiresSourceTaxReviewPermission/g)).toHaveLength(3);
     expect(issueCommand).toContain("PERMISSIONS.overrideTaxDeterminations");
   });
 
   it("keeps source-tax review evidence inside the immutable document snapshot", () => {
-    expect(draftCommands).toContain("sourceTaxOverride");
+    expect(draftCommands).toContain("draftRequiresSourceTaxReviewPermission");
     expect(issueCommand.indexOf("overrideTaxDeterminations"))
       .toBeLessThan(issueCommand.lastIndexOf("assertSnapshotTaxDecisionsCurrent"));
   });
+});
+
+it("allows an exact pending source-tax draft but requires review permission for its approval", () => {
+  const line = businessDocumentLineInputSchema.parse({
+    description: "Insurance premium", accountCombinationId: "10000000-0000-4000-8000-000000000003",
+    netAmount: "100.00", tax: { packKey: "ca.on.hst", category: "EXEMPT", destinationCountry: "CA",
+      destinationRegion: "ON", recoverablePercent: "0", sourceTaxOverride: {
+        ratePercent: "8", amount: "8.00", jurisdiction: "CA-ON", componentKey: "ON_INSURANCE_RST",
+        effectiveFrom: "2026-01-01", reason: "Printed Ontario insurance RST",
+        evidenceReference: "synthetic-insurance-invoice",
+      } },
+  });
+  expect(draftRequiresSourceTaxReviewPermission([line])).toBe(false);
+  expect(draftRequiresSourceTaxReviewPermission([{ ...line, tax: { ...line.tax,
+    sourceTaxOverride: { ...line.tax.sourceTaxOverride!, reviewedTreatment: "NONRECOVERABLE" } } }])).toBe(true);
 });
 
 const reviewContext = { organizationId: "10000000-0000-4000-8000-000000000001", actorId: "10000000-0000-4000-8000-000000000002", requestId: "source-tax-permission", authMethod: "password+mfa", sourceSurface: "API" as const };
