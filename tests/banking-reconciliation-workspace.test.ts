@@ -8,8 +8,8 @@ describe("bank reconciliation workspace contracts", () => {
   it.each([
     ["ASSET", "125.00", "0", "125.000000000", "INCREASE", "cash deposit"],
     ["ASSET", "0", "40.00", "-40.000000000", "DECREASE", "cash withdrawal"],
-    ["LIABILITY", "0", "85.00", "85.000000000", "INCREASE", "card purchase"],
-    ["LIABILITY", "85.00", "0", "-85.000000000", "DECREASE", "card payment or refund"],
+    ["LIABILITY", "0", "85.00", "-85.000000000", "INCREASE", "card purchase"],
+    ["LIABILITY", "85.00", "0", "85.000000000", "DECREASE", "card payment or refund"],
   ] as const)("interprets %s account signs", (accountClass, debitAmount, creditAmount, amount, effect, _label) => {
     void _label;
     expect(interpretBankAccountLine({ accountClass, debitAmount, creditAmount })).toEqual({
