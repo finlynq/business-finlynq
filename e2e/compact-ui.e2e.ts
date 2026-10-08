@@ -61,7 +61,7 @@ test("workspace pages and major route views keep table overflow local", async ({
   }
   await page.setViewportSize({ width: 320, height: 568 });
   await page.goto("/app/journals");
-  const detail = page.getByRole("link", { name: "View journal entry", exact: true }).first();
+  const detail = page.getByRole("link", { name: /^View journal entry #/ }).first();
   await detail.click();
   await expect(page.getByRole("heading", { level: 1 })).toContainText("Journal");
   await expectNoPageOverflow(page);
