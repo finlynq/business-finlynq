@@ -37,6 +37,7 @@ export type McpAuthorizationSnapshot = Readonly<{
   directWriteSessionId: string | null;
   directWriteStepUpExpiresAt: Date | null;
   connectionVersion: number;
+  agentSelfApprovalEnabled?: boolean;
 }>;
 
 function canonicalValue(value: unknown): unknown {
@@ -125,6 +126,9 @@ export async function loadMcpAuthorizationSnapshot(
          AND membership.id = $3 AND membership.active`,
       [principal.organizationId, principal.userId, principal.membershipId],
     );
+    const agentPolicy = await client.query<{ allowed: boolean }>(
+      "SELECT app.mcp_agent_self_approval_allowed($1) AS allowed", [principal.organizationId],
+    );
     return {
       principal: { ...principal, scopes: effectiveScopes },
       permissions: new Set(permissions.rows.map((row) => row.permission_key)),
@@ -134,6 +138,7 @@ export async function loadMcpAuthorizationSnapshot(
       directWriteSessionId: selected.direct_write_session_id,
       directWriteStepUpExpiresAt: selected.direct_write_step_up_expires_at,
       connectionVersion: selected.version,
+      agentSelfApprovalEnabled: agentPolicy.rows[0]?.allowed === true,
     };
   });
 }

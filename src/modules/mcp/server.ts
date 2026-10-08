@@ -27,6 +27,7 @@ import { SETUP_MCP_TOOLS } from "./setup-tools";
 import { SHARED_MCP_TOOLS } from "./shared-tools";
 import { EMAIL_MCP_TOOLS } from "./email-tools";
 import { registerMcpTools } from "./tool-types";
+import { MAX_CLOUD_DOCUMENT_BYTES } from "@/modules/document-storage/limits";
 
 export const ALL_MCP_TOOLS = [...SHARED_MCP_TOOLS, ...DAILY_MCP_TOOLS, ...ASSET_MCP_TOOLS, ...INBOX_MCP_TOOLS, ...STORAGE_SETUP_MCP_TOOLS, ...STATEMENT_MCP_TOOLS, ...SETUP_MCP_TOOLS, ...EMAIL_MCP_TOOLS] as const;
 
@@ -113,7 +114,7 @@ export async function handleMcpRequest(request: Request): Promise<Response> {
   let boundedRequest = request;
   if (request.method === "POST") {
     try {
-      const body = await readBoundedJson(request, 3 * 1024 * 1024);
+      const body = await readBoundedJson(request, 4 * Math.ceil(MAX_CLOUD_DOCUMENT_BYTES / 3) + 16 * 1024);
       const headers = new Headers(request.headers);
       headers.delete("content-length");
       boundedRequest = new Request(request.url, { method: "POST", headers, body: JSON.stringify(body), signal: request.signal });

@@ -1,7 +1,7 @@
 import "server-only";
 
 import { createHash } from "node:crypto";
-import { MAX_EVIDENCE_BYTES } from "@/modules/subledger/evidence-model";
+import { MAX_CLOUD_DOCUMENT_BYTES } from "./limits";
 import { inboxUploadMimeTypeSchema, validateInboxDocumentBytes, type InboxUploadMimeType } from "./file-types";
 import { StorageError } from "./provider";
 
@@ -10,7 +10,7 @@ const MAX_HEADER_LINE_BYTES = 8 * 1024;
 const MAX_MIME_DEPTH = 8;
 const MAX_MIME_PARTS = 64;
 const MAX_ATTACHMENTS = 20;
-const MAX_DECODED_BYTES = 4 * 1024 * 1024;
+const MAX_DECODED_BYTES = MAX_CLOUD_DOCUMENT_BYTES;
 const MAX_PREVIEW_CHARACTERS = 100_000;
 
 export type EmlAttachmentStatus =
@@ -431,7 +431,7 @@ function parseEntity(bytes: Buffer, depth: number, state: ParserState): Headers 
   if (!isAttachment && (mediaType === "text/plain" || mediaType === "text/html")) {
     const decoded = decodeTransfer(body, oneHeader(headers, "content-transfer-encoding", true) ?? "7bit");
     state.decodedBytes += decoded.length;
-    if (state.decodedBytes > MAX_DECODED_BYTES) throw emlError("STORAGE_EML_DECODED_LIMIT", "The decoded email exceeds the 4 MiB safety limit.");
+    if (state.decodedBytes > MAX_DECODED_BYTES) throw emlError("STORAGE_EML_DECODED_LIMIT", "The decoded email exceeds the 20 MiB safety limit.");
     const charset = contentType.parameters.get("charset") ?? "utf-8";
     const text = safeText(decodeBytes(decoded, charset));
     if (mediaType === "text/plain") state.plainBodies.push(text);
@@ -448,7 +448,7 @@ function parseEntity(bytes: Buffer, depth: number, state: ParserState): Headers 
   try {
     decoded = decodeTransfer(body, oneHeader(headers, "content-transfer-encoding", true) ?? "7bit");
     state.decodedBytes += decoded.length;
-    if (state.decodedBytes > MAX_DECODED_BYTES) throw emlError("STORAGE_EML_DECODED_LIMIT", "The decoded email exceeds the 4 MiB safety limit.");
+    if (state.decodedBytes > MAX_DECODED_BYTES) throw emlError("STORAGE_EML_DECODED_LIMIT", "The decoded email exceeds the 20 MiB safety limit.");
     const sha256 = createHash("sha256").update(decoded).digest("hex");
     if (dispositionValue === "inline" && mediaType.startsWith("image/")) {
       state.previews.push({ index, filename, mimeType: mediaType, byteSize: decoded.length, sha256, disposition: "inline", status: "INLINE_SKIPPED", reason: "Inline message artwork is not extracted as accounting evidence." });
@@ -475,8 +475,8 @@ function parseEntity(bytes: Buffer, depth: number, state: ParserState): Headers 
 }
 
 export function parseEmlDocument(bytes: Buffer): ParsedEmlDocument {
-  if (bytes.length < 1 || bytes.length > MAX_EVIDENCE_BYTES) {
-    throw emlError("STORAGE_EML_SIZE_LIMIT", "Emails must be between 1 byte and 2 MiB.");
+  if (bytes.length < 1 || bytes.length > MAX_CLOUD_DOCUMENT_BYTES) {
+    throw emlError("STORAGE_EML_SIZE_LIMIT", "Emails must be between 1 byte and 20 MiB.");
   }
   const state: ParserState = {
     parts: 0,

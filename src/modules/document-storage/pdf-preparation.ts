@@ -135,7 +135,7 @@ async function verifyAllPages(original: Buffer, optimized: Buffer, sourcePath: s
 export async function prepareLosslessPdf(original: Buffer): Promise<{ optimized: Buffer; verification: PdfPreparationVerification }> {
   if (original.length < 1 || original.length > MAX_PDF_PREPARATION_BYTES) throw pdfError("STORAGE_PDF_PREPARATION_LIMIT", `Source size ${original.length} bytes exceeds the ${MAX_PDF_PREPARATION_BYTES} byte (8 MiB) preparation limit. Split or re-export the PDF and retry.`);
   if (!/^%PDF-(?:1\.[0-9]|2\.0)/.test(original.subarray(0, 8).toString("ascii"))) throw pdfError("STORAGE_PDF_CORRUPT", "This file is not a valid PDF. Re-export the document and retry.");
-  if (original.length <= MAX_EVIDENCE_BYTES) throw pdfError("STORAGE_PDF_ALREADY_FITS", `Source size ${original.length} bytes is within the ${MAX_EVIDENCE_BYTES} byte inbox limit. Upload this PDF normally.`);
+  if (original.length <= MAX_EVIDENCE_BYTES) throw pdfError("STORAGE_PDF_ALREADY_FITS", `Source size ${original.length} bytes is already below the ${MAX_EVIDENCE_BYTES} byte lossless optimization target. Upload this PDF normally.`);
   if (/\/Encrypt\b/.test(original.toString("latin1"))) throw pdfError("STORAGE_PDF_ENCRYPTED", "Encrypted PDFs cannot be prepared. Export an unencrypted copy and retry.");
   if (/\/ByteRange\b/.test(original.toString("latin1"))) throw pdfError("STORAGE_PDF_PROTECTED", "Signed PDFs cannot be recompressed safely. Keep the signed original and export an unsigned copy for review.");
   const directory = await mkdtemp(join(tmpdir(), `finlynq-pdf-${randomUUID()}-`));
@@ -151,7 +151,7 @@ export async function prepareLosslessPdf(original: Buffer): Promise<{ optimized:
     await runQpdf(["--deterministic-id", "--stream-data=compress", "--object-streams=preserve", "--normalize-content=n", sourcePath, outputPath], 100_000);
     const info = await stat(outputPath);
     if (info.size > MAX_EVIDENCE_BYTES || info.size >= original.length || info.size < 1) {
-      throw pdfError("STORAGE_PDF_NOT_REDUCIBLE", `Source size ${original.length} bytes cannot be safely reduced below ${MAX_EVIDENCE_BYTES} bytes. Keep the original and split or re-export a smaller unsigned PDF, then retry.`);
+      throw pdfError("STORAGE_PDF_NOT_REDUCIBLE", `Source size ${original.length} bytes cannot be safely reduced below the optional ${MAX_EVIDENCE_BYTES} byte optimization target. Upload the original directly if it is within the 20 MiB cloud document limit.`);
     }
     optimized = await readFile(outputPath);
     const json = await runQpdf(["--json", "--json-stream-data=none", outputPath], 4 * 1024 * 1024);

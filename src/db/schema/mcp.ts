@@ -69,6 +69,16 @@ export const mcpConnections = pgTable(
   ],
 );
 
+export const mcpAgentSelfApprovalPolicy = pgTable("mcp_agent_self_approval_policy", {
+  organizationId: uuid("organization_id").primaryKey().references(() => organizations.id, { onDelete: "restrict" }),
+  enabled: boolean("enabled").notNull().default(false),
+  version: integer("version").notNull().default(1),
+  enabledBy: uuid("enabled_by").references(() => users.id, { onDelete: "restrict" }),
+  enabledAt: timestamp("enabled_at", { withTimezone: true }),
+  changedBy: uuid("changed_by").notNull().references(() => users.id, { onDelete: "restrict" }),
+  changedAt: timestamp("changed_at", { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [check("mcp_agent_self_approval_policy_version_check", sql`${table.version} > 0`)]);
+
 export const mcpOauthCodes = pgTable(
   "mcp_oauth_codes",
   {

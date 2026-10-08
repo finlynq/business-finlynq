@@ -66,22 +66,14 @@ export function DocumentInbox({ initialConnections, initialInbox, entities, perm
       };
       const mimeType = file.type || fallbackMimeType[fileExtension];
       if (!file.size || !fallbackMimeType[fileExtension] || !mimeType) throw new Error("Choose a non-empty PDF, PNG, JPEG, CSV, TSV, TXT, XLS, or XLSX file.");
-      const requiresPreparation = file.size > 2 * 1024 * 1024 && fileExtension === "pdf";
-      if (file.size > 2 * 1024 * 1024 && !requiresPreparation) throw new Error(`Source size ${file.size} bytes exceeds the 2097152 byte (2 MiB) inbox limit. Split or export a smaller file and retry.`);
-      if (file.size > 8 * 1024 * 1024) throw new Error(`Source size ${file.size} bytes exceeds the 8388608 byte (8 MiB) PDF preparation limit. Split or re-export an unsigned smaller PDF and retry.`);
+      if (file.size > 20 * 1024 * 1024) throw new Error(`Source size ${file.size} bytes exceeds the 20971520 byte (20 MiB) cloud document limit. Split or export a smaller file and retry.`);
       const buffer = await file.arrayBuffer(); const bytes = new Uint8Array(buffer);
       const sha256 = Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", buffer))).map((v) => v.toString(16).padStart(2, "0")).join("");
       const nameHash = Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(file.name)))).map((v) => v.toString(16).padStart(2, "0")).join("");
       let binary = ""; for (let i = 0; i < bytes.length; i += 8192) binary += String.fromCharCode(...bytes.subarray(i, i + 8192));
       const input = { connectionId, filename: file.name, mimeType, byteSize: file.size, sha256, contentBase64: btoa(binary), idempotencyKey: `browser:${nameHash}:${sha256}` };
-      let preparedSize: number | null = null;
-      if (requiresPreparation) {
-        const response = await fetch("/api/document-storage/prepare-pdf", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(input) });
-        const result = await response.json();
-        if (!response.ok) throw new Error(result.error ?? "PDF preparation failed. Export a smaller unsigned PDF and retry.");
-        preparedSize = result.preparation.optimizedByteSize;
-      } else await request("upload", input);
-      await refresh(); setMessage(preparedSize === null ? "Uploaded to your cloud inbox. Ask your connected AI client to process it." : `Verified every PDF page and reduced the file from ${file.size} to ${preparedSize} bytes. The original is retained in Archive / Original PDFs; the copy is ready in Inbox.`);
+      await request("upload", input);
+      await refresh(); setMessage("Uploaded to your cloud inbox. Ask your connected AI client to process it.");
     });
   }
   return <>
@@ -138,7 +130,7 @@ export function DocumentInbox({ initialConnections, initialInbox, entities, perm
             <button className="secondary-button" disabled={busy} onClick={() => void perform(async () => { const result = await request("sync", { connectionId: connection.id }); await refresh(); setMessage(result.hasMore ? "More files are available. Sync again to continue." : "Inbox sync complete."); })}>Sync inbox</button>
             <label className="secondary-button">Upload document<input type="file" accept=".pdf,.png,.jpg,.jpeg,.csv,.tsv,.txt,.xls,.xlsx" disabled={busy} onChange={(event) => { const file = event.currentTarget.files?.[0]; event.currentTarget.value = ""; if (file) void upload(connection.id, file); }} /></label>
           </>}
-          {connection.active && canManage(connection) && <p className="panel-note">Unsigned PDFs up to 8 MiB are prepared losslessly when needed; the original is retained in Archive / Original PDFs. Other uploads are limited to 2 MiB.</p>}
+          {connection.active && canManage(connection) && <p className="panel-note">Upload documents up to 20 MiB. Originals remain in your connected cloud storage.</p>}
 
         </div>{permissions.admin && <CompactDisclosure summary="Manage connection and sharing" defaultOpen={!connection.active}>{permissions.admin && <label className="document-sharing-consent"><input type="checkbox" checked={Boolean(reconnectConsent[connection.id])} onChange={(event) => setReconnectConsent({ ...reconnectConsent, [connection.id]: event.target.checked })} /><span>When reconnecting, I authorize the access described above and continued sharing with this company’s accounting module. Use the original account; the saved folder locations will be retained.</span></label>}<div className="document-actions">{permissions.admin && <>
             <button className="secondary-button" disabled={busy || !reconnectConsent[connection.id] || !providers.find((p) => p.provider === connection.provider)?.configured} onClick={() => void perform(async () => { const result = await request("connect", { provider: connection.provider, legalEntityId: connection.legalEntityId, module: connection.module, label: connection.label, connectionId: connection.id, sharedWithOrganization: true, accessAcknowledged: reconnectConsent[connection.id] }); window.location.assign(result.authorizationUrl); })}>Reconnect</button>

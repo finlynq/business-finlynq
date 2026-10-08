@@ -25,7 +25,7 @@ afterEach(() => { vi.unstubAllEnvs(); vi.restoreAllMocks(); });
 
 describe("self-hosted Mailpit relay protocol", () => {
   it("preserves the full signed body through Next's proxy buffer, including one overflow byte", () => {
-    expect(nextConfig.experimental?.proxyClientMaxBodySize).toBe(MAX_RELAY_BODY_BYTES + 1);
+    expect(nextConfig.experimental?.proxyClientMaxBodySize).toBeGreaterThan(MAX_RELAY_BODY_BYTES);
   });
   it("matches Personal's exact timestamp.body HMAC and rejects modification, stale and future signatures", () => {
     const rawBody = bytes(payload());

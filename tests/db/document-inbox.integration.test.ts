@@ -417,6 +417,33 @@ run("cloud inbox PostgreSQL lifecycle", () => {
       [ids.org, assetId],
     )).rows).toEqual([{ count: 1 }]);
   });
+  it("returns a durable MCP completion before the cloud move and replays without duplicating evidence", async () => {
+    const bytes = Buffer.from("date,amount\n2026-09-01,13.80\n");
+    const row = await discoverDocument("deferred-statement.csv", "text/csv", bytes);
+    const claimId = randomUUID();
+    await claimInboxDocument(requestContext(), { itemId: row.id, claimId });
+    const read = await readInboxDocument(requestContext(), { itemId: row.id, claimId });
+    const command = {
+      itemId: row.id, claimId, sha256: read.sha256,
+      metadata: { documentType: "STATEMENT" as const, documentDate: "2026-09-01", counterparty: "Test Bank" },
+      action: { type: "ARCHIVE_ONLY" as const }, reason: "Archive validated bank statement",
+    };
+    const movesBefore = cloud.moves;
+    const first = await completeInboxDocument(requestContext(), command, true);
+    expect(first).toMatchObject({ completionHandle: row.id, filingPending: true, idempotentReplay: false,
+      item: { id: row.id, status: "READY_TO_FILE" } });
+    const replay = await completeInboxDocument(requestContext(), command, true);
+    expect(replay).toMatchObject({ completionHandle: row.id, filingPending: true, idempotentReplay: true,
+      item: { id: row.id, status: "READY_TO_FILE", assetId: first.item.assetId } });
+    expect(cloud.moves).toBe(movesBefore);
+    expect((await owner.query("SELECT count(*)::int AS count FROM document_evidence_assets WHERE organization_id=$1 AND id=$2",
+      [ids.org, first.item.assetId])).rows[0].count).toBe(1);
+    await retryDocumentFiling(requestContext(), { itemId: row.id });
+    const filed = await completeInboxDocument(requestContext(), command, true);
+    expect(filed).toMatchObject({ completionHandle: row.id, filingPending: false, idempotentReplay: true,
+      item: { id: row.id, status: "FILED", assetId: first.item.assetId } });
+    expect(cloud.moves).toBe(movesBefore + 1);
+  });
   it("extracts EML attachments exactly once with source lineage and preserves the original", async () => {
     const boundary = "finlynq-eml-test";
     const eml = Buffer.from([
