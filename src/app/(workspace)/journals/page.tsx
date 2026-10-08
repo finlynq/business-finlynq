@@ -70,23 +70,23 @@ export default async function JournalsPage({ searchParams }: { searchParams: Pro
       {workspace.journals.length ? (
         <section className="panel" aria-label="Journal register">
           <div className="table-scroll" tabIndex={0}>
-            <table>
+            <table className={styles.registerTable}>
               <caption className="sr-only">Journal register</caption>
-              <thead><tr><th scope="col">Journal</th><th scope="col">Description</th><th scope="col">Account postings</th><th scope="col">Owner</th><th scope="col">Journal debit</th><th scope="col">Journal credit</th><th scope="col">Status</th><th scope="col">Actions</th></tr></thead>
+              <thead><tr><th scope="col">Journal</th><th scope="col">Description</th><th scope="col">Postings</th><th scope="col">Owner</th><th scope="col">Debit</th><th scope="col">Credit</th><th scope="col">Status</th><th scope="col">Actions</th></tr></thead>
               <tbody>{workspace.journals.map((journal) => {
                 const sourceHref = sourceModuleHref(journal);
                 const reversalPeriods = workspace.reversalPeriods.filter((period) => period.ledgerId === journal.ledgerId);
                 return (
-                  <ExpandableTableRow key={journal.id} columns={8} label={`account postings for ${journal.number}`} cells={<>
-                    <td><Link className="text-link compact-button" href={`/app/journals/${journal.id}`}>{journal.number}</Link><small>{journal.accountingDate} · {journal.entityCode}</small></td>
-                    <td><strong>{journal.description}</strong><small>{journal.typeKey}{journal.reversalOfNumber ? ` · reverses ${journal.reversalOfNumber}` : ""}{journal.reversedByNumber ? ` · reversed by ${journal.reversedByNumber}` : ""}</small></td>
-                    <td>{journal.accountPostings?.length ?? journal.accountKeys?.length ?? 0} account postings</td>
+                  <ExpandableTableRow key={journal.id} columns={8} label={`account postings for ${journal.number}`} triggerLabel="postings" actionLayoutClassName={styles.actionLine} cells={<>
+                    <td><Link className="text-link" href={`/app/journals/${journal.id}`}>#{journal.number}</Link><span className={styles.journalMeta}> · {journal.accountingDate} · {journal.entityCode}</span></td>
+                    <td><span className={styles.description} title={`${journal.description} · ${journal.typeKey}`}>{journal.description}</span></td>
+                    <td>{journal.accountPostings?.length ?? journal.accountKeys?.length ?? 0}</td>
                     <td>{journal.ownerModule}</td>
                     <td className="amount-cell">{formatAmount(journal.currency, journal.debitFunctional ?? journal.amount)}</td>
                     <td className="amount-cell">{formatAmount(journal.currency, journal.creditFunctional ?? journal.amount)}</td>
                     <td><StatusPill status={journal.reversedByNumber ? "REVERSED" : journal.status} /></td>
                     </>} actions={<div className={styles.actions}>
-                        <Link className="text-link compact-button" href={`/app/journals/${journal.id}`}>View journal entry</Link>
+                        <Link className="text-link compact-button" href={`/app/journals/${journal.id}`}>Open</Link>
                         {journal.canPost && journal.expectedContentHash && (
                           <JournalRegisterAction
                             key={`${journal.id}:post:${journal.expectedContentHash}:${journal.expectedApprovalVersion}`}
@@ -96,7 +96,7 @@ export default async function JournalsPage({ searchParams }: { searchParams: Pro
                             action={{ kind: "post", expectedContentHash: journal.expectedContentHash, expectedApprovalVersion: journal.expectedApprovalVersion ?? undefined }}
                           />
                         )}
-                        {(journal.canReverse || journal.canUnpost || journal.canDelete) && <CompactDisclosure summary="Corrections" className="inline-disclosure">                        {journal.canReverse && reversalPeriods.length > 0 && (
+                        {(journal.canReverse || journal.canUnpost || journal.canDelete) && <CompactDisclosure summary="Correct" className="inline-disclosure">                        {journal.canReverse && reversalPeriods.length > 0 && (
                           <JournalRegisterAction
                             key={`${journal.id}:reverse`}
                             journalId={journal.id}
@@ -125,9 +125,8 @@ export default async function JournalsPage({ searchParams }: { searchParams: Pro
                         )}
 </CompactDisclosure>}
                         {sourceHref && (
-                          <Link className="text-link compact-button" href={sourceHref}>Open {journal.ownerModule === "receivables" ? "AR" : "AP"} source</Link>
+                          <Link className="text-link compact-button" href={sourceHref}>{journal.ownerModule === "receivables" ? "AR" : "AP"} source</Link>
                         )}
-                        {journal.reversedByNumber && <span className="subtle-label">Reversal posted</span>}
                       </div>}><div className="posting-evidence">{journal.accountPostings?.length ? (
                       <div className={styles.postingList}>
                         {journal.accountPostings.map((posting) => (
