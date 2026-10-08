@@ -11,6 +11,7 @@ import { StorageError } from "./provider";
 import { assertDirectChild, assertStorageFolder } from "./boundaries";
 import { decodeInboxUpload } from "./file-types";
 import type { PdfPreparationVerification } from "./pdf-preparation";
+import { MAX_CLOUD_DOCUMENT_BYTES } from "./limits";
 
 export type PdfUploadProvenance = PdfPreparationVerification & Readonly<{ originalFilename: string; originalProviderFileId: string; originalArchiveFolderId: string }>;
 
@@ -24,7 +25,7 @@ export async function uploadInboxDocument(context: TenantTransactionContext, inp
   const decoded = decodeInboxUpload(command);
   const bytes = decoded.bytes;
   try {
-    await scanEvidence(bytes);
+    await scanEvidence(bytes, MAX_CLOUD_DOCUMENT_BYTES);
     return await withTenantTransaction(context, async (client) => {
       await assertStorageWrite(client, context);
       const connection = await loadConnection(client, context, command.connectionId, "manage");

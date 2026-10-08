@@ -931,18 +931,7 @@ export async function loadBankingWorkspace(
         });
         const unmatchedLineRows = unmatchedReconciliationLedgerLines(lineRows);
         const observationTotal = observationRows.reduce((total, row) => total.plus(row.amount), new Decimal(0));
-        const observationAmountById = new Map(observationRows.map((row) => [row.versionId, new Decimal(row.amount)]));
-        const lineAmountById = new Map(lineRows.map((row) => [row.lineId, new Decimal(row.amount)]));
-        const ledgerTotal = reconciliationAllocationsResult.rows.reduce((total, allocation) => {
-          const observationAmount = observationAmountById.get(allocation.observation_version_id);
-          const lineAmount = lineAmountById.get(allocation.journal_line_id);
-          if (!observationAmount || !lineAmount || lineAmount.isZero()
-            || observationAmount.isPositive() !== lineAmount.isPositive()) {
-            return total;
-          }
-          const allocated = new Decimal(allocation.allocated_amount);
-          return total.plus(lineAmount.isPositive() ? allocated : allocated.negated());
-        }, new Decimal(0));
+        const ledgerTotal = lineRows.reduce((total, line) => total.plus(line.amount), new Decimal(0));
         const statementMovement = new Decimal(selectedReconciliation.closing_balance).minus(selectedReconciliation.opening_balance);
         const liveMatchHash = createHash("sha256").update(JSON.stringify(reconciliationAllocationsResult.rows.map((row) => ({
           id: row.id,

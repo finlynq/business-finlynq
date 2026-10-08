@@ -582,6 +582,34 @@
       "when": 1791380371763,
       "tag": "0082_tax_registration_scope_versions",
       "breakpoints": true
+    },
+    {
+      "idx": 83,
+      "version": "7",
+      "when": 1791474051489,
+      "tag": "0083_bank_match_cutover_guards",
+      "breakpoints": true
+    },
+    {
+      "idx": 84,
+      "version": "7",
+      "when": 1791474549087,
+      "tag": "0084_cloud_document_20mib",
+      "breakpoints": true
+    },
+    {
+      "idx": 85,
+      "version": "7",
+      "when": 1791475039784,
+      "tag": "0085_mcp_agent_self_approval_policy",
+      "breakpoints": true
+    },
+    {
+      "idx": 86,
+      "version": "7",
+      "when": 1791475084591,
+      "tag": "0086_mcp_agent_self_approval_guards",
+      "breakpoints": true
     }
   ]
 }

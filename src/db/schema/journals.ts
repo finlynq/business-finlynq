@@ -168,6 +168,7 @@ export const journalApprovals = pgTable(
     contentHash: text("content_hash").notNull(),
     decision: text("decision").notNull(),
     actorId: uuid("actor_id").notNull(),
+    mcpSelfApprovalConnectionId: uuid("mcp_self_approval_connection_id"),
     reason: text("reason"),
     decidedAt: timestamp("decided_at", { withTimezone: true }).notNull().defaultNow(),
   },

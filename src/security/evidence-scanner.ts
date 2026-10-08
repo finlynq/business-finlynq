@@ -2,6 +2,7 @@ import "server-only";
 
 import { createConnection } from "node:net";
 import { MAX_EVIDENCE_BYTES } from "@/modules/subledger/evidence-model";
+import { MAX_CLOUD_DOCUMENT_BYTES } from "@/modules/document-storage/limits";
 
 // Only operator-controlled endpoints are used. No user-supplied URLs or paths.
 async function clamCommand(command: "VERSION" | "INSTREAM", bytes?: Buffer): Promise<string> {
@@ -21,7 +22,7 @@ async function clamCommand(command: "VERSION" | "INSTREAM", bytes?: Buffer): Pro
       socket.destroy();
       if (error) reject(error); else resolve(result!);
     };
-    const deadline = setTimeout(() => finish(new Error("Evidence scanner timed out")), 15_000);
+    const deadline = setTimeout(() => finish(new Error("Evidence scanner timed out")), bytes && bytes.length > 8 * 1024 * 1024 ? 45_000 : 15_000);
     socket.on("error", () => finish(new Error("Evidence scanning is unavailable")));
     socket.on("end", () => finish(new Error("Evidence scanner response was incomplete")));
     socket.on("data", (chunk: Buffer) => {
@@ -48,7 +49,7 @@ async function clamCommand(command: "VERSION" | "INSTREAM", bytes?: Buffer): Pro
 }
 
 export async function scanEvidence(bytes: Buffer, maximumBytes = MAX_EVIDENCE_BYTES): Promise<{ version: string; scannedAt: string }> {
-  if (maximumBytes > 8 * 1024 * 1024 || bytes.length < 1 || bytes.length > maximumBytes) throw new Error("Invalid evidence size");
+  if (maximumBytes > MAX_CLOUD_DOCUMENT_BYTES || bytes.length < 1 || bytes.length > maximumBytes) throw new Error("Invalid evidence size");
   const version = await clamCommand("VERSION");
   // VERSION includes the signature database's timestamp. Refuse stale engines,
   // even if freshclam failed after the daemon started.

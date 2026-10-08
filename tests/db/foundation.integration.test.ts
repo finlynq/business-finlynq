@@ -1567,6 +1567,60 @@ runDatabaseTests("PostgreSQL accounting controls", () => {
     expect(audit.rows[1].safe_metadata.approvalVersion).toBe(first.approvalVersion);
   });
 
+  it("allows an owner-enabled MCP creator approval across connections and preserves posting after revocation", async () => {
+    const connectionId = randomUUID();
+    const clientId = `finlynq_${randomUUID()}`;
+    await adminPool.query(
+      "INSERT INTO mcp_oauth_clients(client_id,client_name,redirect_uris) VALUES($1,'Self-approval integration',ARRAY['https://client.example/callback'])",
+      [clientId],
+    );
+    await adminPool.query(
+      `INSERT INTO mcp_connections(id,organization_id,user_id,membership_id,client_id,client_name,scopes,daily_mode)
+       VALUES($1,$2,$3,$4,$5,'Self-approval integration',ARRAY['mcp:daily:write'],'ALLOW_WRITES')`,
+      [connectionId, ids.orgA, ids.actor, ids.membership, clientId],
+    );
+    await adminPool.query("UPDATE auth_sessions SET step_up_expires_at=now()+interval '10 minutes' WHERE id=$1", [ids.validSession]);
+    const created = await createAdministrativeJournal("MCP creator approval", { post: false, actorId: ids.actor, periodId: ids.workflowPeriod });
+    const reason = "Approve the exact reviewed creator journal";
+    const context = { organizationId: ids.orgA, actorId: ids.actor, sessionId: connectionId,
+      sessionMode: "real" as const, requestId: randomUUID(), authMethod: "oauth2.1+pkce",
+      sourceSurface: "MCP" as const, reason };
+    const submitted = await submitJournalForApproval({ context, journalId: created.journalId });
+    const approval = { journalId: created.journalId, expectedContentHash: submitted.contentHash,
+      expectedApprovalVersion: submitted.approvalVersion, reason };
+    await expect(approveSubmittedJournal({ context: { ...context, requestId: randomUUID() }, ...approval }))
+      .rejects.toMatchObject({ code: "CREATOR_CANNOT_APPROVE" });
+    await asTenant(async (client) => {
+      await client.query("SELECT set_config('app.session_id',$1,true)", [ids.validSession]);
+      await client.query("SELECT set_config('app.session_mode','real',true)");
+      await client.query("SELECT set_config('app.source_surface','UI',true)");
+      await client.query("SELECT set_config('app.auth_method','password+mfa',true)");
+      await client.query("SELECT set_config('app.reason','Enable creator approval for integration verification',true)");
+      expect((await client.query<{ policy: { enabled: boolean; version: number } }>(
+        "SELECT app.set_mcp_agent_self_approval(true,0) AS policy",
+      )).rows[0]?.policy).toMatchObject({ enabled: true, version: 1 });
+    });
+    const approved = await approveSubmittedJournal({ context: { ...context, requestId: randomUUID() }, ...approval });
+    expect(approved.status).toBe("APPROVED");
+    const decision = await adminPool.query<{ mcp_self_approval_connection_id: string }>(
+      "SELECT mcp_self_approval_connection_id FROM journal_approvals WHERE organization_id=$1 AND journal_entry_id=$2 AND journal_version=$3",
+      [ids.orgA, created.journalId, submitted.approvalVersion],
+    );
+    expect(decision.rows[0]?.mcp_self_approval_connection_id).toBe(connectionId);
+    await asTenant(async (client) => {
+      await client.query("SELECT set_config('app.session_id',$1,true)", [ids.validSession]);
+      await client.query("SELECT set_config('app.session_mode','real',true)");
+      await client.query("SELECT set_config('app.source_surface','UI',true)");
+      await client.query("SELECT set_config('app.reason','Revoke creator approval after integration verification',true)");
+      expect((await client.query<{ policy: { enabled: boolean; version: number } }>(
+        "SELECT app.set_mcp_agent_self_approval(false,1) AS policy",
+      )).rows[0]?.policy).toMatchObject({ enabled: false, version: 2 });
+    });
+    expect((await postJournal({ context: { ...context, requestId: randomUUID() },
+      journalId: created.journalId, expectedContentHash: submitted.contentHash,
+      expectedApprovalVersion: submitted.approvalVersion })).status).toBe("POSTED");
+  });
+
   it("creates journals concurrently with bound idempotency, role-aware auto-post, and one full reversal", async () => {
     const policyContext = {
       organizationId: ids.orgA,
