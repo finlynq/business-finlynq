@@ -50,16 +50,75 @@
   white-space: nowrap;
 }
 
-.actions {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 7px;
-  min-width: 145px;
+.registerTable {
+  table-layout: fixed;
+  min-width: 1320px;
 }
 
-.actions a {
-  min-height: 36px;
+.registerTable th,
+.registerTable tbody tr:not(:global(.expanded-row)) td {
+  padding: 8px 10px;
+}
+
+.registerTable th:nth-child(1) { width: 14%; }
+.registerTable th:nth-child(2) { width: 24%; }
+.registerTable th:nth-child(3) { width: 7%; }
+.registerTable th:nth-child(4) { width: 7%; }
+.registerTable th:nth-child(5) { width: 9%; }
+.registerTable th:nth-child(6) { width: 9%; }
+.registerTable th:nth-child(7) { width: 8%; }
+.registerTable th:nth-child(8) { width: 22%; }
+
+.registerTable tbody tr:not(:global(.expanded-row)) td {
+  white-space: nowrap;
+  font-size: 12px;
+}
+
+.journalMeta {
+  color: #63758a;
+  font-size: 11px;
+}
+
+.reversalMeta {
+  margin-left: 4px;
+  color: #63758a;
+  font-size: 10px;
+}
+
+.description {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 650;
+}
+
+.actionLine,
+.actions {
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 5px;
+  white-space: nowrap;
+}
+
+.actionLine a,
+.actionLine button {
+  min-height: 30px;
+  padding: 4px 6px;
+  font-size: 11px;
+}
+
+.actions :global(.compact-disclosure) {
+  border: 0;
+  background: transparent;
+}
+
+.actions :global(.compact-disclosure > summary) {
+  min-height: 30px;
+  padding: 6px 2px;
+  color: #0b604c;
+  font-size: 11px;
 }
 
 @media (max-width: 760px) {
@@ -68,4 +127,4 @@
   }
 }
 
-@media(pointer:coarse),(max-width:860px) { .actions a { min-height:44px; } }
+@media(pointer:coarse),(max-width:860px) { .actionLine a, .actionLine button, .actions :global(.compact-disclosure > summary) { min-height:44px; } }
