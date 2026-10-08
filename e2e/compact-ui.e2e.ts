@@ -122,9 +122,12 @@ test("report range switching preserves both period and date inputs", async ({ pa
   await expect(filters.locator('select[name="fromPeriod"]')).toBeHidden();
 });
 
-test("journal evidence stays available in a full-width expanded row", async ({ page }) => {
+test("journal register uses compact rows while keeping posting evidence available", async ({ page }) => {
   await openDemo(page, "/app/journals");
   const trigger = page.getByRole("button", { name: /Show account postings for/ }).first();
+  const registerRow = trigger.locator("xpath=ancestor::tr[1]");
+  await expect(registerRow.locator("td").nth(1).locator("span")).toHaveCSS("white-space", "nowrap");
+  expect(await registerRow.evaluate((node) => node.getBoundingClientRect().height)).toBeLessThan(70);
   const id = await trigger.getAttribute("aria-controls");
   if (!id) throw new Error("Missing evidence row association");
   const stableTrigger = page.locator(`button[aria-controls=${JSON.stringify(id)}]`);
