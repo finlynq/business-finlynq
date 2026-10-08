@@ -72,7 +72,12 @@ run("immutable booking reports and authorized posting",()=>{
  expect(issued.document.snapshot).toMatchObject({subtotal:"100.00",taxTotal:"8.00",grossTotal:"108.00"});
  if(issued.document.snapshot.kind!=="SUPPLIER_BILL")throw new Error("Expected a posted supplier bill");
  expect(issued.document.snapshot.lines[0].taxDecision.components).toEqual([expect.objectContaining({key:"ON_INSURANCE_RST_NONRECOVERABLE",amount:"8.00",treatment:"NONRECOVERABLE"})]);
- expect((await owner.query("SELECT count(*)::int AS n FROM journal_lines WHERE organization_id=$1 AND journal_entry_id=$2",[id.org,issued.journalId])).rows[0].n).toBe(2);
+ const postedLines=(await owner.query("SELECT account_combination_id,debit_transaction::text AS debit,credit_transaction::text AS credit FROM journal_lines WHERE organization_id=$1 AND journal_entry_id=$2 ORDER BY account_combination_id",[id.org,issued.journalId])).rows;
+ expect(postedLines).toEqual(expect.arrayContaining([
+   expect.objectContaining({account_combination_id:id.expenseCombination,debit:"108.000000000",credit:"0.000000000"}),
+   expect.objectContaining({account_combination_id:id.payableCombination,debit:"0.000000000",credit:"108.000000000"}),
+ ]));
+ expect(postedLines).toHaveLength(2);
  expect((await issueBusinessDocument({context:context(),kind:"SUPPLIER_BILL",sourceNumber:bill.sourceNumber,expectedVersion:2,idempotencyKey:"insurance-rst-issue"})).journalId).toBe(issued.journalId);
  },30000);
  it("captures an encrypted immutable draft and replays the same create without posting",async()=>{manual=await journalRecord();const args=batch([manual]);review=await createBookingBatch(context(),args);expect(review.status).toBe("DRAFT");expect(review.snapshot.entries[0].linesArePosted).toBe(false);expect((await createBookingBatch(context(),args)).reportId).toBe(review.reportId);await expect(createBookingBatch(context(),{...args,title:"Changed"})).rejects.toThrow(/Idempotency/);
