@@ -14,7 +14,7 @@ import { buildBusinessDocumentSnapshot } from "@/modules/subledger/document-mode
 import { correctTaxRegistrationScope } from "@/modules/ledger/accounting-configuration";
 import type { SessionPrincipal } from "@/modules/identity/session";
 import { appendSourceDocument } from "@/modules/subledger/ar-ap-persistence";
-import { issueBusinessDocument,recordCustomerReceiptOrSupplierPayment } from "@/modules/subledger/ar-ap-service";
+import { createBusinessDocumentDraft,editBusinessDocumentDraft,issueBusinessDocument,recordCustomerReceiptOrSupplierPayment } from "@/modules/subledger/ar-ap-service";
 const run=process.env.TEST_DATABASE_URL&&process.env.TEST_APP_DATABASE_URL?describe:describe.skip;
 const id={org:randomUUID(),actor:randomUUID(),member:randomUUID(),role:randomUUID(),entity:randomUUID(),ledger:randomUUID(),period:randomUUID(),revenue:randomUUID(),expense:randomUUID(),cash:randomUUID(),expenseCombination:randomUUID(),cashCombination:randomUUID(),outsider:randomUUID(),party:randomUUID(),partyAccount:randomUUID(),payable:randomUUID(),payableCombination:randomUUID(),liability:randomUUID(),liabilityCombination:randomUUID(),taxRegistration:randomUUID(),gainCombination:randomUUID()};
 const context=()=>({organizationId:id.org,actorId:id.actor,requestId:randomUUID(),authMethod:"oidc",sourceSurface:"API" as const,reason:"Synthetic booking regression"});
@@ -54,6 +54,32 @@ run("immutable booking reports and authorized posting",()=>{
  await owner.query("INSERT INTO party_accounts(id,organization_id,legal_entity_id,ledger_id,party_id,role,account_number,control_account_id) VALUES($1,$2,$3,$4,$5,'SUPPLIER','SUPPLIER',$6)",[id.partyAccount,id.org,id.entity,id.ledger,id.party,id.payable]);
  },30000);
  afterAll(async()=>{await closeDatabasePool();await owner.end();vi.unstubAllEnvs();});
+ it("hands an exact Ontario insurance RST draft to an authorized reviewer before posting",async()=>{
+ const tax={packKey:"ca.on.hst",category:"EXEMPT" as const,destinationCountry:"CA",destinationRegion:"ON",registrationId:id.taxRegistration,recoverablePercent:"0",sourceTaxOverride:{ratePercent:"8",amount:"8.00",jurisdiction:"CA-ON",componentKey:"ON_INSURANCE_RST",effectiveFrom:"2025-01-01",reason:"Printed Ontario insurance RST on the premium",evidenceReference:"synthetic-insurance-invoice"}};
+ const bill={kind:"SUPPLIER_BILL" as const,sourceNumber:"SYNTHETIC-INSURANCE-RST",ledgerId:id.ledger,legalEntityId:id.entity,partyAccountId:id.partyAccount,controlAccountCombinationId:id.payableCombination,documentDate:"2025-12-15",accountingDate:"2025-12-15",periodId:id.period,dueOn:"2025-12-31",currency:"CAD",fx:{rate:"1",source:"FUNCTIONAL",effectiveAt:"2025-12-15T00:00:00Z",quoteConvention:"FUNCTIONAL_UNITS_PER_TRANSACTION_UNIT" as const},description:"Synthetic insurance premium",lines:[{description:"Insurance premium",accountCombinationId:id.expenseCombination,netAmount:"100.00",tax}]};
+ await owner.query("DELETE FROM role_permissions WHERE organization_id=$1 AND role_id=$2 AND permission_key='tax.determinations.override'",[id.org,id.role]);
+ let draft:Awaited<ReturnType<typeof createBusinessDocumentDraft>>;
+ try {
+   draft=await createBusinessDocumentDraft({...bill,context:context(),idempotencyKey:"insurance-rst-create"});
+   expect(draft.document.snapshot).toMatchObject({subtotal:"100.00",taxTotal:"8.00",grossTotal:"108.00"});
+   await expect(issueBusinessDocument({context:context(),kind:"SUPPLIER_BILL",sourceNumber:bill.sourceNumber,expectedVersion:1,idempotencyKey:randomUUID()})).rejects.toMatchObject({code:"SOURCE_TAX_AUTHORIZATION_REQUIRED"});
+ } finally {
+   await owner.query("INSERT INTO role_permissions(organization_id,role_id,permission_key) VALUES($1,$2,'tax.determinations.override') ON CONFLICT DO NOTHING",[id.org,id.role]);
+ }
+ const reviewed=await editBusinessDocumentDraft({...bill,context:context(),expectedVersion:draft!.document.version,idempotencyKey:"insurance-rst-review",lines:[{...bill.lines[0],tax:{...tax,sourceTaxOverride:{...tax.sourceTaxOverride,reviewedTreatment:"NONRECOVERABLE" as const}}}]});
+ expect(reviewed.document.version).toBe(2);
+ const issued=await issueBusinessDocument({context:context(),kind:"SUPPLIER_BILL",sourceNumber:bill.sourceNumber,expectedVersion:2,idempotencyKey:"insurance-rst-issue"});
+ expect(issued.document.snapshot).toMatchObject({subtotal:"100.00",taxTotal:"8.00",grossTotal:"108.00"});
+ if(issued.document.snapshot.kind!=="SUPPLIER_BILL")throw new Error("Expected a posted supplier bill");
+ expect(issued.document.snapshot.lines[0].taxDecision.components).toEqual([expect.objectContaining({key:"ON_INSURANCE_RST_NONRECOVERABLE",amount:"8.00",treatment:"NONRECOVERABLE"})]);
+ const postedLines=(await owner.query("SELECT account_combination_id,debit_transaction::text AS debit,credit_transaction::text AS credit FROM journal_lines WHERE organization_id=$1 AND journal_entry_id=$2 ORDER BY account_combination_id",[id.org,issued.journalId])).rows;
+ expect(postedLines).toEqual(expect.arrayContaining([
+   expect.objectContaining({account_combination_id:id.expenseCombination,debit:"108.000000000",credit:"0.000000000"}),
+   expect.objectContaining({account_combination_id:id.payableCombination,debit:"0.000000000",credit:"108.000000000"}),
+ ]));
+ expect(postedLines).toHaveLength(2);
+ expect((await issueBusinessDocument({context:context(),kind:"SUPPLIER_BILL",sourceNumber:bill.sourceNumber,expectedVersion:2,idempotencyKey:"insurance-rst-issue"})).journalId).toBe(issued.journalId);
+ },30000);
  it("captures an encrypted immutable draft and replays the same create without posting",async()=>{manual=await journalRecord();const args=batch([manual]);review=await createBookingBatch(context(),args);expect(review.status).toBe("DRAFT");expect(review.snapshot.entries[0].linesArePosted).toBe(false);expect((await createBookingBatch(context(),args)).reportId).toBe(review.reportId);await expect(createBookingBatch(context(),{...args,title:"Changed"})).rejects.toThrow(/Idempotency/);
  const raw=(await owner.query("SELECT snapshot_ciphertext FROM booking_batch_reports WHERE id=$1",[review.reportId])).rows[0];expect(raw.snapshot_ciphertext).not.toContain("Synthetic booked journal");expect((await owner.query("SELECT status FROM journal_entries WHERE id=$1",[manual.id])).rows[0].status).toBe("DRAFT");});
  it("posts through normal controls, saves actual lines and returns the same outcome on retry",async()=>{const args={batchId:review.batchId,reviewReportId:review.reportId,expectedReviewHash:review.hash,confirmed:true,reason:"Book reviewed synthetic journal",idempotencyKey:randomUUID()};await expect(postBookingBatch(context(),{...args,expectedReviewHash:"0".repeat(64)})).rejects.toThrow(/exact immutable/);
