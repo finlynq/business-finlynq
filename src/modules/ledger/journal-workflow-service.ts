@@ -39,9 +39,12 @@ async function assertWorkflowPermission(client: PoolClient, request: ActorPermis
 async function assertWorkflowAction(client: PoolClient, context: TenantTransactionContext, journalId: string, action: JournalWorkflowAction) {
   const journal = (await readJournalWorkflowFacts(client, context.organizationId, [journalId]))[0];
   if (!journal) throw new JournalWorkflowError("INVALID_STATE", "Journal was not found in the authorized organization.");
+  const selfApprovalAllowed = action === "approve" && journal.created_by === context.actorId && context.sourceSurface === "MCP"
+    ? (await client.query<{ allowed: boolean }>("SELECT app.mcp_agent_self_approval_allowed($1) AS allowed", [context.organizationId])).rows[0]?.allowed === true
+    : false;
   // Permission and organization activation were checked within this same transaction.
   const decision = evaluateJournalWorkflow(journal, {
-    actorId: context.actorId, canWrite: true,
+    actorId: context.actorId, canWrite: true, selfApprovalAllowed,
     permissions: new Set([action === "approve" || action === "reject" ? PERMISSIONS.approveJournal : PERMISSIONS.submitJournal]),
   }).actions[action];
   if (!decision.allowed) throw new JournalWorkflowError(decision.reasonCode!);
@@ -144,7 +147,6 @@ export async function approveSubmittedJournal(input: Readonly<{
     );
     const journal = current.rows[0];
     if (!journal) throw new JournalWorkflowError("INVALID_STATE");
-    if (journal.created_by === context.actorId) throw new JournalWorkflowError("CREATOR_CANNOT_APPROVE");
     if (journal.status === "APPROVED") {
       if (journal.content_hash?.toLowerCase() !== command.expectedContentHash.toLowerCase() ||
           journal.approval_version !== command.expectedApprovalVersion) {
@@ -154,6 +156,10 @@ export async function approveSubmittedJournal(input: Readonly<{
     }
     if (journal.status !== "SUBMITTED" || !journal.content_hash || !journal.approval_version) {
       throw new JournalWorkflowError("INVALID_STATE");
+    }
+    if (journal.created_by === context.actorId &&
+      (await client.query<{ allowed: boolean }>("SELECT app.mcp_agent_self_approval_allowed($1) AS allowed", [context.organizationId])).rows[0]?.allowed !== true) {
+      throw new JournalWorkflowError("CREATOR_CANNOT_APPROVE");
     }
     if (journal.content_hash.toLowerCase() !== command.expectedContentHash.toLowerCase() ||
         journal.approval_version !== command.expectedApprovalVersion) {

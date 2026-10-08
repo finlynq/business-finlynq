@@ -12,6 +12,7 @@ import { claimInboxDocument, listDocumentInbox, retryDocumentFiling, reviewInbox
 import { uploadInboxDocument } from "@/modules/document-storage/upload";
 import { claimInboxSchema, connectStorageSchema, listInboxSchema, retryFilingSchema, reviewInboxSchema, syncInboxSchema, uploadInboxSchema } from "@/modules/document-storage/model";
 import { StorageError } from "@/modules/document-storage/provider";
+import { MAX_CLOUD_DOCUMENT_BYTES } from "@/modules/document-storage/limits";
 
 const headers = { "Cache-Control": "private, no-store", "X-Robots-Tag": "noindex, nofollow" };
 function failure(error: unknown) {
@@ -45,7 +46,7 @@ async function mutate(request: NextRequest) {
     if (!principal || principal.sessionMode !== "real") return NextResponse.json({ error: "Sign in to a real account to use document storage." }, { status: 401, headers });
     const rate = await consumeLedgerMutationRateLimit(principal, "create");
     if (!rate.allowed) return NextResponse.json({ error: "Too many document requests. Try again later." }, { status: 429, headers: { ...headers, "Retry-After": String(rate.retryAfterSeconds) } });
-    const body = actionSchema.parse(await readBoundedJson(request, 3 * 1024 * 1024));
+    const body = actionSchema.parse(await readBoundedJson(request, 4 * Math.ceil(MAX_CLOUD_DOCUMENT_BYTES / 3) + 4096));
     const context = mutationContext(principal, requestIdFor(request), { reason: "Manage cloud document inbox", sourceSurface: "API" });
     let result;
     switch (body.action) {

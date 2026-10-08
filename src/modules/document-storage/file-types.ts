@@ -3,8 +3,8 @@ import "server-only";
 import { createHash, timingSafeEqual } from "node:crypto";
 import { z } from "zod";
 import { read } from "xlsx";
-import { MAX_EVIDENCE_BYTES } from "@/modules/subledger/evidence-model";
 import { StorageError, type CloudFile } from "./provider";
+import { MAX_CLOUD_DOCUMENT_BYTES } from "./limits";
 
 export const inboxUploadMimeTypeSchema = z.enum([
   "application/pdf",
@@ -69,14 +69,14 @@ export function classifyInboxFile(file: Pick<CloudFile, "folder" | "shortcut" | 
   }
   const definition = FORMAT_BY_EXTENSION[extension(file.name)];
   if (!definition) {
-    return { supported: false, code: "STORAGE_EXTENSION_UNSUPPORTED", reason: "Use PDF, PNG, JPEG, CSV, TSV, TXT, XLS, XLSX, or EML files of up to 2 MiB." };
+    return { supported: false, code: "STORAGE_EXTENSION_UNSUPPORTED", reason: "Use PDF, PNG, JPEG, CSV, TSV, TXT, XLS, XLSX, or EML files of up to 20 MiB." };
   }
   const mimeType = normalizedMimeType(file.mimeType);
   if (!definition.mimeTypes.has(mimeType)) {
     return { supported: false, code: "STORAGE_MIME_MISMATCH", reason: `The .${extension(file.name)} filename does not match the provider MIME type. Correct the filename or export the file again.` };
   }
-  if (file.size > MAX_EVIDENCE_BYTES) {
-    return { supported: false, code: "STORAGE_TOO_LARGE", reason: `Source size ${file.size} bytes exceeds the ${MAX_EVIDENCE_BYTES} byte (2 MiB) inbox limit. For an unsigned PDF up to 8 MiB, use Prepare and upload PDF to make a verified lossless copy, then retry. For other files, split or export a smaller source and retry.` };
+  if (file.size > MAX_CLOUD_DOCUMENT_BYTES) {
+    return { supported: false, code: "STORAGE_TOO_LARGE", reason: `Source size ${file.size} bytes exceeds the ${MAX_CLOUD_DOCUMENT_BYTES} byte (20 MiB) cloud document limit. Split or export a smaller file and retry.` };
   }
   return { supported: true, format: definition.format, canonicalMimeType: definition.canonicalMimeType };
 }
@@ -126,7 +126,7 @@ function preflightXlsx(bytes: Buffer) {
   const directorySize = bytes.readUInt32LE(eocd + 12);
   const directoryOffset = bytes.readUInt32LE(eocd + 16);
   if (entries < 2 || entries > 512 || directoryOffset + directorySize > eocd || directorySize > 2 * 1024 * 1024) {
-    throw new StorageError("STORAGE_WORKBOOK_LIMIT", "The XLSX archive exceeds the 512-entry or 16 MiB expanded-content limit.");
+    throw new StorageError("STORAGE_WORKBOOK_LIMIT", "The XLSX archive exceeds the 512-entry or 64 MiB expanded-content limit.");
   }
   let offset = directoryOffset;
   let expanded = 0;
@@ -146,8 +146,8 @@ function preflightXlsx(bytes: Buffer) {
       throw new StorageError("STORAGE_WORKBOOK_UNSAFE", "Encrypted, ZIP64, or unsupported XLSX archive entries are not accepted.");
     }
     expanded += uncompressed;
-    if (uncompressed > 8 * 1024 * 1024 || expanded > 16 * 1024 * 1024) {
-      throw new StorageError("STORAGE_WORKBOOK_LIMIT", "The XLSX archive exceeds the 512-entry or 16 MiB expanded-content limit.");
+    if (uncompressed > 32 * 1024 * 1024 || expanded > 64 * 1024 * 1024) {
+      throw new StorageError("STORAGE_WORKBOOK_LIMIT", "The XLSX archive exceeds the 32 MiB per-entry or 64 MiB expanded-content limit.");
     }
     const name = bytes.toString("utf8", offset + 46, offset + 46 + nameLength);
     if (!name || name.startsWith("/") || name.includes("\\") || name.split("/").includes("..")) {

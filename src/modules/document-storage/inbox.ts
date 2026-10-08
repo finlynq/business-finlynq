@@ -298,7 +298,7 @@ export function replayedStatementCompletion(
     ? statementCompletionResponse(processing.statementImport, true)
     : null;
 }
-export async function completeInboxDocument(context: TenantTransactionContext, input: z.input<typeof completeInboxSchema>) {
+export async function completeInboxDocument(context: TenantTransactionContext, input: z.input<typeof completeInboxSchema>, deferFiling = false) {
   const command = completeInboxSchema.parse(input); const completionHash = canonicalHash(command);
   const operationContext = { ...context, reason: command.reason };
   const result = await withTenantTransaction(operationContext, async (client) => {
@@ -433,6 +433,26 @@ export async function completeInboxDocument(context: TenantTransactionContext, i
     throw error;
   });
   // A durable READY_TO_FILE item exists even if this process stops here.
+  if (deferFiling) {
+    const filingPending = result.item.status !== "FILED";
+    console.info(JSON.stringify({
+      event: "document.inbox.completion.response_ready",
+      requestId: context.requestId,
+      itemId: command.itemId,
+      claimId: command.claimId,
+      assetId: result.item.assetId,
+      action: command.action.type,
+      status: result.item.status,
+      providerMoveOutcome: filingPending ? "PENDING" : "FILED",
+      idempotentReplay: result.idempotentReplay,
+    }));
+    return {
+      ...result,
+      completionHandle: command.itemId,
+      filingPending,
+      ...(filingPending ? { instruction: "Accounting and evidence are saved. Call finlynq_daily_retry_document_filing with itemId set to this completionHandle to finish archiving; retry this completion with identical arguments to read its durable outcome." } : {}),
+    };
+  }
   try {
     const filed = { ...result, ...await retryDocumentFiling(context, { itemId: command.itemId }) };
     console.info(JSON.stringify({
@@ -465,7 +485,7 @@ export async function completeInboxDocument(context: TenantTransactionContext, i
 export async function retryDocumentFiling(context: TenantTransactionContext, input: z.input<typeof retryFilingSchema>) {
   const command = retryFilingSchema.parse(input);
   try {
-    return await withTenantTransaction(context, async (client) => {
+    const filed = await withTenantTransaction(context, async (client) => {
       await assertStorageWrite(client, context);
       const { row, connection } = await loadInboxItem(client, context, command.itemId);
       if (row.status === "FILED") return { item: await itemMetadata(client, row), filingPending: false };
@@ -510,6 +530,9 @@ export async function retryDocumentFiling(context: TenantTransactionContext, inp
         return { item: await itemMetadata(client, updated), filingPending: false };
       } finally { verified.bytes.fill(0); }
     });
+    console.info(JSON.stringify({ event: "document.inbox.filing.completed", requestId: context.requestId,
+      itemId: command.itemId, assetId: filed.item.assetId, status: filed.item.status }));
+    return filed;
   } catch (error) {
     // Persist a safe, actionable failure without undoing the completed draft.
     await withTenantTransaction(context, async (client) => {
@@ -520,6 +543,8 @@ export async function retryDocumentFiling(context: TenantTransactionContext, inp
       const stored = await encryptStorageValue(client, row, "document_inbox_items", "processing_ciphertext", { ...processing, reason: error instanceof StorageError ? error.message : "Cloud filing failed. Retry after checking the connection." });
       await client.query("UPDATE document_inbox_items SET status='FILING_FAILED',processing_ciphertext=$3 WHERE organization_id=$1 AND id=$2", [context.organizationId, row.id, stored]);
     }).catch(() => undefined);
+    console.warn(JSON.stringify({ event: "document.inbox.filing.failed", requestId: context.requestId,
+      itemId: command.itemId, errorCode: error instanceof StorageError ? error.code : "STORAGE_FILING_RETRY_REQUIRED" }));
     throw error;
   }
 }

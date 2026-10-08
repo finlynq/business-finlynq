@@ -35,7 +35,7 @@ const reasons: Record<JournalWorkflowReasonCode, string> = {
   POLICY_RESTRICTION: "This journal must be managed through its owning module, or its ledger is inactive.",
   HAS_DEPENDENCIES: "This journal has a source, reversal, reconciliation, subledger, party, or tax dependency and cannot be returned to draft here.",
   INVALID_CONTENT: "The journal needs valid balanced lines and active accounts before it can progress.",
-  APPROVAL_REQUIRED: "An independent authorized approver must approve the submitted version before posting. AUTO_POST does not bypass an existing submission.",
+  APPROVAL_REQUIRED: "An authorized approver must approve the submitted version before posting. AUTO_POST does not bypass an existing submission.",
 };
 export class JournalWorkflowError extends Error {
   constructor(public readonly code: JournalWorkflowReasonCode, message = reasons[code]) {
@@ -56,7 +56,7 @@ export type JournalWorkflowFacts = Readonly<{
 
 export function evaluateJournalWorkflow(
   journal: JournalWorkflowFacts,
-  actor: Readonly<{ actorId: string; canWrite: boolean; permissions: ReadonlySet<string> }>,
+  actor: Readonly<{ actorId: string; canWrite: boolean; permissions: ReadonlySet<string>; selfApprovalAllowed?: boolean }>,
 ): JournalWorkflowEligibility {
   const frozen = journal.status === "SUBMITTED" || journal.status === "APPROVED";
   const actorIsCreator = journal.created_by === actor.actorId;
@@ -73,7 +73,7 @@ export function evaluateJournalWorkflow(
         (journal.period_state === "ADJUSTMENT_ONLY" && !new Set(["ADJUSTING", "REVERSAL", "CLOSING", "REVALUATION", "TAX_ADJUSTMENT"]).has(journal.purpose))) return denied("PERIOD_CLOSED");
     if (action === "post" && journal.period_state === "ADJUSTMENT_ONLY" && !actor.permissions.has(PERMISSIONS.postAdjustment)) return denied("MISSING_PERMISSION");
     if (!journal.canonical_hash || (frozen && (!journal.approval_version || journal.content_hash !== journal.canonical_hash))) return denied("STALE_VERSION");
-    if ((action === "approve" || action === "reject") && actorIsCreator) return denied("CREATOR_CANNOT_APPROVE");
+    if ((action === "reject" || (action === "approve" && !actor.selfApprovalAllowed)) && actorIsCreator) return denied("CREATOR_CANNOT_APPROVE");
     if (action === "withdraw" && !actorIsCreator) return denied("CREATOR_REQUIRED");
     if (action === "withdraw" || action === "reject") return journal.has_dependencies ? denied("HAS_DEPENDENCIES") : allowed;
     if (!journal.valid_lines) return denied("INVALID_CONTENT");
@@ -87,7 +87,7 @@ export function evaluateJournalWorkflow(
     approvalVersion: journal.approval_version,
     manualPostingMode: journal.manual_mode,
     actorIsCreator,
-    independentApprovalRequired: journal.status === "SUBMITTED",
+    independentApprovalRequired: journal.status === "SUBMITTED" && !(actorIsCreator && actor.selfApprovalAllowed),
     actions: { submit: eligibility("submit"), approve: eligibility("approve"), post: eligibility("post"), reject: eligibility("reject"), withdraw: eligibility("withdraw") },
   };
 }
@@ -123,7 +123,8 @@ export async function readJournalWorkflowFacts(client: PoolClient, organizationI
        EXISTS (SELECT 1 FROM journal_approvals approval WHERE approval.organization_id = entry.organization_id
          AND approval.journal_entry_id = entry.id AND approval.journal_version = entry.approval_version
          AND approval.content_hash = entry.content_hash AND approval.decision = 'APPROVED'
-         AND approval.actor_id IS DISTINCT FROM entry.created_by) AS has_approval
+         AND (approval.actor_id IS DISTINCT FROM entry.created_by
+           OR approval.mcp_self_approval_connection_id IS NOT NULL)) AS has_approval
      FROM journal_entries entry
      JOIN journal_type_definitions type ON type.id = entry.journal_type_definition_id AND type.key = entry.journal_type_key AND type.version = entry.journal_type_version
      JOIN ledgers ledger ON ledger.organization_id = entry.organization_id AND ledger.id = entry.ledger_id

@@ -31,6 +31,16 @@ describe("authoritative journal workflow decisions", () => {
     expect(result.actions.withdraw.allowed).toBe(true);
     expect(evaluateJournalWorkflow(facts, actor).actions.withdraw.reasonCode).toBe("CREATOR_REQUIRED");
   });
+  it("permits an authorized MCP creator to approve an existing submission without waiving other checks", () => {
+    const creator = { ...actor, actorId: "maker", selfApprovalAllowed: true };
+    const result = evaluateJournalWorkflow(facts, creator);
+    expect(result.actions.approve.allowed).toBe(true);
+    expect(result.actions.reject.reasonCode).toBe("CREATOR_CANNOT_APPROVE");
+    expect(result.actions.post.reasonCode).toBe("APPROVAL_REQUIRED");
+    expect(result.independentApprovalRequired).toBe(false);
+    expect(evaluateJournalWorkflow({ ...facts, canonical_hash: "b".repeat(64) }, creator).actions.approve.reasonCode).toBe("STALE_VERSION");
+    expect(evaluateJournalWorkflow(facts, { ...creator, permissions: new Set() }).actions.approve.reasonCode).toBe("MISSING_PERMISSION");
+  });
   it.each(["HARD_CLOSED", "SEALED"])("disables every submitted action in %s periods", (period_state) => {
     const result = evaluateJournalWorkflow({ ...facts, period_state }, actor);
     for (const action of ["approve", "post", "reject", "withdraw"] as const) expect(result.actions[action].reasonCode).toBe("PERIOD_CLOSED");

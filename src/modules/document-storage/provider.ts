@@ -2,7 +2,7 @@ import "server-only";
 import { readFileSync } from "node:fs";
 import { z } from "zod";
 import type { StorageProvider } from "./model";
-import { MAX_EVIDENCE_BYTES } from "@/modules/subledger/evidence-model";
+import { MAX_CLOUD_DOCUMENT_BYTES } from "./limits";
 
 const GOOGLE = "https://www.googleapis.com";
 const GRAPH = "https://graph.microsoft.com/v1.0";
@@ -160,7 +160,7 @@ export class CloudDrive {
     const base = this.provider === "GOOGLE_DRIVE" ? GOOGLE : GRAPH;
     if (!path.startsWith("/") || path.startsWith("//")) throw new Error("Invalid storage path");
     return fetch(base + path, { ...init, headers: { Authorization: `Bearer ${this.token}`, ...init.headers },
-      redirect: "error", cache: "no-store", signal: AbortSignal.timeout(20000) });
+      redirect: "error", cache: "no-store", signal: AbortSignal.timeout(60000) });
   }
   private graphPath() { return this.driveId ? `/drives/${encodeURIComponent(this.driveId)}` : "/me/drive"; }
   private parseFile(raw: unknown): CloudFile {
@@ -255,15 +255,15 @@ export class CloudDrive {
     };
     return { accountId, driveId, rootId, inboxId, archiveId, inboxUrl: await webUrl(inboxId), archiveUrl: await webUrl(archiveId) };
   }
-  async download(fileId: string, maximumBytes = MAX_EVIDENCE_BYTES): Promise<Buffer> {
-    if (maximumBytes > 8 * 1024 * 1024) throw new StorageError("STORAGE_TOO_LARGE", "PDF preparation is limited to 8 MiB.");
+  async download(fileId: string, maximumBytes = MAX_CLOUD_DOCUMENT_BYTES): Promise<Buffer> {
+    if (maximumBytes > MAX_CLOUD_DOCUMENT_BYTES) throw new StorageError("STORAGE_TOO_LARGE", "Cloud documents are limited to 20 MiB.");
     if (this.provider === "GOOGLE_DRIVE") {
       const response = await this.request(`/drive/v3/files/${encodeURIComponent(fileId)}?alt=media`);
       if (!response.ok) await jsonResponse(response);
       return boundedResponse(response, maximumBytes);
     }
     // Do not forward the Graph bearer token to the preauthenticated download host.
-    const response = await fetch(`${GRAPH}${this.graphPath()}/items/${encodeURIComponent(fileId)}/content`, { headers: { Authorization: `Bearer ${this.token}` }, redirect: "manual", cache: "no-store", signal: AbortSignal.timeout(20000) });
+    const response = await fetch(`${GRAPH}${this.graphPath()}/items/${encodeURIComponent(fileId)}/content`, { headers: { Authorization: `Bearer ${this.token}` }, redirect: "manual", cache: "no-store", signal: AbortSignal.timeout(60000) });
     if (response.status !== 302) {
       if (!response.ok) await jsonResponse(response);
       return boundedResponse(response, maximumBytes);
@@ -272,7 +272,7 @@ export class CloudDrive {
     await response.body?.cancel();
     if (!url) throw new StorageError("STORAGE_DOWNLOAD_HOST", "The provider returned an unsupported download location.");
     try {
-      const download = await fetch(url, { redirect: "error", cache: "no-store", signal: AbortSignal.timeout(20000) });
+      const download = await fetch(url, { redirect: "error", cache: "no-store", signal: AbortSignal.timeout(60000) });
       if (!download.ok) await jsonResponse(download);
       return await boundedResponse(download, maximumBytes);
     } catch (error) {
@@ -296,8 +296,8 @@ export class CloudDrive {
     }
     return null;
   }
-  async upload(folderId: string, name: string, mimeType: string, bytes: Buffer, maximumBytes = MAX_EVIDENCE_BYTES): Promise<CloudFile> {
-    if (maximumBytes > 8 * 1024 * 1024 || bytes.length > maximumBytes) throw new StorageError("STORAGE_TOO_LARGE", "Document exceeds the supported size.");
+  async upload(folderId: string, name: string, mimeType: string, bytes: Buffer, maximumBytes = MAX_CLOUD_DOCUMENT_BYTES): Promise<CloudFile> {
+    if (maximumBytes > MAX_CLOUD_DOCUMENT_BYTES || bytes.length > maximumBytes) throw new StorageError("STORAGE_TOO_LARGE", "Cloud documents are limited to 20 MiB.");
     if (this.provider === "ONEDRIVE") {
       const query = new URLSearchParams({ "@microsoft.graph.conflictBehavior": "fail" });
       return this.parseFile(await jsonResponse(await this.request(`${this.graphPath()}/items/${encodeURIComponent(folderId)}:/${encodeURIComponent(name)}:/content?${query}`, {

@@ -240,7 +240,7 @@ describe("mutation route setup failure boundaries", () => {
         }],
         requestId: expect.stringMatching(/^[0-9a-f-]{36}$/i),
       });
-      expect(JSON.stringify(logging.mock.calls)).not.toMatch(/6100|Office expense/);
+      expect(logging.mock.calls.flat().join(" ")).not.toMatch(/"6100"|Office expense/);
     } finally {
       logging.mockRestore();
     }

@@ -4,6 +4,8 @@ import { archiveName, completeInboxSchema, syncInboxSchema, uploadInboxSchema } 
 import { boundedResponse, CloudDrive, exchangeStorageToken } from "@/modules/document-storage/provider";
 import { assertClaim, type InboxRow } from "@/modules/document-storage/inbox-store";
 import { formatInboxPage, INBOX_MCP_TOOLS } from "@/modules/mcp/inbox-tools";
+import { classifyInboxFile } from "@/modules/document-storage/file-types";
+import { MAX_CLOUD_DOCUMENT_BYTES } from "@/modules/document-storage/limits";
 
 afterEach(() => { vi.unstubAllGlobals(); vi.unstubAllEnvs(); });
 describe("cloud document contracts", () => {
@@ -35,6 +37,18 @@ describe("cloud document contracts", () => {
     expect(uploadInboxSchema.safeParse({ ...common, mimeType: "text/html" }).success).toBe(false);
     expect(syncInboxSchema.parse({ connectionId: common.connectionId })).toMatchObject({ restart: false });
     expect(syncInboxSchema.parse({ connectionId: common.connectionId, restart: true })).toMatchObject({ restart: true });
+  });
+  it("accepts 20 MiB cloud documents and rejects larger files with the exact limit", () => {
+    const base = { folder: false, shortcut: false, name: "invoice.pdf", mimeType: "application/pdf" };
+    expect(classifyInboxFile({ ...base, size: MAX_CLOUD_DOCUMENT_BYTES })).toMatchObject({ supported: true });
+    expect(classifyInboxFile({ ...base, size: MAX_CLOUD_DOCUMENT_BYTES + 1 })).toMatchObject({
+      supported: false, code: "STORAGE_TOO_LARGE",
+      reason: expect.stringContaining(String(MAX_CLOUD_DOCUMENT_BYTES)),
+    });
+    const input = { connectionId: randomUUID(), filename: "invoice.pdf", mimeType: "application/pdf",
+      byteSize: MAX_CLOUD_DOCUMENT_BYTES, sha256: "a".repeat(64), contentBase64: "YQ==", idempotencyKey: "large-pdf" };
+    expect(uploadInboxSchema.safeParse(input).success).toBe(true);
+    expect(uploadInboxSchema.safeParse({ ...input, byteSize: MAX_CLOUD_DOCUMENT_BYTES + 1 }).success).toBe(false);
   });
   it("rejects arbitrary destinations and incomplete currency/amount pairs", () => {
     const base = { itemId: randomUUID(), claimId: randomUUID(), sha256: "a".repeat(64), reason: "File statement", action: { type: "ARCHIVE_ONLY" },

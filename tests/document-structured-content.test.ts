@@ -28,7 +28,7 @@ describe("structured inbox type validation", () => {
       .toMatchObject({ supported: false, code: "STORAGE_MIME_MISMATCH" });
     expect(classifyInboxFile({ folder: false, shortcut: true, name: "outside.csv", mimeType: "text/csv", size: 20 }))
       .toMatchObject({ supported: false, code: "STORAGE_SHORTCUT_SKIPPED" });
-    expect(classifyInboxFile({ folder: false, name: "oversized.csv", mimeType: "text/csv", size: 2 * 1024 * 1024 + 1 }))
+    expect(classifyInboxFile({ folder: false, name: "oversized.csv", mimeType: "text/csv", size: 20 * 1024 * 1024 + 1 }))
       .toMatchObject({ supported: false, code: "STORAGE_TOO_LARGE" });
     expect(classifyInboxFile({ folder: false, name: "invoice\u202Efdp.csv", mimeType: "text/csv", size: 20 }))
       .toMatchObject({ supported: false, code: "STORAGE_FILENAME_INVALID" });
@@ -52,7 +52,7 @@ describe("structured inbox type validation", () => {
     const oversizedEntry = Buffer.from(workbook("xlsx"));
     const central = oversizedEntry.indexOf(Buffer.from([0x50, 0x4b, 0x01, 0x02]));
     expect(central).toBeGreaterThan(0);
-    oversizedEntry.writeUInt32LE(9 * 1024 * 1024, central + 24);
+    oversizedEntry.writeUInt32LE(33 * 1024 * 1024, central + 24);
     expect(() => validateInboxDocumentBytes("bomb.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", oversizedEntry)).toThrow(/expanded-content/);
 
     const externalLink = Buffer.from(workbook("xlsx"));

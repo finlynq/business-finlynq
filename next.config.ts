@@ -6,10 +6,9 @@ const nextConfig: NextConfig = {
   output: "standalone",
   serverExternalPackages: ["pg"],
   experimental: {
-    // The signed relay carries inline base64 attachments (20 MiB JSON cap).
-    // Next's default 10 MiB proxy buffer truncates that body and breaks HMAC.
-    // One extra byte lets the route itself reject overflow with 413.
-    proxyClientMaxBodySize: 20 * 1024 * 1024 + 1,
+    // A 20 MiB cloud document expands to about 27 MiB as base64 JSON.
+    // The route and MCP handlers apply their own exact input bounds.
+    proxyClientMaxBodySize: 4 * Math.ceil((20 * 1024 * 1024) / 3) + 16 * 1024,
   },
   turbopack: {
     // An unrelated lockfile exists higher in the Windows user directory.
