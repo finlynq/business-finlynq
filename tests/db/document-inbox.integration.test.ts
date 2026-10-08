@@ -7,6 +7,7 @@ import { loadOrganizationRootKek } from "@/security/root-secret";
 import { encryptStorageValue } from "@/modules/document-storage/store";
 import { claimInboxDocument, completeInboxDocument, listDocumentInbox, readInboxDocument, retryDocumentFiling, reviewInboxDocument, syncDocumentInbox } from "@/modules/document-storage/inbox";
 import { downloadBankStatementEvidence, downloadDocumentEvidence } from "@/modules/subledger/evidence-service";
+import { readFiledStatement } from "@/modules/document-storage/filed-statement";
 import { uploadInboxDocument } from "@/modules/document-storage/upload";
 import { itemSourceMetadata } from "@/modules/document-storage/inbox-store";
 import { disconnectStorage, finishStorageConnection, listStorageConnections, startStorageConnection } from "@/modules/document-storage/connections";
@@ -616,6 +617,28 @@ run("cloud inbox PostgreSQL lifecycle", () => {
     expect((await owner.query("SELECT max(version)::int AS n FROM source_documents WHERE organization_id=$1", [ids.org])).rows[0].n).toBe(2);
     receiptDownload = { assetId: saved.item.assetId!, sourceDocumentId: saved.item.sourceDocumentId! };
     expect((await downloadDocumentEvidence({ context: requestContext(), ...receiptDownload })).bytes).toEqual(Buffer.concat([png, Buffer.from("receipt")]));
+  });
+  it("reads an already FILED CSV linked to a supplier bill without another upload", async () => {
+    const csv = Buffer.from("posted,amount\n2026-09-04,-10.00\n");
+    const row = await discoverDocument("filed-bank-evidence.csv", "text/csv", csv);
+    const claim = randomUUID();
+    await claimInboxDocument(requestContext(), { itemId: row.id, claimId: claim });
+    const read = await readInboxDocument(requestContext(), { itemId: row.id, claimId: claim });
+    const uploadsBefore = cloud.uploads;
+    const saved = await completeInboxDocument(requestContext(), {
+      itemId: row.id, claimId: claim, sha256: read.sha256,
+      metadata: { documentType: "OTHER", documentDate: "2026-09-04", counterparty: "Test Bank" },
+      action: { type: "LINK_DRAFT", kind: "SUPPLIER_BILL", sourceNumber: draftInput.sourceNumber,
+        expectedVersion: 2, purpose: "SUPPORTING" },
+      reason: "Retain the original bank export as supporting evidence",
+    });
+    expect(saved.item.status).toBe("FILED");
+    const identity = { itemId: row.id, assetId: saved.item.assetId!, sourceDocumentId: saved.item.sourceDocumentId!, sha256: read.sha256 };
+    const page = await readFiledStatement(requestContext(), { ...identity, page: 1 });
+    expect(page).toMatchObject({ ...identity, page: 1, pageCount: 1, contentKind: "DELIMITED_TEXT" });
+    expect(page.text).toContain("-10.00");
+    expect(cloud.uploads).toBe(uploadsBefore);
+    await expect(readFiledStatement(requestContext({ organizationId: ids.other }), { ...identity, page: 1 })).rejects.toThrow();
   });
   it("downloads invoice/receipt pairs and repeated assets concurrently for multiple users", async () => {
     cloud.activeDownloads = 0; cloud.maximumConcurrentDownloads = 0; cloud.downloadDelayMilliseconds = 40;
