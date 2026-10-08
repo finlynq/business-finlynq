@@ -201,14 +201,14 @@ export async function prepareBankAccountingProposal(input: Readonly<{ principal:
         command.accountingDate < accountingScope.starts_on || command.accountingDate > accountingScope.ends_on) {
       throw new BankingServiceError("Choose an active company ledger and writable fiscal period containing the accounting date.", 400, "BANK_PROPOSAL_PERIOD_INVALID");
     }
-    const existing = (await client.query(
-      `SELECT 1 FROM bank_accounting_proposals proposal
+    const existing = (await client.query<{ id: string; version: number; status: string }>(
+      `SELECT proposal.id, proposal.version, proposal.status FROM bank_accounting_proposals proposal
        WHERE proposal.organization_id=$1 AND proposal.observation_version_id=$2
          AND NOT EXISTS (SELECT 1 FROM bank_accounting_proposals successor WHERE successor.organization_id=proposal.organization_id AND successor.supersedes_proposal_id=proposal.id)
-         AND proposal.status<>'REJECTED'`,
+       ORDER BY proposal.version DESC LIMIT 1`,
       [principal.organizationId, command.observationVersionId],
     )).rows[0];
-    if (existing) throw new BankingServiceError("This observation already has an active accounting proposal.", 409, "BANK_PROPOSAL_DUPLICATE");
+    if (existing && existing.status !== "REJECTED") throw new BankingServiceError("This observation already has an active accounting proposal.", 409, "BANK_PROPOSAL_DUPLICATE");
     const duplicateEvidence = await client.query<{
       id: string; source_document_id: string | null; source_event_key: string;
     }>(
@@ -333,16 +333,18 @@ export async function prepareBankAccountingProposal(input: Readonly<{ principal:
       }
     }
     const proposalId = randomUUID();
+    const version = existing ? existing.version + 1 : 1;
     await client.query(
       `INSERT INTO bank_accounting_proposals(
          id, organization_id, observation_version_id, version, status,
-         proposal_snapshot, proposal_hash, reason, idempotency_key, command_hash, created_by
-       ) VALUES ($1,$2,$3,1,'PREPARED',$4::jsonb,$5,$6,$7,$8,$9)`,
-      [proposalId, principal.organizationId, command.observationVersionId,
-        JSON.stringify(normalized), contentHash, command.reason, command.idempotencyKey,
-        commandHash, principal.userId],
+         proposal_snapshot, proposal_hash, supersedes_proposal_id, reason,
+         idempotency_key, command_hash, created_by
+       ) VALUES ($1,$2,$3,$4,'PREPARED',$5::jsonb,$6,$7,$8,$9,$10,$11)`,
+      [proposalId, principal.organizationId, command.observationVersionId, version,
+        JSON.stringify(normalized), contentHash, existing?.id ?? null, command.reason,
+        command.idempotencyKey, commandHash, principal.userId],
     );
-    return { proposalId, version: 1, status: "PREPARED" as const, proposalHash: contentHash, idempotentReplay: false };
+    return { proposalId, version, status: "PREPARED" as const, proposalHash: contentHash, idempotentReplay: false };
   });
 }
 
