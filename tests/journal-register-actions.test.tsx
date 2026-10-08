@@ -241,7 +241,7 @@ describe("journal register actions", () => {
     const journalEvidenceLinks = tree.filter((element) => {
       const href = (element.props as { href?: unknown }).href;
       return typeof href === "string" && href.startsWith("/app/journals/") &&
-        textContent(element) === "View journal entry";
+        textContent(element) === "Open";
     });
 
     expect(actions).toEqual(["post", "reverse"]);
@@ -249,14 +249,15 @@ describe("journal register actions", () => {
     expect(hrefs).toContain("/app/payables/bills?q=BILL-1001");
     expect(hrefs).toContain("/app/journals/30000000-0000-4000-8000-000000000002");
     expect(journalEvidenceLinks).toHaveLength(5);
-    expect(textContent(page)).toContain("Journal debit");
-    expect(textContent(page)).toContain("Journal credit");
+    const headers = tree.filter((element) => element.type === "th").map(textContent);
+    expect(headers).toContain("Debit");
+    expect(headers).toContain("Credit");
     expect(textContent(page)).toMatch(/Ending balance\s+·\s+debit/);
     expect(textContent(page)).toMatch(/Ending balance\s+·\s+credit/);
     expect(textContent(page)).toContain("CAD 475.00");
     expect(textContent(page)).toContain("CAD 250.00");
     expect(textContent(page)).toContain("CA01.6100.MKT.0000");
-    expect(textContent(page)).toContain("reversed by 42");
+    expect(textContent(page)).toMatch(/→\s*#\s*42/);
     expect(textContent(page).toLowerCase()).not.toContain("delete");
   });
 
