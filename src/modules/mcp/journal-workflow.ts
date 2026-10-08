@@ -19,7 +19,12 @@ export function mcpJournalWorkflow(workflow: JournalWorkflowEligibility | null, 
   if (!workflow) return null;
   const actions = Object.fromEntries((Object.keys(JOURNAL_WORKFLOW_TOOL_POLICIES) as JournalWorkflowAction[]).map((action) => {
     const policy = JOURNAL_WORKFLOW_TOOL_POLICIES[action];
-    const domain = workflow.actions[action];
+    const original = workflow.actions[action];
+    const selfApprovalEnabled = snapshot.agentSelfApprovalEnabled === true;
+    const domain = action === "approve" && selfApprovalEnabled && workflow.actorIsCreator
+      && original.reasonCode === "CREATOR_CANNOT_APPROVE"
+      ? { allowed: true, reasonCode: null, reason: null }
+      : original;
     const connectionAllows = isMcpToolVisible(snapshot, policy);
     return [action, {
       ...domain,
@@ -36,7 +41,12 @@ export function mcpJournalWorkflow(workflow: JournalWorkflowEligibility | null, 
     allowed: boolean; reasonCode: string | null; reason: string | null;
     toolName: string; confirmationRequired: boolean; authorization: Readonly<Record<string, string | boolean>>;
   }>;
-  return { ...workflow, actions };
+  return {
+    ...workflow,
+    agentSelfApprovalEnabled: snapshot.agentSelfApprovalEnabled === true,
+    independentApprovalRequired: workflow.independentApprovalRequired && !(workflow.actorIsCreator && snapshot.agentSelfApprovalEnabled),
+    actions,
+  };
 }
 
 export async function readMcpJournal(runtime: McpToolRuntime, journalId: string) {

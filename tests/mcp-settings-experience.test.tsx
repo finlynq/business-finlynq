@@ -7,6 +7,7 @@ const mocks = vi.hoisted(() => ({
   listUserMcpConnections: vi.fn(),
   listPendingMcpApprovals: vi.fn(),
   mfaStatusForSession: vi.fn(),
+  readAgentApprovalPolicy: vi.fn(),
 }));
 
 vi.mock("next/navigation", () => ({
@@ -23,6 +24,10 @@ vi.mock("@/modules/mcp/connection-policy", () => ({
 
 vi.mock("@/modules/mcp/settings-store", () => ({
   listPendingMcpApprovals: mocks.listPendingMcpApprovals,
+}));
+
+vi.mock("@/modules/mcp/agent-approval-policy", () => ({
+  readAgentApprovalPolicy: mocks.readAgentApprovalPolicy,
 }));
 
 vi.mock("@/modules/mcp/protocol", () => ({
@@ -56,6 +61,10 @@ beforeEach(() => {
   mocks.requireWorkspacePrincipal.mockResolvedValue(principal);
   mocks.listUserMcpConnections.mockResolvedValue([]);
   mocks.listPendingMcpApprovals.mockResolvedValue([]);
+  mocks.readAgentApprovalPolicy.mockResolvedValue({
+    enabled: false, version: 0, enabledBy: null, enabledAt: null,
+    ownerCanChange: true, scope: "ALL_MCP_CONNECTIONS",
+  });
   mocks.mfaStatusForSession.mockResolvedValue({
     mfa_required: false,
     active_factor: false,

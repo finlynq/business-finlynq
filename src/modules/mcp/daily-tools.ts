@@ -298,6 +298,18 @@ function voidSettlementTool(input: Readonly<{
 }
 
 export const DAILY_MCP_TOOLS: readonly McpToolDefinition[] = [
+  defineMcpTool({
+    policy: { name: "finlynq_daily_get_agent_approval_policy", group: "DAILY", access: "READ", permissionsAny: [PERMISSIONS.readMcpLedger, PERMISSIONS.approveJournal, PERMISSIONS.postJournal] },
+    title: "Check owner authorization for agent journal self-approval",
+    description: "Show whether the owner has enabled journal self-approval for all MCP connections. Normal live role permissions and connection write controls still apply. This setting never approves a journal by itself.",
+    inputSchema: z.object({}).strict(),
+    invoke: (_args, runtime) => ({
+      enabled: runtime.snapshot.agentSelfApprovalEnabled === true,
+      scope: "ALL_MCP_CONNECTIONS",
+      actorHasApprovalPermission: runtime.snapshot.permissions.has(PERMISSIONS.approveJournal),
+      actorHasPostingPermission: runtime.snapshot.permissions.has(PERMISSIONS.postJournal),
+    }),
+  }),
   ...EVIDENCE_MCP_TOOLS,
   ...BOOKING_MCP_TOOLS,
   defineMcpTool({
@@ -348,7 +360,7 @@ export const DAILY_MCP_TOOLS: readonly McpToolDefinition[] = [
   defineMcpTool({
     policy: JOURNAL_WORKFLOW_TOOL_POLICIES.approve,
     title: "Approve submitted journal",
-    description: "Approve the exact frozen journal version. The journal creator cannot approve their own journal; supply both the frozen content hash and approval version.",
+    description: "Approve the exact frozen journal version. The creator may approve only while the organization owner has enabled MCP agent self-approval. Supply both the frozen content hash and approval version; all normal permissions and validations remain in force.",
     inputSchema: z.object({ journalId: z.uuid(), expectedContentHash: z.string().regex(/^[a-f0-9]{64}$/i), expectedApprovalVersion: z.number().int().positive(), reason: z.string().trim().min(5).max(500) }).strict(),
     idempotent: true,
     invoke: async (args, runtime) => refreshedJournalTransition(runtime, await approveSubmittedJournal({ context: mcpMutationContext(runtime.principal, runtime.requestId, args.reason), ...args })),

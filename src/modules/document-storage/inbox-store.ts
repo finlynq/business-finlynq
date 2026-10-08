@@ -7,6 +7,7 @@ import { activeKeyVersion, decryptStorageValue, encryptStorageValue, loadConnect
 import { filingMetadataSchema, inboxStatusSchema, noAccountingRelatedEvidenceSchema, noAccountingTreatmentSchema } from "./model";
 import { StorageError, type CloudFile } from "./provider";
 import { classifyInboxFile } from "./file-types";
+import { MAX_CLOUD_DOCUMENT_BYTES } from "./limits";
 
 export type InboxRow = {
   id: string; organization_id: string; connection_id: string; owner_module: "payables" | "receivables";
@@ -64,7 +65,7 @@ export const processingSchema = z.object({
       index: z.number().int().min(1).max(20),
       filename: z.string().min(1).max(180),
       mimeType: z.string().min(1).max(200),
-      byteSize: z.number().int().min(0).max(4 * 1024 * 1024),
+      byteSize: z.number().int().min(0).max(MAX_CLOUD_DOCUMENT_BYTES),
       sha256: z.string().regex(/^[a-f0-9]{64}$/).optional(),
       disposition: z.enum(["attachment", "inline"]),
       status: z.enum(["EXTRACTED", "RETRY_REQUIRED", "INLINE_SKIPPED", "DUPLICATE_SKIPPED", "QUARANTINED"]),

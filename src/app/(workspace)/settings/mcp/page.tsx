@@ -6,6 +6,7 @@ import { hasRecentStepUp } from "@/modules/identity/session";
 import { listUserMcpConnections } from "@/modules/mcp/connection-policy";
 import { mcpResourceUrl } from "@/modules/mcp/protocol";
 import { listPendingMcpApprovals } from "@/modules/mcp/settings-store";
+import { readAgentApprovalPolicy } from "@/modules/mcp/agent-approval-policy";
 import { requireWorkspacePrincipal } from "@/modules/workspace/access";
 import { SettingsNavigation } from "@/app/_components/route-tabs";
 
@@ -14,6 +15,7 @@ export const dynamic = "force-dynamic";
 export default async function McpSettingsPage() {
   const principal = await requireWorkspacePrincipal("/app/settings/mcp");
   const realUser = principal.sessionMode === "real";
+  const agentApprovalPolicy = await readAgentApprovalPolicy(principal);
   const [connections, approvals, authenticator] = realUser
     ? await Promise.all([
       listUserMcpConnections(principal),
@@ -37,6 +39,7 @@ export default async function McpSettingsPage() {
         endpoint={mcpResourceUrl().href}
         initialConnections={connections}
         initialApprovals={approvals}
+        initialAgentApprovalPolicy={agentApprovalPolicy}
         enabled={realUser}
         mfaEnrollmentState={principal.authMethod === "OIDC" && hasRecentStepUp(principal)
           ? "ENABLED"

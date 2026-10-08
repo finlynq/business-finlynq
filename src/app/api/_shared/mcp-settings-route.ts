@@ -47,10 +47,12 @@ export async function readMcpSettingsJson<Output>(
 export function mcpSettingsFailure(error: unknown): NextResponse {
   const rawMessage = error instanceof Error ? error.message : "";
   const controlled = rawMessage.startsWith("Recent MFA verification") ||
+    rawMessage.includes("Agent approval policy changed") ||
     rawMessage.includes("changed or is no longer active") ||
     rawMessage.includes("unavailable in demo");
   const message = controlled ? rawMessage : "The MCP setting could not be changed.";
   const status = message.startsWith("Recent MFA verification") ? 428
+    : message.includes("Agent approval policy changed") ? 409
     : message.includes("changed or is no longer active") ? 409
       : message.includes("unavailable in demo") ? 403
         : 400;

@@ -3,6 +3,7 @@ import { bankStatementExtractionSchema, bankStatementMappingSchema } from "@/mod
 import { createBusinessDocumentSchema } from "@/modules/subledger/document-model";
 import { uploadEvidenceSchema } from "@/modules/subledger/evidence-model";
 import { inboxUploadMimeTypeSchema } from "./file-types";
+import { MAX_CLOUD_DOCUMENT_BYTES } from "./limits";
 
 export const providerSchema = z.enum(["GOOGLE_DRIVE", "ONEDRIVE"]);
 export type StorageProvider = z.infer<typeof providerSchema>;
@@ -29,6 +30,9 @@ export const syncInboxSchema = z.object({ connectionId: z.uuid(), restart: z.boo
 export const uploadInboxSchema = uploadEvidenceSchema.omit({ module: true, mimeType: true }).extend({
   connectionId: z.uuid(),
   mimeType: inboxUploadMimeTypeSchema,
+  byteSize: z.number().int().positive().max(MAX_CLOUD_DOCUMENT_BYTES),
+  contentBase64: z.string().min(4).max(4 * Math.ceil(MAX_CLOUD_DOCUMENT_BYTES / 3))
+    .regex(/^[A-Za-z0-9+/]*={0,2}$/).refine((value) => value.length % 4 === 0, "Invalid base64 length"),
 }).strict();
 export const MAX_PDF_PREPARATION_BYTES = 8 * 1024 * 1024;
 export const preparePdfUploadSchema = z.object({

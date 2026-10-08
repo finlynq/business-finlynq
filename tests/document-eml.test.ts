@@ -131,6 +131,6 @@ describe("bounded EML parsing", () => {
       nested = message([`Content-Type: multipart/mixed; boundary=depth-${depth}`], multipart(`depth-${depth}`, [nested]));
     }
     expect(() => parseEmlDocument(nested)).toThrow(/nesting-depth/);
-    expect(() => parseEmlDocument(Buffer.alloc(2 * 1024 * 1024 + 1, 65))).toThrow(/2 MiB/);
+    expect(() => parseEmlDocument(Buffer.alloc(20 * 1024 * 1024 + 1, 65))).toThrow(/20 MiB/);
   });
 });

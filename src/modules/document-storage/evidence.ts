@@ -11,6 +11,7 @@ import { CloudDrive, StorageError, type CloudFile } from "./provider";
 import { assertStoredFile } from "./boundaries";
 import { classifyInboxFile, validateInboxDocumentBytes } from "./file-types";
 import { parseEmlDocument } from "./eml";
+import { MAX_CLOUD_DOCUMENT_BYTES } from "./limits";
 
 export function supportedCloudFile(file: CloudFile) {
   return classifyInboxFile(file).supported;
@@ -25,7 +26,7 @@ export async function validatedCloudBytes(drive: CloudDrive, file: CloudFile) {
     const sha256 = createHash("sha256").update(bytes).digest("hex");
     let scan: Awaited<ReturnType<typeof scanEvidence>>;
     try {
-      scan = await scanEvidence(bytes);
+      scan = await scanEvidence(bytes, MAX_CLOUD_DOCUMENT_BYTES);
     } catch (error) {
       if (validated.format === "EML" && error instanceof Error && /malware/i.test(error.message)) {
         throw new StorageError("STORAGE_EML_MALWARE", "The email or one of its attachments was rejected by malware scanning.");

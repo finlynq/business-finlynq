@@ -7,6 +7,7 @@ import { MutationFeedback } from "@/app/_components/mutation-feedback.client";
 import type { McpConnectionSettings } from "@/modules/mcp/connection-policy";
 import type { McpAccessMode } from "@/modules/mcp/protocol";
 import type { PendingMcpApproval } from "@/modules/mcp/settings-store";
+import type { AgentApprovalPolicy } from "@/modules/mcp/agent-approval-policy";
 
 const MODES: readonly Readonly<{ value: McpAccessMode; label: string }>[] = [
   { value: "OFF", label: "Off" },
@@ -31,18 +32,21 @@ export function McpSettings({
   endpoint,
   initialConnections,
   initialApprovals,
+  initialAgentApprovalPolicy,
   enabled,
   mfaEnrollmentState,
 }: {
   endpoint: string;
   initialConnections: readonly McpConnectionSettings[];
   initialApprovals: readonly PendingMcpApproval[];
+  initialAgentApprovalPolicy: AgentApprovalPolicy;
   enabled: boolean;
   mfaEnrollmentState: MfaEnrollmentState;
 }) {
   const router = useRouter();
   const [connections, setConnections] = useState(initialConnections);
   const [approvals, setApprovals] = useState(initialApprovals);
+  const [agentApprovalPolicy, setAgentApprovalPolicy] = useState(initialAgentApprovalPolicy);
   const [busy, setBusy] = useState<string | null>(null);
   const [feedback, setFeedback] = useState<Feedback>(null);
   const [otp, setOtp] = useState("");
@@ -123,6 +127,29 @@ export function McpSettings({
     }
   }
 
+  async function changeAgentApprovalPolicy(enabledForAgents: boolean) {
+    setBusy("agent-approval-policy");
+    setFeedback(null);
+    try {
+      const response = await fetch("/api/mcp/agent-approval-policy", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ enabled: enabledForAgents, expectedVersion: agentApprovalPolicy.version }),
+      });
+      if (!response.ok) {
+        if (response.status === 428) setNeedsStepUp(true);
+        throw new Error(await responseMessage(response));
+      }
+      const saved = await response.json() as AgentApprovalPolicy;
+      setAgentApprovalPolicy(saved);
+      setFeedback({ kind: "success", message: saved.enabled
+        ? "MCP agents with live approval and posting permissions may approve their own eligible journals."
+        : "Agent self-approval has been revoked for future decisions." });
+      router.refresh();
+    } catch (error) {
+      setFeedback({ kind: "error", message: error instanceof Error ? error.message : "The policy could not be changed." });
+    } finally { setBusy(null); }
+  }
+
   return (
     <div className="settings-layout">
       {feedback && <MutationFeedback {...feedback} onDismiss={() => setFeedback(null)} />}
@@ -156,6 +183,13 @@ export function McpSettings({
           <div className="table-scroll" tabIndex={0}><table><thead><tr><th>Client</th><th>Action</th><th>Arguments</th><th>Expires</th><th>Decision</th></tr></thead><tbody>{approvals.map((approval) => <tr key={approval.id}><td>{approval.clientName}</td><td><code>{approval.toolName}</code></td><td><code>{JSON.stringify(approval.argumentsSummary)}</code></td><td>{displayTime(approval.expiresAt)}</td><td><div className="member-action-list"><button className="primary-button compact-button" type="button" disabled={busy !== null} onClick={() => void decide(approval, "APPROVED")}>Approve once</button><button className="text-danger-button" type="button" disabled={busy !== null} onClick={() => void decide(approval, "REJECTED")}>Reject</button></div></td></tr>)}</tbody></table></div>
         </section>
       )}
+
+      <section className="panel" aria-labelledby="mcp-agent-approval-title">
+        <div className="panel-heading"><div><p className="eyebrow">Owner authorization</p><h2 id="mcp-agent-approval-title">Agent journal self-approval</h2><p>This organization-wide option applies to all connected MCP clients. Agents still need their own live journal approval and posting permissions, and all normal journal checks apply.</p></div></div>
+        <p><strong>{agentApprovalPolicy.enabled ? "Enabled" : "Disabled"}</strong>{agentApprovalPolicy.enabledAt ? ` · Enabled ${displayTime(agentApprovalPolicy.enabledAt)}` : " · Default"}</p>
+        {agentApprovalPolicy.ownerCanChange && enabled && <div className="form-actions"><button type="button" className={agentApprovalPolicy.enabled ? "text-danger-button" : "primary-button"} disabled={busy !== null} onClick={() => void changeAgentApprovalPolicy(!agentApprovalPolicy.enabled)}>{agentApprovalPolicy.enabled ? "Revoke agent self-approval" : "Enable for all MCP connections"}</button></div>}
+        <p className="panel-note">An owner must complete a recent MFA step-up before enabling. Revoking stops new self-approvals; approvals already recorded remain part of the journal’s audit history.</p>
+      </section>
 
       <section className="panel" aria-labelledby="mcp-endpoint-title">
         <div className="panel-heading"><div><p className="eyebrow">Remote endpoint</p><h2 id="mcp-endpoint-title">Connect an MCP client</h2><p>Use OAuth 2.1 with PKCE. FinLynQ never asks the agent for a password, API key, bank credential, or signing secret.</p></div></div>

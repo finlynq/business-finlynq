@@ -85,6 +85,18 @@ describe("MCP journal workflow contract", () => {
     const override = mcpJournalWorkflow(workflow, { ...rt.snapshot, toolOverrides: { finlynq_daily_approve_journal: "OFF" } });
     expect(override?.actions.approve.allowed).toBe(false);
   });
+  it("shows organization-wide self-approval only when owner policy is enabled", () => {
+    const creatorWorkflow = { ...workflow, actorIsCreator: true,
+      actions: { ...workflow.actions, approve: { allowed: false, reasonCode: "CREATOR_CANNOT_APPROVE" as const, reason: "Independent review required" } } };
+    const disabled = mcpJournalWorkflow(creatorWorkflow, runtime().snapshot);
+    expect(disabled?.actions.approve.reasonCode).toBe("CREATOR_CANNOT_APPROVE");
+    const enabled = mcpJournalWorkflow(creatorWorkflow, { ...runtime().snapshot, agentSelfApprovalEnabled: true });
+    expect(enabled).toMatchObject({ agentSelfApprovalEnabled: true, independentApprovalRequired: false,
+      actions: { approve: { allowed: true }, post: { allowed: false, reasonCode: "APPROVAL_REQUIRED" } } });
+    const restricted = mcpJournalWorkflow(creatorWorkflow, { ...runtime().snapshot,
+      agentSelfApprovalEnabled: true, dailyMode: "READ_ONLY" });
+    expect(restricted?.actions.approve.reasonCode).toBe("CONNECTION_RESTRICTED");
+  });
 
   it("carries frozen versions through approval, posting, and refreshed action responses", async () => {
     const args = { journalId: id, expectedContentHash: hash, expectedApprovalVersion: 3, reason: "Reviewed synthetic journal" };
