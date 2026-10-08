@@ -61,12 +61,12 @@
 }
 
 .registerTable th:nth-child(1) { width: 14%; }
-.registerTable th:nth-child(2) { width: 25%; }
+.registerTable th:nth-child(2) { width: 24%; }
 .registerTable th:nth-child(3) { width: 7%; }
 .registerTable th:nth-child(4) { width: 7%; }
 .registerTable th:nth-child(5) { width: 9%; }
 .registerTable th:nth-child(6) { width: 9%; }
-.registerTable th:nth-child(7) { width: 7%; }
+.registerTable th:nth-child(7) { width: 8%; }
 .registerTable th:nth-child(8) { width: 22%; }
 
 .registerTable tbody tr:not(:global(.expanded-row)) td {
@@ -77,6 +77,12 @@
 .journalMeta {
   color: #63758a;
   font-size: 11px;
+}
+
+.reversalMeta {
+  margin-left: 4px;
+  color: #63758a;
+  font-size: 10px;
 }
 
 .description {

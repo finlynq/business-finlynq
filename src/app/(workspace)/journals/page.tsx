@@ -84,9 +84,9 @@ export default async function JournalsPage({ searchParams }: { searchParams: Pro
                     <td>{journal.ownerModule}</td>
                     <td className="amount-cell">{formatAmount(journal.currency, journal.debitFunctional ?? journal.amount)}</td>
                     <td className="amount-cell">{formatAmount(journal.currency, journal.creditFunctional ?? journal.amount)}</td>
-                    <td><StatusPill status={journal.reversedByNumber ? "REVERSED" : journal.status} /></td>
+                    <td><StatusPill status={journal.reversedByNumber ? "REVERSED" : journal.status} />{journal.reversedByNumber && <span className={styles.reversalMeta} title={`Reversed by journal #${journal.reversedByNumber}`} aria-label={`Reversed by journal #${journal.reversedByNumber}`}>→ #{journal.reversedByNumber}</span>}</td>
                     </>} actions={<div className={styles.actions}>
-                        <Link className="text-link compact-button" href={`/app/journals/${journal.id}`}>Open</Link>
+                        <Link className="text-link compact-button" href={`/app/journals/${journal.id}`} aria-label={`View journal entry #${journal.number}`}>Open</Link>
                         {journal.canPost && journal.expectedContentHash && (
                           <JournalRegisterAction
                             key={`${journal.id}:post:${journal.expectedContentHash}:${journal.expectedApprovalVersion}`}
