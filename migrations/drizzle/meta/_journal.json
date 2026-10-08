@@ -610,6 +610,13 @@
       "when": 1791475084591,
       "tag": "0086_mcp_agent_self_approval_guards",
       "breakpoints": true
+    },
+    {
+      "idx": 87,
+      "version": "7",
+      "when": 1791484500000,
+      "tag": "0087_reprepare_rejected_bank_proposal",
+      "breakpoints": true
     }
   ]
 }
