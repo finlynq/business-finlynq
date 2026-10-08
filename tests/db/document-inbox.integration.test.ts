@@ -372,7 +372,7 @@ run("cloud inbox PostgreSQL lifecycle", () => {
           ids.org, randomUUID(), mimeType, ids.actor, randomUUID(), assetId,
         ])).rejects.toMatchObject({
           code: "23514",
-          constraint: "document_evidence_assets_metadata_check_v3",
+          constraint: "document_evidence_assets_metadata_check_v4",
         });
         await client.query("ROLLBACK TO SAVEPOINT unsafe_evidence_mime_probe");
         await client.query("RELEASE SAVEPOINT unsafe_evidence_mime_probe");
