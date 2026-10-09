@@ -126,8 +126,9 @@ export async function saveClientGuidanceFile(context: TenantTransactionContext, 
   }
   return withTenantTransaction(context, async (client) => {
     await assertWrite(client, context);
+    // Serialize the path revision and the organization-wide file quota together.
     await client.query(`SELECT pg_advisory_xact_lock(hashtextextended($1,0))`,
-      [`client-guidance:${context.organizationId}:${command.path}`]);
+      [`client-guidance:${context.organizationId}`]);
     const existing = await client.query<{ version: number }>(
       `SELECT version FROM organization_guidance_files WHERE organization_id=$1 AND path=$2
        ORDER BY version DESC LIMIT 1`, [context.organizationId, command.path]);
@@ -165,7 +166,7 @@ export async function retireClientGuidanceFile(context: TenantTransactionContext
   return withTenantTransaction(context, async (client) => {
     await assertWrite(client, context);
     await client.query(`SELECT pg_advisory_xact_lock(hashtextextended($1,0))`,
-      [`client-guidance:${context.organizationId}:${command.path}`]);
+      [`client-guidance:${context.organizationId}`]);
     const existing = await client.query<FileRow>(
       `SELECT path,summary,content,version,status,changed_at FROM organization_guidance_files
        WHERE organization_id=$1 AND path=$2 ORDER BY version DESC LIMIT 1`,

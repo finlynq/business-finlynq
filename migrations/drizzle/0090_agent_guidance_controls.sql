@@ -54,7 +54,8 @@ BEGIN
     RAISE EXCEPTION 'Invalid platform guidance summary or content size'
       USING ERRCODE = '22023';
   END IF;
-  PERFORM pg_advisory_xact_lock(hashtextextended('platform-guidance:' || selected_path, 0));
+  -- One library lock protects both exact revisions and the 100-path quota.
+  PERFORM pg_advisory_xact_lock(hashtextextended('platform-guidance-library', 0));
   SELECT * INTO current_file FROM platform_guidance_files
    WHERE path = selected_path ORDER BY version DESC LIMIT 1;
   IF coalesce(current_file.version, 0) <> expected_version THEN
