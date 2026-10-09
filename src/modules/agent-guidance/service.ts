@@ -144,7 +144,7 @@ export async function saveClientGuidanceFile(context: TenantTransactionContext, 
         throw guidanceError("GUIDANCE_FILE_LIMIT", "Client guidance has reached its 100-file limit");
       }
     }
-    const saved = await client.query<{ id: string; version: number; changed_at: Date }>(
+    const saved = await client.query<{ version: number; changed_at: Date }>(
       `INSERT INTO organization_guidance_files
         (organization_id,path,summary,content,version,status,changed_by,request_id)
        VALUES ($1,$2,$3,$4,$5,'ACTIVE',$6,$7)
@@ -152,10 +152,6 @@ export async function saveClientGuidanceFile(context: TenantTransactionContext, 
       [context.organizationId, command.path, command.summary, command.content, version + 1,
         context.actorId, context.requestId]);
     const row = saved.rows[0]!;
-    await client.query(
-      `SELECT app.append_tenant_business_audit($1::uuid,'guidance.file.saved','guidance-file',$2::text,
-        jsonb_build_object('path',$3::text,'version',$4::int),'agent-guidance.file-saved')`,
-      [context.organizationId, row.id, command.path, row.version]);
     return { scope: "client" as const, path: command.path, version: row.version,
       updatedAt: row.changed_at.toISOString() };
   });
@@ -178,17 +174,13 @@ export async function retireClientGuidanceFile(context: TenantTransactionContext
     if (current.status !== "ACTIVE") {
       throw guidanceError("GUIDANCE_ALREADY_RETIRED", "This guidance file is already retired");
     }
-    const saved = await client.query<{ id: string; changed_at: Date }>(
+    await client.query(
       `INSERT INTO organization_guidance_files
         (organization_id,path,summary,content,version,status,changed_by,request_id)
        VALUES ($1,$2,$3,$4,$5,'RETIRED',$6,$7)
        RETURNING id,changed_at`,
       [context.organizationId, current.path, current.summary, current.content, current.version + 1,
         context.actorId, context.requestId]);
-    await client.query(
-      `SELECT app.append_tenant_business_audit($1::uuid,'guidance.file.retired','guidance-file',$2::text,
-        jsonb_build_object('path',$3::text,'version',$4::int),'agent-guidance.file-retired')`,
-      [context.organizationId, saved.rows[0]!.id, current.path, current.version + 1]);
     return { scope: "client" as const, path: current.path, version: current.version + 1,
       status: "RETIRED" as const };
   });

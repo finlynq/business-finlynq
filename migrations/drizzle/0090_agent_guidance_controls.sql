@@ -20,6 +20,28 @@ CREATE TRIGGER platform_guidance_revision_immutable
   FOR EACH ROW EXECUTE FUNCTION app.guard_guidance_revision_immutable();
 --> statement-breakpoint
 
+CREATE FUNCTION app.guard_organization_guidance_append()
+RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER
+SET search_path = pg_catalog, public, pg_temp AS $$
+BEGIN
+  IF NEW.organization_id IS DISTINCT FROM app.current_organization_id()
+    OR NEW.changed_by IS DISTINCT FROM app.current_actor_id()
+    OR NOT app.current_actor_has_permission('organization.settings.manage') THEN
+    RAISE EXCEPTION 'Organization guidance requires an authorized actor'
+      USING ERRCODE = '42501';
+  END IF;
+  PERFORM app.append_tenant_business_audit(NEW.organization_id,
+    CASE NEW.status WHEN 'RETIRED' THEN 'guidance.file.retired' ELSE 'guidance.file.saved' END,
+    'guidance-file', NEW.id::text,
+    jsonb_build_object('path', NEW.path, 'version', NEW.version), NULL);
+  RETURN NEW;
+END $$;
+REVOKE ALL ON FUNCTION app.guard_organization_guidance_append() FROM PUBLIC;
+CREATE TRIGGER organization_guidance_append_guard
+  BEFORE INSERT ON organization_guidance_files
+  FOR EACH ROW EXECUTE FUNCTION app.guard_organization_guidance_append();
+--> statement-breakpoint
+
 -- Platform files are readable by tenant sessions, but only this fresh-MFA
 -- control-plane function can append a revision. Tenant roles never own them.
 CREATE FUNCTION app.save_platform_guidance_file(

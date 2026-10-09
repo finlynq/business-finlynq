@@ -78,6 +78,12 @@ run("agent guidance tenant and revision controls", () => {
       "SELECT status FROM organization_guidance_files WHERE organization_id=$1 AND path='index.md' ORDER BY version",
       [ids.orgA]);
     expect(history.rows.map((row) => row.status)).toEqual(["ACTIVE", "ACTIVE", "RETIRED"]);
+    const audit = await owner.query<{ action: string }>(
+      "SELECT action FROM audit_events WHERE organization_id=$1 AND entity_type='guidance-file' ORDER BY occurred_at",
+      [ids.orgA]);
+    expect(audit.rows.map((row) => row.action)).toEqual([
+      "guidance.file.saved", "guidance.file.saved", "guidance.file.retired",
+    ]);
     await expect(withTenantTransaction(a, (client) => client.query(
       "UPDATE organization_guidance_files SET summary='Changed history' WHERE organization_id=$1 AND path='index.md'",
       [ids.orgA]))).rejects.toThrow();
