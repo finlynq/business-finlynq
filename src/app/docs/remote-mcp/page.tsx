@@ -21,7 +21,7 @@ export default function RemoteMcpDocumentationPage() {
       />
       <div className="documentation-layout">
       <CompactDisclosure summary="Guide contents" desktopOpen className="documentation-contents"><nav className="documentation-topics" aria-label="Guide topics">
-        <a href="#connection">Connect a client</a><a href="#scopes">Access scopes</a><a href="#filings">Tax workpapers</a><a href="#settlements">Settlements</a><a href="#cloud-inbox">Cloud inbox</a><a href="#attachments">Attachments</a><a href="#confirmations">Confirmations</a>
+        <a href="#connection">Connect a client</a><a href="#scopes">Access scopes</a><a href="#guidance">Agent guidance</a><a href="#filings">Tax workpapers</a><a href="#settlements">Settlements</a><a href="#cloud-inbox">Cloud inbox</a><a href="#attachments">Attachments</a><a href="#confirmations">Confirmations</a>
       </nav></CompactDisclosure>
       <div className="documentation-content">
       <section className="panel form-panel" id="connection">
@@ -30,6 +30,11 @@ export default function RemoteMcpDocumentationPage() {
           <label className="full-field"><span>MCP server URL</span><input readOnly value={endpoint} /></label>
           <p>Discovery is available through OAuth authorization-server and protected-resource metadata. Clients register as public clients and must use an exact registered redirect URI and PKCE S256.</p>
         </div>
+      </section>
+      <section className="panel" id="guidance">
+        <div className="panel-heading"><div><p className="eyebrow">Persistent context</p><h2>Agent guidance files</h2></div></div>
+        <p>The MCP startup instruction points to <code>finlynq_guidance_get_index</code>. It returns short Finlynq-standard and organization indexes containing file references; use <code>finlynq_guidance_read_file</code> to load only the relevant Markdown file. <code>finlynq_guidance_list_files</code> can recover the full file list when needed. Each file is limited to 3,000 estimated tokens. Organization members can inspect the plain files in <Link href="/app/settings/guidance">Agent guidance settings</Link>.</p>
+        <p>An agent with <code>organization.settings.manage</code> and an authorized Daily write connection can save or retire organization files without a separate approval for each change when Daily mode is Allow writes. Every edit creates a version; platform-standard files can be changed only by a platform administrator with fresh MFA. Guidance does not override tool permissions, the user&apos;s request, or source evidence.</p>
       </section>
       <section className="panel" id="scopes">
         <div className="panel-heading"><div><p className="eyebrow">Least privilege</p><h2>Scopes and tool groups</h2></div></div>
