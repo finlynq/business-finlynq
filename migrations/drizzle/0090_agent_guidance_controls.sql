@@ -33,8 +33,8 @@ DECLARE current_file platform_guidance_files%ROWTYPE;
         saved_file platform_guidance_files%ROWTYPE;
 BEGIN
   IF NOT EXISTS (
-    SELECT 1 FROM app.auth_platform_administrator_authorization(selected_session_id, selected_user_id) authorization
-    WHERE authorization.step_up_expires_at > now()
+    SELECT 1 FROM app.auth_platform_administrator_authorization(selected_session_id, selected_user_id) grant_check
+    WHERE grant_check.step_up_expires_at > now()
   ) THEN
     RAISE EXCEPTION 'Platform guidance changes require a current platform administrator MFA step-up'
       USING ERRCODE = '42501';
