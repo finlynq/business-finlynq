@@ -1,12 +1,13 @@
 import "server-only";
 import type { CallToolResult } from "@modelcontextprotocol/server";
 import { z } from "zod";
+import { after } from "next/server";
 import { PERMISSIONS } from "@/modules/identity/permissions";
 import { listStorageConnections } from "@/modules/document-storage/connections";
 import { uploadInboxDocument } from "@/modules/document-storage/upload";
 import { prepareAndUploadPdf } from "@/modules/document-storage/prepare-pdf-upload";
 import { preparePdfUploadSchema, uploadInboxSchema } from "@/modules/document-storage/model";
-import { claimInboxDocument, completeInboxDocument, listDocumentInbox, readInboxDocument, retryDocumentFiling, reviewInboxDocument, syncDocumentInbox } from "@/modules/document-storage/inbox";
+import { claimInboxDocument, completeInboxDocument, getDocumentFilingStatus, listDocumentInbox, readInboxDocument, reviewInboxDocument, scheduleDocumentFiling, syncDocumentInbox } from "@/modules/document-storage/inbox";
 import { claimInboxSchema, completeInboxSchema, listInboxSchema, readInboxSchema, retryFilingSchema, reviewInboxSchema, syncInboxSchema } from "@/modules/document-storage/model";
 import { mcpMutationContext } from "./oauth-store";
 import { defineMcpTool, type McpToolRuntime } from "./tool-types";
@@ -51,6 +52,9 @@ export const INBOX_MCP_TOOLS = [
     title: "Send an inbox document for review", description: "Release your claim and record missing fields, unsupported content, or suspected duplicates. The original remains in the cloud inbox. No accounting record is created.",
     inputSchema: reviewInboxSchema, invoke: (args, runtime) => reviewInboxDocument(context(runtime, args.reason), args) }),
   defineMcpTool({ policy: { name: "finlynq_daily_retry_document_filing", group: "DAILY", access: "WRITE", permissionsAny: manage },
-    title: "Retry filing a processed document", description: "Pass the itemId returned as completionHandle by finlynq_daily_complete_inbox_document. Retry only the saved rename/move after a completed ingestion. Reconcile a move whose response was lost, verify content, and mark FILED. No accounting record is created or posted.",
-    openWorld: true, inputSchema: retryFilingSchema, invoke: (args, runtime) => retryDocumentFiling(context(runtime, "Retry document filing"), args) }),
+    title: "Start or retry filing a processed document", description: "Pass the itemId returned as completionHandle by finlynq_daily_complete_inbox_document. If already FILED, return the same item and asset. Otherwise start the saved archive move after a completed ingestion and return filingPending=true with the durable item promptly; poll finlynq_daily_get_document_filing_status for FILED or FILING_FAILED. If still ready or failed, retry the same itemId. No accounting record is created or posted.",
+    openWorld: true, inputSchema: retryFilingSchema, invoke: (args, runtime) => scheduleDocumentFiling(context(runtime, "Retry document filing"), args, after) }),
+  defineMcpTool({ policy: { name: "finlynq_daily_get_document_filing_status", group: "DAILY", access: "READ", permissionsAny: read },
+    title: "Get exact document filing status", description: "Read the exact completed inbox item by its completionHandle/itemId. FILED returns the original asset metadata, READY_TO_FILE means filing remains pending or can be retried, and FILING_FAILED includes an actionable reason. This never moves a file or repeats accounting.",
+    inputSchema: retryFilingSchema, invoke: (args, runtime) => getDocumentFilingStatus(context(runtime, "Get document filing status"), args) }),
 ];

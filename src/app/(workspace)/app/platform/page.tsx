@@ -80,6 +80,10 @@ export default async function PlatformAdministrationPage() {
           platform change will require a separate audited operation and a fresh MFA step-up inside the database transaction.
         </p>
       </section>
+      <section className="panel"><div className="panel-heading"><div><p className="eyebrow">Agent guidance</p><h2>Shared Markdown files</h2></div></div>
+        <p className="panel-note">Publish versioned standard guidance for all organizations. File changes require a fresh platform administrator MFA step-up.</p>
+        <Link className="secondary-button" href="/app/platform/guidance">Manage guidance files</Link>
+      </section>
     </div>
   );
 }
