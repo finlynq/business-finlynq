@@ -13,3 +13,4 @@ export * from "./parties";
 export * from "./platform-administration";
 export * from "./tax";
 export * from "./booking-reports";
+export * from "./agent-guidance";
