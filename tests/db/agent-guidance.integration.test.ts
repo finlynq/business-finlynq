@@ -25,7 +25,8 @@ run("agent guidance tenant and revision controls", () => {
       VALUES ($1,$2,'Guidance A',true,false,'REAL',now()),($3,$4,'Guidance B',true,false,'REAL',now())`,
       [ids.orgA, `guidance-${ids.orgA}`, ids.orgB, `guidance-${ids.orgB}`]);
     await owner.query(`INSERT INTO users(id,email_lookup_hash,email_ciphertext,password_hash,active)
-      VALUES ($1,$1::text,'encrypted','test',true),($2,$2::text,'encrypted','test',true)`, [ids.userA, ids.userB]);
+      VALUES ($1,$2,'encrypted','test',true),($3,$4,'encrypted','test',true)`,
+      [ids.userA, ids.userA, ids.userB, ids.userB]);
     await owner.query(`INSERT INTO organization_memberships(id,organization_id,user_id,active)
       VALUES ($1,$2,$3,true),($4,$5,$6,true)`,
       [ids.membershipA, ids.orgA, ids.userA, ids.membershipB, ids.orgB, ids.userB]);
