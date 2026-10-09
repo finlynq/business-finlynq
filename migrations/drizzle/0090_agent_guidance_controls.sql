@@ -136,3 +136,9 @@ DO $$ BEGIN
       TO business_finlynq_app;
   END IF;
 END $$;
+--> statement-breakpoint
+
+INSERT INTO demo_sandbox_reset_tables(table_name,purge_order)
+VALUES ('organization_guidance_files',
+  (SELECT coalesce(max(purge_order),0)+1 FROM demo_sandbox_reset_tables))
+ON CONFLICT(table_name) DO NOTHING;
