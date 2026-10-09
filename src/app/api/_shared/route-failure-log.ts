@@ -20,6 +20,8 @@ export type RouteFailureOperation =
   | "oidc-login"
   | "optional-mfa-activation"
   | "organization-administration"
+  | "organization-guidance"
+  | "platform-guidance"
   | "password-reset-confirmation"
   | "password-reset-escalation"
   | "password-reset-request"
