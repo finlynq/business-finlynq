@@ -268,6 +268,7 @@ BEGIN
     'bank_match_allocation_voids', 'bank_rules', 'bank_rule_runs',
     'bank_draft_proposals', 'bank_account_cutovers', 'bank_accounting_proposals',
     'mcp_oauth_clients', 'mcp_connections', 'mcp_agent_self_approval_policy',
+    'organization_guidance_files', 'platform_guidance_files',
     'mcp_oauth_codes', 'mcp_access_tokens', 'mcp_refresh_tokens',
     'mcp_approvals', 'mcp_tool_executions',
     'document_storage_connections', 'document_storage_oauth', 'document_inbox_items',
@@ -320,6 +321,7 @@ BEGIN
     'bank_reconciliation_voids', 'bank_match_allocations', 'bank_match_allocation_voids', 'bank_rules',
     'bank_rule_runs', 'bank_draft_proposals', 'bank_account_cutovers',
     'bank_accounting_proposals', 'mcp_oauth_clients',
+    'organization_guidance_files',
     'document_inbox_processing_attempts',
     'email_booking_rules', 'sales_invoice_pdf_artifacts', 'invoice_delivery_events'
   ] LOOP
@@ -385,6 +387,7 @@ BEGIN
     'app.auth_resolve_session_v2(text,text)',
     'app.auth_resolve_session_v3(text,text)',
     'app.auth_platform_administrator_authorization(uuid,uuid)',
+    'app.save_platform_guidance_file(uuid,uuid,text,text,text,integer,text,boolean)',
     'app.platform_administration_overview(uuid,uuid)',
     'app.auth_revoke_session(text,text)',
     'app.auth_trusted_browsers_for_session(uuid,text)',

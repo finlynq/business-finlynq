@@ -1445,14 +1445,17 @@ async function reconciliationProof(
        WHERE posted_on BETWEEN $4::date AND $5::date
          AND currency_code = $6
      ), in_period_ledger_line AS (
-       SELECT line.id, CASE WHEN account.class = 'LIABILITY'
-         THEN line.credit_transaction - line.debit_transaction
-         ELSE line.debit_transaction - line.credit_transaction END AS amount
+       SELECT line.id, CASE WHEN line.transaction_currency = $6
+         THEN line.debit_transaction - line.credit_transaction
+         ELSE line.debit_functional - line.credit_functional END AS amount
        FROM journal_lines line
        JOIN journal_entries journal
          ON journal.organization_id = line.organization_id
         AND journal.id = line.journal_entry_id
         AND journal.status = 'POSTED'
+       JOIN ledgers ledger
+         ON ledger.organization_id = journal.organization_id
+        AND ledger.id = journal.ledger_id
        JOIN account_combinations combination
          ON combination.organization_id = line.organization_id
         AND combination.id = line.account_combination_id
@@ -1480,7 +1483,7 @@ async function reconciliationProof(
                    AND deactivation.lifecycle_effective_on <= journal.accounting_date)
            )
          )
-         AND line.transaction_currency = $6
+         AND (line.transaction_currency = $6 OR ledger.functional_currency = $6)
          AND journal.accounting_date BETWEEN $4::date AND $5::date
          AND NOT EXISTS (
            SELECT 1 FROM bank_account_cutovers migration_cutover
@@ -1714,13 +1717,16 @@ export async function createBankMatchAllocation(input: Readonly<{
            )
        ), selected_line AS (
          SELECT line.id,
-           CASE WHEN account.class = 'LIABILITY'
-             THEN line.credit_transaction - line.debit_transaction
-             ELSE line.debit_transaction - line.credit_transaction END AS amount
+           CASE WHEN line.transaction_currency = $6
+             THEN line.debit_transaction - line.credit_transaction
+             ELSE line.debit_functional - line.credit_functional END AS amount
          FROM journal_lines line
          JOIN journal_entries journal
           ON journal.organization_id = line.organization_id
           AND journal.id = line.journal_entry_id AND journal.status = 'POSTED'
+         JOIN ledgers ledger
+           ON ledger.organization_id = journal.organization_id
+          AND ledger.id = journal.ledger_id
          JOIN account_combinations combination
            ON combination.organization_id = line.organization_id
           AND combination.id = line.account_combination_id
@@ -1748,7 +1754,7 @@ export async function createBankMatchAllocation(input: Readonly<{
                      AND deactivation.lifecycle_effective_on <= journal.accounting_date)
              )
            )
-           AND line.transaction_currency = $6
+           AND (line.transaction_currency = $6 OR ledger.functional_currency = $6)
            AND journal.accounting_date BETWEEN $4::date AND $5::date
            AND NOT EXISTS (
              SELECT 1 FROM bank_account_cutovers migration_cutover

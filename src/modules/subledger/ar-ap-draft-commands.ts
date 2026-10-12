@@ -5,6 +5,7 @@ import { evidenceReferencesSchema, type EvidenceReference } from "./evidence-mod
 
 import { withTenantTransaction } from "@/db/transaction";
 import { PERMISSIONS } from "@/modules/identity/permissions";
+import { draftRequiresSourceTaxReviewPermission } from "./source-tax-review";
 import {
   assertTenantWritesEnabled,
   assertWritableOrganization,
@@ -190,7 +191,7 @@ export async function createBusinessDocumentDraftInTransaction(
   const fingerprints = fingerprint ? { current: fingerprint, legacy: fingerprint } : subledgerCommandFingerprints(policy.ownerModule, "draft-create", command);
   await assertWritableOrganization(client, unparsedCommand.context);
   await assertPermission(client, unparsedCommand.context, permissionForOwner(policy.ownerModule, "manage"));
-  if (command.lines.some((line) => line.tax.sourceTaxOverride !== undefined || line.tax.sourceTaxRounding !== undefined)) {
+  if (draftRequiresSourceTaxReviewPermission(command.lines)) {
     await assertPermission(client, unparsedCommand.context, PERMISSIONS.overrideTaxDeterminations);
   }
   await acquireIdempotencyLock(client, unparsedCommand.context.organizationId, idempotencyKey);
@@ -272,7 +273,7 @@ export async function editBusinessDocumentDraft(
   return withTenantTransaction(unparsedCommand.context, async (client) => {
     await assertWritableOrganization(client, unparsedCommand.context);
     await assertPermission(client, unparsedCommand.context, permissionForOwner(policy.ownerModule, "manage"));
-    if (command.lines.some((line) => line.tax.sourceTaxOverride !== undefined || line.tax.sourceTaxRounding !== undefined)) {
+    if (draftRequiresSourceTaxReviewPermission(command.lines)) {
       await assertPermission(client, unparsedCommand.context, PERMISSIONS.overrideTaxDeterminations);
     }
     await acquireIdempotencyLock(client, unparsedCommand.context.organizationId, idempotencyKey);

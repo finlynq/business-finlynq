@@ -33,6 +33,12 @@ The server rebuilds the preview and rejects a changed hash or an extraction that
 
 Statement filing metadata uses `documentType: STATEMENT`. Its `documentDate` must equal the statement ending date, and its currency must equal the reviewed statement currency. A statement may supply currency without a document total. Opening, closing, available, current, and amount-owed balances are statement facts rather than an invoice total; retain named balances in the extraction. Invoice and other non-statement metadata still require currency and total together.
 
+## Reuse a file already attached to a bill
+
+When a bank export was filed earlier as evidence on a supplier bill, do not upload or claim another copy. Obtain its `itemId`, `assetId`, `sourceDocumentId`, and SHA-256 from the filed inbox item and linked source version. Use `finlynq_daily_read_filed_bank_evidence` for each bounded CSV/TSV/TXT/XLS/XLSX row page, then submit the extracted facts to the normal preview tool. After review, call `finlynq_daily_import_filed_bank_evidence` with those exact four identifiers, the unchanged extraction and `previewHash`, account mapping, `confirmed: true`, and a permanent reason.
+
+The server rechecks the filed item, source-document link, company, payables/receivables read permission, banking permissions, live storage grant, provider boundary, file size, and SHA-256. It imports observations with the original inbox and evidence IDs; it neither moves the cloud file nor creates another bill, evidence asset, or journal. The original bill and attachment remain unchanged. A repeated confirmation with the same source and preview returns the retained import. A different preview for an already imported item fails as a conflict. `TRANSACTION_EXPORT` creates observations without inventing balances; use `STATEMENT_BALANCES` only when actual opening and closing balances are present.
+
 ## Account mapping and permissions
 
 The statement must map to an active account in the same company as the document-inbox connection. The account kind and currency must match the reviewed statement. A cash statement maps to an active, postable, non-control asset combination in that company's ledger. A credit-card statement maps to an equivalent liability combination.

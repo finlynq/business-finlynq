@@ -207,6 +207,18 @@ export async function downloadDocumentEvidence(command: Context & { assetId: str
   }
 }
 
+export async function reauthorizeDocumentEvidenceLinkInTransaction(
+  client: PoolClient,
+  context: TenantTransactionContext,
+  assetId: string,
+  sourceDocumentId: string,
+): Promise<EvidenceRow> {
+  const { row } = await authorizedEvidenceRow(client, context, assetId, sourceDocumentId);
+  if (row.storage_backend !== "CLOUD") throw new Error("The filed statement evidence must remain linked to cloud storage");
+  await reauthorizeCloudEvidenceDownload(client, context, row);
+  return row;
+}
+
 async function authorizedBankStatementEvidenceRow(
   client: PoolClient,
   context: TenantTransactionContext,

@@ -174,6 +174,36 @@ describe("AR/AP immutable source snapshots", () => {
     expect(() => assertSnapshotTaxDecisionsCurrent(reviewed)).not.toThrow();
   });
 
+  it("preserves Ontario insurance RST as cost with no GST/HST credit after review", () => {
+    const input = baseDocument();
+    const sourceOverride = {
+      ratePercent: "8", amount: "8.00", jurisdiction: "CA-ON", componentKey: "ON_INSURANCE_RST",
+      effectiveFrom: "2026-01-01", reason: "Printed insurance premium retail sales tax",
+      evidenceReference: "synthetic-insurance-invoice",
+    };
+    const bill = (reviewedTreatment?: "NONRECOVERABLE") => buildBusinessDocumentSnapshot({
+      ...input, kind: "SUPPLIER_BILL", sourceNumber: "insurance-rst-1",
+      lines: [{ ...input.lines[0], accountCombinationId: ids.expense, netAmount: "100.00",
+        tax: { ...input.lines[0].tax, category: "EXEMPT", recoverablePercent: "0",
+          sourceTaxOverride: { ...sourceOverride, ...(reviewedTreatment ? { reviewedTreatment } : {}) } } }],
+    }, "CAD");
+    const pending = bill();
+    expect(pending).toMatchObject({ subtotal: "100.00", taxTotal: "8.00", grossTotal: "108.00" });
+    expect(pending.lines[0]?.taxDecision.sourceOverride?.state).toBe("PENDING_REVIEW");
+    expect(() => assertSnapshotTaxDecisionsCurrent(pending)).toThrow("manual review");
+
+    const reviewed = bill("NONRECOVERABLE");
+    expect(reviewed.lines[0]?.taxDecision.components).toEqual([
+      expect.objectContaining({ key: "ON_INSURANCE_RST_NONRECOVERABLE", amount: "8.00", treatment: "NONRECOVERABLE" }),
+    ]);
+    expect(() => assertSnapshotTaxDecisionsCurrent(reviewed)).not.toThrow();
+    expect(() => buildBusinessDocumentSnapshot({ ...input, kind: "SUPPLIER_BILL",
+      lines: [{ ...input.lines[0], accountCombinationId: ids.expense,
+        tax: { ...input.lines[0].tax, category: "EXEMPT", recoverablePercent: "100",
+          sourceTaxOverride: { ...sourceOverride, reviewedTreatment: "NONRECOVERABLE" } } }],
+    }, "CAD")).toThrow("cannot create a GST/HST credit");
+  });
+
   it("requires adjustment evidence when a source tax amount differs from rate times net", () => {
     const input = baseDocument();
     expect(() => buildBusinessDocumentSnapshot({

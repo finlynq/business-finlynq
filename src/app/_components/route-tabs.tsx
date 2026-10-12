@@ -34,5 +34,6 @@ export function SettingsNavigation({ active }: { active: string }) {
     { key: "documents", label: "Documents", href: "/app/settings/documents" },
     { key: "email", label: "Email automation", href: "/app/settings/email" },
     { key: "mcp", label: "AI connections", href: "/app/settings/mcp" },
+    { key: "guidance", label: "Agent guidance", href: "/app/settings/guidance" },
   ]} />;
 }

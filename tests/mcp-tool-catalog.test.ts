@@ -61,9 +61,29 @@ function advertisedSchema(name: string) {
 }
 
 describe("remote MCP advertised tool catalog", () => {
+  it("advertises the source-tax reviewer handoff without exposing another member's permissions", () => {
+    const { tool, schema } = advertisedSchema("finlynq_daily_get_source_tax_review_access");
+    expect(tool.policy).toMatchObject({ group: "DAILY", access: "READ", permission: PERMISSIONS.readPayables });
+    expect(schema.properties ?? {}).toEqual({});
+    const supplier = advertisedSchema("finlynq_daily_create_supplier_bill");
+    expect(supplier.tool.description).toContain("ON_INSURANCE_RST");
+    expect(supplier.tool.description).toContain("review-required draft");
+  });
+
   it("keeps every registered tool name unique", () => {
     const names = allTools.map((tool) => tool.policy.name);
     expect(new Set(names).size).toBe(names.length);
+  });
+
+  it("advertises a bounded filing retry and exact readback handle", () => {
+    const retry = advertisedSchema("finlynq_daily_retry_document_filing");
+    const status = advertisedSchema("finlynq_daily_get_document_filing_status");
+    expect(retry.tool.policy).toMatchObject({ group: "DAILY", access: "WRITE" });
+    expect(status.tool.policy).toMatchObject({ group: "DAILY", access: "READ" });
+    expect(retry.schema.required).toEqual(["itemId"]);
+    expect(status.schema.required).toEqual(["itemId"]);
+    expect(retry.tool.description).toContain("filingPending");
+    expect(status.tool.description).toContain("FILED");
   });
 
   it("advertises all immutable evidence operations with their complete schemas", () => {

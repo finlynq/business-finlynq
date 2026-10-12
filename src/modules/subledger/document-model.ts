@@ -855,8 +855,17 @@ function decideLineTax(
   if (tax.sourceTaxRounding) return applySourceTaxRounding(baseDecision, tax.sourceTaxRounding);
   const override = tax.sourceTaxOverride;
   if (!override) return baseDecision;
-  if (facts.category !== "STANDARD") {
-    throw new Error("A source-tax override is only valid for a standard taxable line");
+  const ontarioInsuranceRst = facts.direction === "PURCHASE"
+    && facts.category === "EXEMPT" && tax.packKey === "ca.on.hst"
+    && facts.destinationCountry === "CA" && facts.destinationRegion === "ON"
+    && override.jurisdiction === "CA-ON" && override.componentKey === "ON_INSURANCE_RST"
+    && exact(override.ratePercent).equals(8);
+  if (facts.category !== "STANDARD" && !ontarioInsuranceRst) {
+    throw new Error("A source-tax override is only valid for a standard taxable line or reviewed Ontario insurance RST");
+  }
+  if (ontarioInsuranceRst && (!exact(facts.recoverablePercent ?? "0").isZero()
+      || (override.reviewedTreatment !== undefined && override.reviewedTreatment !== "NONRECOVERABLE"))) {
+    throw new Error("Ontario insurance RST must be nonrecoverable and cannot create a GST/HST credit");
   }
   if (facts.taxPointDate < override.effectiveFrom
       || (override.effectiveTo && facts.taxPointDate > override.effectiveTo)) {

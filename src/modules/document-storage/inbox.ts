@@ -549,4 +549,43 @@ export async function retryDocumentFiling(context: TenantTransactionContext, inp
   }
 }
 
+export async function getDocumentFilingStatus(
+  context: TenantTransactionContext,
+  input: z.input<typeof retryFilingSchema>,
+  access: "read" | "manage" = "read",
+) {
+  const command = retryFilingSchema.parse(input);
+  return withTenantTransaction(context, async (client) => {
+    const row = (await client.query<InboxRow>(
+      "SELECT * FROM document_inbox_items WHERE organization_id=$1 AND id=$2",
+      [context.organizationId, command.itemId],
+    )).rows[0];
+    if (!row) throw new StorageError("STORAGE_ITEM_MISSING", "This inbox item is unavailable.");
+    // Filing holds the item and connection locks during provider I/O. A status
+    // read must not wait behind that transaction just to report a durable handle.
+    await loadConnection(client, context, row.connection_id, access, true, "none");
+    if (!row.completion_hash || !["READY_TO_FILE", "FILING_FAILED", "FILED"].includes(row.status)) {
+      throw new StorageError("STORAGE_NOT_COMPLETED", "Save a processing result before checking filing status.");
+    }
+    if (access === "manage" && row.status !== "FILED") await assertStorageWrite(client, context);
+    return { item: await itemMetadata(client, row), filingPending: row.status === "READY_TO_FILE" };
+  });
+}
+
+export async function scheduleDocumentFiling(
+  context: TenantTransactionContext,
+  input: z.input<typeof retryFilingSchema>,
+  schedule: (task: () => Promise<void>) => void,
+) {
+  const command = retryFilingSchema.parse(input);
+  const current = await getDocumentFilingStatus(context, command, "manage");
+  if (current.item.status === "FILED") return current;
+  schedule(async () => { await retryDocumentFiling(context, command).catch(() => undefined); });
+  return {
+    ...current,
+    filingPending: true,
+    instruction: "Filing is running. Poll get_document_filing_status with this itemId. If it remains ready or fails, retry with the same itemId; accounting and evidence will not be repeated.",
+  };
+}
+
 function canonicalHashBytes(bytes: Buffer) { return createHash("sha256").update(bytes).digest("hex"); }

@@ -111,7 +111,8 @@ exec 8<>"$host_deployment_lock"
 [[ "$(readlink -f -- /proc/$$/fd/8)" == "$host_deployment_lock" \
   && "$(stat -Lc '%u:%g:%a:%h' -- /proc/$$/fd/8)" == "0:$deploy_gid:660:1" ]] \
   || fail "the opened host deployment lock differs from its protected path"
-flock --exclusive --nonblock 8 || fail "another production or development deployment is active"
+flock --exclusive --timeout 900 8 \
+  || fail "another production or development deployment held the shared lock for 15 minutes"
 
 git_as_deploy() {
   runuser -u deploy -- /usr/bin/env -i \

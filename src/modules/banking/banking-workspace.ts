@@ -36,12 +36,11 @@ export function interpretBankAccountLine(input: Readonly<{
 }> {
   const debit = new Decimal(input.debitAmount);
   const credit = new Decimal(input.creditAmount);
-  const signed = input.accountClass === "LIABILITY"
-    ? credit.minus(debit)
-    : debit.minus(credit);
+  const signed = debit.minus(credit);
+  const accountMovement = input.accountClass === "LIABILITY" ? signed.negated() : signed;
   return {
     signedComparisonAmount: signed.toFixed(9),
-    accountEffect: signed.isNegative() ? "DECREASE" : "INCREASE",
+    accountEffect: accountMovement.isNegative() ? "DECREASE" : "INCREASE",
   };
 }
 
@@ -244,6 +243,12 @@ export type BankingWorkspaceDto = Readonly<{
       credit: string;
       debitAmount: string;
       creditAmount: string;
+      comparisonDebitAmount: string;
+      comparisonCreditAmount: string;
+      originalCurrencyCode: string;
+      comparisonBasis: "TRANSACTION" | "FUNCTIONAL";
+      fxRate: string;
+      fxRateSource: string;
       accountClass: "ASSET" | "LIABILITY";
       accountEffect: "INCREASE" | "DECREASE";
       amount: string;
@@ -611,6 +616,8 @@ export async function loadBankingWorkspace(
         client.query<{
           id: string; journal_id: string; journal_label: string; accounting_date: string;
           description: string; memo: string | null; debit: string; credit: string;
+          debit_functional: string; credit_functional: string; transaction_currency: string;
+          fx_rate: string; fx_rate_source: string;
           account_class: "ASSET" | "LIABILITY"; amount: string; allocated: string;
           session_allocated: string;
         }>(
@@ -618,10 +625,12 @@ export async function loadBankingWorkspace(
              coalesce(journal.journal_number::text, journal.description) AS journal_label,
              journal.accounting_date::text, journal.description, line.memo,
              line.debit_transaction::text AS debit, line.credit_transaction::text AS credit,
+             line.debit_functional::text, line.credit_functional::text,
+             line.transaction_currency, line.fx_rate::text, line.fx_rate_source,
              account.class AS account_class,
-             (CASE WHEN account.class = 'LIABILITY'
-               THEN line.credit_transaction - line.debit_transaction
-               ELSE line.debit_transaction - line.credit_transaction END)::text AS amount,
+             (CASE WHEN line.transaction_currency = $5
+               THEN line.debit_transaction - line.credit_transaction
+               ELSE line.debit_functional - line.credit_functional END)::text AS amount,
              coalesce(sum(allocation.allocated_amount) FILTER (
                WHERE void.id IS NULL AND allocated_session.id IS NOT NULL
              ), 0)::text AS allocated,
@@ -633,6 +642,9 @@ export async function loadBankingWorkspace(
            JOIN journal_entries journal
              ON journal.organization_id = line.organization_id
             AND journal.id = line.journal_entry_id AND journal.status = 'POSTED'
+           JOIN ledgers ledger
+             ON ledger.organization_id = journal.organization_id
+            AND ledger.id = journal.ledger_id
            JOIN account_combinations line_combination
              ON line_combination.organization_id = line.organization_id
             AND line_combination.id = line.account_combination_id
@@ -669,7 +681,7 @@ export async function loadBankingWorkspace(
                        AND deactivation.lifecycle_effective_on <= journal.accounting_date)
                )
              )
-             AND line.transaction_currency = $5
+             AND (line.transaction_currency = $5 OR ledger.functional_currency = $5)
              AND journal.accounting_date BETWEEN $4::date AND $6::date
              AND NOT EXISTS (
                SELECT 1 FROM bank_account_cutovers migration_cutover
@@ -902,10 +914,14 @@ export async function loadBankingWorkspace(
         const lineRows = reconciliationLinesResult.rows.map((row) => {
           const amount = new Decimal(row.amount);
           const allocated = new Decimal(row.allocated);
+          const comparisonBasis: "TRANSACTION" | "FUNCTIONAL" = row.transaction_currency === selectedReconciliation.currency_code
+            ? "TRANSACTION" : "FUNCTIONAL";
+          const comparisonDebit = comparisonBasis === "TRANSACTION" ? row.debit : row.debit_functional;
+          const comparisonCredit = comparisonBasis === "TRANSACTION" ? row.credit : row.credit_functional;
           const interpreted = interpretBankAccountLine({
             accountClass: row.account_class,
-            debitAmount: row.debit,
-            creditAmount: row.credit,
+            debitAmount: comparisonDebit,
+            creditAmount: comparisonCredit,
           });
           if (!new Decimal(interpreted.signedComparisonAmount).equals(amount)) {
             throw new Error("The database and application bank-account sign interpretations differ");
@@ -921,6 +937,12 @@ export async function loadBankingWorkspace(
             credit: new Decimal(row.credit).toFixed(9),
             debitAmount: new Decimal(row.debit).toFixed(9),
             creditAmount: new Decimal(row.credit).toFixed(9),
+            comparisonDebitAmount: new Decimal(comparisonDebit).toFixed(9),
+            comparisonCreditAmount: new Decimal(comparisonCredit).toFixed(9),
+            originalCurrencyCode: row.transaction_currency,
+            comparisonBasis,
+            fxRate: row.fx_rate,
+            fxRateSource: row.fx_rate_source,
             accountClass: row.account_class,
             accountEffect: interpreted.accountEffect,
             amount: amount.toFixed(9),

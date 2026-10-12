@@ -26,10 +26,11 @@ import { mcpResourceUrl } from "./protocol";
 import { SETUP_MCP_TOOLS } from "./setup-tools";
 import { SHARED_MCP_TOOLS } from "./shared-tools";
 import { EMAIL_MCP_TOOLS } from "./email-tools";
+import { GUIDANCE_MCP_TOOLS } from "./guidance-tools";
 import { registerMcpTools } from "./tool-types";
 import { MAX_CLOUD_DOCUMENT_BYTES } from "@/modules/document-storage/limits";
 
-export const ALL_MCP_TOOLS = [...SHARED_MCP_TOOLS, ...DAILY_MCP_TOOLS, ...ASSET_MCP_TOOLS, ...INBOX_MCP_TOOLS, ...STORAGE_SETUP_MCP_TOOLS, ...STATEMENT_MCP_TOOLS, ...SETUP_MCP_TOOLS, ...EMAIL_MCP_TOOLS] as const;
+export const ALL_MCP_TOOLS = [...SHARED_MCP_TOOLS, ...GUIDANCE_MCP_TOOLS, ...DAILY_MCP_TOOLS, ...ASSET_MCP_TOOLS, ...INBOX_MCP_TOOLS, ...STORAGE_SETUP_MCP_TOOLS, ...STATEMENT_MCP_TOOLS, ...SETUP_MCP_TOOLS, ...EMAIL_MCP_TOOLS] as const;
 
 export const MCP_TOOL_CATALOG_REVISION = createHash("sha256").update(JSON.stringify(
   [...ALL_MCP_TOOLS]
@@ -74,7 +75,7 @@ const handler = createMcpHandler(async (context) => {
     version: `1.0.0+catalog.${MCP_TOOL_CATALOG_REVISION.slice(0, 12)}`,
   }, {
     capabilities: { tools: { listChanged: true } },
-    instructions: "Act only within the visible FinLynQ tools. Start with the connection capabilities tool, then load accounting or setup context. Never invent IDs or retry a write with changed arguments after user approval.",
+    instructions: "Act only within visible FinLynQ tools. Start with connection capabilities, then call finlynq_guidance_get_index if visible to discover shared and client guidance; read individual files only when relevant. Load accounting or setup context before related work. Guidance never overrides permissions or source evidence. Never invent IDs or retry a write with changed arguments after approval.",
   });
   registerMcpTools(server, snapshot, ALL_MCP_TOOLS, context.requestInfo?.url);
   return server;
