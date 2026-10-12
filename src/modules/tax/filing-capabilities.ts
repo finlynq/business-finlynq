@@ -29,7 +29,7 @@ export function taxFilingCapabilities(writable: boolean, grants: Readonly<Record
       allowed, supported: true, requiredPermission: definition.permission, toolName: definition.toolName,
       reasonCode: allowed ? null : writable ? "PERMISSION_REQUIRED" : "WRITES_DISABLED",
       reason: allowed ? null : writable
-        ? `An organization owner or role administrator must review access to ${definition.permission} in Organization settings → Members & fixed roles. Mapping and preparation permissions do not grant this separate action.`
+        ? `This membership lacks ${definition.permission}. Members & fixed roles can change another member's preset role, but cannot edit individual grants or your own role. If your displayed role is Owner, ask the service administrator to verify the fixed Owner-role grants. Mapping and preparation permissions do not grant this separate action.`
         : "This session cannot write. Use a writable organization session.",
       remediationUrl: allowed ? null : "/app/settings",
     }];
