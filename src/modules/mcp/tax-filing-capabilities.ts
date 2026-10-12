@@ -17,7 +17,7 @@ export function mcpTaxFilingWorkspace(workspace: TaxFilingWorkspaceDto, runtime:
     const restriction = !supported ? {
       reasonCode: "UNSUPPORTED_DEPLOYED_CAPABILITY", reason: "This server catalog does not contain the tool. Ask the service administrator to deploy the tax filing configuration release, then reconnect to refresh the catalog.", remediationUrl: "/app/settings/mcp",
     } : missingPermission ? {
-      reasonCode: "PERMISSION_REQUIRED", reason: `Ask an organization owner or role administrator to review access to ${action.permission} in Organization settings → Members & fixed roles. Reconnecting alone cannot add a membership permission.`, remediationUrl: "/app/settings",
+      reasonCode: "PERMISSION_REQUIRED", reason: `This membership lacks ${action.permission}. Members & fixed roles can change another member's preset role, but cannot edit individual grants or your own role. If your displayed role is Owner, ask the service administrator to verify the fixed Owner-role grants. Reconnecting cannot add a membership permission.`, remediationUrl: "/app/settings",
     } : missingScope ? {
       reasonCode: "OAUTH_SCOPE_REQUIRED", reason: `Reconnect with ${requiredScope} consent in MCP settings. Membership permission is present, but this connection lacks the OAuth scope.`, remediationUrl: "/app/settings/mcp",
     } : !isMcpToolVisible(runtime.snapshot, policy) ? {
