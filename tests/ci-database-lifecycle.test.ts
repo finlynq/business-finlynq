@@ -64,11 +64,11 @@ describe("CI predecessor-upgrade and restore verification", () => {
     );
   });
 
-  it("replays exactly 0000-0024 before preserving a tenant sentinel through 0090", () => {
+  it("replays exactly 0000-0024 before preserving a tenant sentinel through 0091", () => {
     expect(migrationJournal.entries.map((entry) => entry.idx)).toEqual(
-      Array.from({ length: 91 }, (_, index) => index),
+      Array.from({ length: 92 }, (_, index) => index),
     );
-    expect(migrationJournal.entries.at(-1)?.tag).toBe("0090_agent_guidance_controls");
+    expect(migrationJournal.entries.at(-1)?.tag).toBe("0091_next_software_owner_tax_filing_grants");
     expect(migrationJournal.entries.find((entry) => entry.idx === 25)?.tag).toBe(
       "0025_tenant_rls_completion",
     );
@@ -233,9 +233,9 @@ describe("CI predecessor-upgrade and restore verification", () => {
     expect(lifecycleScript).toContain(
       'run_migrations "$predecessor_database" "$repository_root/migrations/drizzle"',
     );
-    expect(lifecycleScript).toContain('[[ "$upgraded_count" == "91" ]]');
+    expect(lifecycleScript).toContain('[[ "$upgraded_count" == "92" ]]');
     expect(lifecycleScript).toContain(
-      "tenant sentinel was not preserved through migrations 0025 through 0090",
+      "tenant sentinel was not preserved through migrations 0025 through 0091",
     );
     expect(lifecycleScript).toContain("ci.predecessor-audit-after-upgrade");
     expect(lifecycleScript).toContain(
