@@ -39,6 +39,7 @@ export function ReportFilters({
   showAccount = false,
   showDimensions = false,
   csvHref,
+  view,
 }: {
   action: string;
   dimensions: ReportDimensions;
@@ -46,12 +47,14 @@ export function ReportFilters({
   showAccount?: boolean;
   showDimensions?: boolean;
   csvHref?: string;
+  view?: "total" | "month";
 }) {
   const entity = dimensions.entities.find((candidate) => candidate.id === selection.entityId)
     ?? dimensions.entities[0];
   if (!entity) return null;
   return (
     <form className={styles.filters} action={action} method="get">
+      {view && <input type="hidden" name="view" value={view} />}
       <label>
         <span>Legal entity</span>
         <select name="entity" defaultValue={selection.entityId}>

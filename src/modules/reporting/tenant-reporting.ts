@@ -183,6 +183,9 @@ export type ReportPeriodOption = Readonly<{
   label: string;
   startsOn: string;
   endsOn: string;
+  fiscalYear?: number;
+  periodNumber?: number;
+  state?: string;
 }>;
 
 export type ReportAccountOption = Readonly<{
@@ -241,6 +244,7 @@ export type ReportFilterInput = Readonly<{
   toPeriod?: string;
   account?: string;
   accountCode?: string;
+  combination?: string;
   segmentFilters?: ReportSegmentFilters;
 }>;
 
@@ -260,6 +264,7 @@ export function reportFilterInput(
     toPeriod: one("toPeriod"),
     account: one("account"),
     accountCode: one("accountCode"),
+    combination: one("combination"),
     segmentFilters: Object.fromEntries(reportDimensionKeys.flatMap((key) => {
       const value = one(`segment_${key}`);
       return value ? [[key, value]] : [];
@@ -281,15 +286,17 @@ export type ReportSelection = Readonly<{
   toPeriodId: string | null;
   accountId: string | null;
   accountCode?: string | null;
+  combinationId?: string | null;
   segmentFilters?: ReportSegmentFilters;
 }>;
 
 export class ReportSelectionError extends Error {
-  readonly code: "REPORT_ENTITY_NOT_FOUND" | "REPORT_ACCOUNT_NOT_FOUND" | "REPORT_ACCOUNT_MISMATCH";
+  readonly code: "REPORT_ENTITY_NOT_FOUND" | "REPORT_ACCOUNT_NOT_FOUND" | "REPORT_ACCOUNT_MISMATCH" | "REPORT_COMBINATION_INVALID";
   readonly safeDetails: Readonly<{
     entityId?: string;
     accountId?: string;
     accountCode?: string;
+    combinationId?: string;
   }>;
 
   constructor(
@@ -336,9 +343,13 @@ export async function loadReportDimensions(principal: SessionPrincipal): Promise
       label: string;
       starts_on: string;
       ends_on: string;
+      fiscal_year: number;
+      period_number: number;
+      state: string;
     }>(
       `SELECT period.id, period.ledger_id, period.label,
-         period.starts_on::text, period.ends_on::text
+         period.starts_on::text, period.ends_on::text,
+         period.fiscal_year, period.period_number, period.state::text
        FROM fiscal_periods period
        JOIN ledgers ledger
          ON ledger.organization_id = period.organization_id
@@ -399,6 +410,9 @@ export async function loadReportDimensions(principal: SessionPrincipal): Promise
             label: period.label,
             startsOn: period.starts_on,
             endsOn: period.ends_on,
+            fiscalYear: period.fiscal_year,
+            periodNumber: period.period_number,
+            state: period.state,
           }));
         const currentPeriod = periods.find((period) => (
           asOfDate >= period.startsOn && asOfDate <= period.endsOn
@@ -503,6 +517,12 @@ export function resolveReportSelection(
   }
   const accountWasRequested = Boolean(input.account || input.accountCode);
   const account = accountById ?? accountByCode ?? entity.accounts[0];
+  if (input.combination && !accountWasRequested) {
+    throw new ReportSelectionError("REPORT_COMBINATION_INVALID", "Choose a natural account with the account combination", { combinationId: input.combination });
+  }
+  if (input.combination && !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(input.combination)) {
+    throw new ReportSelectionError("REPORT_COMBINATION_INVALID", "Choose a valid account-combination ID", { combinationId: input.combination });
+  }
   const allowedSegmentKeys = new Set((dimensions.segments ?? []).map((segment) => segment.key));
   const segmentFilters = Object.fromEntries(reportDimensionKeys.flatMap((key) => {
     if (!allowedSegmentKeys.has(key)) return [];
@@ -523,6 +543,7 @@ export function resolveReportSelection(
     toPeriodId,
     accountId: account?.id ?? null,
     accountCode: accountWasRequested ? account?.code ?? null : null,
+    combinationId: input.combination ?? null,
     segmentFilters,
   };
 }
@@ -536,7 +557,7 @@ export function reportSearchParams(selection: ReportSelection): URLSearchParams 
   });
   if (selection.fromPeriodId) params.set("fromPeriod", selection.fromPeriodId);
   if (selection.toPeriodId) params.set("toPeriod", selection.toPeriodId);
-  if (selection.accountId) params.set("account", selection.accountId);
+  if (selection.accountCode && selection.accountId) params.set("account", selection.accountId);
   if (selection.accountCode) params.set("accountCode", selection.accountCode);
   for (const key of reportDimensionKeys) {
     const value = selection.segmentFilters?.[key];
@@ -619,6 +640,7 @@ export async function loadTrialBalance(
        LEFT JOIN segment_values custom8 ON custom8.organization_id = combination.organization_id AND custom8.id = combination.custom_8_id
        WHERE line.organization_id = $1
          AND ($2::uuid IS NULL OR entry.legal_entity_id = $2::uuid)
+         AND ($17::uuid IS NULL OR entry.ledger_id = $17::uuid)
          AND ($4::date IS NULL OR entry.accounting_date <= $4::date)
          AND ($5::text IS NULL OR account.code = $5::text)
          AND ($6::text IS NULL OR coalesce(subaccount.code, '0000') = $6::text)
@@ -657,6 +679,7 @@ export async function loadTrialBalance(
         selection?.segmentFilters?.custom6 ?? null,
         selection?.segmentFilters?.custom7 ?? null,
         selection?.segmentFilters?.custom8 ?? null,
+        selection?.ledgerId ?? null,
       ],
     );
     return result.rows.map((row) => {
@@ -999,8 +1022,11 @@ export async function loadAccountInquiry(
        WHERE line.organization_id = $1
          AND entry.legal_entity_id = $2
          AND combination.account_id = $3
+         AND combination.entity_id = $2
+         AND combination.ledger_id = $5
+         AND ($6::uuid IS NULL OR combination.id = $6::uuid)
          AND entry.accounting_date < $4::date`,
-      [principal.organizationId, selection.entityId, selection.accountId, selection.fromDate],
+      [principal.organizationId, selection.entityId, selection.accountId, selection.fromDate, selection.ledgerId, selection.combinationId ?? null],
     );
     const lineResult = await client.query<{
       id: string;
@@ -1070,16 +1096,25 @@ export async function loadAccountInquiry(
        WHERE line.organization_id = $1
          AND entry.legal_entity_id = $2
          AND combination.account_id = $3
+         AND combination.entity_id = $2
+         AND combination.ledger_id = $6
+         AND ($7::uuid IS NULL OR combination.id = $7::uuid)
          AND entry.accounting_date BETWEEN $4::date AND $5::date
-       ORDER BY entry.accounting_date, entry.posted_at, entry.journal_number, line.line_number, line.id`,
+       ORDER BY entry.accounting_date, entry.posted_at, entry.journal_number, line.line_number, line.id
+       LIMIT 5001`,
       [
         principal.organizationId,
         selection.entityId,
         selection.accountId,
         selection.fromDate,
         selection.toDate,
+        selection.ledgerId,
+        selection.combinationId ?? null,
       ],
     );
+    if (lineResult.rows.length > 5000) {
+      throw new Error("Account inquiry exceeds 5,000 posted lines. Narrow the date range or account scope.");
+    }
     const openingBalance = openingResult.rows[0]?.opening_balance ?? "0";
     let runningBalance = exact(openingBalance);
     return {

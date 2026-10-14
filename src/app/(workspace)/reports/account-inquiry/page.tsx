@@ -46,7 +46,7 @@ export default async function AccountInquiryPage({ searchParams }: { searchParam
         <section className="panel" aria-labelledby="account-inquiry-title">
           <div className="panel-heading">
             <div>
-              <p className="eyebrow">{selection.entityCode} · {selection.fromDate} to {selection.toDate}</p>
+              <p className="eyebrow">{selection.entityCode} · {selection.fromDate} to {selection.toDate}{selection.combinationId ? " · exact account combination" : ""}</p>
               <h2 id="account-inquiry-title">{account.code} · {account.displayName}</h2>
             </div>
             <div>
