@@ -3,13 +3,14 @@ import "server-only";
 import { randomUUID } from "node:crypto";
 import type { PoolClient } from "pg";
 import { z } from "zod";
-import { withTenantTransaction } from "@/db/transaction";
+import { withTenantTransaction, type TenantTransactionContext } from "@/db/transaction";
 import { loadTaxFilingReadiness } from "./filing-readiness";
 import { createCommandFingerprint } from "@/kernel/command-fingerprint";
 import { exact } from "@/kernel/money";
 import { assertActorHasActivePermission } from "@/modules/identity/authorization";
 import { PERMISSIONS, type Permission } from "@/modules/identity/permissions";
-import type { SessionPrincipal } from "@/modules/identity/session";
+import { transactionAuthMethod, type SessionPrincipal } from "@/modules/identity/session";
+import { withWorkspaceTenantRead } from "@/modules/workspace/tenant-read";
 import {
   assertTenantWritesEnabled,
   assertWritableOrganization,
@@ -117,6 +118,31 @@ export const saveTaxFilingConfigurationSchema = z.object({
   }
 });
 
+export const taxFilingConfigurationCorrectionProposalSchema = z.object({
+  configurationId: z.uuid(),
+  legalEntityId: z.uuid(),
+  ledgerId: z.uuid(),
+  registrationId: z.uuid().nullable(),
+  filingTypeKey: z.string().trim().regex(/^[a-z][a-z0-9.-]{2,99}$/),
+  templateId: z.uuid(),
+  mappingSetId: z.uuid(),
+  expectedConfigurationVersion: z.number().int().positive(),
+  state: z.enum(["ACTIVE", "INACTIVE", "NEEDS_CONFIGURATION"]),
+  effectiveFrom: z.iso.date(),
+  effectiveTo: z.iso.date().nullable(),
+  reason: z.string().trim().min(8).max(500),
+}).strict().superRefine((value, context) => {
+  if (value.effectiveTo && value.effectiveTo < value.effectiveFrom) {
+    context.addIssue({ code: "custom", path: ["effectiveTo"], message: "The configuration effective end cannot precede its start" });
+  }
+});
+
+export const correctTaxFilingConfigurationSchema = z.object({
+  proposal: taxFilingConfigurationCorrectionProposalSchema,
+  previewHash: z.string().regex(/^[a-f0-9]{64}$/),
+  idempotencyKey: idempotencyKeySchema,
+}).strict();
+
 export const setTaxFilingCanonicalSchema = z.object({
   filingId: z.uuid(),
   expectedSelectionVersion: z.number().int().min(0),
@@ -164,7 +190,7 @@ async function withAuthorizedTaxWrite<T>(input: Readonly<{
   permission: Permission;
   reason: string;
   sourceSurface?: "API" | "IMPORT" | "MCP";
-  isolationLevel?: "REPEATABLE READ";
+  isolationLevel?: "REPEATABLE READ" | "SERIALIZABLE";
   idempotencyKey?: string;
 }>, work: (client: PoolClient) => Promise<T>): Promise<T> {
   const context = mutationContext(input.principal, input.requestId, {
@@ -507,10 +533,142 @@ export async function deactivateTaxAccountMappings(input: Readonly<{
   });
 }
 
+type CorrectionProposal = z.output<typeof taxFilingConfigurationCorrectionProposalSchema>;
+
+async function loadConfigurationCorrectionPreview(
+  client: PoolClient,
+  organizationId: string,
+  proposal: CorrectionProposal,
+) {
+  const current = (await client.query<{
+    id: string; legal_entity_id: string; ledger_id: string; registration_id: string | null;
+    filing_type_key: string; template_id: string; mapping_set_id: string;
+    version: number; state: string; effective_from: string; effective_to: string | null;
+    supersedes_configuration_id: string | null; template_version: number; mapping_version: number;
+  }>(
+    `SELECT configuration.id,configuration.legal_entity_id,configuration.ledger_id,
+       configuration.registration_id,configuration.filing_type_key,
+       configuration.template_id,configuration.mapping_set_id,configuration.version,
+       configuration.state,configuration.effective_from::text,configuration.effective_to::text,
+       configuration.supersedes_configuration_id,template.version AS template_version,
+       mapping.version AS mapping_version
+     FROM tax_filing_configurations configuration
+     JOIN tax_filing_templates template ON template.id=configuration.template_id
+     JOIN tax_account_mapping_sets mapping ON mapping.organization_id=configuration.organization_id
+       AND mapping.id=configuration.mapping_set_id
+     WHERE configuration.organization_id=$1 AND configuration.id=$2`,
+    [organizationId, proposal.configurationId],
+  )).rows[0];
+  if (!current) throw new TaxFilingError("The exact filing configuration was not found.", 404, "CONFIGURATION_NOT_FOUND");
+
+  const proposalSelection = (await client.query<{
+    template_id: string; template_version: number; template_key: string;
+    template_effective_from: string; template_effective_to: string | null;
+    mapping_set_id: string; mapping_version: number; mapping_state: string;
+    mapping_effective_from: string; mapping_effective_to: string | null;
+    mapping_current: boolean;
+  }>(
+    `SELECT template.id AS template_id,template.version AS template_version,
+       template.template_key,template.effective_from::text AS template_effective_from,
+       template.effective_to::text AS template_effective_to,
+       mapping.id AS mapping_set_id,mapping.version AS mapping_version,
+       mapping.state AS mapping_state,mapping.effective_from::text AS mapping_effective_from,
+       mapping.effective_to::text AS mapping_effective_to,
+       NOT EXISTS (SELECT 1 FROM tax_account_mapping_sets successor
+         WHERE successor.organization_id=mapping.organization_id
+           AND successor.supersedes_mapping_set_id=mapping.id) AS mapping_current
+     FROM tax_filing_templates template
+     JOIN tax_account_mapping_sets mapping ON mapping.organization_id=$1
+       AND mapping.id=$2 AND mapping.template_id=template.id
+       AND mapping.legal_entity_id=$3 AND mapping.ledger_id=$4
+     WHERE template.id=$5`,
+    [organizationId, proposal.mappingSetId, proposal.legalEntityId, proposal.ledgerId, proposal.templateId],
+  )).rows[0] ?? null;
+
+  const predecessor = current.supersedes_configuration_id
+    ? (await client.query<{ id: string; version: number; effective_from: string; effective_to: string | null }>(
+      `SELECT id,version,effective_from::text,effective_to::text
+       FROM tax_filing_configurations WHERE organization_id=$1 AND id=$2`,
+      [organizationId, current.supersedes_configuration_id],
+    )).rows[0] ?? null
+    : null;
+  const references = (await client.query<{
+    workpaper_count: number; canonical_count: number; successor_count: number;
+    workpaper_ids: string[];
+  }>(
+    `SELECT
+       (SELECT count(*)::int FROM tax_filings filing
+         WHERE filing.organization_id=$1 AND filing.configuration_id=$2) AS workpaper_count,
+       (SELECT count(*)::int FROM tax_filing_canonical_selections selection
+         JOIN tax_filings filing ON filing.organization_id=selection.organization_id
+           AND filing.id=selection.filing_id
+         WHERE filing.organization_id=$1 AND filing.configuration_id=$2) AS canonical_count,
+       (SELECT count(*)::int FROM tax_filing_configurations successor
+         WHERE successor.organization_id=$1 AND successor.supersedes_configuration_id=$2) AS successor_count,
+       coalesce((SELECT array_agg(filing.id::text ORDER BY filing.created_at)
+         FROM tax_filings filing WHERE filing.organization_id=$1 AND filing.configuration_id=$2), '{}') AS workpaper_ids`,
+    [organizationId, current.id],
+  )).rows[0]!;
+  const affectedPeriods = (await client.query<{ id: string; label: string; starts_on: string; ends_on: string }>(
+    `SELECT period.id,period.label,period.starts_on::text,period.ends_on::text
+     FROM fiscal_periods period WHERE period.organization_id=$1 AND period.ledger_id=$2
+       AND period.ends_on >= LEAST($3::date,$4::date)
+       AND period.starts_on <= GREATEST($3::date,$4::date)
+     ORDER BY period.starts_on LIMIT 120`,
+    [organizationId, current.ledger_id, current.effective_from, proposal.effectiveFrom],
+  )).rows;
+  const matchesScope = current.legal_entity_id === proposal.legalEntityId
+    && current.ledger_id === proposal.ledgerId
+    && current.registration_id === proposal.registrationId
+    && current.filing_type_key === proposal.filingTypeKey;
+  const eligible = matchesScope
+    && proposalSelection?.template_key === proposal.filingTypeKey
+    && proposalSelection.mapping_state === "ACTIVE"
+    && proposalSelection.mapping_current
+    && proposalSelection.template_effective_from <= proposal.effectiveFrom
+    && (!proposalSelection.template_effective_to || (proposal.effectiveTo !== null
+      && proposal.effectiveTo <= proposalSelection.template_effective_to))
+    && proposalSelection.mapping_effective_from <= proposal.effectiveFrom
+    && (!proposalSelection.mapping_effective_to || (proposal.effectiveTo !== null
+      && proposal.effectiveTo <= proposalSelection.mapping_effective_to))
+    && current.version === proposal.expectedConfigurationVersion
+    && references.workpaper_count === 0
+    && references.successor_count === 0
+    && (!predecessor || (predecessor.effective_from <= proposal.effectiveFrom
+      && !(predecessor.effective_to && proposal.state === "ACTIVE"
+        && proposal.effectiveFrom <= predecessor.effective_to)));
+  const review = { proposal, current, proposalSelection, predecessor, references, affectedPeriods, eligible };
+  return { ...review, previewHash: createCommandFingerprint("tax.filing-configuration.correction-preview", review) };
+}
+
+export async function previewTaxFilingConfigurationCorrection(
+  principal: SessionPrincipal,
+  raw: z.input<typeof taxFilingConfigurationCorrectionProposalSchema>,
+) {
+  const proposal = taxFilingConfigurationCorrectionProposalSchema.parse(raw);
+  const context: TenantTransactionContext = {
+    organizationId: principal.organizationId,
+    actorId: principal.userId,
+    sessionId: principal.sessionId,
+    sessionMode: principal.sessionMode,
+    requestId: `tax-configuration-correction-preview:${randomUUID()}`,
+    authMethod: transactionAuthMethod(principal),
+    sourceSurface: "UI",
+  };
+  return withWorkspaceTenantRead(context, "/app/tax", async (client) => {
+    await assertActorHasActivePermission(client, {
+      organizationId: principal.organizationId, actorId: principal.userId,
+      permission: PERMISSIONS.manageTaxFilingConfiguration,
+    });
+    return loadConfigurationCorrectionPreview(client, principal.organizationId, proposal);
+  }, { isolationLevel: "REPEATABLE READ" });
+}
+
 export async function saveTaxFilingConfiguration(input: Readonly<{
   principal: SessionPrincipal;
   requestId: string;
   sourceSurface?: "API" | "MCP";
+  correction?: Readonly<{ configurationId: string; previewHash: string }>;
 }> & SaveTaxFilingConfigurationInput): Promise<Readonly<{
   configurationId: string;
   version: number;
@@ -518,10 +676,13 @@ export async function saveTaxFilingConfiguration(input: Readonly<{
   idempotentReplay: boolean;
 }>> {
   assertWritableTaxSession(input.principal);
-  const { principal: _principal, requestId: _requestId, sourceSurface: _sourceSurface, ...raw } = input;
+  const { principal: _principal, requestId: _requestId, sourceSurface: _sourceSurface, correction, ...raw } = input;
   void _principal; void _requestId; void _sourceSurface;
   const command = saveTaxFilingConfigurationSchema.parse(raw);
-  const commandHash = createCommandFingerprint("tax.filing-configuration.save", { ...command, idempotencyKey: undefined });
+  const commandHash = createCommandFingerprint(
+    correction ? "tax.filing-configuration.correct" : "tax.filing-configuration.save",
+    { ...command, idempotencyKey: undefined, ...(correction ? { correction } : {}) },
+  );
   return withAuthorizedTaxWrite({
     principal: input.principal,
     requestId: input.requestId,
@@ -529,6 +690,7 @@ export async function saveTaxFilingConfiguration(input: Readonly<{
     idempotencyKey: command.idempotencyKey,
     reason: command.reason,
     sourceSurface: input.sourceSurface,
+    isolationLevel: correction ? "SERIALIZABLE" : undefined,
   }, async (client) => {
     const replay = (await client.query<{ id: string; version: number; state: "ACTIVE" | "INACTIVE" | "NEEDS_CONFIGURATION"; command_hash: string }>(
       `SELECT id, version, state, command_hash FROM tax_filing_configurations
@@ -605,10 +767,30 @@ export async function saveTaxFilingConfiguration(input: Readonly<{
     if ((current?.version ?? 0) !== command.expectedConfigurationVersion) {
       throw new TaxFilingError("The filing configuration changed. Reload its exact current version.", 409, "CONFIGURATION_VERSION_CONFLICT");
     }
-    if (current && command.effectiveFrom < current.effective_from) {
+    if (correction) {
+      if (!current || current.id !== correction.configurationId) {
+        throw new TaxFilingError("The configuration selected for correction is no longer current.", 409, "CONFIGURATION_CORRECTION_STALE");
+      }
+      const proposal = taxFilingConfigurationCorrectionProposalSchema.parse({
+        configurationId: correction.configurationId,
+        legalEntityId: command.legalEntityId, ledgerId: command.ledgerId,
+        registrationId: command.registrationId, filingTypeKey: command.filingTypeKey,
+        templateId: command.templateId, mappingSetId: command.mappingSetId,
+        expectedConfigurationVersion: command.expectedConfigurationVersion,
+        state: command.state, effectiveFrom: command.effectiveFrom,
+        effectiveTo: command.effectiveTo ?? null, reason: command.reason,
+      });
+      const preview = await loadConfigurationCorrectionPreview(client, input.principal.organizationId, proposal);
+      if (preview.previewHash !== correction.previewHash) {
+        throw new TaxFilingError("The configuration correction preview changed. Review the current dates and dependencies again.", 409, "CONFIGURATION_CORRECTION_PREVIEW_STALE");
+      }
+      if (!preview.eligible) {
+        throw new TaxFilingError("Only the exact current unreferenced configuration can be corrected. Review its predecessor, workpapers and successor dependencies.", 409, "CONFIGURATION_CORRECTION_REFERENCED", preview);
+      }
+    } else if (current && command.effectiveFrom < current.effective_from) {
       throw new TaxFilingError("A filing configuration revision cannot become effective before its predecessor.", 400, "CONFIGURATION_EFFECTIVE_DATE_INVALID");
     }
-    if (current?.state === "ACTIVE" && current.effective_to && command.state === "ACTIVE"
+    if (!correction && current?.state === "ACTIVE" && current.effective_to && command.state === "ACTIVE"
         && command.effectiveFrom <= current.effective_to) {
       throw new TaxFilingError("Active filing configuration windows cannot overlap.", 400, "CONFIGURATION_EFFECTIVE_DATE_OVERLAP");
     }
@@ -618,15 +800,41 @@ export async function saveTaxFilingConfiguration(input: Readonly<{
       `INSERT INTO tax_filing_configurations(
          id,organization_id,legal_entity_id,ledger_id,registration_id,filing_type_key,
          template_id,mapping_set_id,version,state,effective_from,effective_to,
-         supersedes_configuration_id,reason,idempotency_key,command_hash,created_by
-       ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)`,
+         supersedes_configuration_id,correction_of_configuration_id,reason,idempotency_key,command_hash,created_by
+       ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)`,
       [configurationId, input.principal.organizationId, command.legalEntityId, command.ledgerId,
         command.registrationId, command.filingTypeKey, command.templateId, command.mappingSetId,
         version, command.state, command.effectiveFrom, command.effectiveTo ?? null,
-        current?.id ?? null, command.reason, command.idempotencyKey, commandHash, input.principal.userId],
+        current?.id ?? null, correction?.configurationId ?? null, command.reason,
+        command.idempotencyKey, commandHash, input.principal.userId],
     );
     return { configurationId, version, state: command.state, idempotentReplay: false };
   });
+}
+
+export async function correctTaxFilingConfiguration(input: Readonly<{
+  principal: SessionPrincipal;
+  requestId: string;
+  sourceSurface?: "API" | "MCP";
+}> & z.input<typeof correctTaxFilingConfigurationSchema>) {
+  const command = correctTaxFilingConfigurationSchema.parse({
+    proposal: input.proposal,
+    previewHash: input.previewHash,
+    idempotencyKey: input.idempotencyKey,
+  });
+  const { configurationId, ...proposedConfiguration } = command.proposal;
+  const result = await saveTaxFilingConfiguration({
+    principal: input.principal,
+    requestId: input.requestId,
+    sourceSurface: input.sourceSurface,
+    ...proposedConfiguration,
+    idempotencyKey: command.idempotencyKey,
+    correction: {
+      configurationId,
+      previewHash: command.previewHash,
+    },
+  });
+  return { ...result, correctedConfigurationId: configurationId };
 }
 
 async function calculateMappedValues(input: Readonly<{
@@ -719,7 +927,7 @@ export async function createTaxFiling(input: Readonly<{
     principal: input.principal,
     requestId: input.requestId,
     permission: PERMISSIONS.prepareTaxFilings,
-    isolationLevel: "REPEATABLE READ",
+    isolationLevel: "SERIALIZABLE",
     reason,
     sourceSurface: input.sourceSurface
       ?? (command.filingType === "HISTORICAL_IMPORT" ? "IMPORT" : "API"),
@@ -835,7 +1043,11 @@ export async function createTaxFiling(input: Readonly<{
          AND ($6::uuid IS NULL OR configuration.id=$6)
          AND NOT EXISTS (SELECT 1 FROM tax_filing_configurations successor
            WHERE successor.organization_id=configuration.organization_id
-             AND successor.supersedes_configuration_id=configuration.id
+             AND successor.legal_entity_id=configuration.legal_entity_id
+             AND successor.ledger_id=configuration.ledger_id
+             AND successor.registration_id IS NOT DISTINCT FROM configuration.registration_id
+             AND successor.filing_type_key=configuration.filing_type_key
+             AND successor.version>configuration.version
              AND successor.effective_from <= $5::date)
        ORDER BY configuration.effective_from DESC,configuration.version DESC LIMIT 2`,
       [input.principal.organizationId, command.legalEntityId, command.ledgerId,

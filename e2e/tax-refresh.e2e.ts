@@ -17,7 +17,7 @@ test("browser review: repair mapping, activate configuration and refresh an immu
   const configuration = { id: id(10), legalEntityId: id(1), ledgerId: id(2), registrationId: null,
     filingTypeKey: template.templateKey, templateId: template.id, templateName: template.name, templateVersion: 2,
     mappingSetId: id(11), mappingVersion: 1, version: 1, state: "ACTIVE" as const,
-    effectiveFrom: "2025-01-01", effectiveTo: null, supersedesConfigurationId: null,
+    effectiveFrom: "2025-01-01", effectiveTo: null, supersedesConfigurationId: null, correctionOfConfigurationId: null,
     reason: "Synthetic original configuration", createdBy: id(3), createdAt: "2025-12-31T00:00:00Z", current: true, dependencyCount: 1 };
   let readiness: TaxFilingReadiness = { ready: false, checkedAt: "2026-01-02T00:00:00Z", ledgerFingerprint: "a".repeat(32),
     configuration: { id: id(10), version: 1, templateId: template.id, mappingSetId: id(11), mappingVersion: 1 },
