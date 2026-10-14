@@ -124,6 +124,7 @@ const mocks = vi.hoisted(() => {
       ledgers: [],
       accounts: [],
       mappings: [],
+      registrations: [],
       filings: [],
       canManageMappings: false,
       canPrepareFilings: false,
@@ -377,6 +378,13 @@ describe("real organization workspace isolation", () => {
     expect(output).toContain("1 releases have a posted journal; 0 remain due");
     expect(output).toContain("NOT COMPUTED");
     expect(output).toContain("Posted releases are not proposed again");
+  });
+
+  it("requests a fresh document when switching tax history views", async () => {
+    const page = await TaxPage({ searchParams: Promise.resolve({ view: "history" }) });
+    const output = serialized(page);
+    expect(output).toContain('"documentNavigation":true');
+    expect(output).toContain('"active":"history"');
   });
 
   it("preserves the real period-control read model when organization writes are disabled", async () => {

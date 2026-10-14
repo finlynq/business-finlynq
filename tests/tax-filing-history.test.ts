@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { partitionTaxFilingHistory } from "@/modules/tax/filing-history";
+import { groupTaxFilingHistory, partitionTaxFilingHistory } from "@/modules/tax/filing-history";
 
 type Filing = Parameters<typeof partitionTaxFilingHistory>[0][number];
 
@@ -51,5 +51,23 @@ describe("tax filing history", () => {
     ], templates);
     expect(result.current).toHaveLength(3);
     expect(result.history).toHaveLength(0);
+  });
+
+  it("keeps separate tax registrations in separate filing-history scopes", () => {
+    const result = partitionTaxFilingHistory([
+      filing("registration-a", { registrationId: "registration-a" }),
+      filing("registration-b", { registrationId: "registration-b" }),
+    ], templates);
+    expect(result.current.map((item) => item.id).sort()).toEqual(["registration-a", "registration-b"]);
+    expect(result.history).toHaveLength(0);
+  });
+
+  it("groups different template versions as alternatives within the same registration and period", () => {
+    const groups = groupTaxFilingHistory([
+      filing("old", { templateId: "t2-v1", registrationId: "reg-1" }),
+      filing("new", { templateId: "t2-v2", registrationId: "reg-1" }),
+      filing("other", { templateId: "t2-v2", registrationId: "reg-2" }),
+    ], templates);
+    expect(groups.map((group) => group.filings.map((item) => item.id))).toEqual([["old", "new"], ["other"]]);
   });
 });

@@ -147,6 +147,7 @@ export type TaxFilingSummaryDto = Readonly<{
   sourceFileName: string | null;
   configurationId?: string | null;
   configurationVersion?: number | null;
+  registrationId?: string | null;
   lifecycleState?: "CURRENT" | "HISTORICAL" | "SUPERSEDED" | "ARCHIVED";
   lifecycleVersion?: number;
   lifecycleReason?: string;
@@ -200,6 +201,7 @@ type TaxFilingSummaryRow = Readonly<{
   source_file_name: string | null;
   configuration_id: string | null;
   configuration_version: number | null;
+  registration_id: string | null;
   lifecycle_state: "CURRENT" | "HISTORICAL" | "SUPERSEDED" | "ARCHIVED";
   lifecycle_version: number;
   lifecycle_reason: string;
@@ -557,6 +559,7 @@ export async function loadTaxFilingWorkspace(
          filing.filing_type, filing.status, filing.period_start::text,
          filing.period_end::text, filing.external_reference,
          filing.source_file_name, filing.configuration_id, filing.configuration_version,
+         filing_configuration.registration_id,
          lifecycle.state AS lifecycle_state,lifecycle.version AS lifecycle_version,
          lifecycle.reason AS lifecycle_reason,lifecycle.replacement_filing_id,
          (canonical.filing_id=filing.id AND canonical.state='ACTIVE') AS canonical,
@@ -571,6 +574,9 @@ export async function loadTaxFilingWorkspace(
          ON ledger.organization_id = filing.organization_id
         AND ledger.id = filing.ledger_id
        JOIN tax_filing_templates template ON template.id = filing.template_id
+       LEFT JOIN tax_filing_configurations filing_configuration
+         ON filing_configuration.organization_id = filing.organization_id
+        AND filing_configuration.id = filing.configuration_id
        JOIN LATERAL (
          SELECT event.state,event.version,event.reason,event.replacement_filing_id
          FROM tax_filing_lifecycle_events event
@@ -635,6 +641,7 @@ export async function loadTaxFilingWorkspace(
       sourceFileName: row.source_file_name,
       configurationId: row.configuration_id,
       configurationVersion: row.configuration_version,
+      registrationId: row.registration_id,
       lifecycleState: row.lifecycle_state,
       lifecycleVersion: row.lifecycle_version,
       lifecycleReason: row.lifecycle_reason,
