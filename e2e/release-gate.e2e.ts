@@ -281,7 +281,9 @@ test("demo session protects workspace routes and is revoked by sign-out", async 
   await page.goto("/app/tax");
   await expect(page.getByRole("heading", { level: 1, name: "Tax returns & review" })).toBeVisible();
   await page.goto("/app/tax?view=history");
-  await expect(page.getByRole("heading", { level: 2, name: "Prepared and imported returns" })).toBeVisible();
+  await expect(page.getByRole("heading", { level: 2, name: "Current and latest workpapers" })).toBeVisible();
+  await page.getByRole("link", { name: /Show history and inactive/ }).click();
+  await expect(page.getByRole("heading", { level: 2, name: "All prepared and imported returns" })).toBeVisible();
   await page.goto("/app/journals");
 
   // The public demo is shared and writable, so visitor-created journals can
