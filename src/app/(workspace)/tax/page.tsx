@@ -3,7 +3,7 @@ import { CompactDisclosure } from "../../_components/compact-disclosure.client";
 import { formatMoney } from "@/kernel/money";
 import { loadTaxDeterminations } from "@/modules/reporting/tenant-reporting";
 import { loadTaxFilingWorkspace } from "@/modules/tax/filing-workspace";
-import { partitionTaxFilingHistory } from "@/modules/tax/filing-history";
+import { groupTaxFilingHistory, partitionTaxFilingHistory } from "@/modules/tax/filing-history";
 import { requireWorkspacePrincipal } from "@/modules/workspace/access";
 import { TaxFilingWorkspace } from "../../_components/tax-filing-workspace.client";
 import { DemoNotice, EmptyState, PageHeader, StatusPill } from "../../_components/ui";
@@ -39,6 +39,8 @@ export default async function TaxPage({ searchParams }: { searchParams: Promise<
   const filingHistory = partitionTaxFilingHistory(filingWorkspace.filings, filingWorkspace.templates);
   const showAllHistory = parameters.history === "all";
   const visibleFilings = showAllHistory ? [...filingHistory.current, ...filingHistory.history] : filingHistory.current;
+  const visibleGroups = groupTaxFilingHistory(visibleFilings, filingWorkspace.templates);
+  const registrationNames = new Map((filingWorkspace.registrations ?? []).map((registration) => [registration.id, registration.regimeKey]));
   const currentFilingIds = new Set(filingHistory.current.map((filing) => filing.id));
 
   return (
@@ -129,9 +131,12 @@ export default async function TaxPage({ searchParams }: { searchParams: Promise<
             <table>
               <caption className="sr-only">Prepared returns and historical filing reconciliations</caption>
               <thead><tr><th>Period / source</th><th>Client scope</th><th>Template</th><th>Result</th><th>Exceptions</th><th>Reconciliation detail</th></tr></thead>
-              <tbody>{visibleFilings.map((filing) => {
+              {visibleGroups.map((group) => <tbody key={group.key}>
+                <tr><th colSpan={6} scope="rowgroup">{group.filings[0].entityCode} · {group.filings[0].ledgerCode} · {group.filings[0].registrationId ? registrationNames.get(group.filings[0].registrationId) ?? group.filings[0].registrationId : "No linked registration"} · {group.typeKey} · {group.filings[0].periodStart} – {group.filings[0].periodEnd} · {group.filings.some((filing) => filing.canonical) ? "Canonical selected" : "Canonical selection required"}{group.filings.length > 1 ? ` · ${group.filings.length - 1} alternative${group.filings.length === 2 ? "" : "s"}` : ""}</th></tr>
+                {group.filings.map((filing) => {
                 const variances = filing.reconciliation.filter((field) => field.status === "VARIANCE");
                 const notReported = filing.reconciliation.filter((field) => field.status === "NOT_REPORTED");
+                const matched = filing.reconciliation.filter((field) => field.status === "MATCHED");
                 const failedRules = filing.validations.filter((rule) => rule.status === "FAIL");
                 const currency = filingWorkspace.templates.find((template) => template.id === filing.templateId)?.currencyCode ?? "CAD";
                 return <ExpandableTableRow key={filing.id} columns={6} label={`comparison for ${filing.entityCode} ${filing.periodStart}–${filing.periodEnd}`} cells={<>
@@ -139,7 +144,7 @@ export default async function TaxPage({ searchParams }: { searchParams: Promise<
                   <td><strong>{filing.entityCode}</strong><small>{filing.ledgerCode}</small></td>
                   <td><strong>{filing.templateName}</strong><small>Template v{filing.templateVersion} · mapping v{filing.mappingVersion} · configuration v{filing.configurationVersion ?? "legacy"}</small></td>
                   <td><StatusPill status={filing.status} />{filing.freshness.mayBeStale && <small>Comparison may be stale</small>}<small>{filing.lifecycleState ?? "HISTORICAL"}{filing.canonical ? " · CANONICAL" : currentFilingIds.has(filing.id) ? " · LATEST CANDIDATE, not canonical" : " · HISTORY, not canonical"}</small><small>Reason: {filing.lifecycleReason ?? "Legacy workpaper"}{filing.replacementFilingId ? ` · replacement ${filing.replacementFilingId}` : ""}{filing.canonicalReason ? ` · canonical: ${filing.canonicalReason}` : ""}</small></td>
-                  <td><strong>{variances.length} monetary variance{variances.length === 1 ? "" : "s"}</strong><small>{notReported.length} not reported · {failedRules.length} rule exception{failedRules.length === 1 ? "" : "s"}</small></td>
+                  <td><strong>{variances.length} monetary variance{variances.length === 1 ? "" : "s"}</strong><small>{matched.length} matched · {notReported.length} not reported · {failedRules.length} rule exception{failedRules.length === 1 ? "" : "s"}</small></td>
                   </>}>
                       <p>Workpaper ID: <code>{filing.id}</code>. Source: {filing.sourceFileName ?? "manual entry"}.</p>
                       <p>Snapshot captured: <time dateTime={new Date(filing.capturedAt).toISOString()}>{new Date(filing.capturedAt).toISOString()}</time>. Period {filing.periodStart} – {filing.periodEnd}. Template v{filing.templateVersion}, mapping v{filing.mappingVersion}, configuration v{filing.configurationVersion ?? "legacy"}.</p>
@@ -161,7 +166,8 @@ export default async function TaxPage({ searchParams }: { searchParams: Promise<
                         </table>
                       </div>
                 </ExpandableTableRow>;
-              })}</tbody>
+                })}
+              </tbody>)}
             </table>
           </div> : <EmptyState title={filingHistory.history.length ? "No current workpapers" : "No filing workpapers yet"}>{filingHistory.history.length ? "Open history and inactive to review earlier workpapers." : "Prepare a return or load a historical filing after mapping the template’s account-backed fields."}</EmptyState>}
           <p className="panel-note">A workpaper records the template version, mapping version, posted-ledger calculation, reported values, differences, and rule outcomes used at that moment. It does not transmit a filing to a tax authority.</p>

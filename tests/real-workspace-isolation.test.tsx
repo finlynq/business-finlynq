@@ -124,6 +124,7 @@ const mocks = vi.hoisted(() => {
       ledgers: [],
       accounts: [],
       mappings: [],
+      registrations: [],
       filings: [],
       canManageMappings: false,
       canPrepareFilings: false,
