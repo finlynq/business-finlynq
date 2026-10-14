@@ -82,6 +82,14 @@ export type TaxAccountMappingVersionDto = Readonly<{
   effectiveFrom: string;
 }>;
 
+export type TaxMappingRevisionDto = Readonly<{
+  id: string; ledgerId: string; templateId: string; version: number;
+  state: "ACTIVE" | "INACTIVE"; effectiveFrom: string; effectiveTo: string | null;
+  supersedesMappingSetId: string | null; correctionOfMappingSetId: string | null;
+  reason: string; createdBy: string; createdAt: string;
+  current: boolean; configurationCount: number; workpaperCount: number;
+}>;
+
 export type TaxFilingRegistrationDto = Readonly<{
   id: string;
   legalEntityId: string;
@@ -106,6 +114,7 @@ export type TaxFilingConfigurationDto = Readonly<{
   effectiveFrom: string;
   effectiveTo: string | null;
   supersedesConfigurationId: string | null;
+  correctionOfConfigurationId: string | null;
   reason: string;
   createdBy: string;
   createdAt: string;
@@ -156,6 +165,7 @@ export type TaxFilingWorkspaceDto = Readonly<{
   accounts: readonly TaxAccountDto[];
   mappings: readonly TaxAccountMappingDto[];
   mappingVersions: readonly TaxAccountMappingVersionDto[];
+  mappingHistory?: readonly TaxMappingRevisionDto[];
   registrations?: readonly TaxFilingRegistrationDto[];
   configurations?: readonly TaxFilingConfigurationDto[];
   filings: readonly TaxFilingSummaryDto[];
@@ -440,6 +450,39 @@ export async function loadTaxFilingWorkspace(
       state: row.state,
       effectiveFrom: row.effective_from,
     }));
+    const mappingHistory = (await client.query<{
+      id: string; ledger_id: string; template_id: string; version: number;
+      state: "ACTIVE" | "INACTIVE"; effective_from: string; effective_to: string | null;
+      supersedes_mapping_set_id: string | null; correction_of_mapping_set_id: string | null;
+      reason: string; created_by: string; created_at: string;
+      current: boolean; configuration_count: number; workpaper_count: number;
+    }>(
+      `SELECT mapping.id,mapping.ledger_id,mapping.template_id,mapping.version,
+         mapping.state,mapping.effective_from::text,mapping.effective_to::text,
+         mapping.supersedes_mapping_set_id,mapping.correction_of_mapping_set_id,
+         mapping.reason,mapping.created_by,mapping.created_at::text,
+         NOT EXISTS (SELECT 1 FROM tax_account_mapping_sets successor
+           WHERE successor.organization_id=mapping.organization_id
+             AND successor.supersedes_mapping_set_id=mapping.id) AS current,
+         (SELECT count(*)::int FROM tax_filing_configurations configuration
+           WHERE configuration.organization_id=mapping.organization_id
+             AND configuration.mapping_set_id=mapping.id) AS configuration_count,
+         (SELECT count(*)::int FROM tax_filings filing
+           WHERE filing.organization_id=mapping.organization_id
+             AND filing.mapping_set_id=mapping.id) AS workpaper_count
+       FROM tax_account_mapping_sets mapping
+       WHERE mapping.organization_id=$1
+       ORDER BY mapping.created_at DESC,mapping.id DESC LIMIT 200`,
+      [principal.organizationId],
+    )).rows.map<TaxMappingRevisionDto>((row) => ({
+      id: row.id, ledgerId: row.ledger_id, templateId: row.template_id,
+      version: row.version, state: row.state, effectiveFrom: row.effective_from,
+      effectiveTo: row.effective_to, supersedesMappingSetId: row.supersedes_mapping_set_id,
+      correctionOfMappingSetId: row.correction_of_mapping_set_id,
+      reason: row.reason, createdBy: row.created_by, createdAt: row.created_at,
+      current: row.current, configurationCount: row.configuration_count,
+      workpaperCount: row.workpaper_count,
+    }));
 
     const registrationRows = (await client.query<{
       id: string; legal_entity_id: string; regime_key: string; valid_from: string; valid_to: string | null;
@@ -463,6 +506,7 @@ export async function loadTaxFilingWorkspace(
       mapping_set_id: string; mapping_version: number; version: number;
       state: "ACTIVE" | "INACTIVE" | "NEEDS_CONFIGURATION"; effective_from: string;
       effective_to: string | null; supersedes_configuration_id: string | null;
+      correction_of_configuration_id: string | null;
       reason: string; created_by: string; created_at: string; current: boolean; dependency_count: number;
     }>(
       `SELECT configuration.id,configuration.legal_entity_id,configuration.ledger_id,
@@ -470,7 +514,8 @@ export async function loadTaxFilingWorkspace(
          template.name AS template_name,template.version AS template_version,
          configuration.mapping_set_id,mapping.version AS mapping_version,configuration.version,
          configuration.state,configuration.effective_from::text,configuration.effective_to::text,
-         configuration.supersedes_configuration_id,configuration.reason,configuration.created_by,
+         configuration.supersedes_configuration_id,configuration.correction_of_configuration_id,
+         configuration.reason,configuration.created_by,
          configuration.created_at::text,
          NOT EXISTS (SELECT 1 FROM tax_filing_configurations successor
            WHERE successor.organization_id=configuration.organization_id
@@ -493,6 +538,7 @@ export async function loadTaxFilingWorkspace(
       mappingSetId: row.mapping_set_id, mappingVersion: row.mapping_version, version: row.version,
       state: row.state, effectiveFrom: row.effective_from, effectiveTo: row.effective_to,
       supersedesConfigurationId: row.supersedes_configuration_id,
+      correctionOfConfigurationId: row.correction_of_configuration_id,
       reason: row.reason, createdBy: row.created_by, createdAt: row.created_at, current: row.current,
       dependencyCount: row.dependency_count,
     }));
@@ -608,6 +654,7 @@ export async function loadTaxFilingWorkspace(
       accounts,
       mappings,
       mappingVersions,
+      mappingHistory,
       registrations,
       configurations,
       filings,

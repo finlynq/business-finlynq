@@ -44,7 +44,7 @@ function effectiveConfiguration(
       && configuration.effectiveFrom <= input.on
       && (!configuration.effectiveTo || configuration.effectiveTo >= input.on)
     ))
-    .sort((left, right) => right.effectiveFrom.localeCompare(left.effectiveFrom) || right.version - left.version)[0] ?? null;
+    .sort((left, right) => right.version - left.version || right.effectiveFrom.localeCompare(left.effectiveFrom))[0] ?? null;
 }
 
 function effectiveConfigurationsForDate(
@@ -58,8 +58,8 @@ function effectiveConfigurationsForDate(
         || (configuration.effectiveTo && configuration.effectiveTo < on)) continue;
     const key = `${configuration.registrationId ?? "none"}|${configuration.filingTypeKey}`;
     const current = byScope.get(key);
-    if (!current || configuration.effectiveFrom > current.effectiveFrom
-        || (configuration.effectiveFrom === current.effectiveFrom && configuration.version > current.version)) {
+    if (!current || configuration.version > current.version
+        || (configuration.version === current.version && configuration.effectiveFrom > current.effectiveFrom)) {
       byScope.set(key, configuration);
     }
   }
@@ -186,6 +186,18 @@ export function TaxFilingWorkspace({ workspace, refreshFilingId }: { workspace: 
   const [mappingFeedback, setMappingFeedback] = useState<Feedback | null>(null);
   const [mappingBusy, setMappingBusy] = useState(false);
   const mappingCommand = useRef(idempotencyCommand());
+  const [mappingCorrectionBusy, setMappingCorrectionBusy] = useState(false);
+  const [mappingCorrectionFeedback, setMappingCorrectionFeedback] = useState<Feedback | null>(null);
+  const [mappingCorrectionReview, setMappingCorrectionReview] = useState<{
+    fingerprint: string; previewHash: string; eligible: boolean;
+    proposal: { mappingSetId: string; effectiveFrom: string; effectiveTo?: string; reason: string; mappings: { fieldKey: string; glAccountId: string; balanceBasis: string; multiplier: string }[] };
+    current: { id: string; version: number; effective_from: string; effective_to: string | null; template_id: string; template_version: number };
+    originalLines: { field_key: string; gl_account_id: string; balance_basis: string; multiplier: string }[];
+    predecessor: { id: string; effective_from: string; effective_to: string | null } | null;
+    references: { configuration_ids: string[]; workpaper_ids: string[]; successor_count: number };
+    affectedPeriods: { id: string; label: string }[];
+  } | null>(null);
+  const mappingCorrectionCommand = useRef(idempotencyCommand());
   const [configurationReason, setConfigurationReason] = useState("");
   const [configurationEffectiveFrom, setConfigurationEffectiveFrom] = useState(() => new Date().toISOString().slice(0, 10));
   const [configurationEffectiveTo, setConfigurationEffectiveTo] = useState("");
@@ -193,6 +205,18 @@ export function TaxFilingWorkspace({ workspace, refreshFilingId }: { workspace: 
   const [showConfigurationHistory, setShowConfigurationHistory] = useState(false);
   const [configurationBusy, setConfigurationBusy] = useState(false);
   const configurationCommand = useRef(idempotencyCommand());
+  const [correctionBusy, setCorrectionBusy] = useState(false);
+  const [correctionFeedback, setCorrectionFeedback] = useState<Feedback | null>(null);
+  const [correctionReview, setCorrectionReview] = useState<{
+    fingerprint: string; previewHash: string; eligible: boolean;
+    proposal: { configurationId: string; templateId: string; mappingSetId: string; effectiveFrom: string; effectiveTo: string | null; state: string; reason: string };
+    current: { id: string; version: number; effective_from: string; effective_to: string | null; template_id: string; mapping_set_id: string; template_version: number; mapping_version: number };
+    proposalSelection: { template_version: number; mapping_version: number } | null;
+    predecessor: { id: string; effective_from: string; effective_to: string | null } | null;
+    references: { workpaper_count: number; canonical_count: number; successor_count: number; workpaper_ids: string[] };
+    affectedPeriods: { id: string; label: string }[];
+  } | null>(null);
+  const correctionCommand = useRef(idempotencyCommand());
 
   const [filingType, setFilingType] = useState<"PREPARED" | "HISTORICAL_IMPORT">(refreshSource ? "HISTORICAL_IMPORT" : "PREPARED");
   const [periodStart, setPeriodStart] = useState(refreshSource?.periodStart ?? "");
@@ -239,11 +263,15 @@ export function TaxFilingWorkspace({ workspace, refreshFilingId }: { workspace: 
     () => (workspace.configurations ?? []).find((configuration) => (
       configuration.current
       && configuration.legalEntityId === ledger?.legalEntityId
+      && configuration.ledgerId === ledger?.ledgerId
       && configuration.filingTypeKey === template?.templateKey
       && configuration.registrationId === (scopeRegistration?.id ?? null)
     )) ?? null,
-    [workspace.configurations, ledger?.legalEntityId, template?.templateKey, scopeRegistration?.id],
+    [workspace.configurations, ledger?.legalEntityId, ledger?.ledgerId, template?.templateKey, scopeRegistration?.id],
   );
+  const currentMappingVersion = workspace.mappingVersions.find((mapping) => (
+    mapping.ledgerId === ledger?.ledgerId && mapping.templateId === template?.id
+  ));
 
   const readinessKey = ledger && template && periodStart && periodEnd && periodStart <= periodEnd
     ? new URLSearchParams({ legalEntityId: ledger.legalEntityId, ledgerId: ledger.ledgerId, templateId: template.id, periodStart, periodEnd }).toString()
@@ -271,11 +299,16 @@ export function TaxFilingWorkspace({ workspace, refreshFilingId }: { workspace: 
     setAccountSelections(selections.accounts);
     setBasisSelections(selections.bases);
     setMappingFeedback(null);
+    setMappingCorrectionFeedback(null);
+    setMappingCorrectionReview(null);
     setManualValues({});
     setReportedValues({});
     mappingCommand.current = idempotencyCommand();
+    mappingCorrectionCommand.current = idempotencyCommand();
     filingCommand.current = idempotencyCommand();
     configurationCommand.current = idempotencyCommand();
+    correctionCommand.current = idempotencyCommand();
+    setCorrectionReview(null);
   };
 
   const saveConfiguration = async (event: React.FormEvent<HTMLFormElement>) => {
@@ -318,6 +351,70 @@ export function TaxFilingWorkspace({ workspace, refreshFilingId }: { workspace: 
     } finally { setConfigurationBusy(false); }
   };
 
+  const correctionProposal = () => {
+    if (!template || !ledger || !currentConfiguration) return null;
+    const mapping = workspace.mappingVersions.find((candidate) => (
+      candidate.ledgerId === ledger.ledgerId && candidate.templateId === template.id && candidate.state === "ACTIVE"
+    ));
+    if (!mapping) return null;
+    return {
+      configurationId: currentConfiguration.id,
+      legalEntityId: ledger.legalEntityId,
+      ledgerId: ledger.ledgerId,
+      registrationId: template.templateKey === "ca.gst-hst.return" ? scopeRegistration?.id ?? null : null,
+      filingTypeKey: template.templateKey,
+      templateId: template.id,
+      mappingSetId: mapping.mappingSetId,
+      expectedConfigurationVersion: currentConfiguration.version,
+      state: configurationState,
+      effectiveFrom: configurationEffectiveFrom,
+      effectiveTo: configurationEffectiveTo || null,
+      reason: configurationReason.trim(),
+    };
+  };
+
+  const previewCorrection = async () => {
+    const proposal = correctionProposal();
+    if (!proposal || correctionBusy) return;
+    setCorrectionBusy(true); setCorrectionFeedback(null); setCorrectionReview(null);
+    try {
+      const response = await fetch("/api/tax/configurations/correction/preview", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(proposal), cache: "no-store",
+      });
+      const payload = await response.json() as { error?: string } & Omit<NonNullable<typeof correctionReview>, "fingerprint">;
+      if (!response.ok) throw new Error(payload.error ?? "The correction preview could not be loaded.");
+      setCorrectionReview({ ...payload, fingerprint: JSON.stringify(proposal) });
+    } catch (error) {
+      setCorrectionFeedback({ kind: "error", message: error instanceof Error ? error.message : "The correction preview could not be loaded." });
+    } finally { setCorrectionBusy(false); }
+  };
+
+  const commitCorrection = async () => {
+    const proposal = correctionProposal();
+    if (!proposal || !correctionReview || !correctionReview.eligible || correctionBusy) return;
+    const fingerprint = JSON.stringify(proposal);
+    if (fingerprint !== correctionReview.fingerprint) {
+      setCorrectionFeedback({ kind: "error", message: "The correction fields changed. Preview the exact dates and references again." });
+      setCorrectionReview(null);
+      return;
+    }
+    if (correctionCommand.current.fingerprint !== fingerprint) correctionCommand.current = { fingerprint, key: crypto.randomUUID() };
+    setCorrectionBusy(true); setCorrectionFeedback(null);
+    try {
+      const response = await fetch("/api/tax/configurations/correction", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ proposal, previewHash: correctionReview.previewHash, idempotencyKey: correctionCommand.current.key }),
+      });
+      const payload = await response.json() as { error?: string; version?: number };
+      if (!response.ok) throw new Error(payload.error ?? "The configuration correction could not be saved.");
+      setCorrectionFeedback({ kind: "success", message: `Corrected configuration v${payload.version ?? "new"} saved with the original revision retained. Review the final readback before creating another workpaper.` });
+      setCorrectionReview(null); router.refresh();
+    } catch (error) {
+      setCorrectionFeedback({ kind: "error", message: error instanceof Error ? error.message : "The configuration correction could not be saved." });
+    } finally { setCorrectionBusy(false); }
+  };
+
   const selectCanonical = async (event: React.FormEvent<HTMLFormElement>, filingId: string, expectedSelectionVersion: number) => {
     event.preventDefault();
     const reason = String(new FormData(event.currentTarget).get("reason") ?? "").trim();
@@ -358,27 +455,30 @@ export function TaxFilingWorkspace({ workspace, refreshFilingId }: { workspace: 
     selectScope(nextTemplateId, nextLedgerId);
   };
 
-  const saveMappings = async (event: React.FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    if (!template || !ledger || mappingBusy) return;
+  const mappingFieldsInput = () => {
+    if (!template || !ledger) return null;
     const mappings = mappingFields.flatMap((field) => (accountSelections[field.key] ?? []).map((glAccountId) => ({
       fieldKey: field.key,
       glAccountId,
       balanceBasis: basisSelections[field.key] ?? field.defaultBalanceBasis ?? "NET_DEBIT",
       multiplier: "1",
     })));
-    const fields = {
+    return {
       legalEntityId: ledger.legalEntityId,
       ledgerId: ledger.ledgerId,
       templateId: template.id,
       expectedTemplateVersion: template.version,
-      expectedMappingVersion: workspace.mappingVersions.find(
-        (mapping) => mapping.ledgerId === ledger.ledgerId && mapping.templateId === template.id,
-      )?.mappingVersion ?? 0,
+      expectedMappingVersion: currentMappingVersion?.mappingVersion ?? 0,
       effectiveFrom: mappingEffectiveFrom,
       mappings,
       reason: mappingReason.trim(),
     };
+  };
+
+  const saveMappings = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const fields = mappingFieldsInput();
+    if (!fields || mappingBusy) return;
     const fingerprint = JSON.stringify(fields);
     if (mappingCommand.current.fingerprint !== fingerprint) {
       mappingCommand.current = { fingerprint, key: crypto.randomUUID() };
@@ -401,6 +501,56 @@ export function TaxFilingWorkspace({ workspace, refreshFilingId }: { workspace: 
     } finally {
       setMappingBusy(false);
     }
+  };
+
+  const mappingCorrectionProposal = () => {
+    const fields = mappingFieldsInput();
+    return fields && currentMappingVersion?.state === "ACTIVE"
+      ? { mappingSetId: currentMappingVersion.mappingSetId, ...fields }
+      : null;
+  };
+
+  const previewMappingCorrection = async () => {
+    const proposal = mappingCorrectionProposal();
+    if (!proposal || mappingCorrectionBusy) return;
+    setMappingCorrectionBusy(true); setMappingCorrectionFeedback(null); setMappingCorrectionReview(null);
+    try {
+      const response = await fetch("/api/tax/mappings/correction/preview", {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(proposal),
+      });
+      const payload = await response.json() as { error?: string } & Omit<NonNullable<typeof mappingCorrectionReview>, "fingerprint">;
+      if (!response.ok) throw new Error(payload.error ?? "The mapping correction preview could not be loaded.");
+      setMappingCorrectionReview({ ...payload, fingerprint: JSON.stringify(proposal) });
+    } catch (error) {
+      setMappingCorrectionFeedback({ kind: "error", message: error instanceof Error ? error.message : "The mapping correction preview could not be loaded." });
+    } finally { setMappingCorrectionBusy(false); }
+  };
+
+  const commitMappingCorrection = async () => {
+    const proposal = mappingCorrectionProposal();
+    if (!proposal || !mappingCorrectionReview?.eligible || mappingCorrectionBusy) return;
+    const fingerprint = JSON.stringify(proposal);
+    if (fingerprint !== mappingCorrectionReview.fingerprint) {
+      setMappingCorrectionFeedback({ kind: "error", message: "The mapping lines or dates changed. Preview the exact correction again." });
+      setMappingCorrectionReview(null);
+      return;
+    }
+    if (mappingCorrectionCommand.current.fingerprint !== fingerprint) {
+      mappingCorrectionCommand.current = { fingerprint, key: crypto.randomUUID() };
+    }
+    setMappingCorrectionBusy(true); setMappingCorrectionFeedback(null);
+    try {
+      const response = await fetch("/api/tax/mappings/correction", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ proposal, previewHash: mappingCorrectionReview.previewHash, idempotencyKey: mappingCorrectionCommand.current.key }),
+      });
+      const payload = await response.json() as { error?: string; version?: number };
+      if (!response.ok) throw new Error(payload.error ?? "The mapping correction could not be saved.");
+      setMappingCorrectionFeedback({ kind: "success", message: `Corrected mapping v${payload.version ?? "new"} saved with the original revision retained. Review the final mapping before configuring a workpaper.` });
+      setMappingCorrectionReview(null); router.refresh();
+    } catch (error) {
+      setMappingCorrectionFeedback({ kind: "error", message: error instanceof Error ? error.message : "The mapping correction could not be saved." });
+    } finally { setMappingCorrectionBusy(false); }
   };
 
   const loadCsv = async (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -507,11 +657,11 @@ export function TaxFilingWorkspace({ workspace, refreshFilingId }: { workspace: 
   const visibleFilingControls = showConfigurationHistory
     ? scopedFilings
     : scopedFilings.filter((filing) => filing.canonical && !["ARCHIVED", "SUPERSEDED"].includes(filing.lifecycleState ?? ""));
-  const visibleFeedback = filingFeedback ?? mappingFeedback;
+  const visibleFeedback = mappingCorrectionFeedback ?? correctionFeedback ?? filingFeedback ?? mappingFeedback;
 
   return (
     <div className={styles.workspace}>
-      {visibleFeedback && <MutationFeedback {...visibleFeedback} onDismiss={() => { setMappingFeedback(null); setFilingFeedback(null); }} />}
+      {visibleFeedback && <MutationFeedback {...visibleFeedback} onDismiss={() => { setMappingCorrectionFeedback(null); setCorrectionFeedback(null); setMappingFeedback(null); setFilingFeedback(null); }} />}
       <section className={styles.scopeBar} aria-label="Tax filing scope">
         <label><span>Template</span>
           <select value={templateId} onChange={(event) => selectTemplate(event.target.value)}>
@@ -559,8 +709,24 @@ export function TaxFilingWorkspace({ workspace, refreshFilingId }: { workspace: 
             <p className="form-footnote">Saving a mapping does not activate it. Activation is a separate review of the exact template and mapping. Activation is versioned and prospective. It never rewrites an existing prepared or historical workpaper and never submits a return.</p>
             <div className="form-actions"><button className="primary-button" disabled={!workspace.canManageConfigurations || configurationBusy || !mappingReady || (template.templateKey === "ca.gst-hst.return" && !scopeRegistration)}>{configurationBusy ? "Activating…" : currentConfiguration ? "Create configuration revision" : "Activate configuration"}</button></div>
           </form>
+          {currentConfiguration && workspace.canManageConfigurations && <div className="form-footnote">
+            <p>An incorrect unused committed revision can be corrected only after reviewing its exact references. The original revision and audit history remain. Ordinary configuration changes use the prospective action above.</p>
+            <button type="button" className="secondary-button" disabled={correctionBusy || configurationBusy || configurationReason.trim().length < 8} onClick={() => { void previewCorrection(); }}>
+              {correctionBusy ? "Checking…" : "Preview correction of unused revision"}
+            </button>
+            {correctionReview && <div className="panel" aria-label="Configuration correction review">
+              <h3>Review correction before saving</h3>
+              <p>Company {ledger.entityCode} · ledger {ledger.ledgerCode} · {template.templateKey}</p>
+              <p>Original v{correctionReview.current.version}: {correctionReview.current.id}, {correctionReview.current.effective_from} to {correctionReview.current.effective_to ?? "open"}; template {correctionReview.current.template_id} v{correctionReview.current.template_version}, mapping {correctionReview.current.mapping_set_id} v{correctionReview.current.mapping_version}.</p>
+              <p>Proposed: {correctionReview.proposal.effectiveFrom} to {correctionReview.proposal.effectiveTo ?? "open"}; template {correctionReview.proposal.templateId} v{correctionReview.proposalSelection?.template_version ?? "?"}, mapping {correctionReview.proposal.mappingSetId} v{correctionReview.proposalSelection?.mapping_version ?? "?"}, state {correctionReview.proposal.state}. Reason: {correctionReview.proposal.reason}</p>
+              <p>References: {correctionReview.references.workpaper_count} workpapers, {correctionReview.references.canonical_count} canonical decisions, {correctionReview.references.successor_count} successor revisions. {correctionReview.references.workpaper_ids.join(", ")}</p>
+              <p>Predecessor: {correctionReview.predecessor ? `${correctionReview.predecessor.id}, from ${correctionReview.predecessor.effective_from}` : "none"}. Affected periods: {correctionReview.affectedPeriods.map((period) => period.label).join(", ") || "none configured"}.</p>
+              {!correctionReview.eligible && <p className="validation-message validation-error">This revision is not eligible for correction. Review the scope, version, references and predecessor dates.</p>}
+              <button type="button" className="primary-button" disabled={!correctionReview.eligible || correctionBusy || JSON.stringify(correctionProposal()) !== correctionReview.fingerprint} onClick={() => { void commitCorrection(); }}>Save reviewed correction</button>
+            </div>}
+          </div>}
           <details className="mapping-details"><summary>{showConfigurationHistory ? "Configuration history" : "Current configuration"} ({visibleConfigurations.length})</summary>
-            <ul className="checklist large-checklist">{visibleConfigurations.map((item) => <li key={item.id}><div><strong>v{item.version} · {item.state.replaceAll("_", " ")}</strong><small>{item.effectiveFrom} – {item.effectiveTo ?? "open"} · template v{item.templateVersion} · mapping v{item.mappingVersion} · {item.dependencyCount} workpaper dependenc{item.dependencyCount === 1 ? "y" : "ies"}</small><small>Reason: {item.reason} · actor {item.createdBy}</small></div>{item.current && <span className="status-pill status-neutral">CURRENT VERSION</span>}</li>)}</ul>
+            <ul className="checklist large-checklist">{visibleConfigurations.map((item) => <li key={item.id}><div><strong>v{item.version} · {item.state.replaceAll("_", " ")}{item.correctionOfConfigurationId ? " · CORRECTION" : ""}</strong><small>{item.effectiveFrom} – {item.effectiveTo ?? "open"} · template v{item.templateVersion} · mapping v{item.mappingVersion} · {item.dependencyCount} workpaper dependenc{item.dependencyCount === 1 ? "y" : "ies"}</small><small>Reason: {item.reason} · actor {item.createdBy}{item.correctionOfConfigurationId ? ` · corrects ${item.correctionOfConfigurationId}` : ""}</small></div>{item.current && <span className="status-pill status-neutral">CURRENT VERSION</span>}</li>)}</ul>
           </details>
           {(visibleFilingControls.length > 0) && <details className="mapping-details"><summary>{showConfigurationHistory ? "Canonical and lifecycle history" : "Canonical workpapers"}</summary>
             <div className={styles.lifecycleList}>{visibleFilingControls.map((filing) => <article key={filing.id}>
@@ -642,6 +808,31 @@ export function TaxFilingWorkspace({ workspace, refreshFilingId }: { workspace: 
               <button className="primary-button" type="submit" disabled={!workspace.canManageMappings || mappingBusy || !mappingReady}>{mappingBusy ? "Saving…" : "Save mapping version"}</button>
             </div>
           </form>
+          {currentMappingVersion?.state === "ACTIVE" && workspace.canManageMappings && <div className="form-footnote">
+            <p>If this committed mapping is unused and its date or account selection is wrong, review an append-only correction. A configuration or workpaper reference blocks this action; ordinary revisions use the save action above.</p>
+            <button type="button" className="secondary-button" disabled={mappingCorrectionBusy || mappingBusy || !mappingReady || mappingReason.trim().length < 8} onClick={() => { void previewMappingCorrection(); }}>
+              {mappingCorrectionBusy ? "Checking…" : "Preview correction of unused mapping"}
+            </button>
+            {mappingCorrectionReview && <div className="panel" aria-label="Mapping correction review">
+              <h3>Review mapping correction before saving</h3>
+              <p>Company {ledger?.entityCode} · ledger {ledger?.ledgerCode} · template {mappingCorrectionReview.current.template_id} v{mappingCorrectionReview.current.template_version}.</p>
+              <p>Original v{mappingCorrectionReview.current.version}: {mappingCorrectionReview.current.id}, {mappingCorrectionReview.current.effective_from} to {mappingCorrectionReview.current.effective_to ?? "open"}.</p>
+              <p>Proposed: {mappingCorrectionReview.proposal.effectiveFrom} to {mappingCorrectionReview.proposal.effectiveTo ?? "open"}. Reason: {mappingCorrectionReview.proposal.reason}</p>
+              <p>Original lines: {mappingCorrectionReview.originalLines.map((line) => `${line.field_key} → ${ledgerAccounts.find((account) => account.id === line.gl_account_id)?.code ?? line.gl_account_id} (${line.balance_basis}, ×${line.multiplier})`).join("; ")}.</p>
+              <p>Proposed lines: {mappingCorrectionReview.proposal.mappings.map((line) => `${line.fieldKey} → ${ledgerAccounts.find((account) => account.id === line.glAccountId)?.code ?? line.glAccountId} (${line.balanceBasis}, ×${line.multiplier})`).join("; ")}.</p>
+              <p>References: {mappingCorrectionReview.references.configuration_ids.length} configurations ({mappingCorrectionReview.references.configuration_ids.join(", ") || "none"}), {mappingCorrectionReview.references.workpaper_ids.length} workpapers ({mappingCorrectionReview.references.workpaper_ids.join(", ") || "none"}), {mappingCorrectionReview.references.successor_count} successors.</p>
+              <p>Predecessor: {mappingCorrectionReview.predecessor ? `${mappingCorrectionReview.predecessor.id}, from ${mappingCorrectionReview.predecessor.effective_from}` : "none"}. Affected periods: {mappingCorrectionReview.affectedPeriods.map((period) => period.label).join(", ") || "none configured"}.</p>
+              {!mappingCorrectionReview.eligible && <p className="validation-message validation-error">This mapping is not eligible for correction. Review the scope, version, references and predecessor dates.</p>}
+              <button type="button" className="primary-button" disabled={!mappingCorrectionReview.eligible || mappingCorrectionBusy || JSON.stringify(mappingCorrectionProposal()) !== mappingCorrectionReview.fingerprint} onClick={() => { void commitMappingCorrection(); }}>Save reviewed mapping correction</button>
+            </div>}
+          </div>}
+          <details className="mapping-details"><summary>Mapping revision history ({(workspace.mappingHistory ?? []).filter((item) => item.ledgerId === ledgerId && item.templateId === templateId).length})</summary>
+            <ul className="checklist large-checklist">{(workspace.mappingHistory ?? []).filter((item) => item.ledgerId === ledgerId && item.templateId === templateId).map((item) => <li key={item.id}><div>
+              <strong>v{item.version} · {item.state}{item.correctionOfMappingSetId ? " · CORRECTION" : ""}</strong>
+              <small>{item.effectiveFrom} – {item.effectiveTo ?? "open"} · {item.configurationCount} configurations · {item.workpaperCount} workpapers</small>
+              <small>Reason: {item.reason} · actor {item.createdBy} · {item.createdAt}{item.correctionOfMappingSetId ? ` · corrects ${item.correctionOfMappingSetId}` : ""}</small>
+            </div>{item.current && <span className="status-pill status-neutral">CURRENT VERSION</span>}</li>)}</ul>
+          </details>
         </section>
 
         <section className="panel form-panel" aria-labelledby="tax-filing-title">
