@@ -59,6 +59,21 @@ export const saveTaxAccountMappingsSchema = z.object({
   }
 });
 
+export const taxMappingCorrectionProposalSchema = z.object({
+  ...saveTaxAccountMappingsSchema.shape,
+  mappingSetId: z.uuid(),
+}).omit({ idempotencyKey: true }).strict().superRefine((value, context) => {
+  if (value.effectiveTo && value.effectiveTo < value.effectiveFrom) {
+    context.addIssue({ code: "custom", path: ["effectiveTo"], message: "The mapping effective end cannot precede its start" });
+  }
+});
+
+export const correctTaxAccountMappingsSchema = z.object({
+  proposal: taxMappingCorrectionProposalSchema,
+  previewHash: z.string().regex(/^[a-f0-9]{64}$/),
+  idempotencyKey: idempotencyKeySchema,
+}).strict();
+
 export const deactivateTaxAccountMappingsSchema = z.object({
   mappingSetId: z.uuid(),
   expectedMappingVersion: z.number().int().min(1),
@@ -288,10 +303,111 @@ function normalizedMappings(command: z.output<typeof saveTaxAccountMappingsSchem
   ));
 }
 
+type MappingCorrectionProposal = z.output<typeof taxMappingCorrectionProposalSchema>;
+
+async function loadMappingCorrectionPreview(
+  client: PoolClient,
+  organizationId: string,
+  proposal: MappingCorrectionProposal,
+) {
+  const current = (await client.query<{
+    id: string; legal_entity_id: string; ledger_id: string; template_id: string;
+    version: number; state: string; effective_from: string; effective_to: string | null;
+    supersedes_mapping_set_id: string | null; template_version: number;
+  }>(
+    `SELECT mapping.id,mapping.legal_entity_id,mapping.ledger_id,mapping.template_id,
+       mapping.version,mapping.state,mapping.effective_from::text,mapping.effective_to::text,
+       mapping.supersedes_mapping_set_id,template.version AS template_version
+     FROM tax_account_mapping_sets mapping
+     JOIN tax_filing_templates template ON template.id=mapping.template_id
+     WHERE mapping.organization_id=$1 AND mapping.id=$2`,
+    [organizationId, proposal.mappingSetId],
+  )).rows[0];
+  if (!current) throw new TaxFilingError("The exact tax mapping version was not found.", 404, "MAPPING_NOT_FOUND");
+  const originalLines = (await client.query<{
+    field_key: string; gl_account_id: string; balance_basis: string; multiplier: string;
+  }>(
+    `SELECT field_key,gl_account_id,balance_basis,multiplier::text
+     FROM tax_account_mapping_lines
+     WHERE organization_id=$1 AND mapping_set_id=$2
+     ORDER BY field_key,gl_account_id`,
+    [organizationId, current.id],
+  )).rows;
+  const predecessor = current.supersedes_mapping_set_id
+    ? (await client.query<{ id: string; version: number; effective_from: string; effective_to: string | null }>(
+      `SELECT id,version,effective_from::text,effective_to::text
+       FROM tax_account_mapping_sets WHERE organization_id=$1 AND id=$2`,
+      [organizationId, current.supersedes_mapping_set_id],
+    )).rows[0] ?? null
+    : null;
+  const references = (await client.query<{
+    configuration_ids: string[]; workpaper_ids: string[]; successor_count: number;
+  }>(
+    `SELECT
+       coalesce((SELECT array_agg(configuration.id::text ORDER BY configuration.version)
+         FROM tax_filing_configurations configuration
+         WHERE configuration.organization_id=$1 AND configuration.mapping_set_id=$2), '{}') AS configuration_ids,
+       coalesce((SELECT array_agg(filing.id::text ORDER BY filing.created_at)
+         FROM tax_filings filing
+         WHERE filing.organization_id=$1 AND filing.mapping_set_id=$2), '{}') AS workpaper_ids,
+       (SELECT count(*)::int FROM tax_account_mapping_sets successor
+         WHERE successor.organization_id=$1 AND successor.supersedes_mapping_set_id=$2) AS successor_count`,
+    [organizationId, current.id],
+  )).rows[0]!;
+  const affectedPeriods = (await client.query<{ id: string; label: string; starts_on: string; ends_on: string }>(
+    `SELECT period.id,period.label,period.starts_on::text,period.ends_on::text
+     FROM fiscal_periods period WHERE period.organization_id=$1 AND period.ledger_id=$2
+       AND period.ends_on >= LEAST($3::date,$4::date)
+       AND period.starts_on <= GREATEST($3::date,$4::date)
+     ORDER BY period.starts_on LIMIT 120`,
+    [organizationId, current.ledger_id, current.effective_from, proposal.effectiveFrom],
+  )).rows;
+  const template = (await client.query<{ id: string; version: number }>(
+    `SELECT id,version FROM tax_filing_templates WHERE id=$1`, [proposal.templateId],
+  )).rows[0] ?? null;
+  const eligible = current.legal_entity_id === proposal.legalEntityId
+    && current.ledger_id === proposal.ledgerId
+    && current.template_id === proposal.templateId
+    && current.version === proposal.expectedMappingVersion
+    && current.state === "ACTIVE"
+    && template?.version === proposal.expectedTemplateVersion
+    && references.configuration_ids.length === 0
+    && references.workpaper_ids.length === 0
+    && references.successor_count === 0
+    && (!predecessor || (predecessor.effective_from < proposal.effectiveFrom
+      && !(predecessor.effective_to && proposal.effectiveFrom <= predecessor.effective_to)));
+  const review = { proposal, current, originalLines, template, predecessor, references, affectedPeriods, eligible };
+  return { ...review, previewHash: createCommandFingerprint("tax.mapping-set.correction-preview", review) };
+}
+
+export async function previewTaxAccountMappingCorrection(
+  principal: SessionPrincipal,
+  raw: z.input<typeof taxMappingCorrectionProposalSchema>,
+) {
+  const proposal = taxMappingCorrectionProposalSchema.parse(raw);
+  const context: TenantTransactionContext = {
+    organizationId: principal.organizationId,
+    actorId: principal.userId,
+    sessionId: principal.sessionId,
+    sessionMode: principal.sessionMode,
+    requestId: `tax-mapping-correction-preview:${randomUUID()}`,
+    authMethod: transactionAuthMethod(principal),
+    sourceSurface: "UI",
+  };
+  return withWorkspaceTenantRead(context, "/app/tax", async (client) => {
+    await assertActorHasActivePermission(client, {
+      organizationId: principal.organizationId, actorId: principal.userId,
+      permission: PERMISSIONS.manageTaxMappings,
+    });
+    return loadMappingCorrectionPreview(client, principal.organizationId, proposal);
+  }, { isolationLevel: "REPEATABLE READ" });
+}
+
 export async function saveTaxAccountMappings(input: Readonly<{
   principal: SessionPrincipal;
   requestId: string;
   sourceSurface?: "API" | "MCP";
+  correction?: Readonly<{ mappingSetId: string; previewHash: string }>;
 }> & SaveTaxAccountMappingsInput): Promise<Readonly<{
   mappingSetId: string;
   version: number;
@@ -302,6 +418,7 @@ export async function saveTaxAccountMappings(input: Readonly<{
     principal: _principal,
     requestId: _requestId,
     sourceSurface: _sourceSurface,
+    correction,
     ...unparsedCommand
   } = input;
   void _principal;
@@ -309,10 +426,11 @@ export async function saveTaxAccountMappings(input: Readonly<{
   void _sourceSurface;
   const command = saveTaxAccountMappingsSchema.parse(unparsedCommand);
   const mappings = normalizedMappings(command);
-  const commandHash = createCommandFingerprint("tax.mapping-set.create", {
+  const commandHash = createCommandFingerprint(correction ? "tax.mapping-set.correct" : "tax.mapping-set.create", {
     ...command,
     mappings,
     idempotencyKey: undefined,
+    ...(correction ? { correction } : {}),
   });
 
   return withAuthorizedTaxWrite({
@@ -416,7 +534,30 @@ export async function saveTaxAccountMappings(input: Readonly<{
     if (currentVersion !== command.expectedMappingVersion) {
       throw new TaxFilingError("The mapping version is stale. Reload and compare the current immutable version.", 409, "MAPPING_VERSION_CONFLICT");
     }
-    if (current && command.effectiveFrom <= current.effective_from) {
+    if (correction) {
+      if (!current || current.id !== correction.mappingSetId) {
+        throw new TaxFilingError("The mapping selected for correction is no longer current.", 409, "MAPPING_CORRECTION_STALE");
+      }
+      await client.query(
+        "SELECT pg_advisory_xact_lock(hashtextextended('tax-mapping-reference:' || $1::text || ':' || $2::text, 0))",
+        [input.principal.organizationId, current.id],
+      );
+      const proposal = taxMappingCorrectionProposalSchema.parse({
+        mappingSetId: current.id,
+        legalEntityId: command.legalEntityId, ledgerId: command.ledgerId,
+        templateId: command.templateId, expectedTemplateVersion: command.expectedTemplateVersion,
+        expectedMappingVersion: command.expectedMappingVersion,
+        effectiveFrom: command.effectiveFrom, effectiveTo: command.effectiveTo,
+        mappings: command.mappings, reason: command.reason,
+      });
+      const preview = await loadMappingCorrectionPreview(client, input.principal.organizationId, proposal);
+      if (preview.previewHash !== correction.previewHash) {
+        throw new TaxFilingError("The mapping correction preview changed. Review the exact lines and references again.", 409, "MAPPING_CORRECTION_PREVIEW_STALE");
+      }
+      if (!preview.eligible) {
+        throw new TaxFilingError("Only the exact current unreferenced mapping can be corrected. Review the configuration and workpaper references.", 409, "MAPPING_CORRECTION_REFERENCED", preview);
+      }
+    } else if (current && command.effectiveFrom <= current.effective_from) {
       throw new TaxFilingError("A mapping revision must become effective after the current version.", 400, "MAPPING_EFFECTIVE_DATE_INVALID");
     }
     const version = currentVersion + 1;
@@ -425,8 +566,8 @@ export async function saveTaxAccountMappings(input: Readonly<{
       `INSERT INTO tax_account_mapping_sets (
          id, organization_id, legal_entity_id, ledger_id, template_id, version,
          state, effective_from, effective_to, supersedes_mapping_set_id,
-         reason, idempotency_key, command_hash, created_by
-       ) VALUES ($1,$2,$3,$4,$5,$6,'ACTIVE',$7,$8,$9,$10,$11,$12,$13)`,
+         correction_of_mapping_set_id,reason, idempotency_key, command_hash, created_by
+       ) VALUES ($1,$2,$3,$4,$5,$6,'ACTIVE',$7,$8,$9,$10,$11,$12,$13,$14)`,
       [
         mappingSetId,
         input.principal.organizationId,
@@ -437,6 +578,7 @@ export async function saveTaxAccountMappings(input: Readonly<{
         command.effectiveFrom,
         command.effectiveTo ?? null,
         current?.id ?? null,
+        correction?.mappingSetId ?? null,
         command.reason,
         command.idempotencyKey,
         commandHash,
@@ -466,6 +608,28 @@ export async function saveTaxAccountMappings(input: Readonly<{
     );
     return { mappingSetId, version, idempotentReplay: false };
   });
+}
+
+export async function correctTaxAccountMappings(input: Readonly<{
+  principal: SessionPrincipal;
+  requestId: string;
+  sourceSurface?: "API" | "MCP";
+}> & z.input<typeof correctTaxAccountMappingsSchema>) {
+  const command = correctTaxAccountMappingsSchema.parse({
+    proposal: input.proposal,
+    previewHash: input.previewHash,
+    idempotencyKey: input.idempotencyKey,
+  });
+  const { mappingSetId, ...proposedMapping } = command.proposal;
+  const result = await saveTaxAccountMappings({
+    principal: input.principal,
+    requestId: input.requestId,
+    sourceSurface: input.sourceSurface,
+    ...proposedMapping,
+    idempotencyKey: command.idempotencyKey,
+    correction: { mappingSetId, previewHash: command.previewHash },
+  });
+  return { ...result, correctedMappingSetId: mappingSetId };
 }
 
 export async function deactivateTaxAccountMappings(input: Readonly<{
@@ -718,6 +882,12 @@ export async function saveTaxFilingConfiguration(input: Readonly<{
     if (template.template_key === "ca.gst-hst.return" && !command.registrationId) {
       throw new TaxFilingError("A GST/HST filing configuration requires an effective entity registration.", 400, "CONFIGURATION_REGISTRATION_REQUIRED");
     }
+    // A configuration cannot start referencing a mapping between its
+    // correction's final dependency check and append-only replacement.
+    await client.query(
+      "SELECT pg_advisory_xact_lock(hashtextextended('tax-mapping-reference:' || $1::text || ':' || $2::text, 0))",
+      [input.principal.organizationId, command.mappingSetId],
+    );
     const mapping = (await client.query<{ id: string; effective_from: string; effective_to: string | null }>(
       `SELECT mapping.id,mapping.effective_from::text,mapping.effective_to::text FROM tax_account_mapping_sets mapping
        WHERE mapping.organization_id=$1 AND mapping.id=$2
