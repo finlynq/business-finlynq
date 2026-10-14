@@ -5,10 +5,11 @@ import { closeDatabasePool } from "@/db/transaction";
 import type { SessionPrincipal } from "@/modules/identity/session";
 import {
   correctTaxFilingConfiguration, createTaxFiling,
+  correctTaxAccountMappings, previewTaxAccountMappingCorrection,
   previewTaxFilingConfigurationCorrection, saveTaxAccountMappings,
   saveTaxFilingConfiguration,
 } from "@/modules/tax/filing-service";
-import { previewTaxFilingReadiness } from "@/modules/tax/filing-workspace";
+import { loadTaxFilingWorkspace, previewTaxFilingReadiness } from "@/modules/tax/filing-workspace";
 
 const run = process.env.TEST_DATABASE_URL && process.env.TEST_APP_DATABASE_URL ? describe : describe.skip;
 const id = { org: randomUUID(), actor: randomUUID(), member: randomUUID(), role: randomUUID(),
@@ -126,5 +127,52 @@ run("unused committed tax configuration correction", () => {
     await expect(correctTaxFilingConfiguration({ ...context(), proposal: referencedProposal,
       previewHash: preview.previewHash, idempotencyKey: randomUUID() })).rejects.toMatchObject({ code: "CONFIGURATION_CORRECTION_REFERENCED" });
     expect((await owner.query("SELECT count(*)::int AS n FROM tax_filing_configurations WHERE organization_id=$1", [id.org])).rows[0].n).toBe(3);
+  }, 30000);
+
+  it("corrects only an unused mapping and retains its original lines and audited decision", async () => {
+    const referencedProposal = { mappingSetId, ...scope, expectedTemplateVersion: 2,
+      expectedMappingVersion: 2, effectiveFrom: "2025-01-04", mappings,
+      reason: "Attempt to correct a referenced mapping" };
+    const referenced = await previewTaxAccountMappingCorrection(principal, referencedProposal);
+    expect(referenced.eligible).toBe(false);
+    expect(referenced.references.configuration_ids).toContain(correctedConfigurationId);
+    await expect(correctTaxAccountMappings({ ...context(), proposal: referencedProposal,
+      previewHash: referenced.previewHash, idempotencyKey: randomUUID() })).rejects.toMatchObject({ code: "MAPPING_CORRECTION_REFERENCED" });
+
+    const wrong = await saveTaxAccountMappings({ ...context(), ...scope,
+      expectedTemplateVersion: 2, expectedMappingVersion: 2, effectiveFrom: "2026-10-14",
+      mappings, reason: "Synthetic wrong mapping date", idempotencyKey: randomUUID() });
+    const proposal = { ...referencedProposal, mappingSetId: wrong.mappingSetId,
+      expectedMappingVersion: 3, reason: "Correct the unused mapping effective date" };
+    const preview = await previewTaxAccountMappingCorrection(principal, proposal);
+    expect(preview.eligible).toBe(true);
+    expect(preview.current.effective_from).toBe("2026-10-14");
+    expect(preview.references.configuration_ids).toHaveLength(0);
+    const command = { ...context(), proposal, previewHash: preview.previewHash, idempotencyKey: randomUUID() };
+    const corrected = await correctTaxAccountMappings(command);
+    expect(corrected).toMatchObject({ version: 4, correctedMappingSetId: wrong.mappingSetId, idempotentReplay: false });
+    expect(await correctTaxAccountMappings(command)).toMatchObject({ mappingSetId: corrected.mappingSetId, idempotentReplay: true });
+    const rows = (await owner.query(
+      "SELECT id,version,effective_from::text,correction_of_mapping_set_id FROM tax_account_mapping_sets WHERE organization_id=$1 ORDER BY version",
+      [id.org],
+    )).rows;
+    expect(rows).toHaveLength(4);
+    expect(rows[2]).toMatchObject({ id: wrong.mappingSetId, version: 3, effective_from: "2026-10-14", correction_of_mapping_set_id: null });
+    expect(rows[3]).toMatchObject({ id: corrected.mappingSetId, version: 4, effective_from: "2025-01-04", correction_of_mapping_set_id: wrong.mappingSetId });
+    const audit = (await owner.query(
+      "SELECT safe_metadata,reason FROM audit_events WHERE organization_id=$1 AND action='tax.mapping.corrected' AND entity_id=$2",
+      [id.org, corrected.mappingSetId],
+    )).rows;
+    expect(audit).toHaveLength(1);
+    expect(audit[0]).toMatchObject({ reason: proposal.reason, safe_metadata: {
+      originalId: wrong.mappingSetId, replacementId: corrected.mappingSetId,
+      replacementEffectiveFrom: "2025-01-04",
+    } });
+    const history = (await loadTaxFilingWorkspace(principal)).mappingHistory ?? [];
+    expect(history.find((item) => item.id === wrong.mappingSetId)).toMatchObject({ version: 3, current: false });
+    expect(history.find((item) => item.id === corrected.mappingSetId)).toMatchObject({
+      version: 4, current: true, correctionOfMappingSetId: wrong.mappingSetId,
+    });
+    expect((await owner.query("SELECT to_jsonb(filing) AS data FROM tax_filings filing WHERE id=$1", [originalFilingId])).rows[0].data).toEqual(originalSnapshot);
   }, 30000);
 });

@@ -55,10 +55,14 @@ import {
   organizationFxProviderPolicyConfigurationSchema,
 } from "@/modules/fx/provider-policy";
 import {
+  correctTaxAccountMappings,
+  correctTaxAccountMappingsSchema,
   deactivateTaxAccountMappings,
   deactivateTaxAccountMappingsSchema,
+  previewTaxAccountMappingCorrection,
   saveTaxAccountMappings,
   saveTaxAccountMappingsSchema,
+  taxMappingCorrectionProposalSchema,
 } from "@/modules/tax/filing-service";
 import { loadTaxAccountMappingHistory, loadTaxFilingWorkspace, previewTaxAccountMappings } from "@/modules/tax/filing-workspace";
 
@@ -277,6 +281,24 @@ export const SETUP_MCP_TOOLS: readonly McpToolDefinition[] = [
       requestId: runtime.requestId,
       sourceSurface: "MCP",
       ...args,
+    }),
+  }),
+  defineMcpTool({
+    policy: { name: "finlynq_setup_preview_tax_mapping_correction", group: "SETUP", access: "READ", permission: PERMISSIONS.manageTaxMappings },
+    title: "Preview an unused mapping correction",
+    description: "Review exact original and proposed account lines, dates, predecessor, affected periods, configuration and workpaper references. Returns the hash required for an eligible append-only correction.",
+    inputSchema: taxMappingCorrectionProposalSchema,
+    invoke: (args, runtime) => previewTaxAccountMappingCorrection(runtime.sessionPrincipal, args),
+  }),
+  defineMcpTool({
+    policy: { name: "finlynq_setup_correct_tax_account_mappings", group: "SETUP", access: "WRITE", permission: PERMISSIONS.manageTaxMappings },
+    title: "Correct an unused tax mapping",
+    description: "Append an audited replacement after reviewing an exact eligible preview. Referenced mapping versions and existing workpapers cannot be changed or deleted.",
+    inputSchema: correctTaxAccountMappingsSchema,
+    idempotent: true,
+    invoke: (args, runtime) => correctTaxAccountMappings({
+      principal: runtime.sessionPrincipal, requestId: runtime.requestId,
+      sourceSurface: "MCP", ...args,
     }),
   }),
   defineMcpTool({
