@@ -36,6 +36,8 @@ export type RouteFailureOperation =
   | "tax-filing-canonical-select"
   | "tax-filing-lifecycle-transition"
   | "tax-mapping-save"
+  | "tax-mapping-correction-preview"
+  | "tax-mapping-correction"
   | "trusted-browser-management";
 
 export type ObservedRouteOperation = RouteFailureOperation
