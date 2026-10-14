@@ -6,15 +6,22 @@ import {
   loadTrialBalance,
   profitAndLossRows,
   reportFilterInput,
+  reportSearchParams,
   reportSegmentCode,
   reportSegmentColumns,
   resolveReportSelection,
 } from "@/modules/reporting/tenant-reporting";
 import { requireWorkspacePrincipal } from "@/modules/workspace/access";
 import { currentWorkspaceEntityContext } from "@/modules/workspace/entity-context";
+import { loadMonthlyProfitAndLoss, MonthlyReportScopeError, monthlyReportAsOfDate, monthlyReportSelectionInput } from "@/modules/reporting/monthly-profit-and-loss";
+import { monthlyReportPresentationHash } from "@/modules/reporting/monthly-profit-and-loss-export";
 import { ReportFilters, ReportNavigation } from "../../../_components/report-controls";
+import { RouteTabs } from "../../../_components/route-tabs";
 import { DemoNotice, EmptyState, PageHeader } from "../../../_components/ui";
+import { MonthlyProfitAndLossTable } from "./monthly-table";
+import { MonthlyReportPrintButton } from "./print-button.client";
 import styles from "../financial-statements.module.css";
+import printStyles from "./monthly-print.module.css";
 
 type SearchParams = Promise<Record<string, string | string[] | undefined>>;
 
@@ -30,16 +37,31 @@ export default async function ProfitAndLossPage({ searchParams }: { searchParams
     searchParams,
   ]);
   const filterInput = reportFilterInput(query);
+  const byMonth = query.view === "month";
+  const selectedInput = byMonth
+    ? monthlyReportSelectionInput(dimensions, { ...filterInput, entity: filterInput.entity ?? entityContext.selectedEntity?.id })
+    : filterInput;
   const selection = resolveReportSelection(dimensions, {
-    ...filterInput,
-    entity: filterInput.entity ?? entityContext.selectedEntity?.id,
+    ...selectedInput,
+    entity: selectedInput.entity ?? entityContext.selectedEntity?.id,
   });
   const [trialBalance, hierarchy] = selection
     ? await Promise.all([
-        loadTrialBalance(principal, selection),
+        byMonth ? Promise.resolve([]) : loadTrialBalance(principal, selection),
         loadEffectiveAccountHierarchy(principal, selection),
       ])
     : [[], null] as const;
+  const entity = dimensions.entities.find((candidate) => candidate.id === selection?.entityId);
+  let monthly: Awaited<ReturnType<typeof loadMonthlyProfitAndLoss>> | null = null;
+  let monthlyError: string | null = null;
+  if (byMonth && selection && entity) {
+    try {
+      monthly = await loadMonthlyProfitAndLoss(principal, selection, entity, monthlyReportAsOfDate(principal));
+    } catch (error) {
+      if (error instanceof MonthlyReportScopeError) monthlyError = error.message;
+      else throw error;
+    }
+  }
   const rows = profitAndLossRows(trialBalance);
   const revenue = rows.filter((row) => row.accountClass === "REVENUE");
   const expenses = rows.filter((row) => row.accountClass === "EXPENSE");
@@ -52,9 +74,18 @@ export default async function ProfitAndLossPage({ searchParams }: { searchParams
     { key: "REVENUE", label: "Revenue", totalLabel: "Total revenue", rows: revenue, total: totalRevenue, lines: financialStatementDisplayLines(rows, hierarchy, "REVENUE") },
     { key: "EXPENSE", label: "Expenses", totalLabel: "Total expenses", rows: expenses, total: totalExpenses, lines: financialStatementDisplayLines(rows, hierarchy, "EXPENSE") },
   ] as const;
+  const totalQuery = selection ? reportSearchParams(selection).toString() : "";
+  const monthlyQuery = selection ? reportSearchParams(selection) : null;
+  if (monthlyQuery && !["from", "to", "fromPeriod", "toPeriod"].some((key) => query[key] !== undefined)) {
+    for (const key of ["from", "to", "fromPeriod", "toPeriod"]) monthlyQuery.delete(key);
+  }
+  monthlyQuery?.set("view", "month");
+  const exportQuery = monthly && selection ? reportSearchParams(selection) : null;
+  if (exportQuery && monthly) exportQuery.set("snapshot", monthlyReportPresentationHash(monthly, hierarchy));
 
   return (
     <div className="page-content">
+      <div className={`${printStyles.controls} ${byMonth ? printStyles.noPrint : ""}`}>
       <PageHeader
         eyebrow="Reports"
         title="Profit & loss"
@@ -62,8 +93,19 @@ export default async function ProfitAndLossPage({ searchParams }: { searchParams
       />
       <ReportNavigation active="profit-and-loss" selection={selection} />
       {principal.sessionMode === "demo" && <DemoNotice>This statement reflects the current writable demo ledger and resets with the seeded business nightly.</DemoNotice>}
-      {selection && <ReportFilters action="/app/reports/profit-and-loss" dimensions={dimensions} selection={selection} showDimensions />}
-      {selection && rows.length ? (
+      {selection && <ReportFilters action="/app/reports/profit-and-loss" dimensions={dimensions} selection={selection} showDimensions view={byMonth ? "month" : "total"} />}
+      {selection && <RouteTabs label="Profit and loss view" active={byMonth ? "month" : "total"} tabs={[
+        { key: "total", label: "Total", href: `/app/reports/profit-and-loss?${totalQuery}` },
+        { key: "month", label: "By month", href: `/app/reports/profit-and-loss?${monthlyQuery?.toString() ?? "view=month"}` },
+      ]} />}
+      {monthly && exportQuery && <div style={{ display: "flex", flexWrap: "wrap", gap: "8px" }}>
+        <a className="secondary-button" href={`/app/reports/profit-and-loss.xlsx?${exportQuery}`}>Download XLSX</a>
+        <MonthlyReportPrintButton />
+      </div>}
+      </div>
+      {monthly && entity && <MonthlyProfitAndLossTable report={monthly} entity={entity} hierarchy={hierarchy} />}
+      {monthlyError && <EmptyState title="Monthly report needs a complete fiscal year">{monthlyError}</EmptyState>}
+      {!byMonth && selection && rows.length ? (
         <section className="panel" aria-labelledby="profit-loss-title">
           <div className="panel-heading">
             <div>
@@ -112,12 +154,12 @@ export default async function ProfitAndLossPage({ searchParams }: { searchParams
             </table>
           </div>
         </section>
-      ) : (
+      ) : !byMonth ? (
         <EmptyState title={selection ? "No profit-and-loss activity" : "No reporting entity available"}>
           {selection ? "No posted revenue or expense lines fall within the selected range." : "Create an active legal entity and primary ledger first."}
         </EmptyState>
-      )}
-      <div className="currency-warning"><strong>Functional statement</strong><p>{selection ? `${selection.entityCode} is shown only in ${selection.currency}.` : "Select an entity to establish the functional currency."} No implicit currency translation or consolidation is applied.</p></div>
+      ) : null}
+      <div className={`currency-warning ${byMonth ? printStyles.noPrint : ""}`}><strong>Functional statement</strong><p>{selection ? `${selection.entityCode} is shown only in ${selection.currency}.` : "Select an entity to establish the functional currency."} No implicit currency translation or consolidation is applied.</p></div>
     </div>
   );
 }
