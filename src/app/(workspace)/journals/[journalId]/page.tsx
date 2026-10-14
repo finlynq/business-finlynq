@@ -1,10 +1,13 @@
 import Link from "next/link";
+import { randomUUID } from "node:crypto";
 import { JournalWorkflowControls } from "../../../_components/journal-workflow-controls.client";
 import { CompactDisclosure } from "../../../_components/compact-disclosure.client";
 import { notFound } from "next/navigation";
 import { formatMoney } from "@/kernel/money";
 import { accountKeyDisplayTitle } from "@/modules/ledger/account-key-display";
 import { loadTenantJournalDetail } from "@/modules/ledger/tenant-workspace";
+import { listPostedJournalEvidence } from "@/modules/ledger/journal-evidence";
+import { mutationContext } from "@/modules/workspace/write-policy";
 import { requireWorkspacePrincipal } from "@/modules/workspace/access";
 import { BackLink, EmptyState, PageHeader, StatusPill } from "../../../_components/ui";
 
@@ -24,6 +27,10 @@ export default async function JournalDetailPage({
   const principal = await requireWorkspacePrincipal(`/app/journals/${journalId}`);
   const journal = await loadTenantJournalDetail(principal, journalId);
   if (!journal) notFound();
+  const evidence = await listPostedJournalEvidence(
+    mutationContext(principal, randomUUID(), { reason: "View journal evidence", sourceSurface: "UI" }),
+    journalId,
+  );
 
   return (
     <div className="page-content">
@@ -60,6 +67,33 @@ export default async function JournalDetailPage({
           <div><dt>Origin / purpose</dt><dd>{journal.origin} · {journal.purpose}</dd></div>
           <div><dt>Posted at</dt><dd>{journal.postedAt ?? "Not posted"}</dd></div>
 </dl></CompactDisclosure>
+      </section>
+
+      <section className="panel" aria-labelledby="journal-evidence-title">
+        <div className="panel-heading">
+          <div>
+            <p className="eyebrow">Supporting documents</p>
+            <h2 id="journal-evidence-title">Original evidence</h2>
+          </div>
+          <span className="subtle-label">Evidence revision {evidence.evidenceRevision}</span>
+        </div>
+        {evidence.links.length ? (
+          <div className="table-scroll" tabIndex={0} aria-label={`Journal ${journal.number} evidence; scroll horizontally if needed`}>
+            <table>
+              <thead><tr><th scope="col">Document</th><th scope="col">Original date</th><th scope="col">Original total</th><th scope="col">Integrity</th><th scope="col">Action</th></tr></thead>
+              <tbody>{evidence.links.map((link) => (
+                <tr key={link.linkId}>
+                  <td><strong>{link.documentReference}</strong><small>{link.asset.filename}</small></td>
+                  <td>{link.documentDate}</td>
+                  <td className="amount-cell">{money(link.documentCurrency, link.documentTotal)}</td>
+                  <td><span title={link.asset.sha256}>SHA-256 {link.asset.sha256.slice(0, 12)}…</span><small>Scanned {new Date(link.asset.scannedAt).toLocaleDateString("en-CA")}</small></td>
+                  <td><a href={link.downloadUrl}>Download original</a></td>
+                </tr>
+              ))}</tbody>
+            </table>
+          </div>
+        ) : <p>No original documents are linked to this journal yet.</p>}
+        {journal.status === "POSTED" && <p className="panel-note">Have an original invoice or receipt to add? Open <Link href="/app/settings/documents">Documents</Link> and link it to this posted journal using your connected assistant. Its accounting entries will stay as posted.</p>}
       </section>
 
       {!["POSTED", "REVERSED", "DELETED"].includes(journal.status) && (
