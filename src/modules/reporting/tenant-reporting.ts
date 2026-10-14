@@ -557,7 +557,7 @@ export function reportSearchParams(selection: ReportSelection): URLSearchParams 
   });
   if (selection.fromPeriodId) params.set("fromPeriod", selection.fromPeriodId);
   if (selection.toPeriodId) params.set("toPeriod", selection.toPeriodId);
-  if (selection.accountId) params.set("account", selection.accountId);
+  if (selection.accountCode && selection.accountId) params.set("account", selection.accountId);
   if (selection.accountCode) params.set("accountCode", selection.accountCode);
   for (const key of reportDimensionKeys) {
     const value = selection.segmentFilters?.[key];

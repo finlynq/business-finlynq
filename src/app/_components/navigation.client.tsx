@@ -39,6 +39,7 @@ function NavigationLinks({
           <li key={item.href}>
             <Link
               href={item.href}
+              prefetch={false}
               aria-current={current ? "page" : undefined}
               className={current ? "active" : undefined}
               onClick={onNavigate}

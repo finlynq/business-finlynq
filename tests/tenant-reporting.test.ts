@@ -370,6 +370,10 @@ describe("tenant reporting authorization and tax exception evidence", () => {
       segmentFilters: { department: "OPS" },
     });
     expect(reportSearchParams(selection!).toString()).toContain("segment_department=OPS");
+    const unfiltered = resolveReportSelection(dimensions, { entity: dimensions.entities[0]?.id });
+    expect(unfiltered?.accountId).toBe(dimensions.entities[0]?.accounts[0]?.id);
+    expect(reportSearchParams(unfiltered!).has("account")).toBe(false);
+    expect(reportSearchParams(selection!).get("account")).toBe(selection?.accountId);
   });
 
   it("fails closed for unknown, cross-entity, or mismatched report accounts", () => {
