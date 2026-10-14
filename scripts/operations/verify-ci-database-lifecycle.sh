@@ -502,7 +502,7 @@ SQL
   verify_fail_closed_default_privileges "$predecessor_database"
   verify_schema_and_grants "$predecessor_database"
   printf '%s\n' \
-    "Predecessor upgrade verification passed: replayed 0000-0024, preserved tenant and audit sentinels, upgraded through 0092, and verified schema/grants/journal types."
+    "Predecessor upgrade verification passed: replayed 0000-0024, preserved tenant and audit sentinels, upgraded through the current migration journal, and verified schema/grants/journal types."
 else
   # Create two otherwise-identical business events with explicit request IDs.
   # Their exact audit/outbox correlation must survive the populated logical
