@@ -83,6 +83,9 @@ run("unused committed tax configuration correction", () => {
     const command = { ...context(), proposal, previewHash: preview.previewHash, idempotencyKey: randomUUID() };
     const corrected = await correctTaxFilingConfiguration(command);
     correctedConfigurationId = corrected.configurationId;
+    await expect(correctTaxFilingConfiguration({ ...command,
+      proposal: { ...proposal, reason: "Different reason with reused correction key" },
+    })).rejects.toMatchObject({ code: "IDEMPOTENCY_CONFLICT" });
     expect(corrected).toMatchObject({ version: 3, correctedConfigurationId: wrongConfigurationId, idempotentReplay: false });
     expect(await correctTaxFilingConfiguration(command)).toMatchObject({ configurationId: correctedConfigurationId, idempotentReplay: true });
     await expect(correctTaxFilingConfiguration({ ...command, previewHash: "f".repeat(64) })).rejects.toMatchObject({ code: "IDEMPOTENCY_CONFLICT" });
@@ -152,6 +155,9 @@ run("unused committed tax configuration correction", () => {
     const corrected = await correctTaxAccountMappings(command);
     expect(corrected).toMatchObject({ version: 4, correctedMappingSetId: wrong.mappingSetId, idempotentReplay: false });
     expect(await correctTaxAccountMappings(command)).toMatchObject({ mappingSetId: corrected.mappingSetId, idempotentReplay: true });
+    await expect(correctTaxAccountMappings({ ...command,
+      proposal: { ...proposal, reason: "Different reason with reused mapping key" },
+    })).rejects.toMatchObject({ code: "IDEMPOTENCY_CONFLICT" });
     const rows = (await owner.query(
       "SELECT id,version,effective_from::text,correction_of_mapping_set_id FROM tax_account_mapping_sets WHERE organization_id=$1 ORDER BY version",
       [id.org],
@@ -174,5 +180,32 @@ run("unused committed tax configuration correction", () => {
       version: 4, current: true, correctionOfMappingSetId: wrong.mappingSetId,
     });
     expect((await owner.query("SELECT to_jsonb(filing) AS data FROM tax_filings filing WHERE id=$1", [originalFilingId])).rows[0].data).toEqual(originalSnapshot);
+  }, 30000);
+
+  it("rejects a mapping correction when a configuration starts using it after preview", async () => {
+    const wrong = await saveTaxAccountMappings({ ...context(), ...scope,
+      expectedTemplateVersion: 2, expectedMappingVersion: 4,
+      effectiveFrom: "2026-11-01", mappings,
+      reason: "Another unused wrong-date mapping", idempotencyKey: randomUUID() });
+    const proposal = { mappingSetId: wrong.mappingSetId, ...scope,
+      expectedTemplateVersion: 2, expectedMappingVersion: 5,
+      effectiveFrom: "2025-01-05", mappings,
+      reason: "Review dependency race on mapping" };
+    const preview = await previewTaxAccountMappingCorrection(principal, proposal);
+    expect(preview.eligible).toBe(true);
+
+    const dependent = await saveTaxFilingConfiguration({ ...context(), ...scope,
+      mappingSetId: wrong.mappingSetId, filingTypeKey,
+      expectedConfigurationVersion: 3, effectiveFrom: "2026-11-01",
+      reason: "Reference mapping after correction preview", idempotencyKey: randomUUID() });
+    const refreshed = await previewTaxAccountMappingCorrection(principal, proposal);
+    expect(refreshed.eligible).toBe(false);
+    expect(refreshed.references.configuration_ids).toContain(dependent.configurationId);
+
+    await expect(correctTaxAccountMappings({ ...context(), proposal,
+      previewHash: preview.previewHash, idempotencyKey: randomUUID() }))
+      .rejects.toMatchObject({ code: "MAPPING_CORRECTION_PREVIEW_STALE" });
+    expect((await owner.query("SELECT count(*)::int AS n FROM tax_account_mapping_sets WHERE organization_id=$1", [id.org])).rows[0].n).toBe(5);
+    expect((await owner.query("SELECT count(*)::int AS n FROM audit_events WHERE organization_id=$1 AND action='tax.mapping.corrected' AND entity_id=$2", [id.org, wrong.mappingSetId])).rows[0].n).toBe(0);
   }, 30000);
 });
