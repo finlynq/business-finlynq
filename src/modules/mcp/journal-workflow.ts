@@ -3,6 +3,8 @@ import "server-only";
 import { PERMISSIONS } from "@/modules/identity/permissions";
 import type { JournalWorkflowAction, JournalWorkflowEligibility } from "@/modules/ledger/journal-workflow-eligibility";
 import { loadTenantJournalDetail } from "@/modules/ledger/tenant-workspace";
+import { listPostedJournalEvidence } from "@/modules/ledger/journal-evidence";
+import { mcpMutationContext } from "./oauth-store";
 import { effectiveToolMode, isMcpToolVisible, mcpToolAuthorizationMetadata, type McpAuthorizationSnapshot, type McpToolPolicy } from "./connection-policy";
 import type { McpToolRuntime } from "./tool-types";
 
@@ -51,7 +53,18 @@ export function mcpJournalWorkflow(workflow: JournalWorkflowEligibility | null, 
 
 export async function readMcpJournal(runtime: McpToolRuntime, journalId: string) {
   const journal = await loadTenantJournalDetail(runtime.sessionPrincipal, journalId);
-  return journal ? { ...journal, workflow: mcpJournalWorkflow(journal.workflow, runtime.snapshot) } : null;
+  if (!journal) return null;
+  const evidence = await listPostedJournalEvidence(
+    mcpMutationContext(runtime.principal, runtime.requestId), journalId);
+  return {
+    ...journal,
+    workflow: mcpJournalWorkflow(journal.workflow, runtime.snapshot),
+    legalEntityId: evidence.legalEntityId,
+    ledgerId: evidence.ledgerId,
+    journalContentHash: evidence.journalContentHash,
+    evidenceRevision: evidence.evidenceRevision,
+    evidence: evidence.links,
+  };
 }
 
 export async function refreshedJournalTransition<T extends { journalId: string }>(runtime: McpToolRuntime, result: T) {

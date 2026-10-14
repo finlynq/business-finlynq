@@ -7,6 +7,7 @@ import { loadOrganizationRootKek } from "@/security/root-secret";
 import { encryptStorageValue } from "@/modules/document-storage/store";
 import { claimInboxDocument, completeInboxDocument, getDocumentFilingStatus, listDocumentInbox, readInboxDocument, retryDocumentFiling, reviewInboxDocument, scheduleDocumentFiling, syncDocumentInbox } from "@/modules/document-storage/inbox";
 import { downloadBankStatementEvidence, downloadDocumentEvidence } from "@/modules/subledger/evidence-service";
+import { downloadPostedJournalEvidence, linkPostedJournalEvidence, listPostedJournalEvidence } from "@/modules/ledger/journal-evidence";
 import { readFiledStatement } from "@/modules/document-storage/filed-statement";
 import { importFiledStatement } from "@/modules/document-storage/filed-statement";
 import { previewBankStatementExtraction } from "@/modules/banking/statement-import-model";
@@ -886,6 +887,96 @@ run("cloud inbox PostgreSQL lifecycle", () => {
     expect((await owner.query("SELECT sync_cursor FROM document_storage_connections WHERE id=$1", [ids.connection])).rows[0].sync_cursor).toBeNull();
     await expect(finishStorageConnection(principal, "GOOGLE_DRIVE", state, "code")).rejects.toThrow(/expired/);
     expect(cloud.provisionCalls).toBe(1); cloud.provisionCalls = 0;
+  });
+  it("files one original against two sealed-period journals and reuses it on a third", async () => {
+    const periodId = randomUUID();
+    const journals = [randomUUID(), randomUUID(), randomUUID()];
+    const hash = "b".repeat(64);
+    await owner.query(
+      "INSERT INTO role_permissions(organization_id,role_id,permission_key) VALUES($1,$2,'mcp.ledger.read'),($1,$2,'ledger.journal.draft') ON CONFLICT DO NOTHING",
+      [ids.org, ids.role],
+    );
+    await owner.query(
+      "INSERT INTO fiscal_periods(id,organization_id,ledger_id,fiscal_year,period_number,label,starts_on,ends_on,state) VALUES($1,$2,$3,2026,6,'June 2026','2026-06-01','2026-06-30','SEALED')",
+      [periodId, ids.org, ids.bankLedger],
+    );
+    const fixture = await owner.connect();
+    try {
+      await fixture.query("BEGIN");
+      await fixture.query("SET LOCAL session_replication_role=replica");
+      for (const [index, journalId] of journals.entries()) {
+        await fixture.query(
+          `INSERT INTO journal_entries(id,organization_id,legal_entity_id,ledger_id,period_id,
+             journal_type_definition_id,journal_type_key,journal_type_version,source_event_key,idempotency_key,
+             origin,purpose,status,accounting_date,functional_currency,description,total_debit_functional,
+             total_credit_functional,content_hash,journal_number,created_by,posted_by,posted_at)
+           VALUES($1,$2,$3,$4,$5,(SELECT id FROM journal_type_definitions WHERE key='ledger.manual' AND version=1),
+             'ledger.manual',1,$6,$6,'USER','ROUTINE','POSTED','2026-06-04','USD','Split receipt evidence',
+             $7,$7,$8,$9,$10,$10,now())`,
+          [journalId, ids.org, ids.entity, ids.bankLedger, periodId, `posted-evidence:${journalId}`,
+            index === 0 ? "119.00" : index === 1 ? "15.47" : "10.00", hash, 900000 + index, ids.actor],
+        );
+      }
+      await fixture.query("COMMIT");
+    } catch (error) { await fixture.query("ROLLBACK"); throw error; }
+    finally { fixture.release(); }
+    const bytes = Buffer.concat([png, Buffer.from("posted-original")]);
+    const item = await discoverDocument("posted-original.png", "image/png", bytes);
+    const claim = randomUUID();
+    await claimInboxDocument(requestContext(), { itemId: item.id, claimId: claim });
+    const read = await readInboxDocument(requestContext(), { itemId: item.id, claimId: claim });
+    const command = {
+      itemId: item.id, claimId: claim, sha256: read.sha256,
+      metadata: {
+        documentType: "PURCHASE_INVOICE" as const,
+        documentDate: "2026-06-02", counterparty: "Apple",
+        reference: "MC76150842", currency: "CAD", total: "134.47",
+      },
+      action: {
+        type: "LINK_POSTED" as const, confirmed: true as const,
+        targets: journals.slice(0, 2).map((journalId) => ({
+          journalId, expectedContentHash: hash, expectedEvidenceRevision: 0,
+        })),
+      },
+      reason: "Retain the original receipt on both posted entries",
+    };
+    const first = await completeInboxDocument(requestContext(), command, true);
+    expect(first).toMatchObject({
+      filingPending: true, idempotentReplay: false,
+      item: { id: item.id, status: "READY_TO_FILE" },
+      postedJournalEvidence: { idempotentReplay: false },
+    });
+    const assetId = first.item.assetId!;
+    expect((await completeInboxDocument(requestContext(), command, true)).postedJournalEvidence)
+      .toMatchObject({ idempotentReplay: true });
+    await retryDocumentFiling(requestContext(), { itemId: item.id });
+    const reused = await linkPostedJournalEvidence(requestContext(), {
+      assetId, inboxItemId: item.id,
+      targets: [{ journalId: journals[2], expectedContentHash: hash, expectedEvidenceRevision: 0 }],
+      metadata: { documentDate: "2026-06-02", reference: "MC76150842", currency: "CAD", total: "134.47" },
+      reason: "Reuse the reviewed filed original on another posted entry",
+      idempotencyKey: randomUUID(),
+    });
+    expect(reused.links).toHaveLength(1);
+    for (const journalId of journals) {
+      const evidence = await listPostedJournalEvidence(requestContext(), journalId);
+      expect(evidence.links[0]).toMatchObject({
+        assetId, sourceInboxItemId: item.id, documentDate: "2026-06-02",
+        documentTotal: "134.470000000", asset: { sha256: read.sha256 },
+      });
+      const download = await downloadPostedJournalEvidence(requestContext(), journalId, assetId);
+      expect(download.bytes).toEqual(bytes);
+      download.bytes.fill(0);
+    }
+    expect((await owner.query(
+      "SELECT count(*)::int AS count FROM journal_evidence_links WHERE organization_id=$1 AND journal_entry_id=ANY($2::uuid[])",
+      [ids.org, journals],
+    )).rows[0].count).toBe(3);
+    expect((await owner.query(
+      "SELECT status,content_hash FROM journal_entries WHERE id=ANY($1::uuid[])",
+      [journals],
+    )).rows).toEqual(Array.from({ length: 3 }, () => ({ status: "POSTED", content_hash: hash })));
+    bytes.fill(0);
   });
   it("binds OAuth state to the session and invalidates it on disconnect", async () => {
     const started = await startStorageConnection(principal, { provider: "GOOGLE_DRIVE", legalEntityId: ids.entity, module: "payables", label: "Purchases", connectionId: ids.connection, sharedWithOrganization: true, accessAcknowledged: true });

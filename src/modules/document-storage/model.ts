@@ -3,6 +3,7 @@ import { bankStatementExtractionSchema, bankStatementMappingSchema } from "@/mod
 import { createBusinessDocumentSchema } from "@/modules/subledger/document-model";
 import { uploadEvidenceSchema } from "@/modules/subledger/evidence-model";
 import { inboxUploadMimeTypeSchema } from "./file-types";
+import { postedJournalEvidenceTargetSchema } from "@/modules/ledger/journal-evidence-model";
 import { MAX_CLOUD_DOCUMENT_BYTES } from "./limits";
 
 export const providerSchema = z.enum(["GOOGLE_DRIVE", "ONEDRIVE"]);
@@ -77,6 +78,10 @@ export const completeInboxSchema = claimInboxSchema.extend({
     z.object({ type: z.literal("LINK_DRAFT"), kind: z.enum(["SALES_INVOICE", "SUPPLIER_BILL"]),
       sourceNumber: z.string().trim().min(1).max(50), expectedVersion: z.number().int().positive(),
       purpose: z.enum(["INVOICE", "RECEIPT", "SUPPORTING"]) }).strict(),
+    z.object({ type: z.literal("LINK_POSTED"), confirmed: z.literal(true),
+      targets: z.array(postedJournalEvidenceTargetSchema).min(1).max(20)
+        .refine((targets) => new Set(targets.map((target) => target.journalId)).size === targets.length,
+          "Each posted journal may appear only once") }).strict(),
     z.object({
       type: z.literal("IMPORT_STATEMENT"),
       extraction: bankStatementExtractionSchema,

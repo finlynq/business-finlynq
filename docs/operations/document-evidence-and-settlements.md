@@ -146,6 +146,36 @@ documents the Refresh and new-conversation sequence.
 
 ## Operations
 
+### Evidence added after posting
+
+Migration `0092_outgoing_rocket_raccoon` stores an append-only link from each
+posted journal to the verified original asset. One asset can support several
+explicit journals in the same legal entity and ledger; each link preserves the
+original document date, reference, currency, and total independently of the
+journal date and amount. It records the inbox item for cloud originals and an
+audit/outbox event for every target. Links cannot be edited or deleted by the
+application role.
+
+Adding a link requires current `mcp.ledger.read`, `ledger.journal.draft`, and
+the asset module's `manage` permission. Listing and downloading require
+`mcp.ledger.read` plus the asset module's `read` or `manage` permission. Cloud
+links must name the exact filed inbox item, or complete an actively claimed
+inbox item with `LINK_POSTED`; the latter saves the asset and all target links
+in one database transaction before the resumable archive move. Both paths
+verify the original bytes and SHA-256. Download rechecks live permissions,
+the source connection and the stored bytes. The ledger is never a source of
+cloud-file permission.
+
+Evidence-only links are permitted when a target's fiscal period is hard-closed
+or sealed. This policy adds an audit record and a separate evidence revision;
+it does not reopen the period or modify posted status, journal content hash,
+lines, tax, FX, settlement or reconciliation data. A stale target hash or
+evidence revision fails the entire multi-target request. Retry with the same
+idempotency key and identical arguments; if a provider move fails after the
+database commit, use the existing inbox filing handle to retry that move.
+Journal detail and `get_journal` show the saved evidence; the dedicated MCP
+list and download tools provide the same authorized original.
+
 Migration `0040_document_evidence_assets` adds the append-only, FORCE-RLS asset
 table, permission policy, source-lineage trigger, audit/outbox pair, runtime
 SELECT/INSERT grants, and demo-reset registration. Database backups include

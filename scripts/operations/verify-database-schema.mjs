@@ -55,7 +55,7 @@ const runtimeSelectRelations = [
   "gl_accounts", "segment_definitions", "segment_values",
   "account_combinations", "accounting_hierarchies",
   "accounting_hierarchy_nodes", "journal_type_definitions",
-  "source_documents", "document_evidence_assets", "journal_entries", "journal_approvals",
+  "source_documents", "document_evidence_assets", "journal_evidence_links", "journal_entries", "journal_approvals",
   "journal_transaction_controls", "journal_lines",
   "journal_entry_relations", "parties", "party_addresses", "party_accounts",
   "subledger_events", "open_items", "document_settlement_allocations",
@@ -100,7 +100,7 @@ const runtimeInsertUpdateRelations = [
 ];
 const runtimeInsertRelations = [
   "booking_batches", "booking_batch_reports",
-  "journal_approvals", "journal_entry_relations", "source_documents", "document_evidence_assets",
+  "journal_approvals", "journal_entry_relations", "source_documents", "document_evidence_assets", "journal_evidence_links",
   "subledger_events", "open_items", "document_settlement_allocations",
   "open_item_void_events", "tax_determination_snapshots",
   "tax_account_mapping_sets", "tax_account_mapping_lines", "tax_filings",
@@ -974,6 +974,16 @@ function expectedRlsPolicy(table) {
       command: "ALL", name: "tenant_isolation", permissive: true, roles: ["PUBLIC"],
       usingExpression: "organization_id = app.current_organization_id() AND (app.current_actor_has_permission(owner_module || '.read'::text) OR app.current_actor_has_permission(owner_module || '.manage'::text))",
       withCheckExpression: "organization_id = app.current_organization_id() AND app.current_actor_has_permission(owner_module || '.manage'::text)",
+    };
+  }
+  if (table.name === "journal_evidence_links") {
+    const assetIdentity = "asset.organization_id = journal_evidence_links.organization_id AND asset.id = journal_evidence_links.evidence_asset_id";
+    const moduleRead = "app.current_actor_has_permission(asset.owner_module || '.read'::text) OR app.current_actor_has_permission(asset.owner_module || '.manage'::text)";
+    const moduleManage = "app.current_actor_has_permission(asset.owner_module || '.manage'::text)";
+    return {
+      command: "ALL", name: "tenant_isolation", permissive: true, roles: ["PUBLIC"],
+      usingExpression: `organization_id = app.current_organization_id() AND app.current_actor_has_permission('mcp.ledger.read'::text) AND EXISTS (SELECT 1 FROM document_evidence_assets asset WHERE ${assetIdentity} AND (${moduleRead}))`,
+      withCheckExpression: `organization_id = app.current_organization_id() AND app.current_actor_has_permission('ledger.journal.draft'::text) AND EXISTS (SELECT 1 FROM document_evidence_assets asset WHERE ${assetIdentity} AND ${moduleManage})`,
     };
   }
   if (table.name === "organizations") {

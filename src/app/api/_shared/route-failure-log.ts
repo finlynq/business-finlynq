@@ -43,6 +43,7 @@ export type ObservedRouteOperation = RouteFailureOperation
   | "accounting-email-webhook"
   | "service-liveness"
   | "document-evidence-download"
+  | "journal-evidence-download"
   | "document-storage"
   | "document-storage-callback"
   | "personal-email-alias";

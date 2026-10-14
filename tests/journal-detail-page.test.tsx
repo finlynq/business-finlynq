@@ -2,6 +2,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
+  evidence: vi.fn(async () => ({ evidenceRevision: 0, links: [] as unknown[] })),
   principal: {
     sessionMode: "real" as const,
   },
@@ -57,11 +58,31 @@ vi.mock("@/modules/workspace/access", () => ({
 vi.mock("@/modules/ledger/tenant-workspace", () => ({
   loadTenantJournalDetail: vi.fn(async () => mocks.detail),
 }));
+vi.mock("@/modules/ledger/journal-evidence", () => ({ listPostedJournalEvidence: mocks.evidence }));
 
 import { loadTenantJournalDetail, type TenantJournalDetailDto } from "@/modules/ledger/tenant-workspace";
 import JournalDetailPage from "@/app/(workspace)/journals/[journalId]/page";
 
 describe("journal detail page", () => {
+  it("shows the original document and its authorized journal download", async () => {
+    mocks.evidence.mockResolvedValueOnce({
+      evidenceRevision: 1,
+      links: [{
+        linkId: "30000000-0000-4000-8000-000000000030",
+        assetId: "30000000-0000-4000-8000-000000000031",
+        documentDate: "2026-06-02", documentReference: "MC76150842",
+        documentCurrency: "CAD", documentTotal: "134.470000000",
+        downloadUrl: "/api/ledger/journals/30000000-0000-4000-8000-000000000020/evidence/30000000-0000-4000-8000-000000000031",
+        asset: { filename: "MC76150842.pdf", sha256: "a".repeat(64), scannedAt: "2026-06-03T10:00:00.000Z" },
+      }],
+    });
+    const page = await JournalDetailPage({ params: Promise.resolve({ journalId: mocks.detail.id }) });
+    const markup = renderToStaticMarkup(page);
+    expect(markup).toContain("Original evidence");
+    expect(markup).toContain("MC76150842.pdf");
+    expect(markup).toContain("CAD 134.47");
+    expect(markup).toContain("/api/ledger/journals/30000000-0000-4000-8000-000000000020/evidence/30000000-0000-4000-8000-000000000031");
+  });
   it("renders separate transaction and functional sides with source and FX provenance", async () => {
     const page = await JournalDetailPage({
       params: Promise.resolve({ journalId: mocks.detail.id }),
