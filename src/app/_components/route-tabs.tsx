@@ -22,7 +22,7 @@ export function RouteTabs({ label, active, tabs }: {
     else if (item.right > bounds.right) rail.scrollLeft += item.right - bounds.right;
   }, [active]);
   return <nav ref={ref} className={styles.tabs} aria-label={label}>
-    {tabs.map((tab) => <Link key={tab.key} href={tab.href} aria-current={tab.key === active ? "page" : undefined}>{tab.label}</Link>)}
+    {tabs.map((tab) => <Link key={tab.key} href={tab.href} prefetch={false} aria-current={tab.key === active ? "page" : undefined}>{tab.label}</Link>)}
   </nav>;
 }
 

@@ -34,6 +34,11 @@ import {
   resolveReportSelection,
 } from "@/modules/reporting/tenant-reporting";
 import {
+  loadMonthlyProfitAndLoss,
+  monthlyReportAsOfDate,
+  monthlyReportSelectionInput,
+} from "@/modules/reporting/monthly-profit-and-loss";
+import {
   createBusinessDocumentDraft,
   editBusinessDocumentDraft,
   getCurrentSubledgerDocument,
@@ -568,6 +573,31 @@ export const DAILY_MCP_TOOLS: readonly McpToolDefinition[] = [
     description: "Return revenue and expense activity for the selected entity and date or period range.",
     inputSchema: reportSelectionSchema,
     invoke: async (args, runtime) => profitAndLossRows(await loadTrialBalance(runtime.sessionPrincipal, await reportSelection(args, runtime))),
+  }),
+  defineMcpTool({
+    policy: { name: "finlynq_daily_monthly_profit_and_loss", group: "DAILY", access: "READ", permission: PERMISSIONS.readMcpLedger },
+    title: "Run monthly profit and loss",
+    description: "Return one consistent twelve-column fiscal-year P&L grid from posted functional-currency activity. Defaults to the selected entity’s current fiscal year; period/date ranges and natural-account or segment filters use the existing report contract. Months outside the selected range or after the as-of date are labelled, not presented as completed zeroes. Amounts are exact decimal strings.",
+    inputSchema: reportSelectionSchema,
+    invoke: async (args, runtime) => {
+      const dimensions = await loadReportDimensions(runtime.sessionPrincipal);
+      const input = monthlyReportSelectionInput(dimensions, {
+        entity: args.entityId,
+        basis: args.basis,
+        from: args.from,
+        to: args.to,
+        fromPeriod: args.fromPeriodId,
+        toPeriod: args.toPeriodId,
+        account: args.accountId,
+        accountCode: args.accountCode,
+        segmentFilters: args.segmentFilters,
+      });
+      const selection = resolveReportSelection(dimensions, input);
+      if (!selection) throw new Error("No active legal entity and primary ledger are available for reporting");
+      const entity = dimensions.entities.find((candidate) => candidate.id === selection.entityId);
+      if (!entity) throw new Error("The selected reporting entity is unavailable");
+      return loadMonthlyProfitAndLoss(runtime.sessionPrincipal, selection, entity, monthlyReportAsOfDate(runtime.sessionPrincipal));
+    },
   }),
   defineMcpTool({
     policy: { name: "finlynq_daily_account_inquiry", group: "DAILY", access: "READ", permission: PERMISSIONS.readMcpLedger },
