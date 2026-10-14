@@ -290,6 +290,20 @@ describe("remote MCP advertised tool catalog", () => {
     expect(tool.description).toContain("Open and partially settled items are returned by default");
   });
 
+  it("advertises an authorized receivable lookup for customer receipt allocations", () => {
+    const { tool, schema } = advertisedSchema("finlynq_daily_list_receivable_open_items");
+    expect(tool.policy).toMatchObject({
+      group: "DAILY",
+      access: "READ",
+      permission: "receivables.read",
+    });
+    expect(Object.keys(schema.properties ?? {}).sort()).toEqual([
+      "asOfDate", "currency", "ledgerId", "legalEntityId", "limit",
+      "partyAccountId", "sourceDocumentId", "sourceNumber", "statuses",
+    ]);
+    expect(tool.description).toContain("customer-receipt allocation IDs");
+  });
+
   it("advertises the tax filing and effective-dated mapping workflows", () => {
     for (const name of [
       "finlynq_daily_get_tax_filing_workspace",

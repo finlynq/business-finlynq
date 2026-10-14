@@ -26,8 +26,9 @@ function normalizedDate(value: string | undefined): string | null {
   return value;
 }
 
-export async function listPayableOpenItems(
+async function listOpenItems(
   command: ListPayableOpenItemsCommand,
+  ownerModule: "payables" | "receivables",
 ): Promise<readonly PayableOpenItemRecord[]> {
   const sourceNumber = command.sourceNumber?.trim().toUpperCase() || null;
   const currency = command.currency?.trim().toUpperCase() || null;
@@ -35,12 +36,12 @@ export async function listPayableOpenItems(
   const asOfDate = normalizedDate(command.asOfDate);
   const statuses = command.statuses ?? ["OPEN", "PARTIALLY_SETTLED"];
   if (statuses.length === 0 || statuses.some((status) => !payableOpenItemStatuses.has(status))) {
-    throw new Error("At least one valid payable open-item status is required");
+    throw new Error("At least one valid open-item status is required");
   }
   const limit = Math.min(Math.max(command.limit ?? 100, 1), 500);
 
   return withTenantTransaction(command.context, async (client) => {
-    await assertPermission(client, command.context, permissionForOwner("payables", "read"));
+    await assertPermission(client, command.context, permissionForOwner(ownerModule, "read"));
     const result = await client.query<{
       open_item_id: string;
       source_number: string;
@@ -59,7 +60,7 @@ export async function listPayableOpenItems(
       due_date: string | null;
       settlement_status: PayableOpenItemStatus;
     }>(
-      `WITH payable_items AS (
+      `WITH scoped_items AS (
          SELECT item.id AS open_item_id,
            issued_source.source_number,
            current_source.id AS source_document_id,
@@ -90,15 +91,15 @@ export async function listPayableOpenItems(
          JOIN source_documents issued_source
            ON issued_source.organization_id = event.organization_id
           AND issued_source.id = event.source_document_id
-          AND issued_source.owner_module = 'payables'
-          AND issued_source.source_type = 'payables.supplier-bill'
+          AND issued_source.owner_module = $11::text
+          AND issued_source.source_type = $12::text
           AND issued_source.status = 'POSTED'
          JOIN party_accounts party_account
            ON party_account.organization_id = item.organization_id
           AND party_account.id = item.party_account_id
           AND party_account.ledger_id = item.ledger_id
           AND party_account.legal_entity_id = issued_source.legal_entity_id
-          AND party_account.role = 'SUPPLIER'
+          AND party_account.role::text = $13::text
          JOIN ledgers ledger
            ON ledger.organization_id = item.organization_id
           AND ledger.id = item.ledger_id
@@ -147,7 +148,7 @@ export async function listPayableOpenItems(
              nullif(issued_source.snapshot->>'documentDate', '')::date
            ) <= $8::date)
        )
-       SELECT * FROM payable_items
+       SELECT * FROM scoped_items
        WHERE settlement_status = ANY($9::text[])
        ORDER BY due_date NULLS LAST, source_number, open_item_id
        LIMIT $10`,
@@ -162,6 +163,9 @@ export async function listPayableOpenItems(
         asOfDate,
         statuses,
         limit,
+        ownerModule,
+        ownerModule === "payables" ? "payables.supplier-bill" : "receivables.sales-invoice",
+        ownerModule === "payables" ? "SUPPLIER" : "CUSTOMER",
       ],
     );
     return result.rows.map((row) => ({
@@ -183,4 +187,16 @@ export async function listPayableOpenItems(
       settlementStatus: row.settlement_status,
     }));
   });
+}
+
+export function listPayableOpenItems(
+  command: ListPayableOpenItemsCommand,
+): Promise<readonly PayableOpenItemRecord[]> {
+  return listOpenItems(command, "payables");
+}
+
+export function listReceivableOpenItems(
+  command: ListPayableOpenItemsCommand,
+): Promise<readonly PayableOpenItemRecord[]> {
+  return listOpenItems(command, "receivables");
 }
