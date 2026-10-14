@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { CompactDisclosure } from "../../../_components/compact-disclosure.client";
 import { demoClosePackages } from "@/modules/demo/dashboard-data";
+import { loadCloseMonitor, type ClosePeriodMonitor } from "@/modules/close/monitor";
 import { loadPeriodControlWorkspace } from "@/modules/ledger/tenant-workspace";
 import { requireWorkspacePrincipal } from "@/modules/workspace/access";
 import { principalCanWrite } from "@/modules/workspace/write-policy";
@@ -9,6 +10,20 @@ import { PeriodCreationForm } from "../../../_components/period-creation-form.cl
 import { PeriodTransitionForm } from "../../../_components/period-transition-form.client";
 import { DemoNotice, PageHeader, StatusPill } from "../../../_components/ui";
 
+export function CloseSourceMonitor({ periods }: { periods: readonly ClosePeriodMonitor[] }) {
+  if (periods.length === 0) return null;
+  return <section className="panel" aria-labelledby="close-monitor-title">
+    <div className="panel-heading"><div><p className="eyebrow">Read-only source checks</p><h2 id="close-monitor-title">Month-end close monitor</h2></div></div>
+    <p className="muted">These live counts are signals for review, not a close sign-off. Open-item balances are current as of this check, including for older periods. Tax estimates and statement review require separate evidence.</p>
+    {periods.map((period) => <details key={period.periodId} className="compact-disclosure">
+      <summary><strong>{period.entityCode} · {period.ledgerCode} · {period.label}</strong> <span>{period.startsOn} – {period.endsOn} · {period.periodState.replace("_", " ")}</span></summary>
+      <div className="table-wrap"><table><thead><tr><th>Task</th><th>Source evidence</th><th>State</th></tr></thead>
+        <tbody>{period.checks.map((row) => <tr key={row.key}><td><strong>{row.label}</strong></td><td>{row.detail} <Link href={row.href}>Open source</Link></td><td><StatusPill status={row.status} /></td></tr>)}</tbody>
+      </table></div>
+    </details>)}
+  </section>;
+}
+
 export default async function PeriodClosePage() {
   const principal = await requireWorkspacePrincipal("/app/controls/period-close");
   // A real organization always reads its own period history. Write activation
@@ -16,6 +31,7 @@ export default async function PeriodClosePage() {
   // synthetic demo records for a disabled organization's accounting history.
   if (principal.sessionMode === "real" || principalCanWrite(principal)) {
     const workspace = await loadPeriodControlWorkspace(principal);
+    const closeMonitor = await loadCloseMonitor(principal, workspace.periods);
     return (
       <div className="page-content">
         <PageHeader
@@ -28,6 +44,7 @@ export default async function PeriodClosePage() {
           <p>OPEN moves to ADJUSTMENT ONLY before HARD CLOSED. SEALED is irreversible, and unposted journals block hard close and seal.</p>
         </aside>
         <CompactDisclosure summary="Add fiscal periods" defaultOpen={workspace.periods.length === 0}><PeriodCreationForm workspace={workspace} defaultFiscalYear={new Date().getUTCFullYear()} /></CompactDisclosure>
+        <CloseSourceMonitor periods={closeMonitor} />
         <PeriodTransitionForm
           key={workspace.periods.map((period) => `${period.id}:${period.version}`).join("|")}
           workspace={workspace}
