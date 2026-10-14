@@ -86,8 +86,12 @@ import {
 import {
   createTaxFiling,
   createTaxFilingSchema,
+  correctTaxFilingConfiguration,
+  correctTaxFilingConfigurationSchema,
+  previewTaxFilingConfigurationCorrection,
   saveTaxFilingConfiguration,
   saveTaxFilingConfigurationSchema,
+  taxFilingConfigurationCorrectionProposalSchema,
   setTaxFilingCanonical,
   setTaxFilingCanonicalSchema,
   transitionTaxFilingLifecycle,
@@ -633,6 +637,24 @@ export const DAILY_MCP_TOOLS: readonly McpToolDefinition[] = [
     description: "Read the exact template, mapping, registration, workpaper, canonical, and successor dependencies before a prospective configuration change. This preview performs no write, filing, payment, or authority transmission.",
     inputSchema: z.object({ configurationId: z.uuid() }).strict(),
     invoke: (args, runtime) => previewTaxFilingConfigurationDependencies(runtime.sessionPrincipal, args.configurationId),
+  }),
+  defineMcpTool({
+    policy: { name: "finlynq_daily_preview_tax_filing_configuration_correction", group: "DAILY", access: "READ", permission: PERMISSIONS.manageTaxFilingConfiguration },
+    title: "Preview an unused filing configuration correction",
+    description: "Review the exact current configuration, proposed replacement, earlier revision, affected periods and all dependent workpaper references. Returns a preview hash required to correct an eligible unreferenced revision. This does not change tax evidence or accounting.",
+    inputSchema: taxFilingConfigurationCorrectionProposalSchema,
+    invoke: (args, runtime) => previewTaxFilingConfigurationCorrection(runtime.sessionPrincipal, args),
+  }),
+  defineMcpTool({
+    policy: { name: "finlynq_daily_correct_tax_filing_configuration", group: "DAILY", access: "WRITE", permission: PERMISSIONS.manageTaxFilingConfiguration },
+    title: "Correct an unused filing configuration",
+    description: "Append an audited replacement only after reviewing the exact preview hash. A referenced or changed revision is rejected; existing workpapers and their snapshots stay immutable. Never deletes or files a return.",
+    inputSchema: correctTaxFilingConfigurationSchema,
+    idempotent: true,
+    invoke: (args, runtime) => correctTaxFilingConfiguration({
+      principal: runtime.sessionPrincipal, requestId: runtime.requestId,
+      sourceSurface: "MCP", ...args,
+    }),
   }),
   defineMcpTool({
     policy: { name: "finlynq_daily_preview_tax_filing_readiness", group: "DAILY", access: "READ", permission: PERMISSIONS.readTax },

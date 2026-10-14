@@ -106,6 +106,7 @@ export type TaxFilingConfigurationDto = Readonly<{
   effectiveFrom: string;
   effectiveTo: string | null;
   supersedesConfigurationId: string | null;
+  correctionOfConfigurationId: string | null;
   reason: string;
   createdBy: string;
   createdAt: string;
@@ -463,6 +464,7 @@ export async function loadTaxFilingWorkspace(
       mapping_set_id: string; mapping_version: number; version: number;
       state: "ACTIVE" | "INACTIVE" | "NEEDS_CONFIGURATION"; effective_from: string;
       effective_to: string | null; supersedes_configuration_id: string | null;
+      correction_of_configuration_id: string | null;
       reason: string; created_by: string; created_at: string; current: boolean; dependency_count: number;
     }>(
       `SELECT configuration.id,configuration.legal_entity_id,configuration.ledger_id,
@@ -470,7 +472,8 @@ export async function loadTaxFilingWorkspace(
          template.name AS template_name,template.version AS template_version,
          configuration.mapping_set_id,mapping.version AS mapping_version,configuration.version,
          configuration.state,configuration.effective_from::text,configuration.effective_to::text,
-         configuration.supersedes_configuration_id,configuration.reason,configuration.created_by,
+         configuration.supersedes_configuration_id,configuration.correction_of_configuration_id,
+         configuration.reason,configuration.created_by,
          configuration.created_at::text,
          NOT EXISTS (SELECT 1 FROM tax_filing_configurations successor
            WHERE successor.organization_id=configuration.organization_id
@@ -493,6 +496,7 @@ export async function loadTaxFilingWorkspace(
       mappingSetId: row.mapping_set_id, mappingVersion: row.mapping_version, version: row.version,
       state: row.state, effectiveFrom: row.effective_from, effectiveTo: row.effective_to,
       supersedesConfigurationId: row.supersedes_configuration_id,
+      correctionOfConfigurationId: row.correction_of_configuration_id,
       reason: row.reason, createdBy: row.created_by, createdAt: row.created_at, current: row.current,
       dependencyCount: row.dependency_count,
     }));
