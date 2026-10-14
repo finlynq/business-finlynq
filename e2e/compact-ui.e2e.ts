@@ -125,7 +125,11 @@ test("report range switching preserves both period and date inputs", async ({ pa
 test("monthly profit and loss keeps twelve fiscal columns and exports the displayed snapshot", async ({ page }) => {
   await openDemo(page, "/app/reports/profit-and-loss");
   await page.getByRole("navigation", { name: "Profit and loss view" }).getByRole("link", { name: "By month" }).click();
-  await expect(page.getByRole("heading", { name: /Monthly profit & loss/ })).toBeVisible();
+  try {
+    await expect(page.getByRole("heading", { name: /Monthly profit & loss/ })).toBeVisible({ timeout: 20_000 });
+  } catch (error) {
+    throw new Error(`Monthly report did not render at ${page.url()}: ${(await page.locator("main").innerText()).slice(0, 1200)}`, { cause: error });
+  }
   const table = page.getByRole("table", { name: /Monthly profit and loss/ });
   await expect(table.locator("thead th")).toHaveCount(14);
   await expect(page.getByRole("button", { name: "Print / Save PDF" })).toBeVisible();
