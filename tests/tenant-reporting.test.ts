@@ -39,11 +39,13 @@ import {
   balanceSheetRows,
   financialStatementDisplayLines,
   loadEffectiveAccountHierarchy,
+  loadAccountInquiry,
   loadAccountingOverview,
   loadReportDimensions,
   loadTaxDeterminations,
   loadTrialBalance,
   profitAndLossRows,
+  reportFilterInput,
   reportSearchParams,
   resolveReportSelection,
   trialBalanceCsv,
@@ -243,6 +245,7 @@ describe("tenant reporting authorization and tax exception evidence", () => {
 
     expect(mocks.query.mock.calls[0]?.[0]).toContain("entry.status = 'POSTED'");
     expect(mocks.query.mock.calls[0]?.[0]).toContain("entry.legal_entity_id = $2::uuid");
+    expect(mocks.query.mock.calls[0]?.[0]).toContain("entry.ledger_id = $17::uuid");
     expect(mocks.query.mock.calls[0]?.[0]).toContain("coalesce(department.code, '0000') = $7::text");
     expect(mocks.query.mock.calls[0]?.[1]).toEqual([
       principal.organizationId,
@@ -261,6 +264,7 @@ describe("tenant reporting authorization and tax exception evidence", () => {
       null,
       null,
       "0000",
+      selection.ledgerId,
     ]);
     expect(rows[0]).toMatchObject({
       canonicalKey: "US01.1000.0000.0000.0000.0000.0000.0000.0000.0000.0000.0000.0000",
@@ -366,6 +370,10 @@ describe("tenant reporting authorization and tax exception evidence", () => {
       segmentFilters: { department: "OPS" },
     });
     expect(reportSearchParams(selection!).toString()).toContain("segment_department=OPS");
+    const unfiltered = resolveReportSelection(dimensions, { entity: dimensions.entities[0]?.id });
+    expect(unfiltered?.accountId).toBe(dimensions.entities[0]?.accounts[0]?.id);
+    expect(reportSearchParams(unfiltered!).has("account")).toBe(false);
+    expect(reportSearchParams(selection!).get("account")).toBe(selection?.accountId);
   });
 
   it("fails closed for unknown, cross-entity, or mismatched report accounts", () => {
@@ -399,6 +407,27 @@ describe("tenant reporting authorization and tax exception evidence", () => {
     expect(() => resolveReportSelection(dimensions, {
       entity: "ffffffff-ffff-4fff-8fff-ffffffffffff",
     })).toThrow(expect.objectContaining({ code: "REPORT_ENTITY_NOT_FOUND" }));
+  });
+
+  it("limits a monthly cell drilldown to its exact account combination and ledger", async () => {
+    const selection: ReportSelection = {
+      entityId: "30000000-0000-4000-8000-000000000010", entityCode: "US01", entityName: "Company",
+      ledgerId: "30000000-0000-4000-8000-000000000011", ledgerCode: "PRIMARY", currency: "USD",
+      basis: "date", fromDate: "2026-08-01", toDate: "2026-08-31",
+      fromPeriodId: null, toPeriodId: null,
+      accountId: "30000000-0000-4000-8000-000000000012", accountCode: "4000",
+      combinationId: "30000000-0000-4000-8000-000000000013",
+    };
+    mocks.query.mockResolvedValueOnce({ rows: [{ opening_balance: "0" }] }).mockResolvedValueOnce({ rows: [] });
+    await loadAccountInquiry(principal, selection);
+    expect(mocks.query.mock.calls[0]?.[0]).toContain("combination.id = $6::uuid");
+    expect(mocks.query.mock.calls[1]?.[0]).toContain("combination.id = $7::uuid");
+    expect(mocks.query.mock.calls[1]?.[0]).toContain("LIMIT 5001");
+    expect(mocks.query.mock.calls[1]?.[1]).toEqual([
+      principal.organizationId, selection.entityId, selection.accountId,
+      selection.fromDate, selection.toDate, selection.ledgerId, selection.combinationId,
+    ]);
+    expect(reportFilterInput({ combination: selection.combinationId! }).combination).toBe(selection.combinationId);
   });
 
   it("loads active natural accounts even when they have no combination", async () => {
