@@ -4,6 +4,7 @@ import { CompactDisclosure } from "../../_components/compact-disclosure.client";
 import { formatMoney } from "@/kernel/money";
 import { loadTaxDeterminations } from "@/modules/reporting/tenant-reporting";
 import { loadTaxFilingWorkspace } from "@/modules/tax/filing-workspace";
+import { partitionTaxFilingHistory } from "@/modules/tax/filing-history";
 import { requireWorkspacePrincipal } from "@/modules/workspace/access";
 import { TaxFilingWorkspace } from "../../_components/tax-filing-workspace.client";
 import { DemoNotice, EmptyState, PageHeader, StatusPill } from "../../_components/ui";
@@ -24,7 +25,7 @@ function requiresReview(status: string): boolean {
   return status.includes("REVIEW");
 }
 
-export default async function TaxPage({ searchParams }: { searchParams: Promise<{ status?: string; view?: string; refresh?: string }> }) {
+export default async function TaxPage({ searchParams }: { searchParams: Promise<{ status?: string; view?: string; refresh?: string; history?: string }> }) {
   const principal = await requireWorkspacePrincipal("/app/tax");
   const parameters = await searchParams;
   const reviewOnly = parameters.status === "review";
@@ -36,6 +37,10 @@ export default async function TaxPage({ searchParams }: { searchParams: Promise<
   const reviewCount = determinations.filter((decision) => requiresReview(decision.status)).length;
   const filingReviewCount = filingWorkspace.filings.filter((filing) => filing.status === "REVIEW_REQUIRED").length;
   const mappedScopes = new Set(filingWorkspace.mappings.map((mapping) => `${mapping.ledgerId}|${mapping.templateId}`)).size;
+  const filingHistory = partitionTaxFilingHistory(filingWorkspace.filings, filingWorkspace.templates);
+  const showAllHistory = parameters.history === "all";
+  const visibleFilings = showAllHistory ? [...filingHistory.current, ...filingHistory.history] : filingHistory.current;
+  const currentFilingIds = new Set(filingHistory.current.map((filing) => filing.id));
 
   return (
     <div className="page-content">
@@ -116,25 +121,28 @@ export default async function TaxPage({ searchParams }: { searchParams: Promise<
           <div className="panel-heading">
             <div>
               <p className="eyebrow">Immutable workpapers</p>
-              <h2 id="filing-history-title">Prepared and imported returns</h2>
+              <h2 id="filing-history-title">{showAllHistory ? "All prepared and imported returns" : "Current and latest workpapers"}</h2>
+              <p>{filingHistory.current.length} current or latest · {filingHistory.history.length} historical or inactive</p>
             </div>
-            <span className="attention-count">{filingWorkspace.filings.length}</span>
+            <div className="form-actions"><span className="attention-count">{visibleFilings.length}</span><Link href={showAllHistory ? "/app/tax?view=history" : "/app/tax?view=history&history=all"}>{showAllHistory ? "Show current only" : `Show history and inactive (${filingHistory.history.length})`}</Link></div>
           </div>
-          {filingWorkspace.filings.length ? <div className="table-scroll" tabIndex={0} aria-label="Tax filing workpapers; scroll horizontally if needed">
+          {visibleFilings.length ? <div className="table-scroll" tabIndex={0} aria-label="Tax filing workpapers; scroll horizontally if needed">
             <table>
               <caption className="sr-only">Prepared returns and historical filing reconciliations</caption>
               <thead><tr><th>Period / source</th><th>Client scope</th><th>Template</th><th>Result</th><th>Exceptions</th><th>Reconciliation detail</th></tr></thead>
-              <tbody>{filingWorkspace.filings.map((filing) => {
-                const variances = filing.reconciliation.filter((field) => field.status !== "MATCHED");
+              <tbody>{visibleFilings.map((filing) => {
+                const variances = filing.reconciliation.filter((field) => field.status === "VARIANCE");
+                const notReported = filing.reconciliation.filter((field) => field.status === "NOT_REPORTED");
                 const failedRules = filing.validations.filter((rule) => rule.status === "FAIL");
                 const currency = filingWorkspace.templates.find((template) => template.id === filing.templateId)?.currencyCode ?? "CAD";
                 return <ExpandableTableRow key={filing.id} columns={6} label={`comparison for ${filing.entityCode} ${filing.periodStart}–${filing.periodEnd}`} cells={<>
-                  <td><strong>{filing.periodStart} – {filing.periodEnd}</strong><small>{filing.filingType === "PREPARED" ? "Prepared declaration" : `Historical · ${filing.externalReference ?? "No reference"}`}</small></td>
+                  <td><strong>{filing.periodStart} – {filing.periodEnd}</strong><small>{filing.filingType === "PREPARED" ? "Prepared declaration" : `Historical import · ${filing.externalReference ?? "No reference"}`}</small><small>Source: {filing.sourceFileName ?? "manual"} · ID {filing.id.slice(0, 8)}</small></td>
                   <td><strong>{filing.entityCode}</strong><small>{filing.ledgerCode}</small></td>
                   <td><strong>{filing.templateName}</strong><small>Template v{filing.templateVersion} · mapping v{filing.mappingVersion} · configuration v{filing.configurationVersion ?? "legacy"}</small></td>
-                  <td><StatusPill status={filing.status} />{filing.freshness.mayBeStale && <small>Comparison may be stale</small>}<small>{filing.lifecycleState ?? "HISTORICAL"}{filing.canonical ? " · CANONICAL" : " · not canonical"}</small><small>Reason: {filing.lifecycleReason ?? "Legacy workpaper"}{filing.replacementFilingId ? ` · replacement ${filing.replacementFilingId}` : ""}{filing.canonicalReason ? ` · canonical: ${filing.canonicalReason}` : ""}</small></td>
-                  <td><strong>{variances.length} field{variances.length === 1 ? "" : "s"}</strong><small>{failedRules.length} rule exception{failedRules.length === 1 ? "" : "s"}</small></td>
+                  <td><StatusPill status={filing.status} />{filing.freshness.mayBeStale && <small>Comparison may be stale</small>}<small>{filing.lifecycleState ?? "HISTORICAL"}{filing.canonical ? " · CANONICAL" : currentFilingIds.has(filing.id) ? " · LATEST CANDIDATE, not canonical" : " · HISTORY, not canonical"}</small><small>Reason: {filing.lifecycleReason ?? "Legacy workpaper"}{filing.replacementFilingId ? ` · replacement ${filing.replacementFilingId}` : ""}{filing.canonicalReason ? ` · canonical: ${filing.canonicalReason}` : ""}</small></td>
+                  <td><strong>{variances.length} monetary variance{variances.length === 1 ? "" : "s"}</strong><small>{notReported.length} not reported · {failedRules.length} rule exception{failedRules.length === 1 ? "" : "s"}</small></td>
                   </>}>
+                      <p>Workpaper ID: <code>{filing.id}</code>. Source: {filing.sourceFileName ?? "manual entry"}.</p>
                       <p>Snapshot captured: <time dateTime={new Date(filing.capturedAt).toISOString()}>{new Date(filing.capturedAt).toISOString()}</time>. Period {filing.periodStart} – {filing.periodEnd}. Template v{filing.templateVersion}, mapping v{filing.mappingVersion}, configuration v{filing.configurationVersion ?? "legacy"}.</p>
                       <p><strong>{filing.freshness.mayBeStale ? "Comparison may be stale" : "Comparison matches the current ledger snapshot"}</strong></p>
                       {filing.freshness.reasons.length > 0 && <ul>{filing.freshness.reasons.map((reason) => <li key={reason}>{reason}</li>)}</ul>}
@@ -156,7 +164,7 @@ export default async function TaxPage({ searchParams }: { searchParams: Promise<
                 </ExpandableTableRow>;
               })}</tbody>
             </table>
-          </div> : <EmptyState title="No filing workpapers yet">Prepare a return or load a historical filing after mapping the template’s account-backed fields.</EmptyState>}
+          </div> : <EmptyState title={filingHistory.history.length ? "No current workpapers" : "No filing workpapers yet"}>{filingHistory.history.length ? "Open history and inactive to review earlier workpapers." : "Prepare a return or load a historical filing after mapping the template’s account-backed fields."}</EmptyState>}
           <p className="panel-note">A workpaper records the template version, mapping version, posted-ledger calculation, reported values, differences, and rule outcomes used at that moment. It does not transmit a filing to a tax authority.</p>
         </section>}
       </>}

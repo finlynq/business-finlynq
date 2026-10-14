@@ -10,6 +10,7 @@ import { MutationFeedback } from "@/app/_components/mutation-feedback.client";
 import type { TaxFilingField, TaxMappingBalanceBasis } from "@/modules/tax/filing-template";
 import Link from "next/link";
 import type { TaxFilingReadiness } from "@/modules/tax/filing-readiness";
+import { partitionTaxFilingHistory } from "@/modules/tax/filing-history";
 import type { TaxFilingWorkspaceDto } from "@/modules/tax/filing-workspace";
 import styles from "./tax-filing-workspace.module.css";
 
@@ -653,10 +654,11 @@ export function TaxFilingWorkspace({ workspace, refreshFilingId }: { workspace: 
   const visibleConfigurations = showConfigurationHistory
     ? scopeConfigurations
     : scopeConfigurations.filter((item) => item.current);
-  const scopedFilings = workspace.filings.filter((filing) => filing.legalEntityId === ledger.legalEntityId);
+  const scopedFilings = workspace.filings.filter((filing) => filing.legalEntityId === ledger.legalEntityId && filing.ledgerId === ledgerId && filing.templateId === templateId);
+  const filingControlHistory = partitionTaxFilingHistory(scopedFilings, workspace.templates);
   const visibleFilingControls = showConfigurationHistory
-    ? scopedFilings
-    : scopedFilings.filter((filing) => filing.canonical && !["ARCHIVED", "SUPERSEDED"].includes(filing.lifecycleState ?? ""));
+    ? [...filingControlHistory.current, ...filingControlHistory.history]
+    : filingControlHistory.current;
   const visibleFeedback = mappingCorrectionFeedback ?? correctionFeedback ?? filingFeedback ?? mappingFeedback;
 
   return (
@@ -728,9 +730,9 @@ export function TaxFilingWorkspace({ workspace, refreshFilingId }: { workspace: 
           <details className="mapping-details"><summary>{showConfigurationHistory ? "Configuration history" : "Current configuration"} ({visibleConfigurations.length})</summary>
             <ul className="checklist large-checklist">{visibleConfigurations.map((item) => <li key={item.id}><div><strong>v{item.version} · {item.state.replaceAll("_", " ")}{item.correctionOfConfigurationId ? " · CORRECTION" : ""}</strong><small>{item.effectiveFrom} – {item.effectiveTo ?? "open"} · template v{item.templateVersion} · mapping v{item.mappingVersion} · {item.dependencyCount} workpaper dependenc{item.dependencyCount === 1 ? "y" : "ies"}</small><small>Reason: {item.reason} · actor {item.createdBy}{item.correctionOfConfigurationId ? ` · corrects ${item.correctionOfConfigurationId}` : ""}</small></div>{item.current && <span className="status-pill status-neutral">CURRENT VERSION</span>}</li>)}</ul>
           </details>
-          {(visibleFilingControls.length > 0) && <details className="mapping-details"><summary>{showConfigurationHistory ? "Canonical and lifecycle history" : "Canonical workpapers"}</summary>
+          {(visibleFilingControls.length > 0) && <details className="mapping-details"><summary>{showConfigurationHistory ? "Canonical and lifecycle history" : "Current or latest workpapers"} ({visibleFilingControls.length})</summary>
             <div className={styles.lifecycleList}>{visibleFilingControls.map((filing) => <article key={filing.id}>
-              <div><strong>{filing.entityCode} · {filing.periodStart} – {filing.periodEnd}</strong><small>{filing.filingType.replaceAll("_", " ")} · {filing.lifecycleState ?? "HISTORICAL"} · {filing.canonical ? "canonical" : "not canonical"}</small><small>Lifecycle reason: {filing.lifecycleReason ?? "Legacy workpaper"}{filing.replacementFilingId ? ` · replacement ${filing.replacementFilingId}` : ""}{filing.canonicalReason ? ` · canonical reason: ${filing.canonicalReason}` : ""}</small></div>
+              <div><strong>{filing.entityCode} · {filing.periodStart} – {filing.periodEnd}</strong><small>{filing.templateName} v{filing.templateVersion} · mapping v{filing.mappingVersion} · {filing.filingType.replaceAll("_", " ")} · {filing.lifecycleState ?? "HISTORICAL"} · {filing.canonical ? "canonical" : filingControlHistory.current.some((item) => item.id === filing.id) ? "latest candidate, not canonical" : "history, not canonical"}</small><small>Source: {filing.sourceFileName ?? "manual"} · workpaper {filing.id}</small><small>Lifecycle reason: {filing.lifecycleReason ?? "Legacy workpaper"}{filing.replacementFilingId ? ` · replacement ${filing.replacementFilingId}` : ""}{filing.canonicalReason ? ` · canonical reason: ${filing.canonicalReason}` : ""}</small></div>
               {workspace.canManageCanonical && !filing.canonical && !["ARCHIVED", "SUPERSEDED"].includes(filing.lifecycleState ?? "") && <form onSubmit={(event) => { void selectCanonical(event, filing.id, filing.canonicalVersion ?? 0); }}><input name="reason" minLength={8} maxLength={500} required placeholder="Canonical selection reason" /><button className="secondary-button" disabled={filingBusy}>Set canonical</button></form>}
               {workspace.canManageCanonical && !filing.canonical && !["ARCHIVED", "SUPERSEDED"].includes(filing.lifecycleState ?? "") && <form onSubmit={(event) => { void archiveFiling(event, filing.id, filing.lifecycleVersion ?? 1); }}><input name="reason" minLength={8} maxLength={500} required placeholder="Permanent archive reason" /><button className="secondary-button" disabled={filingBusy}>Archive</button></form>}
             </article>)}</div>
