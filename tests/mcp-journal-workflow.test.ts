@@ -6,8 +6,9 @@ import { mcpSessionPrincipal } from "@/modules/mcp/oauth-store";
 import { MCP_OAUTH_SCOPES } from "@/modules/mcp/protocol";
 
 const mocks = vi.hoisted(() => ({
-  detail: vi.fn(), workspace: vi.fn(), submit: vi.fn(), approve: vi.fn(), post: vi.fn(), withdraw: vi.fn(), reject: vi.fn(),
+  detail: vi.fn(), workspace: vi.fn(), evidence: vi.fn(), submit: vi.fn(), approve: vi.fn(), post: vi.fn(), withdraw: vi.fn(), reject: vi.fn(),
 }));
+vi.mock("@/modules/ledger/journal-evidence", () => ({ listPostedJournalEvidence: mocks.evidence }));
 vi.mock("@/modules/ledger/tenant-workspace", async (original) => ({
   ...await original<typeof import("@/modules/ledger/tenant-workspace")>(),
   loadTenantJournalDetail: mocks.detail,
@@ -63,6 +64,8 @@ function tool(action: string) {
 beforeEach(() => {
   vi.clearAllMocks();
   mocks.detail.mockResolvedValue({ id, status: "SUBMITTED", expectedContentHash: hash, expectedApprovalVersion: 3, workflow });
+  mocks.evidence.mockResolvedValue({ journalId: id, legalEntityId: id, ledgerId: id,
+    journalStatus: "SUBMITTED", journalContentHash: hash, evidenceRevision: 0, links: [] });
 });
 
 describe("MCP journal workflow contract", () => {
