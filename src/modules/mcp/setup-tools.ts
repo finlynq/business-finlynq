@@ -38,6 +38,7 @@ import { createGlAccount, createGlAccountSchema, updateGlAccount, updateGlAccoun
 import { transitionFiscalPeriod } from "@/modules/ledger/period-service";
 import { changeLedgerPostingPolicy, postingPolicyChangeSchema } from "@/modules/ledger/posting-policy-service";
 import { loadPeriodControlWorkspace, loadTenantPartyDirectory } from "@/modules/ledger/tenant-workspace";
+import { loadCloseMonitor } from "@/modules/close/monitor";
 import { addPartyAccount, createParty } from "@/modules/parties/party-service";
 import { updateParty, updatePartySchema } from "@/modules/parties/party-lifecycle-service";
 import {
@@ -366,6 +367,16 @@ export const SETUP_MCP_TOOLS: readonly McpToolDefinition[] = [
     description: "Return fiscal periods, current state and version, unposted journal counts, and the connected user's close/reopen/seal capabilities.",
     inputSchema: emptySchema,
     invoke: (_args, runtime) => loadPeriodControlWorkspace(runtime.sessionPrincipal),
+  }),
+  defineMcpTool({
+    policy: { name: "finlynq_setup_get_close_monitor", group: "SETUP", access: "READ", permission: PERMISSIONS.readMcpLedger },
+    title: "Get month-end close monitor",
+    description: "Return read-only, source-derived checks for the 12 most recent fiscal periods. UNKNOWN means a source read failed; SOURCE CHECK is not a reviewed sign-off. This tool does not post or close a period.",
+    inputSchema: emptySchema,
+    invoke: async (_args, runtime) => {
+      const workspace = await loadPeriodControlWorkspace(runtime.sessionPrincipal);
+      return loadCloseMonitor(runtime.sessionPrincipal, workspace.periods);
+    },
   }),
   defineMcpTool({
     policy: { name: "finlynq_setup_transition_period", group: "SETUP", access: "WRITE", permissionsAny: [PERMISSIONS.closePeriod, PERMISSIONS.reopenPeriod, PERMISSIONS.sealPeriod] },

@@ -76,6 +76,7 @@ const mocks = vi.hoisted(() => {
       recentStepUp: false,
       periods: [],
     })),
+    loadCloseMonitor: vi.fn(async () => []),
     loadEntitySummaries: vi.fn(async () => ([{
       id: "30000000-0000-4000-8000-000000000001",
       code: "SECOND",
@@ -171,6 +172,7 @@ vi.mock("@/modules/ledger/tenant-workspace", () => ({
   loadManualJournalOptions: mocks.loadManualJournalOptions,
   loadPeriodControlWorkspace: mocks.loadPeriodControlWorkspace,
 }));
+vi.mock("@/modules/close/monitor", () => ({ loadCloseMonitor: mocks.loadCloseMonitor }));
 vi.mock("@/modules/parties/party-workspace", () => ({
   loadPartyAccountCreationOptions: mocks.loadPartyAccountCreationOptions,
 }));
@@ -194,7 +196,7 @@ vi.mock("@/modules/workspace/entity-context", () => ({
 
 import OverviewPage from "@/app/(workspace)/app/page";
 import AutomationPage from "@/app/(workspace)/automation/page";
-import PeriodClosePage from "@/app/(workspace)/controls/period-close/page";
+import PeriodClosePage, { CloseSourceMonitor } from "@/app/(workspace)/controls/period-close/page";
 import EntitiesPage from "@/app/(workspace)/entities/page";
 import NewJournalPage from "@/app/(workspace)/journals/new/page";
 import JournalsPage from "@/app/(workspace)/journals/page";
@@ -354,6 +356,27 @@ describe("real organization workspace isolation", () => {
     expect(mocks.loadManualJournalOptions).toHaveBeenCalledWith(mocks.principal);
     expect(mocks.currentWorkspaceEntityContext).toHaveBeenCalledWith(mocks.principal);
     expect(mocks.loadPeriodControlWorkspace).toHaveBeenCalledWith(mocks.principal);
+  });
+
+  it("shows due depreciation, posted prepaid release, and uncomputed tax as different close signals", async () => {
+    mocks.loadCloseMonitor.mockResolvedValueOnce([{
+      periodId: "30000000-0000-4000-8000-000000000003", entityCode: "SECOND",
+      ledgerCode: "SECOND-PRIMARY", label: "September 2026", startsOn: "2026-09-01",
+      endsOn: "2026-09-30", periodState: "OPEN", periodVersion: 1,
+      checkedAt: "2026-10-14T00:00:00Z", sourceFingerprint: "fixture",
+      checks: [
+        { key: "depreciation", label: "Depreciation and amortization", detail: "1 entries remain due without a journal; 0 eligible assets lack a period schedule.", status: "BLOCKED", href: "/app/assets" },
+        { key: "prepaids", label: "Prepaid releases", detail: "1 releases have a posted journal; 0 remain due without one. Posted releases are not proposed again.", status: "SOURCE CHECK", href: "/app/assets" },
+        { key: "tax-provision", label: "Corporate tax provision", detail: "No reviewed period-specific provision model or sign-off is connected to this monitor.", status: "NOT COMPUTED", href: "/app/tax" },
+      ],
+    }] as never);
+    const page = await PeriodClosePage();
+    const output = serialized(CloseSourceMonitor(page.props.children[3].props));
+    expect(output).toContain("Depreciation and amortization");
+    expect(output).toContain("1 entries remain due without a journal");
+    expect(output).toContain("1 releases have a posted journal; 0 remain due");
+    expect(output).toContain("NOT COMPUTED");
+    expect(output).toContain("Posted releases are not proposed again");
   });
 
   it("preserves the real period-control read model when organization writes are disabled", async () => {
