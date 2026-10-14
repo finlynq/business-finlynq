@@ -68,6 +68,9 @@ done
 
 script_directory="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 readonly repository_root="$(cd -- "$script_directory/../.." && pwd -P)"
+expected_migration_count="$(node -e 'const journal=require(process.argv[1]); process.stdout.write(String(journal.entries.length))' "$repository_root/migrations/drizzle/meta/_journal.json")"
+[[ "$expected_migration_count" =~ ^[1-9][0-9]*$ ]] || fail "migration journal has no entries"
+readonly expected_migration_count
 readonly runner_temp="$(cd -- "$RUNNER_TEMP" && pwd -P)"
 [[ "$runner_temp" != "/" ]] || fail "RUNNER_TEMP cannot be the filesystem root"
 
@@ -445,12 +448,12 @@ SQL
   run_migrations "$predecessor_database" "$repository_root/migrations/drizzle"
   upgraded_count="$(psql_value "$predecessor_database" \
     "SELECT count(*) FROM drizzle.__drizzle_migrations;")"
-  [[ "$upgraded_count" == "93" ]] ||
-    fail "predecessor upgrade recorded $upgraded_count migrations instead of 93"
+  [[ "$upgraded_count" == "$expected_migration_count" ]] ||
+    fail "predecessor upgrade recorded $upgraded_count migrations instead of $expected_migration_count"
   preserved_sentinel="$(psql_value "$predecessor_database" \
     "SELECT slug || '|' || display_name FROM organizations WHERE id = '$predecessor_sentinel_id';")"
   [[ "$preserved_sentinel" == "ci-predecessor-sentinel|CI predecessor tenant sentinel" ]] ||
-    fail "tenant sentinel was not preserved through migrations 0025 through 0092"
+    fail "tenant sentinel was not preserved through the current migration journal"
 
   PGPASSWORD="$PGPASSWORD" psql \
     --host "$PGHOST" \
@@ -558,8 +561,8 @@ SQL
 
   source_migration_count="$(psql_value "$POSTGRES_DB" \
     "SELECT count(*) FROM drizzle.__drizzle_migrations;")"
-  [[ "$source_migration_count" == "93" ]] ||
-    fail "source database is not fully migrated through 0092 (found $source_migration_count records)"
+  [[ "$source_migration_count" == "$expected_migration_count" ]] ||
+    fail "source database is not fully migrated (found $source_migration_count records; expected $expected_migration_count)"
   source_organization_count="$(psql_value "$POSTGRES_DB" "SELECT count(*) FROM organizations;")"
   [[ "$source_organization_count" =~ ^[1-9][0-9]*$ ]] ||
     fail "source database has no populated organization data to restore"
