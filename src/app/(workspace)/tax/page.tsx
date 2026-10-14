@@ -1,4 +1,3 @@
-import Link from "next/link";
 import { ExpandableTableRow } from "../../_components/expandable-table-row.client";
 import { CompactDisclosure } from "../../_components/compact-disclosure.client";
 import { formatMoney } from "@/kernel/money";
@@ -48,9 +47,9 @@ export default async function TaxPage({ searchParams }: { searchParams: Promise<
         eyebrow="Tax compliance workspace"
         title={reviewOnly ? "Tax exceptions" : "Tax returns & review"}
         description="Prepare returns, reconcile historical filings and review transaction tax decisions. Choose a workspace below to keep preparation, evidence and setup in focus."
-        actions={reviewOnly ? <Link className="secondary-button" href="/app/tax?view=transactions">View all determinations</Link> : undefined}
+        actions={reviewOnly ? <a className="secondary-button" href="/app/tax?view=transactions">View all determinations</a> : undefined}
       />
-      <RouteTabs label="Tax workspace views" active={view} tabs={[
+      <RouteTabs label="Tax workspace views" active={view} documentNavigation tabs={[
         { key: "prepare", label: "Prepare return", href: "/app/tax" },
         { key: "history", label: "Filing history", href: "/app/tax?view=history" },
         { key: "templates", label: "Templates & rules", href: "/app/tax?view=templates" },
@@ -70,7 +69,7 @@ export default async function TaxPage({ searchParams }: { searchParams: Promise<
             <strong id="tax-review-title">{reviewCount} tax decision{reviewCount === 1 ? "" : "s"} require review</strong>
             <p>Review the underlying source document before posting or period close.</p>
           </div>
-          <Link href="/app/tax?status=review">Show exceptions <span aria-hidden="true">→</span></Link>
+          <a href="/app/tax?status=review">Show exceptions <span aria-hidden="true">→</span></a>
         </section>
       )}
 
@@ -124,7 +123,7 @@ export default async function TaxPage({ searchParams }: { searchParams: Promise<
               <h2 id="filing-history-title">{showAllHistory ? "All prepared and imported returns" : "Current and latest workpapers"}</h2>
               <p>{filingHistory.current.length} current or latest · {filingHistory.history.length} historical or inactive</p>
             </div>
-            <div className="form-actions"><span className="attention-count">{visibleFilings.length}</span><Link href={showAllHistory ? "/app/tax?view=history" : "/app/tax?view=history&history=all"}>{showAllHistory ? "Show current only" : `Show history and inactive (${filingHistory.history.length})`}</Link></div>
+            <div className="form-actions"><span className="attention-count">{visibleFilings.length}</span><a href={showAllHistory ? "/app/tax?view=history" : "/app/tax?view=history&history=all"}>{showAllHistory ? "Show current only" : `Show history and inactive (${filingHistory.history.length})`}</a></div>
           </div>
           {visibleFilings.length ? <div className="table-scroll" tabIndex={0} aria-label="Tax filing workpapers; scroll horizontally if needed">
             <table>
@@ -147,7 +146,7 @@ export default async function TaxPage({ searchParams }: { searchParams: Promise<
                       <p><strong>{filing.freshness.mayBeStale ? "Comparison may be stale" : "Comparison matches the current ledger snapshot"}</strong></p>
                       {filing.freshness.reasons.length > 0 && <ul>{filing.freshness.reasons.map((reason) => <li key={reason}>{reason}</li>)}</ul>}
                       {filing.freshness.readiness.coverage.required && <p>Current posted book net income: {formatMoney(filing.freshness.readiness.coverage.currentBookNetIncome, currency)}. Unmapped net income effect: {formatMoney(filing.freshness.readiness.coverage.omittedNetIncome, currency)}. Variances compare the saved posted-balance calculation with reported values; review missing coverage and configuration changes before interpreting them as tax adjustments.</p>}
-                      <div className="form-actions">{filingWorkspace.canPrepareFilings && <Link className="secondary-button" href={`/app/tax?refresh=${filing.id}#tax-workpaper`}>Refresh / reconcile</Link>}<Link href="/app/tax#tax-mappings">Review account mappings</Link><Link href="/app/tax#tax-configuration">Review filing configuration and canonical selection</Link></div>
+                      <div className="form-actions">{filingWorkspace.canPrepareFilings && <a className="secondary-button" href={`/app/tax?refresh=${filing.id}#tax-workpaper`}>Refresh / reconcile</a>}<a href="/app/tax#tax-mappings">Review account mappings</a><a href="/app/tax#tax-configuration">Review filing configuration and canonical selection</a></div>
                       {filing.refreshedFromFilingId && <p>Refreshed from workpaper {filing.refreshedFromFilingId}. Canonical selection requires a separate authorized action.</p>}
                       <div className="table-scroll" tabIndex={0} aria-label={`Workpaper comparison for ${filing.entityCode}`}>
                         <table>

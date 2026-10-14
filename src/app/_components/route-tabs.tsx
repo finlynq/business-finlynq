@@ -6,10 +6,11 @@ import styles from "./workspace-navigation.module.css";
 
 export type RouteTab = Readonly<{ key: string; label: string; href: string }>;
 
-export function RouteTabs({ label, active, tabs }: {
+export function RouteTabs({ label, active, tabs, documentNavigation = false }: {
   label: string;
   active: string;
   tabs: readonly RouteTab[];
+  documentNavigation?: boolean;
 }) {
   const ref = useRef<HTMLElement>(null);
   useEffect(() => {
@@ -22,7 +23,9 @@ export function RouteTabs({ label, active, tabs }: {
     else if (item.right > bounds.right) rail.scrollLeft += item.right - bounds.right;
   }, [active]);
   return <nav ref={ref} className={styles.tabs} aria-label={label}>
-    {tabs.map((tab) => <Link key={tab.key} href={tab.href} prefetch={false} aria-current={tab.key === active ? "page" : undefined}>{tab.label}</Link>)}
+    {tabs.map((tab) => documentNavigation
+      ? <a key={tab.key} href={tab.href} aria-current={tab.key === active ? "page" : undefined}>{tab.label}</a>
+      : <Link key={tab.key} href={tab.href} prefetch={false} aria-current={tab.key === active ? "page" : undefined}>{tab.label}</Link>)}
   </nav>;
 }
 

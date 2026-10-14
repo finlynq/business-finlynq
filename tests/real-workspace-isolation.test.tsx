@@ -379,6 +379,13 @@ describe("real organization workspace isolation", () => {
     expect(output).toContain("Posted releases are not proposed again");
   });
 
+  it("requests a fresh document when switching tax history views", async () => {
+    const page = await TaxPage({ searchParams: Promise.resolve({ view: "history" }) });
+    const output = serialized(page);
+    expect(output).toContain('"documentNavigation":true');
+    expect(output).toContain('"active":"history"');
+  });
+
   it("preserves the real period-control read model when organization writes are disabled", async () => {
     const previousActivation = mocks.principal.organizationWritesEnabled;
     mocks.principal.organizationWritesEnabled = false;
