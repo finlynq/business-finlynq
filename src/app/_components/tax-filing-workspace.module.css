@@ -38,7 +38,7 @@
 .lifecycleList { display:grid; gap:10px; padding:12px; }
 .lifecycleList article { display:grid; grid-template-columns:minmax(0,1fr) minmax(240px,.8fr) minmax(240px,.8fr); gap:10px; align-items:end; padding:12px; border:1px solid var(--line); border-radius:8px; }
 .lifecycleList article>div { display:grid; gap:4px; }
-.lifecycleList article small { color:var(--muted); }
+.lifecycleList article small { color:var(--muted); overflow-wrap:anywhere; }
 .lifecycleList form { display:flex; gap:6px; align-items:end; }
 .lifecycleList form input { min-width:0; }
 @media (max-width:900px) { .configurationSummary{grid-template-columns:repeat(2,minmax(0,1fr))}.lifecycleList article{grid-template-columns:1fr}.lifecycleList form{display:grid} }
