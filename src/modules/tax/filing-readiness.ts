@@ -65,7 +65,12 @@ export async function loadTaxFilingReadiness(client: PoolClient, organizationId:
        AND (configuration.effective_to IS NULL OR configuration.effective_to >= $5::date)
        AND ($6::uuid IS NULL OR configuration.id=$6)
        AND NOT EXISTS (SELECT 1 FROM tax_filing_configurations successor
-         WHERE successor.organization_id=$1 AND successor.supersedes_configuration_id=configuration.id
+         WHERE successor.organization_id=$1
+           AND successor.legal_entity_id=configuration.legal_entity_id
+           AND successor.ledger_id=configuration.ledger_id
+           AND successor.registration_id IS NOT DISTINCT FROM configuration.registration_id
+           AND successor.filing_type_key=configuration.filing_type_key
+           AND successor.version>configuration.version
            AND successor.effective_from <= $5::date)
      ORDER BY configuration.effective_from DESC,configuration.version DESC LIMIT 2`,
     [organizationId, input.legalEntityId, input.ledgerId, scope.template_key, input.periodEnd, input.configurationId ?? null],

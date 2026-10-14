@@ -64,6 +64,25 @@ describe("tax filing MCP lifecycle", () => {
     }).success).toBe(true);
   });
 
+  it("exposes reviewed unused-mapping correction as separate Setup preview and write tools", () => {
+    const preview = tool("finlynq_setup_preview_tax_mapping_correction");
+    const commit = tool("finlynq_setup_correct_tax_account_mappings");
+    expect(preview.policy).toMatchObject({ group: "SETUP", access: "READ", permission: "tax.mappings.manage" });
+    expect(commit.policy).toMatchObject({ group: "SETUP", access: "WRITE", permission: "tax.mappings.manage" });
+    expect(commit.idempotent).toBe(true);
+    const proposal = {
+      mappingSetId: ids.account, legalEntityId: ids.entity, ledgerId: ids.ledger,
+      templateId: ids.template, expectedTemplateVersion: 2, expectedMappingVersion: 3,
+      effectiveFrom: "2025-01-03", mappings: [{
+        fieldKey: "line_101", glAccountId: ids.account,
+        balanceBasis: "NET_CREDIT", multiplier: "1",
+      }], reason: "Correct the reviewed mapping effective date",
+    };
+    expect(preview.inputSchema.safeParse(proposal).success).toBe(true);
+    expect(commit.inputSchema.safeParse({ proposal, previewHash: "a".repeat(64), idempotencyKey: "correction-1" }).success).toBe(true);
+    expect(commit.inputSchema.safeParse({ proposal, idempotencyKey: "correction-1" }).success).toBe(false);
+  });
+
   it("exposes prepared and historical workpapers under Daily write access", () => {
     const selected = tool("finlynq_daily_create_tax_filing_workpaper");
     expect(selected.policy).toMatchObject({
