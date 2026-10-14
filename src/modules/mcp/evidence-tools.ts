@@ -2,6 +2,8 @@ import "server-only";
 
 import { z } from "zod";
 import { PERMISSIONS } from "@/modules/identity/permissions";
+import { downloadPostedJournalEvidence, linkPostedJournalEvidence, listPostedJournalEvidence } from "@/modules/ledger/journal-evidence";
+import { downloadPostedJournalEvidenceSchema, listPostedJournalEvidenceSchema, postedJournalEvidenceLinkSchema } from "@/modules/ledger/journal-evidence-model";
 import { attachEvidenceSchema, detachEvidenceSchema, uploadEvidenceSchema } from "@/modules/subledger/evidence-model";
 import {
   attachDocumentEvidence,
@@ -15,6 +17,35 @@ import { defineMcpTool } from "./tool-types";
 
 const managePermissions = [PERMISSIONS.managePayables, PERMISSIONS.manageReceivables];
 export const EVIDENCE_MCP_TOOLS = [
+  defineMcpTool({
+    policy: { name: "finlynq_daily_link_posted_journal_evidence", group: "DAILY", access: "WRITE", permission: PERMISSIONS.draftJournal },
+    title: "Link an original document to posted journals",
+    description: "Add one verified existing evidence asset to one or more exact POSTED journals without creating or changing accounting. Use list_journals/get_journal and list_posted_journal_evidence first for target IDs, frozen content hashes, and evidence revisions. Cloud assets require their exact FILED inboxItemId; a claimed inbox original can instead use complete_inbox_document LINK_POSTED to save, link, and file it once. All targets must share an entity and ledger; each target and asset is authorized again at write time. Preserve original document date, reference, currency, and total even when split journals have different dates or amounts. Reuse identical arguments and idempotencyKey on retry.",
+    inputSchema: postedJournalEvidenceLinkSchema,
+    idempotent: true,
+    invoke: (args, runtime) => linkPostedJournalEvidence(
+      mcpMutationContext(runtime.principal, runtime.requestId, args.reason), args),
+  }),
+  defineMcpTool({
+    policy: { name: "finlynq_daily_list_posted_journal_evidence", group: "DAILY", access: "READ", permission: PERMISSIONS.readMcpLedger },
+    title: "List evidence on a posted journal",
+    description: "Return the journal's evidence revision, immutable link history, original document metadata, SHA-256, scan result, and authorized download links without changing accounting. Module-read permission is checked for every asset.",
+    inputSchema: listPostedJournalEvidenceSchema,
+    invoke: (args, runtime) => listPostedJournalEvidence(
+      mcpMutationContext(runtime.principal, runtime.requestId), args.journalId),
+  }),
+  defineMcpTool({
+    policy: { name: "finlynq_daily_download_posted_journal_evidence", group: "DAILY", access: "READ", permission: PERMISSIONS.readMcpLedger },
+    title: "Download evidence linked to a journal",
+    description: "Download the exact evidence asset linked to a tenant-owned journal. Rechecks current journal, module, and storage permissions, the immutable link, provider location, size, and SHA-256 before returning bounded base64 content.",
+    inputSchema: downloadPostedJournalEvidenceSchema,
+    invoke: async (args, runtime) => {
+      const result = await downloadPostedJournalEvidence(
+        mcpMutationContext(runtime.principal, runtime.requestId), args.journalId, args.assetId);
+      try { return { ...result.metadata, contentBase64: result.bytes.toString("base64") }; }
+      finally { result.bytes.fill(0); }
+    },
+  }),
   defineMcpTool({
     policy: { name: "finlynq_daily_upload_document_evidence", group: "DAILY", access: "WRITE", permissionsAny: managePermissions },
     title: "Upload source-document evidence",

@@ -6,6 +6,7 @@ import type { PoolClient } from "pg";
 import { withTenantTransaction, type TenantTransactionContext } from "@/db/transaction";
 import { exact } from "@/kernel/money";
 import { importBankStatementInTransaction, normalizeStatementImportDatabaseError } from "@/modules/banking/statement-import-service";
+import { linkFiledInboxEvidenceInTransaction } from "@/modules/ledger/journal-evidence";
 import { loadActiveOrganizationKey } from "@/security/organization-key-store";
 import { businessDocumentSnapshotSchema, canonicalHash, DOCUMENT_KIND_POLICY } from "@/modules/subledger/document-model";
 import { createBusinessDocumentDraftInTransaction } from "@/modules/subledger/ar-ap-draft-commands";
@@ -300,6 +301,25 @@ export function replayedStatementCompletion(
 }
 export async function completeInboxDocument(context: TenantTransactionContext, input: z.input<typeof completeInboxSchema>, deferFiling = false) {
   const command = completeInboxSchema.parse(input); const completionHash = canonicalHash(command);
+  const postedEvidenceCommand = (assetId: string) => {
+    if (command.action.type !== "LINK_POSTED" || command.reason.length < 8 || !command.metadata.reference
+      || !command.metadata.currency || !command.metadata.total) {
+      throw new StorageError("STORAGE_POSTED_EVIDENCE_METADATA", "Posted evidence needs its exact original reference, date, currency, total, and target journals.");
+    }
+    return {
+      assetId,
+      inboxItemId: command.itemId,
+      targets: command.action.targets,
+      metadata: {
+        documentDate: command.metadata.documentDate,
+        reference: command.metadata.reference,
+        currency: command.metadata.currency,
+        total: command.metadata.total,
+      },
+      reason: command.reason,
+      idempotencyKey: `inbox:${command.itemId}`,
+    };
+  };
   const operationContext = { ...context, reason: command.reason };
   const result = await withTenantTransaction(operationContext, async (client) => {
     await assertStorageWrite(client, context);
@@ -310,10 +330,15 @@ export async function completeInboxDocument(context: TenantTransactionContext, i
       const statementImport = command.action.type === "IMPORT_STATEMENT"
         ? replayedStatementCompletion(processing)
         : null;
+      const postedJournalEvidence = command.action.type === "LINK_POSTED" && row.asset_id
+        ? await linkFiledInboxEvidenceInTransaction(client, operationContext,
+          postedEvidenceCommand(row.asset_id), connection.legal_entity_id)
+        : null;
       return {
         item: await itemMetadata(client, row),
         idempotentReplay: true,
         ...(statementImport ? { statementImport } : {}),
+        ...(postedJournalEvidence ? { postedJournalEvidence } : {}),
       };
     }
     assertClaim(row, context, command.claimId);
@@ -362,10 +387,26 @@ export async function completeInboxDocument(context: TenantTransactionContext, i
         if (duplicate) throw new StorageError("STORAGE_POSSIBLE_DUPLICATE", "This zero invoice or source file has already been filed. Review the original completed inbox item; do not repeat accounting or change the source metadata.");
       }
       if (command.action.type === "ARCHIVE_ONLY" && ["PURCHASE_INVOICE", "SALES_INVOICE"].includes(command.metadata.documentType)) throw new StorageError("STORAGE_INVOICE_ASSOCIATION", "Link this invoice to a draft or send it for review. For a verified zero-total purchase invoice with no new payable, use REVIEWED_NO_ACCOUNTING with original metadata and a review reason.");
+      if (command.action.type === "LINK_POSTED") {
+        if (command.metadata.documentType === "STATEMENT" || !command.metadata.reference
+          || !command.metadata.currency || !command.metadata.total) {
+          throw new StorageError("STORAGE_POSTED_EVIDENCE_METADATA", "Preserve the original document type, reference, date, currency, and total when linking posted journals. Statements use the statement-import workflow.");
+        }
+        await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))", [`inbox-checksum:${context.organizationId}:${verified.sha256}`]);
+        const duplicate = await client.query(
+          `SELECT id FROM document_inbox_items
+           WHERE organization_id=$1 AND sha256=$2 AND completion_hash IS NOT NULL AND id<>$3 LIMIT 1`,
+          [context.organizationId, verified.sha256, row.id],
+        );
+        if (duplicate.rows[0]) {
+          throw new StorageError("STORAGE_POSSIBLE_DUPLICATE", "This original is already filed. Link its existing evidence asset to the posted journals instead of filing another copy.");
+        }
+      }
       const original = await itemMetadata(client, row);
       const assetId = await insertCloudEvidence(client, context, connection, row.id, { ...file, name: original.filename, mimeType: verified.mimeType }, verified.sha256, verified.scan, completionHash);
       let sourceDocumentId: string | null = null;
       let statementImport: Awaited<ReturnType<typeof importBankStatementInTransaction>> | null = null;
+      let postedJournalEvidence: Awaited<ReturnType<typeof linkFiledInboxEvidenceInTransaction>> | null = null;
       if (command.action.type === "CREATE_DRAFT") {
         const saved = await createBusinessDocumentDraftInTransaction(client, { ...command.action.draft, context, idempotencyKey: `inbox:${row.id}` }, [{ assetId, purpose: "INVOICE" }]);
         const snapshot = businessDocumentSnapshotSchema.parse(saved.document.snapshot);
@@ -401,6 +442,9 @@ export async function completeInboxDocument(context: TenantTransactionContext, i
         } catch (error) {
           throw normalizeStatementImportDatabaseError(error);
         }
+      } else if (command.action.type === "LINK_POSTED") {
+        postedJournalEvidence = await linkFiledInboxEvidenceInTransaction(
+          client, operationContext, postedEvidenceCommand(assetId), connection.legal_entity_id);
       }
       const archive = archiveName(command.metadata, row.id, verified.mimeType);
       const durableStatementImport = statementImport
@@ -421,6 +465,7 @@ export async function completeInboxDocument(context: TenantTransactionContext, i
       return {
         item: await itemMetadata(client, updated),
         idempotentReplay: false,
+        ...(postedJournalEvidence ? { postedJournalEvidence } : {}),
         ...(durableStatementImport
           ? { statementImport: statementCompletionResponse(durableStatementImport) }
           : {}),
