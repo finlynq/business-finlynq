@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 const mocks = vi.hoisted(() => ({
   failSource: "" as string,
   queries: [] as string[],
+  journalDigest: "posted-version-1",
 }));
 
 vi.mock("@/modules/workspace/tenant-read", () => ({
@@ -16,6 +17,10 @@ vi.mock("@/modules/workspace/tenant-read", () => ({
       if (query.includes("asset_register")) {
         if (mocks.failSource === "asset") throw new Error("asset unavailable");
         return { rows: [{ period_id: "period-1", eligible_count: 2, missing_count: 0, due_depreciation: 1, due_prepaid: 0, drafted_count: 0, posted_prepaid: 1 }] };
+      }
+      if (query.includes("journal_entries journal")) {
+        if (mocks.failSource === "journals") throw new Error("journal source unavailable");
+        return { rows: [{ period_id: "period-1", posted_count: 2, posted_digest: mocks.journalDigest }] };
       }
       return { rows: [{ period_id: "period-1", receivable_count: 0, payable_count: 0 }] };
     },
@@ -52,5 +57,20 @@ describe("month-end close source monitor", () => {
       .toEqual(["UNKNOWN", "UNKNOWN", "UNKNOWN"]);
     expect(monitor.checks.find((check) => check.key === "bank")?.status).toBe("NEEDS REVIEW");
     expect(mocks.queries).toContain("ROLLBACK TO SAVEPOINT close_monitor_asset");
+  });
+
+  it("invalidates the source fingerprint when posted books change without a count change", async () => {
+    mocks.failSource = "";
+    mocks.journalDigest = "posted-version-1";
+    const [before] = await loadCloseMonitor(principal, periods);
+    mocks.journalDigest = "posted-version-2";
+    const [after] = await loadCloseMonitor(principal, periods);
+    expect(after.sourceFingerprint).not.toBe(before.sourceFingerprint);
+    expect(after.checks.find((check) => check.key === "statements")?.status).toBe("NEEDS REVIEW");
+
+    mocks.failSource = "journals";
+    const [unavailable] = await loadCloseMonitor(principal, periods);
+    expect(unavailable.checks.find((check) => check.key === "statements")?.status).toBe("UNKNOWN");
+    expect(mocks.queries).toContain("ROLLBACK TO SAVEPOINT close_monitor_journals");
   });
 });
