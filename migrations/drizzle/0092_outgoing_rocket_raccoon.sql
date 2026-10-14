@@ -37,7 +37,7 @@ ALTER TABLE journal_evidence_links ADD CONSTRAINT journal_evidence_links_metadat
 );
 ALTER TABLE journal_evidence_links ENABLE ROW LEVEL SECURITY;
 ALTER TABLE journal_evidence_links FORCE ROW LEVEL SECURITY;
-CREATE POLICY journal_evidence_links_tenant ON journal_evidence_links
+CREATE POLICY tenant_isolation ON journal_evidence_links
   USING (organization_id = app.current_organization_id()
     AND app.current_actor_has_permission('mcp.ledger.read')
     AND EXISTS (SELECT 1 FROM document_evidence_assets asset
