@@ -14,10 +14,10 @@ vi.mock("@/db/transaction", () => ({
 
 vi.mock("@/modules/subledger/ar-ap-access", () => ({
   assertPermission: mocks.assertPermission,
-  permissionForOwner: vi.fn(() => "payables.read"),
+  permissionForOwner: vi.fn((owner: string) => owner === "payables" ? "payables.read" : "receivables.read"),
 }));
 
-import { listPayableOpenItems } from "@/modules/subledger/ar-ap-open-items";
+import { listPayableOpenItems, listReceivableOpenItems } from "@/modules/subledger/ar-ap-open-items";
 
 const ids = {
   organization: "10000000-0000-4000-8000-000000000001",
@@ -42,6 +42,28 @@ beforeEach(() => {
   vi.clearAllMocks();
   mocks.assertPermission.mockResolvedValue(undefined);
   mocks.query.mockResolvedValue({ rows: [] });
+});
+
+describe("receivable open-item lookup", () => {
+  it("uses the customer invoice population and receivables permission for receipt allocation", async () => {
+    await listReceivableOpenItems({
+      context,
+      legalEntityId: ids.entity,
+      sourceNumber: " pcgl1466450 ",
+    });
+
+    expect(mocks.assertPermission).toHaveBeenCalledWith(expect.anything(), context, "receivables.read");
+    const [sql, params] = mocks.query.mock.calls[0] ?? [];
+    expect(sql).toContain("issued_source.owner_module = $11::text");
+    expect(sql).toContain("issued_source.source_type = $12::text");
+    expect(sql).toContain("party_account.role::text = $13::text");
+    expect(sql).toContain("item.organization_id = $1");
+    expect(params).toEqual([
+      ids.organization, ids.entity, null, null, null,
+      "PCGL1466450", null, null, ["OPEN", "PARTIALLY_SETTLED"], 100,
+      "receivables", "receivables.sales-invoice", "CUSTOMER",
+    ]);
+  });
 });
 
 describe("payable open-item lookup", () => {
@@ -113,6 +135,9 @@ describe("payable open-item lookup", () => {
       "2025-12-31",
       ["PARTIALLY_SETTLED"],
       20,
+      "payables",
+      "payables.supplier-bill",
+      "SUPPLIER",
     ]);
   });
 

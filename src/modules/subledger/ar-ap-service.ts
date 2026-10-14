@@ -8,7 +8,7 @@ export {
   getCurrentSubledgerDocument,
   listCurrentSubledgerDocuments,
 } from "./ar-ap-draft-commands";
-export { listPayableOpenItems } from "./ar-ap-open-items";
+export { listPayableOpenItems, listReceivableOpenItems } from "./ar-ap-open-items";
 export { subledgerOperationKey } from "./ar-ap-idempotency";
 export { issueBusinessDocument } from "./ar-ap-issue-command";
 export { recordCustomerReceiptOrSupplierPayment } from "./ar-ap-settlement-command";
