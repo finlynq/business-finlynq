@@ -20,6 +20,7 @@ export function createTaxMutationRoute<TBody, TResult extends { idempotentReplay
   schema: z.ZodType<TBody>;
   operation: RouteFailureOperation;
   maximumBytes?: number;
+  domainLabel?: string;
   reportFailure: (requestId: string, error: unknown) => void;
   invoke: (body: TBody, principal: SessionPrincipal, requestId: string) => Promise<TResult>;
 }>) {
@@ -27,7 +28,7 @@ export function createTaxMutationRoute<TBody, TResult extends { idempotentReplay
     return observeRoute(request, options.operation, async (requestId) => {
       try {
         if (!validateSameOriginMutation(request)) {
-          return NextResponse.json({ error: "The tax request could not be verified." }, { status: 403, headers });
+          return NextResponse.json({ error: `The ${options.domainLabel ?? "tax"} request could not be verified.` }, { status: 403, headers });
         }
         const principal = await requestPrincipal(request);
         if (!principal || !principalCanWrite(principal)) {
@@ -36,7 +37,7 @@ export function createTaxMutationRoute<TBody, TResult extends { idempotentReplay
         const rateLimit = await consumeLedgerMutationRateLimit(principal, "create");
         if (!rateLimit.allowed) {
           return NextResponse.json(
-            { error: "Too many tax requests. Try again later." },
+            { error: `Too many ${options.domainLabel ?? "tax"} requests. Try again later.` },
             { status: 429, headers: { ...headers, "Retry-After": String(rateLimit.retryAfterSeconds) } },
           );
         }
@@ -51,7 +52,7 @@ export function createTaxMutationRoute<TBody, TResult extends { idempotentReplay
         }
         const parsed = options.schema.safeParse(unparsed);
         if (!parsed.success) {
-          return NextResponse.json({ error: "Review the tax fields and try again." }, { status: 400, headers });
+          return NextResponse.json({ error: `Review the ${options.domainLabel ?? "tax"} fields and try again.` }, { status: 400, headers });
         }
         const result = await options.invoke(parsed.data, principal, requestId);
         return NextResponse.json(result, {
@@ -69,13 +70,13 @@ export function createTaxMutationRoute<TBody, TResult extends { idempotentReplay
         }
         if (isAuthorizationDeniedError(error)) {
           return NextResponse.json(
-            { error: "The authenticated user is not authorized for this tax operation." },
+            { error: `The authenticated user is not authorized for this ${options.domainLabel ?? "tax"} operation.` },
             { status: 403, headers },
           );
         }
         options.reportFailure(requestId, error);
         return NextResponse.json(
-          { error: "The tax operation could not be completed safely.", requestId },
+          { error: `The ${options.domainLabel ?? "tax"} operation could not be completed safely.`, requestId },
           { status: 409, headers },
         );
       }

@@ -179,4 +179,39 @@ run("committed tax mapping → configuration → immutable comparison refresh", 
       expect((await owner.query("SELECT count(*)::int AS n FROM tax_account_mapping_lines WHERE mapping_set_id=$1", [failedId])).rows[0].n).toBe(0);
     }
   });
+
+  it("serializes configuration revisions and rejects changed replays and overlaps without residue", async () => {
+    const mapping = (await owner.query("SELECT id FROM tax_account_mapping_sets WHERE organization_id=$1 ORDER BY version DESC LIMIT 1",[id.org])).rows[0];
+    const base = {...commandContext(),...scope,mappingSetId:mapping.id,filingTypeKey:"ca.t2.corporation-income-tax",
+      expectedConfigurationVersion:2,effectiveFrom:"2026-01-01",effectiveTo:"2026-12-31",reason:"Synthetic reviewed future configuration",idempotencyKey:randomUUID()};
+    const [first,replay] = await Promise.all([saveTaxFilingConfiguration(base),saveTaxFilingConfiguration({...base,requestId:randomUUID()})]);
+    expect(first.configurationId).toBe(replay.configurationId);
+    expect([first.idempotentReplay,replay.idempotentReplay].sort()).toEqual([false,true]);
+    const before = (await owner.query("SELECT count(*)::int n FROM tax_filing_configurations WHERE organization_id=$1",[id.org])).rows[0].n;
+    await expect(saveTaxFilingConfiguration({...base,reason:"Changed request"})).rejects.toMatchObject({code:"IDEMPOTENCY_CONFLICT"});
+    const rejectedKey = randomUUID();
+    await expect(saveTaxFilingConfiguration({...base,idempotencyKey:rejectedKey})).rejects.toMatchObject({code:"CONFIGURATION_VERSION_CONFLICT"});
+    await expect(saveTaxFilingConfiguration({...base,expectedConfigurationVersion:3,effectiveFrom:"2026-06-01",idempotencyKey:rejectedKey})).rejects.toMatchObject({code:"CONFIGURATION_EFFECTIVE_DATE_OVERLAP"});
+    expect((await owner.query("SELECT count(*)::int n FROM tax_filing_configurations WHERE organization_id=$1",[id.org])).rows[0].n).toBe(before);
+    expect((await owner.query("SELECT count(*)::int n FROM tax_filing_configurations WHERE organization_id=$1 AND idempotency_key=$2",[id.org,rejectedKey])).rows[0].n).toBe(0);
+    const recovered = await saveTaxFilingConfiguration({...base,expectedConfigurationVersion:3,effectiveFrom:"2027-01-01",effectiveTo:"2027-12-31",idempotencyKey:rejectedKey});
+    expect(recovered.version).toBe(4);
+  });
+
+  it("allows one concurrent canonical decision and retains all workpaper snapshots", async () => {
+    const alternative = await createTaxFiling({...commandContext(),...scope,...period,filingType:"PREPARED",idempotencyKey:randomUUID()});
+    const ids = [refreshedFilingId,alternative.filingId];
+    const readSnapshots = async () => (await owner.query("SELECT to_jsonb(filing) data FROM tax_filings filing WHERE organization_id=$1 AND id=ANY($2::uuid[]) ORDER BY id",[id.org,ids])).rows;
+    const before = await readSnapshots();
+    const decisions = await Promise.allSettled(ids.map(filingId=>setTaxFilingCanonical({...commandContext(),filingId,expectedSelectionVersion:1,reason:"Competing synthetic reviewed choice",idempotencyKey:randomUUID()})));
+    expect(decisions.filter(result=>result.status==="fulfilled")).toHaveLength(1);
+    expect((decisions.find(result=>result.status==="rejected") as PromiseRejectedResult).reason).toMatchObject({code:"CANONICAL_VERSION_CONFLICT"});
+    expect((await owner.query("SELECT count(*)::int n FROM tax_filing_canonical_selections WHERE organization_id=$1",[id.org])).rows[0].n).toBe(2);
+    expect(await readSnapshots()).toEqual(before);
+    for (const table of ["tax_filings","tax_account_mapping_sets","tax_filing_configurations","tax_filing_canonical_selections"] as const) {
+      await expect(transaction(client=>client.query(`DELETE FROM ${table} WHERE organization_id=$1`,[id.org]))).rejects.toMatchObject({code:"42501"});
+    }
+    expect(await readSnapshots()).toEqual(before);
+  });
+
 });

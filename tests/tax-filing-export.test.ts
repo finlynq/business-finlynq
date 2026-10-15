@@ -38,6 +38,7 @@ const principal: SessionPrincipal = {
 };
 
 function rowsFor(sql: string) {
+  if(sql.includes("pg_advisory_xact_lock") || sql.includes("INSERT INTO tax_workpaper_control_events")) return [];
   if (sql.includes('filing.id AS "filingId"')) return [{ filingId, workpaperVersion: 1 }];
   if (sql.includes("FROM tax_filings filing")) return [{
     id: filingId,
@@ -160,6 +161,7 @@ describe("tax filing workpaper export", () => {
       expectedContentHash: first.contentHash,
       allowDraftWithWarnings: true,
     });
+    expect(mocks.query).toHaveBeenCalledWith(expect.stringContaining("INSERT INTO tax_workpaper_control_events"),expect.arrayContaining([filingId,first.contentHash]));
     expect(json.contentHash).toBe(first.contentHash);
     expect(csv.contentHash).toBe(first.contentHash);
     expect(json.exportId).toHaveLength(64);

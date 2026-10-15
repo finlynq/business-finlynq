@@ -1,4 +1,5 @@
 import "server-only";
+import { retainTaxWorkpaperExport } from "./workpaper-controls";
 
 import { createHash, randomUUID } from "node:crypto";
 import { z } from "zod";
@@ -82,7 +83,7 @@ async function buildPackage(principal: SessionPrincipal, filingId: string) {
        FROM tax_filings filing
        JOIN legal_entities entity ON entity.organization_id=filing.organization_id AND entity.id=filing.legal_entity_id
        JOIN ledgers ledger ON ledger.organization_id=filing.organization_id AND ledger.id=filing.ledger_id
-       WHERE filing.organization_id=$1 AND filing.id=$2`,
+       WHERE filing.organization_id=$1 AND filing.id=$2 AND NOT app.tax_workpaper_deleted(filing.organization_id,filing.id)`,
       [principal.organizationId, filingId],
     )).rows[0];
     if (!filing) throw Object.assign(new Error("The immutable filing workpaper was not found."), { code: "TAX_WORKPAPER_NOT_FOUND" });
@@ -271,7 +272,7 @@ export async function listTaxFilingWorkpapers(
        JOIN tax_filing_templates template ON template.id=filing.template_id
        JOIN tax_account_mapping_sets mapping
          ON mapping.organization_id=filing.organization_id AND mapping.id=filing.mapping_set_id
-       WHERE filing.organization_id=$1 AND ($2::uuid IS NULL OR filing.legal_entity_id=$2)
+       WHERE filing.organization_id=$1 AND NOT app.tax_workpaper_deleted(filing.organization_id,filing.id) AND ($2::uuid IS NULL OR filing.legal_entity_id=$2)
        ORDER BY filing.period_end DESC, filing.created_at DESC, filing.id
        LIMIT $3`,
       [principal.organizationId, command.legalEntityId ?? null, command.limit],
@@ -319,6 +320,7 @@ export async function exportTaxFilingWorkpaper(
       { code: "TAX_EXPORT_SIZE_LIMIT" },
     );
   }
+  await retainTaxWorkpaperExport(principal, command.filingId, contentHash);
   return {
     exportId: createHash("sha256")
       .update(`tax-workpaper-export:${command.filingId}:1:${command.format}:${contentHash}`, "utf8")

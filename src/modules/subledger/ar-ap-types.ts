@@ -144,6 +144,7 @@ export type ListPayableOpenItemsCommand = Readonly<{
   statuses?: readonly PayableOpenItemStatus[];
   asOfDate?: string;
   limit?: number;
+  after?: Readonly<{ dueDate: string | null; sourceNumber: string; openItemId: string }>;
 }>;
 
 export type GetCurrentDocumentCommand = Readonly<{

@@ -1,6 +1,11 @@
+import { loadCloseChecklistWorkspace, inspectCloseInstance, saveCloseTemplate, saveCloseTemplateSchema, createCloseInstance, createCloseInstanceSchema, commandCloseTask, commandCloseTaskSchema, carryCloseTask, carryCloseTaskSchema, listCloseNotifications, configureCloseNotifications, closeNotificationSchema, acknowledgeCloseNotice, acknowledgeCloseNoticeSchema, closeInstanceQuerySchema } from "@/modules/close/checklist-service";
+import { commandProvisionAssumptions, provisionAssumptionCommandSchema, saveProvisionCalculation, provisionCalculationSchema, commandProvisionEvent, provisionEventSchema, previewProvision, provisionPreviewSchema, listProvisions } from "@/modules/tax/provision-service";
+import { commandTaxDraft, taxDraftCommandSchema, listTaxDrafts } from "@/modules/tax/draft-service";
+import { commandTaxWorkpaperControl, taxWorkpaperControlSchema, previewTaxWorkpaperControl, listDeletedTaxWorkpapers } from "@/modules/tax/workpaper-controls";
 import { taxFilingReadinessSchema } from "@/modules/tax/filing-readiness";
 import { mcpTaxFilingWorkspace } from "./tax-filing-capabilities";
 import "server-only";
+import { openItemCursorSchema } from "@/modules/subledger/ar-ap-open-items";
 import { BOOKING_MCP_TOOLS } from "./booking-tools";
 import { EVIDENCE_MCP_TOOLS } from "./evidence-tools";
 
@@ -310,6 +315,47 @@ function voidSettlementTool(input: Readonly<{
 }
 
 export const DAILY_MCP_TOOLS: readonly McpToolDefinition[] = [
+
+  defineMcpTool({policy:{name:"finlynq_daily_list_close_checklists",group:"DAILY",access:"READ",permission:PERMISSIONS.readMcpLedger},title:"List persistent close checklists",description:"Read tenant templates, instances, period scope and available management permission. No side effects.",inputSchema:z.object({}).strict(),invoke:(_args,runtime)=>loadCloseChecklistWorkspace(runtime.sessionPrincipal)}),
+  defineMcpTool({policy:{name:"finlynq_daily_preview_close_checklist",group:"DAILY",access:"READ",permission:PERMISSIONS.readMcpLedger},title:"Inspect current close readiness",description:"Read source stages, versions, fingerprints, blockers, dependencies, owner/reviewer evidence and carry-forward origins. Failed source reads are unknown, not complete. No posting or period transitions.",inputSchema:closeInstanceQuerySchema,invoke:(args,runtime)=>inspectCloseInstance(runtime.sessionPrincipal,args.instanceId)}),
+  defineMcpTool({policy:{name:"finlynq_daily_list_close_notifications",group:"DAILY",access:"READ",permission:PERMISSIONS.readMcpLedger},title:"Read opted-in close notices",description:"Read only current recipient in-app due, overdue and blocker notices. Disabled until explicitly configured. Acknowledged unchanged notices are deduplicated. No outbound delivery.",inputSchema:closeInstanceQuerySchema,invoke:(args,runtime)=>listCloseNotifications(runtime.sessionPrincipal,args.instanceId)}),
+  defineMcpTool({policy:{name:"finlynq_daily_save_close_template",group:"DAILY",access:"WRITE",permission:PERMISSIONS.closePeriod},title:"Save a close template revision",description:"Append a template with the required source checks and an acyclic prerequisite graph. Existing period instances retain their original revision.",inputSchema:saveCloseTemplateSchema,idempotent:true,invoke:(args,runtime)=>saveCloseTemplate({...args,principal:runtime.sessionPrincipal,requestId:runtime.requestId,sourceSurface:"MCP"})}),
+  defineMcpTool({policy:{name:"finlynq_daily_create_close_instance",group:"DAILY",access:"WRITE",permission:PERMISSIONS.closePeriod},title:"Start or resume a period checklist",description:"Create one immutable scoped instance per period, or resume the existing instance. Never generates journals or changes period state.",inputSchema:createCloseInstanceSchema,idempotent:true,invoke:(args,runtime)=>createCloseInstance({...args,principal:runtime.sessionPrincipal,requestId:runtime.requestId,sourceSurface:"MCP"})}),
+  defineMcpTool({policy:{name:"finlynq_daily_manage_close_task",group:"DAILY",access:"WRITE",permission:PERMISSIONS.closePeriod},title:"Update, review or complete a close task",description:"Versioned ownership, due dates and evidence. Assigned reviewer must inspect exact source hash. Completion requires fresh reviewed sources and completed prerequisites. Explicit not-applicable exceptions retain their reasons.",inputSchema:commandCloseTaskSchema,idempotent:true,invoke:(args,runtime)=>commandCloseTask({...args,principal:runtime.sessionPrincipal,requestId:runtime.requestId,sourceSurface:"MCP"})}),
+  defineMcpTool({policy:{name:"finlynq_daily_carry_close_task",group:"DAILY",access:"WRITE",permission:PERMISSIONS.closePeriod},title:"Carry unresolved close work forward",description:"Explicitly link an unresolved task to a later period in the same ledger. Retain its original source period and history without copying completion or changing accounting dates.",inputSchema:carryCloseTaskSchema,idempotent:true,invoke:(args,runtime)=>carryCloseTask({...args,principal:runtime.sessionPrincipal,requestId:runtime.requestId,sourceSurface:"MCP"})}),
+  defineMcpTool({policy:{name:"finlynq_daily_configure_close_notifications",group:"DAILY",access:"WRITE",permission:PERMISSIONS.closePeriod},title:"Opt in to in-app close notices",description:"Configure your own due, overdue and blocker notices. In-app only, disabled by default; no email or chat outreach.",inputSchema:closeNotificationSchema,idempotent:true,invoke:(args,runtime)=>configureCloseNotifications({...args,principal:runtime.sessionPrincipal,requestId:runtime.requestId,sourceSurface:"MCP"})}),
+  defineMcpTool({policy:{name:"finlynq_daily_acknowledge_close_notice",group:"DAILY",access:"WRITE",permission:PERMISSIONS.closePeriod},title:"Acknowledge a pending close notice",description:"Record a recipient acknowledgement of an exact current notice, with replay protection.",inputSchema:acknowledgeCloseNoticeSchema,idempotent:true,invoke:(args,runtime)=>acknowledgeCloseNotice({...args,principal:runtime.sessionPrincipal,requestId:runtime.requestId,sourceSurface:"MCP"})}),
+  defineMcpTool({policy:{name:"finlynq_daily_list_income_tax_provisions",group:"DAILY",access:"READ",permission:PERMISSIONS.readTax},title:"List income-tax provision evidence",description:"List immutable assumptions, calculation snapshots, review events and generated-journal lineage in the current organization. No automatic posting, filing or payment.",inputSchema:z.object({}).strict(),invoke:(_args,runtime)=>listProvisions(runtime.sessionPrincipal)}),
+  defineMcpTool({policy:{name:"finlynq_daily_preview_income_tax_provision",group:"DAILY",access:"READ",permission:PERMISSIONS.readTax},title:"Preview current-tax provision",description:"Read exact posted YTD book income, tax-expense exclusions, book-to-tax adjustments, reviewed CCA sources, explicit enacted rule versions, prior provisions, separate liability roll-forward and blockers. No rate or eligibility defaults.",inputSchema:provisionPreviewSchema,invoke:(args,runtime)=>previewProvision(runtime.sessionPrincipal,args)}),
+  defineMcpTool({policy:{name:"finlynq_daily_configure_income_tax_provision",group:"DAILY",access:"WRITE",permission:PERMISSIONS.manageTaxFilingConfiguration},title:"Save or review provision assumptions",description:"SAVE appends DRAFT assumptions. REVIEW requires their exact current inputs. Explicit jurisdiction, eligibility, tax-year rule sources/effective dates, account mappings and journal classifications are required for readiness. Edits invalidate earlier calculation review.",inputSchema:provisionAssumptionCommandSchema,idempotent:true,invoke:(args,runtime)=>commandProvisionAssumptions({...args,principal:runtime.sessionPrincipal,requestId:runtime.requestId,sourceSurface:"MCP"})}),
+  defineMcpTool({policy:{name:"finlynq_daily_calculate_income_tax_provision",group:"DAILY",access:"WRITE",permission:PERMISSIONS.prepareTaxFilings},title:"Save current-tax provision calculation",description:"Freeze exact current posted ledger sources and reviewed assumption versions. Blocked calculations remain inspectable. Identical source fingerprints reuse the existing snapshot.",inputSchema:provisionCalculationSchema,idempotent:true,invoke:(args,runtime)=>saveProvisionCalculation({...args,principal:runtime.sessionPrincipal,requestId:runtime.requestId,sourceSurface:"MCP"})}),
+  defineMcpTool({policy:{name:"finlynq_daily_review_or_draft_income_tax_provision",group:"DAILY",access:"WRITE",permission:PERMISSIONS.prepareTaxFilings},title:"Review provision or generate its unposted journal",description:"REVIEW requires current ready sources. DRAFT additionally requires ledger.journal.draft, an exact review, writable period and no outstanding provision draft. Zero amounts record no-entry decisions. Nonzero adjustments create balanced unposted journals even under AUTO_POST. Replays return the original generation. Posting remains separate and rejects stale sources.",inputSchema:provisionEventSchema,idempotent:true,invoke:(args,runtime)=>commandProvisionEvent({...args,principal:runtime.sessionPrincipal,requestId:runtime.requestId,sourceSurface:"MCP"})}),
+
+  defineMcpTool({ policy:{name:"finlynq_daily_list_tax_drafts",group:"DAILY",access:"READ",permission:PERMISSIONS.readTax},
+    title:"List tax drafts and review locks", description:"List latest immutable input revisions, review hashes, reviewer/time, correction lineage and locked results. Approval is distinct from configuration activation, external filing and accounting-period locks.",
+    inputSchema:z.object({}).strict(), invoke:(_args,runtime)=>listTaxDrafts(runtime.sessionPrincipal) }),
+  defineMcpTool({ policy:{name:"finlynq_daily_command_tax_mapping_draft",group:"DAILY",access:"WRITE",permission:PERMISSIONS.manageTaxMappings},
+    title:"Save, review or lock a tax mapping draft", description:"SAVE stores versioned complete inputs without activation. REVIEW captures the exact diff, scope, dates and dependency warnings. LOCK requires the reviewed hash and commits that exact version atomically. Edits invalidate review. DISCARD/RESTORE are recoverable before lock; CORRECT creates lineage from a locked original. Does not post, pay or transmit returns.",
+    inputSchema:taxDraftCommandSchema.extend({kind:z.literal("MAPPING")}),idempotent:true,
+    invoke:(args,runtime)=>commandTaxDraft({...args,principal:runtime.sessionPrincipal,requestId:runtime.requestId,sourceSurface:"MCP"}) }),
+  defineMcpTool({ policy:{name:"finlynq_daily_command_tax_configuration_draft",group:"DAILY",access:"WRITE",permission:PERMISSIONS.manageTaxFilingConfiguration},
+    title:"Save, review or lock a tax configuration draft", description:"SAVE stores versioned complete inputs without activation. REVIEW captures the exact diff, scope, dates and dependency warnings. LOCK requires the reviewed hash and commits that exact version atomically. Edits invalidate review. DISCARD/RESTORE are recoverable before lock; CORRECT creates lineage from a locked original. Does not post, pay or transmit returns.",
+    inputSchema:taxDraftCommandSchema.extend({kind:z.literal("CONFIGURATION")}),idempotent:true,
+    invoke:(args,runtime)=>commandTaxDraft({...args,principal:runtime.sessionPrincipal,requestId:runtime.requestId,sourceSurface:"MCP"}) }),
+  defineMcpTool({ policy:{name:"finlynq_daily_command_tax_workpaper_draft",group:"DAILY",access:"WRITE",permission:PERMISSIONS.prepareTaxFilings},
+    title:"Save, review or lock a tax workpaper draft", description:"SAVE stores versioned complete inputs without activation. REVIEW captures the exact diff, scope, dates and dependency warnings. LOCK requires the reviewed hash and commits that exact version atomically. Edits invalidate review. DISCARD/RESTORE are recoverable before lock; CORRECT creates lineage from a locked original. Does not post, pay or transmit returns.",
+    inputSchema:taxDraftCommandSchema.extend({kind:z.literal("WORKPAPER")}),idempotent:true,
+    invoke:(args,runtime)=>commandTaxDraft({...args,principal:runtime.sessionPrincipal,requestId:runtime.requestId,sourceSurface:"MCP"}) }),
+  defineMcpTool({ policy:{name:"finlynq_daily_preview_tax_workpaper_control",group:"DAILY",access:"READ",permission:PERMISSIONS.readTax},
+    title:"Inspect workpaper retention and cleanup eligibility",description:"Read the exact UUID, scope, frozen versions, review/lock/export history and inbound dependencies before a recoverable Delete draft or Restore draft. Historical/source evidence and unknown legacy history are retained.",
+    inputSchema:z.object({filingId:z.uuid()}).strict(),invoke:(args,runtime)=>previewTaxWorkpaperControl(runtime.sessionPrincipal,args.filingId) }),
+  defineMcpTool({ policy:{name:"finlynq_daily_control_tax_workpaper",group:"DAILY",access:"WRITE",permission:PERMISSIONS.manageTaxFilingCanonical},
+    title:"Review, lock, delete or restore a workpaper draft",description:"Requires exact preview hash, expected version and confirmation ACTION UUID; DELETE additionally requires UNFILED. Delete is recoverable hiding only for eligible unfiled, unreviewed, unlocked, unreferenced PREPARED records. Rechecks dependencies atomically. No permanent deletion, posting, payment or external filing.",
+    inputSchema:taxWorkpaperControlSchema,idempotent:true,invoke:(args,runtime)=>commandTaxWorkpaperControl({...args,principal:runtime.sessionPrincipal,requestId:runtime.requestId,sourceSurface:"MCP"}) }),
+  defineMcpTool({ policy:{name:"finlynq_daily_list_deleted_tax_workpapers",group:"DAILY",access:"READ",permission:PERMISSIONS.readTax},
+    title:"List recoverably deleted tax drafts",description:"Explicit deleted-drafts view retains the same record IDs for dependency preview and authorized restoration.",
+    inputSchema:z.object({}).strict(),invoke:(_args,runtime)=>listDeletedTaxWorkpapers(runtime.sessionPrincipal) }),
+
   defineMcpTool({
     policy: { name: "finlynq_daily_get_agent_approval_policy", group: "DAILY", access: "READ", permissionsAny: [PERMISSIONS.readMcpLedger, PERMISSIONS.approveJournal, PERMISSIONS.postJournal] },
     title: "Check owner authorization for agent journal self-approval",
@@ -501,7 +547,7 @@ export const DAILY_MCP_TOOLS: readonly McpToolDefinition[] = [
   defineMcpTool({
     policy: { name: "finlynq_daily_list_receivable_open_items", group: "DAILY", access: "READ", permission: PERMISSIONS.readReceivables },
     title: "List receivable open items",
-    description: "Find tenant-owned posted sales-invoice open items and their exact customer-receipt allocation IDs. Results include current source-document ID/version, customer party account, control account combination, original, allocated and remaining exact amounts, dates, currency, entity, ledger and settlement status. Open and partially settled items are returned by default; use statuses to request closed history.",
+    description: "Find tenant-owned posted sales-invoice open items and their exact customer-receipt allocation IDs. Results include current source-document ID/version, customer party account, control account combination, original, allocated and remaining exact amounts, dates, currency, entity, ledger and settlement status. Open and partially settled items are returned by default; use statuses to request closed history. Page with after={dueDate, sourceNumber, openItemId} from the last returned row, retaining the same filters; an empty page ends the scan. asOfDate reconstructs issue, allocation and reversal balances through that date. Receipt/payment commands revalidate the current balance at commit.",
     inputSchema: z.object({
       legalEntityId: z.uuid().optional(),
       ledgerId: z.uuid().optional(),
@@ -511,6 +557,7 @@ export const DAILY_MCP_TOOLS: readonly McpToolDefinition[] = [
       currency: z.string().trim().toUpperCase().regex(/^[A-Z]{3}$/).optional(),
       statuses: z.array(z.enum(["OPEN", "PARTIALLY_SETTLED", "SETTLED", "REVERSED"])).min(1).optional(),
       asOfDate: z.iso.date().optional(),
+      after: openItemCursorSchema.optional(),
       limit: z.number().int().min(1).max(500).default(100),
     }).strict(),
     invoke: (args, runtime) => listReceivableOpenItems({
@@ -521,7 +568,7 @@ export const DAILY_MCP_TOOLS: readonly McpToolDefinition[] = [
   defineMcpTool({
     policy: { name: "finlynq_daily_list_payable_open_items", group: "DAILY", access: "READ", permission: PERMISSIONS.readPayables },
     title: "List payable open items",
-    description: "Find tenant-owned supplier-bill open items and their exact settlement IDs. Results include the current source-document ID/version, supplier party account, control account combination, original, allocated and remaining exact amounts, dates, currency, entity, ledger and settlement status. Open and partially settled items are returned by default; use statuses to request closed history.",
+    description: "Find tenant-owned supplier-bill open items and their exact settlement IDs. Results include the current source-document ID/version, supplier party account, control account combination, original, allocated and remaining exact amounts, dates, currency, entity, ledger and settlement status. Open and partially settled items are returned by default; use statuses to request closed history. Page with after={dueDate, sourceNumber, openItemId} from the last returned row, retaining the same filters; an empty page ends the scan. asOfDate reconstructs issue, allocation and reversal balances through that date. Receipt/payment commands revalidate the current balance at commit.",
     inputSchema: z.object({
       legalEntityId: z.uuid().optional(),
       ledgerId: z.uuid().optional(),
@@ -531,6 +578,7 @@ export const DAILY_MCP_TOOLS: readonly McpToolDefinition[] = [
       currency: z.string().trim().toUpperCase().regex(/^[A-Z]{3}$/).optional(),
       statuses: z.array(z.enum(["OPEN", "PARTIALLY_SETTLED", "SETTLED", "REVERSED"])).min(1).optional(),
       asOfDate: z.iso.date().optional(),
+      after: openItemCursorSchema.optional(),
       limit: z.number().int().min(1).max(500).default(100),
     }).strict(),
     invoke: (args, runtime) => listPayableOpenItems({

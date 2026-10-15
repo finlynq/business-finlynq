@@ -420,3 +420,31 @@ export const authSecurityEvents = pgTable(
   },
   (table) => [index("auth_security_events_created_idx").on(table.createdAt)],
 );
+
+export const authLoginContexts = pgTable("auth_login_contexts", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  userId: uuid("user_id").notNull().references(() => users.id, { onDelete: "restrict" }),
+  organizationId: uuid("organization_id").notNull().references(() => organizations.id, { onDelete: "restrict" }),
+  realm: text("realm").notNull(),
+  securityEpoch: integer("security_epoch").notNull(),
+  kind: text("kind").notNull(),
+  contextKey: text("context_key").notNull(),
+  firstSeenAt: timestamp("first_seen_at", { withTimezone: true }).notNull().defaultNow(),
+  lastSeenAt: timestamp("last_seen_at", { withTimezone: true }).notNull().defaultNow(),
+  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+}, (table) => [
+  uniqueIndex("auth_login_contexts_scope_key_unique").on(table.userId, table.organizationId, table.realm, table.securityEpoch, table.kind, table.contextKey),
+  check("auth_login_contexts_kind_check", sql`${table.kind} IN ('DEVICE','COUNTRY','LOCATION')`),
+  check("auth_login_contexts_epoch_check", sql`${table.securityEpoch} > 0`),
+]);
+
+export const authLoginNotificationDecisions = pgTable("auth_login_notification_decisions", {
+  sessionId: uuid("session_id").primaryKey().references(() => authSessions.id, { onDelete: "restrict" }),
+  userId: uuid("user_id").notNull().references(() => users.id, { onDelete: "restrict" }),
+  organizationId: uuid("organization_id").notNull().references(() => organizations.id, { onDelete: "restrict" }),
+  requestId: text("request_id").notNull(),
+  emailQueued: boolean("email_queued").notNull(),
+  reasons: jsonb("reasons").notNull(),
+  context: jsonb("context").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});

@@ -82,6 +82,19 @@ export function renderAuthenticationEmail(input: {
       html: wrapHtml("Recovery approval requested", `<p>Another recovery administrator requested account recovery.</p><p><a href="${escapeHtml(link)}">Review recovery request</a></p><p>Approve only after verifying the person through a separate channel. A fresh authenticator code is required.</p>`),
     };
   }
+  if (input.templateType === "SECURITY_NEW_LOGIN" && Array.isArray(input.templateData.reasons)) {
+    const labels: Record<string, string> = { NEW_DEVICE: "new browser or device", NEW_COUNTRY: "new country", NEW_LOCATION: "new approximate region" };
+    const reasons = input.templateData.reasons.filter((reason): reason is string => typeof reason === "string" && reason in labels).map(reason => labels[reason]);
+    const browser = typeof input.templateData.browserLabel === "string" ? input.templateData.browserLabel.slice(0,160) : "Browser unavailable";
+    const time = typeof input.templateData.occurredAt === "string" ? new Date(input.templateData.occurredAt) : null;
+    const timeLabel = time && !Number.isNaN(time.valueOf()) ? `${time.toISOString()} (UTC)` : "Time unavailable";
+    const location = [input.templateData.country, input.templateData.region].filter((value): value is string => typeof value === "string" && /^[A-Z0-9-]{2,7}$/.test(value)).join(" / ") || "Location unavailable or uncertain";
+    const message = `A sign-in succeeded from a ${reasons.join(", ") || "new context"}.`;
+    const detail = `${timeLabel} · ${browser} · Approximate location: ${location}.`;
+    const guidance = "If this was not you, contact your organization administrator immediately. This browser recognition does not change MFA or account permissions.";
+    return { subject: "Unusual Business Finlynq sign-in", text: `${message}\n\n${detail}\n\n${guidance}`,
+      html: wrapHtml("Unusual sign-in", `<p>${escapeHtml(message)}</p><p>${escapeHtml(detail)}</p><p>${escapeHtml(guidance)}</p>`) };
+  }
   const securityMessages: Record<string, { subject: string; message: string }> = {
     SECURITY_PASSWORD_CHANGED: { subject: "Your Business Finlynq password changed", message: "Your password was changed and every existing session was revoked." },
     SECURITY_MFA_ENABLED: { subject: "Authenticator enabled for Business Finlynq", message: "A TOTP authenticator was enabled for your account." },
