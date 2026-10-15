@@ -29,6 +29,32 @@ Run from the checked-out release directory during a reviewed maintenance window:
 
 Do not append an organization ID or other selector. After completion, verify one shared_demo_reset_state row with READY, the current baseline version, a future reset_after, and a recent last_completed_reset_at. Then open two independent browser contexts and prove they enter the same organization and share a newly created uniquely numbered transaction.
 
+## Nonproduction environments
+
+Dev and stage need their own nightly resets. Deploying a new revision or retrying
+public acceptance does not replace this maintenance: an overdue boundary rejects
+new demo sessions even when application health is ready. Install the fixed-target
+runner and timer instances from a reviewed checkout:
+
+```sh
+sudo install -o root -g root -m 0755 deploy/demo-sandbox/reset-nonproduction-demo.sh /usr/local/sbin/business-finlynq-reset-nonproduction-demo
+sudo install -o root -g root -m 0644 deploy/systemd/business-finlynq-nonproduction-demo@.service deploy/systemd/business-finlynq-nonproduction-demo@.timer /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now business-finlynq-nonproduction-demo@dev.timer business-finlynq-nonproduction-demo@stage.timer
+```
+
+The instances run at 04:15 America/Toronto, catch up after downtime, and acquire
+the same host lock as deployments. The runner accepts only `dev` or `stage`,
+resolves their canonical checkout and protected Compose environment, and invokes
+the existing fixed PUBLIC_DEMO reset with no tenant selector. It rejects production
+and clears caller-supplied environment overrides before running Compose.
+
+`bash deploy/demo-sandbox/reset-nonproduction-demo.sh dev --check` previews only
+non-secret target paths. For an overdue demo, run
+`sudo systemctl start business-finlynq-nonproduction-demo@dev.service` (or the
+`stage` instance), then verify READY/future reset boundary and browser entry.
+Production retains its separate `business-finlynq-demo-reconcile.timer`.
+
 ## Failure recovery
 
 Keep demo login or writes disabled while reset maintenance is unavailable. Repair the underlying schema, encryption, role, or seed problem through a reviewed forward change and rerun the complete reconciliation. Never mark the state ready by hand, partially delete tenant tables, disable triggers, or edit the reset boundary to bypass the fail-closed gate.

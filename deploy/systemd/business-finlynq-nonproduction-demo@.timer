@@ -1,0 +1,10 @@
+[Unit]
+Description=Reset the fixed Business Finlynq %i shared demo nightly
+
+[Timer]
+OnCalendar=*-*-* 04:15:00 America/Toronto
+Persistent=true
+Unit=business-finlynq-nonproduction-demo@%i.service
+
+[Install]
+WantedBy=timers.target
