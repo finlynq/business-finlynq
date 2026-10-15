@@ -5,7 +5,7 @@ const valuesSchema = z.record(z.string(), z.string().regex(/^-?(?:0|[1-9]\d*)(?:
 const snapshotSchema = z.object({
   capturedAt: z.string().optional(), ledgerFingerprint: z.string().optional(),
   mappingVersion: z.number().optional(), refreshedFromFilingId: z.string().nullable().optional(),
-  manualValues: valuesSchema.optional(),
+  manualValues: valuesSchema.optional(), correctionOfFilingId:z.string().nullable().optional(),
   definition: z.object({ fields: z.array(z.object({ key: z.string(), kind: z.string() }).passthrough()) }).passthrough().optional(),
 }).passthrough();
 
@@ -21,6 +21,7 @@ export function taxFilingSnapshot(snapshot: unknown, reportedValues: unknown, ca
   return {
     capturedAt: saved.capturedAt, ledgerFingerprint: saved.ledgerFingerprint,
     mappingVersion: saved.mappingVersion, refreshedFromFilingId: saved.refreshedFromFilingId ?? null,
+    correctionOfFilingId:saved.correctionOfFilingId??null,
     reportedValues: valuesSchema.parse(reportedValues), manualValues: saved.manualValues ?? legacyManual,
     manualInputsNeedReview: saved.manualValues === undefined,
   };

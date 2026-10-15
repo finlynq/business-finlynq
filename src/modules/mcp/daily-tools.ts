@@ -1,3 +1,5 @@
+import { commandTaxDraft, taxDraftCommandSchema, listTaxDrafts } from "@/modules/tax/draft-service";
+import { commandTaxWorkpaperControl, taxWorkpaperControlSchema, previewTaxWorkpaperControl, listDeletedTaxWorkpapers } from "@/modules/tax/workpaper-controls";
 import { taxFilingReadinessSchema } from "@/modules/tax/filing-readiness";
 import { mcpTaxFilingWorkspace } from "./tax-filing-capabilities";
 import "server-only";
@@ -310,6 +312,32 @@ function voidSettlementTool(input: Readonly<{
 }
 
 export const DAILY_MCP_TOOLS: readonly McpToolDefinition[] = [
+
+  defineMcpTool({ policy:{name:"finlynq_daily_list_tax_drafts",group:"DAILY",access:"READ",permission:PERMISSIONS.readTax},
+    title:"List tax drafts and review locks", description:"List latest immutable input revisions, review hashes, reviewer/time, correction lineage and locked results. Approval is distinct from configuration activation, external filing and accounting-period locks.",
+    inputSchema:z.object({}).strict(), invoke:(_args,runtime)=>listTaxDrafts(runtime.sessionPrincipal) }),
+  defineMcpTool({ policy:{name:"finlynq_daily_command_tax_mapping_draft",group:"DAILY",access:"WRITE",permission:PERMISSIONS.manageTaxMappings},
+    title:"Save, review or lock a tax mapping draft", description:"SAVE stores versioned complete inputs without activation. REVIEW captures the exact diff, scope, dates and dependency warnings. LOCK requires the reviewed hash and commits that exact version atomically. Edits invalidate review. DISCARD/RESTORE are recoverable before lock; CORRECT creates lineage from a locked original. Does not post, pay or transmit returns.",
+    inputSchema:taxDraftCommandSchema.extend({kind:z.literal("MAPPING")}),idempotent:true,
+    invoke:(args,runtime)=>commandTaxDraft({...args,principal:runtime.sessionPrincipal,requestId:runtime.requestId,sourceSurface:"MCP"}) }),
+  defineMcpTool({ policy:{name:"finlynq_daily_command_tax_configuration_draft",group:"DAILY",access:"WRITE",permission:PERMISSIONS.manageTaxFilingConfiguration},
+    title:"Save, review or lock a tax configuration draft", description:"SAVE stores versioned complete inputs without activation. REVIEW captures the exact diff, scope, dates and dependency warnings. LOCK requires the reviewed hash and commits that exact version atomically. Edits invalidate review. DISCARD/RESTORE are recoverable before lock; CORRECT creates lineage from a locked original. Does not post, pay or transmit returns.",
+    inputSchema:taxDraftCommandSchema.extend({kind:z.literal("CONFIGURATION")}),idempotent:true,
+    invoke:(args,runtime)=>commandTaxDraft({...args,principal:runtime.sessionPrincipal,requestId:runtime.requestId,sourceSurface:"MCP"}) }),
+  defineMcpTool({ policy:{name:"finlynq_daily_command_tax_workpaper_draft",group:"DAILY",access:"WRITE",permission:PERMISSIONS.prepareTaxFilings},
+    title:"Save, review or lock a tax workpaper draft", description:"SAVE stores versioned complete inputs without activation. REVIEW captures the exact diff, scope, dates and dependency warnings. LOCK requires the reviewed hash and commits that exact version atomically. Edits invalidate review. DISCARD/RESTORE are recoverable before lock; CORRECT creates lineage from a locked original. Does not post, pay or transmit returns.",
+    inputSchema:taxDraftCommandSchema.extend({kind:z.literal("WORKPAPER")}),idempotent:true,
+    invoke:(args,runtime)=>commandTaxDraft({...args,principal:runtime.sessionPrincipal,requestId:runtime.requestId,sourceSurface:"MCP"}) }),
+  defineMcpTool({ policy:{name:"finlynq_daily_preview_tax_workpaper_control",group:"DAILY",access:"READ",permission:PERMISSIONS.readTax},
+    title:"Inspect workpaper retention and cleanup eligibility",description:"Read the exact UUID, scope, frozen versions, review/lock/export history and inbound dependencies before a recoverable Delete draft or Restore draft. Historical/source evidence and unknown legacy history are retained.",
+    inputSchema:z.object({filingId:z.uuid()}).strict(),invoke:(args,runtime)=>previewTaxWorkpaperControl(runtime.sessionPrincipal,args.filingId) }),
+  defineMcpTool({ policy:{name:"finlynq_daily_control_tax_workpaper",group:"DAILY",access:"WRITE",permission:PERMISSIONS.manageTaxFilingCanonical},
+    title:"Review, lock, delete or restore a workpaper draft",description:"Requires exact preview hash, expected version and confirmation ACTION UUID; DELETE additionally requires UNFILED. Delete is recoverable hiding only for eligible unfiled, unreviewed, unlocked, unreferenced PREPARED records. Rechecks dependencies atomically. No permanent deletion, posting, payment or external filing.",
+    inputSchema:taxWorkpaperControlSchema,idempotent:true,invoke:(args,runtime)=>commandTaxWorkpaperControl({...args,principal:runtime.sessionPrincipal,requestId:runtime.requestId,sourceSurface:"MCP"}) }),
+  defineMcpTool({ policy:{name:"finlynq_daily_list_deleted_tax_workpapers",group:"DAILY",access:"READ",permission:PERMISSIONS.readTax},
+    title:"List recoverably deleted tax drafts",description:"Explicit deleted-drafts view retains the same record IDs for dependency preview and authorized restoration.",
+    inputSchema:z.object({}).strict(),invoke:(_args,runtime)=>listDeletedTaxWorkpapers(runtime.sessionPrincipal) }),
+
   defineMcpTool({
     policy: { name: "finlynq_daily_get_agent_approval_policy", group: "DAILY", access: "READ", permissionsAny: [PERMISSIONS.readMcpLedger, PERMISSIONS.approveJournal, PERMISSIONS.postJournal] },
     title: "Check owner authorization for agent journal self-approval",

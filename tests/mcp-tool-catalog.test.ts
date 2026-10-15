@@ -304,6 +304,19 @@ describe("remote MCP advertised tool catalog", () => {
     expect(tool.description).toContain("customer-receipt allocation IDs");
   });
 
+  it("keeps draft approval and exact workpaper cleanup behind existing permissions",()=>{
+    for(const [kind,permission] of [["mapping",PERMISSIONS.manageTaxMappings],["configuration",PERMISSIONS.manageTaxFilingConfiguration],["workpaper",PERMISSIONS.prepareTaxFilings]]){
+      const {tool,schema}=advertisedSchema(`finlynq_daily_command_tax_${kind}_draft`);
+      expect(tool.policy).toMatchObject({access:"WRITE",permission});
+      expect(schema.required).toEqual(expect.arrayContaining(["draftId","expectedVersion","action","kind","reason","idempotencyKey"]));
+      expect(schema.properties?.kind).toMatchObject({const:kind!.toUpperCase()});
+    }
+    const controls=advertisedSchema("finlynq_daily_control_tax_workpaper");
+    expect(controls.tool.policy).toMatchObject({access:"WRITE",permission:PERMISSIONS.manageTaxFilingCanonical});
+    expect(controls.schema.required).toEqual(expect.arrayContaining(["filingId","previewHash","confirmation","expectedVersion","idempotencyKey"]));
+    expect(advertisedSchema("finlynq_daily_preview_tax_workpaper_control").tool.policy.access).toBe("READ");
+  });
+
   it("advertises the tax filing and effective-dated mapping workflows", () => {
     for (const name of [
       "finlynq_daily_get_tax_filing_workspace",

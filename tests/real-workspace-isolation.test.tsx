@@ -188,6 +188,8 @@ vi.mock("@/modules/reporting/tenant-reporting", async (importOriginal) => ({
 vi.mock("@/modules/subledger/workspace", () => ({
   loadSubledgerWorkspace: mocks.loadSubledgerWorkspace,
 }));
+vi.mock("@/modules/tax/draft-service",()=>({listTaxDrafts:vi.fn(async()=>[])}));
+vi.mock("@/modules/tax/workpaper-controls",()=>({listDeletedTaxWorkpapers:vi.fn(async()=>[])}));
 vi.mock("@/modules/tax/filing-workspace", () => ({
   loadTaxFilingWorkspace: mocks.loadTaxFilingWorkspace,
 }));
