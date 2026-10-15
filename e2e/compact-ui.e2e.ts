@@ -136,6 +136,11 @@ test("monthly profit and loss keeps twelve fiscal columns and exports the displa
   const download = page.waitForEvent("download");
   await page.getByRole("link", { name: "Download XLSX" }).click();
   expect((await download).suggestedFilename()).toMatch(/monthly-profit-and-loss\.xlsx$/);
+  await page.emulateMedia({ media: "print" });
+  await expect(page.getByText(/Snapshot SHA-256:/)).toBeVisible();
+  await expect(table.locator("thead th").nth(1)).toHaveCSS("white-space", "normal");
+  await expect(table.locator("thead th").nth(1)).toHaveCSS("text-overflow", "clip");
+  await expect(table.locator("tbody code").first()).toHaveCSS("overflow-wrap", "anywhere");
 });
 
 test("journal register uses compact rows while keeping posting evidence available", async ({ page }) => {

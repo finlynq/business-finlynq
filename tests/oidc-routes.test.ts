@@ -68,6 +68,8 @@ vi.mock("@/modules/identity/session", () => ({
   setSessionCookie: mocks.setSessionCookie,
 }));
 
+vi.mock("@/security/identity-secret", () => ({ identityLookupHash: () => "a".repeat(64) }));
+
 import { GET as callback } from "@/app/api/auth/oidc/callback/route";
 import { GET as start } from "@/app/api/auth/oidc/start/route";
 

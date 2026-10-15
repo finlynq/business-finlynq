@@ -160,7 +160,7 @@ export async function loadCloseMonitor(principal: SessionPrincipal, periods: rea
       asset ? check("asset-drafts", "Unposted asset schedules", `${asset.drafted_count} entries have a draft without a posted journal.`, asset.drafted_count > 0 ? "BLOCKED" : "SOURCE CHECK", "/app/assets")
         : check("asset-drafts", "Unposted asset schedules", "Asset source could not be read.", "UNKNOWN", "/app/assets"),
       check("unposted-journals", "Unposted journals", `${period.unpostedJournalCount} draft, submitted or approved journals remain.`, period.unpostedJournalCount > 0 ? "BLOCKED" : "SOURCE CHECK", "/app/journals"),
-      check("tax-provision", "Corporate tax provision", "No reviewed period-specific provision model or sign-off is connected to this monitor.", "NOT COMPUTED", "/app/tax"),
+      check("tax-provision", "Corporate tax provision", "Inspect the period calculation, posting stage and retained review in the persistent checklist and tax provision workspace.", "NEEDS REVIEW", "/app/tax/provision"),
       journals ? check("statements", "Statement review", `${journals.posted_count} posted journals in this period. Trial balance and financial statements need an explicit reviewer decision after postings are final.`, "NEEDS REVIEW", "/app/reports")
         : check("statements", "Statement review", "Posted journal activity could not be read; statement review is blocked.", "UNKNOWN", "/app/reports"),
     ];

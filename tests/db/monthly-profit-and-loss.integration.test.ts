@@ -114,4 +114,19 @@ run("monthly P&L posted activity in PostgreSQL", () => {
       expect(report.rows.find((candidate) => candidate.accountCode === row.accountCode)?.amount).toBe(row.amount);
     }
   });
+
+  it("uses booked CAD values for USD sources and applies account and segment filters", async () => {
+    await client.query("ALTER TABLE journal_lines ADD COLUMN transaction_currency text, ADD COLUMN credit_transaction numeric(38,9), ADD COLUMN fx_rate numeric(38,9)");
+    const entryId = randomUUID();
+    await client.query("INSERT INTO journal_entries VALUES($1,$2,$3,$4,'POSTED','2026-03-02',now())", [entryId,ids.org,ids.entity,ids.ledger]);
+    await client.query("INSERT INTO journal_lines VALUES($1,$2,$3,0,137,'USD',100,1.37)", [ids.org,entryId,ids.revenueCombination]);
+    const report = await loadMonthlyProfitAndLoss(principal as never, { ...selection, accountId: ids.revenue, accountCode: "4000" }, entity, "2026-03-15");
+    expect(report.rows).toHaveLength(1);
+    expect(report.rows[0]).toMatchObject({ currency:"CAD",amount:"217",months:{"period-1":"100","period-2":"-20","period-3":"137"} });
+    const absent = await loadMonthlyProfitAndLoss(principal as never, { ...selection, segmentFilters: { department: "NO-MATCH" } }, entity, "2026-03-15");
+    expect(absent.rows).toEqual([]);
+    await expect(loadMonthlyProfitAndLoss(principal as never, { ...selection, entityId: ids.foreignEntity }, entity, "2026-03-15")).rejects.toThrow(/must match/);
+    expect((await client.query("SELECT transaction_currency,credit_transaction::text,fx_rate::text FROM journal_lines WHERE journal_entry_id=$1",[entryId])).rows[0]).toEqual({ transaction_currency:"USD",credit_transaction:"100.000000000",fx_rate:"1.370000000" });
+  });
+
 });

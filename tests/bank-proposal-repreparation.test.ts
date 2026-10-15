@@ -32,6 +32,7 @@ const principal: SessionPrincipal = {
 
 const mocks = vi.hoisted(() => ({
   withTenantTransaction: vi.fn(),
+  createManualJournal: vi.fn(async () => ({ journalId: "10000000-0000-4000-8000-000000000012" })),
   assertWritableOrganization: vi.fn(async () => undefined),
   assertActorHasActivePermission: vi.fn(async () => undefined),
 }));
@@ -52,7 +53,9 @@ vi.mock("@/modules/workspace/write-policy", () => ({
   principalCanWrite: vi.fn(() => true),
 }));
 
-import { prepareBankAccountingProposal } from "@/modules/banking/proposal-service";
+vi.mock("@/modules/ledger/journal-service", () => ({ createManualJournal: mocks.createManualJournal }));
+
+import { commitBankAccountingProposal, decideBankAccountingProposal, prepareBankAccountingProposal } from "@/modules/banking/proposal-service";
 
 const lineBase = {
   transactionCurrency: "CAD",
@@ -127,5 +130,74 @@ describe("bank proposal preparation lineage", () => {
     const { inserts } = fakeClient({ id: ids.priorProposal, version: 2, status: "REVIEWED" });
     await expect(prepareBankAccountingProposal(command)).rejects.toMatchObject({ code: "BANK_PROPOSAL_DUPLICATE" });
     expect(inserts).toHaveLength(0);
+  });
+});
+
+
+function proposalForDecision(status: "PREPARED" | "REVIEWED", evidence: Record<string, unknown> = {}) {
+  const { principal: _principal, requestId: _requestId, ...facts } = command;
+  void _principal;
+  void _requestId;
+  const snapshot = { ...facts, warnings: [], duplicateReferences: [], transferObservationVersionIds: [], ...evidence };
+  const inserts: unknown[][] = [];
+  const client = {
+    query: vi.fn(async (sql: string, params?: unknown[]) => {
+      if (sql.includes("pg_advisory_xact_lock") || sql.includes("WHERE organization_id=$1 AND idempotency_key=$2")) return { rows: [] };
+      if (sql.includes("SELECT proposal.id, proposal.observation_version_id")) return { rows: [{
+        id: ids.priorProposal, observation_version_id: ids.observation, version: 2,
+        status, proposal_snapshot: snapshot, proposal_hash: "a".repeat(64), journal_entry_id: null,
+      }] };
+      if (sql.includes("INSERT INTO bank_accounting_proposals")) { inserts.push(params ?? []); return { rows: [] }; }
+      throw new Error(`Unexpected query: ${sql.slice(0, 80)}`);
+    }),
+  };
+  mocks.withTenantTransaction.mockImplementation(async (_context: unknown, work: (client: PoolClient) => Promise<unknown>) => work(client as unknown as PoolClient));
+  return inserts;
+}
+
+const decisionCommand = {
+  principal, requestId: "bank-proposal-safety-test", proposalId: ids.priorProposal,
+  expectedVersion: 2, expectedProposalHash: "a".repeat(64),
+  reason: "Review the exact evidence for this proposal", idempotencyKey: "bank-proposal-safety-decision",
+};
+
+const unresolvedEvidence = [
+  { confidence: "LOW", warnings: ["Counterparty is unresolved"] },
+  { confidence: "MEDIUM", warnings: ["Transfer destination is unresolved"] },
+  { warnings: ["Tax basis is unresolved"] },
+  { duplicateReferences: ["source-document:possible-duplicate"] },
+];
+
+describe("bank proposal evidence gates", () => {
+  it.each(unresolvedEvidence)("blocks unresolved evidence before review: %j", async (evidence) => {
+    const inserts = proposalForDecision("PREPARED", evidence);
+    await expect(decideBankAccountingProposal({ ...decisionCommand, decision: "REVIEW" })).rejects.toMatchObject({ code: "BANK_PROPOSAL_REVIEW_REQUIRED" });
+    expect(inserts).toHaveLength(0);
+    expect(mocks.createManualJournal).not.toHaveBeenCalled();
+  });
+
+  it.each(unresolvedEvidence)("also blocks legacy reviewed proposals before journal creation: %j", async (evidence) => {
+    const inserts = proposalForDecision("REVIEWED", evidence);
+    await expect(commitBankAccountingProposal(decisionCommand)).rejects.toMatchObject({ code: "BANK_PROPOSAL_REVIEW_REQUIRED" });
+    expect(inserts).toHaveLength(0);
+    expect(mocks.createManualJournal).not.toHaveBeenCalled();
+  });
+
+  it("allows unresolved prepared proposals to be rejected for corrected preparation", async () => {
+    const inserts = proposalForDecision("PREPARED", unresolvedEvidence[0]);
+    await expect(decideBankAccountingProposal({ ...decisionCommand, decision: "REJECT" })).resolves.toMatchObject({ status: "REJECTED", version: 3 });
+    expect(inserts).toHaveLength(1);
+    expect(mocks.createManualJournal).not.toHaveBeenCalled();
+  });
+
+  it("reviews resolved facts and creates only an MCP-origin draft after exact review", async () => {
+    const reviewed = proposalForDecision("PREPARED");
+    await expect(decideBankAccountingProposal({ ...decisionCommand, decision: "REVIEW" })).resolves.toMatchObject({ status: "REVIEWED" });
+    expect(reviewed).toHaveLength(1);
+    expect(mocks.createManualJournal).not.toHaveBeenCalled();
+    const committed = proposalForDecision("REVIEWED");
+    await expect(commitBankAccountingProposal(decisionCommand)).resolves.toMatchObject({ status: "COMMITTED", matchingStatus: "AWAITING_POSTING" });
+    expect(committed).toHaveLength(1);
+    expect(mocks.createManualJournal).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ origin: "MCP" }), expect.anything());
   });
 });

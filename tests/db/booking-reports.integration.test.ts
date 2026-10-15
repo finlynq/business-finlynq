@@ -14,6 +14,7 @@ import { buildBusinessDocumentSnapshot } from "@/modules/subledger/document-mode
 import { correctTaxRegistrationScope } from "@/modules/ledger/accounting-configuration";
 import type { SessionPrincipal } from "@/modules/identity/session";
 import { appendSourceDocument } from "@/modules/subledger/ar-ap-persistence";
+import { listReceivableOpenItems } from "@/modules/subledger/ar-ap-open-items";
 import { createBusinessDocumentDraft,editBusinessDocumentDraft,issueBusinessDocument,recordCustomerReceiptOrSupplierPayment } from "@/modules/subledger/ar-ap-service";
 const run=process.env.TEST_DATABASE_URL&&process.env.TEST_APP_DATABASE_URL?describe:describe.skip;
 const id={org:randomUUID(),actor:randomUUID(),member:randomUUID(),role:randomUUID(),entity:randomUUID(),ledger:randomUUID(),period:randomUUID(),revenue:randomUUID(),expense:randomUUID(),cash:randomUUID(),expenseCombination:randomUUID(),cashCombination:randomUUID(),outsider:randomUUID(),party:randomUUID(),partyAccount:randomUUID(),payable:randomUUID(),payableCombination:randomUUID(),liability:randomUUID(),liabilityCombination:randomUUID(),taxRegistration:randomUUID(),gainCombination:randomUUID()};
@@ -79,6 +80,89 @@ run("immutable booking reports and authorized posting",()=>{
  ]));
  expect(postedLines).toHaveLength(2);
  expect((await issueBusinessDocument({context:context(),kind:"SUPPLIER_BILL",sourceNumber:bill.sourceNumber,expectedVersion:2,idempotencyKey:"insurance-rst-issue"})).journalId).toBe(issued.journalId);
+ },30000);
+ it("posts the reviewed exact 15-percent source tax once with balanced tax and AP lines", async () => {
+   const tax = { packKey: "ca.on.hst", category: "STANDARD" as const, destinationCountry: "CA", destinationRegion: "ON",
+     registrationId: id.taxRegistration, recoverablePercent: "100", sourceTaxOverride: {
+       ratePercent: "15", amount: "1.80", jurisdiction: "CA-NB", componentKey: "HST_SOURCE", effectiveFrom: "2025-01-01",
+       reason: "Synthetic invoice explicitly states fifteen percent", evidenceReference: "synthetic-hst-source.pdf",
+     } };
+   const command = { context: context(), kind: "SUPPLIER_BILL" as const, sourceNumber: "SYNTHETIC-HST-15",
+     ledgerId: id.ledger, legalEntityId: id.entity, partyAccountId: id.partyAccount,
+     controlAccountCombinationId: id.payableCombination, taxAccountCombinationId: id.cashCombination,
+     documentDate: "2025-12-15", accountingDate: "2025-12-15", periodId: id.period, dueOn: "2025-12-31", currency: "CAD",
+     fx: { rate: "1", source: "FUNCTIONAL", effectiveAt: "2025-12-15T00:00:00Z", quoteConvention: "FUNCTIONAL_UNITS_PER_TRANSACTION_UNIT" as const },
+     description: "Synthetic fifteen-percent source tax", lines: [{ description: "Usage", accountCombinationId: id.expenseCombination, netAmount: "12.00", tax }],
+     idempotencyKey: randomUUID() };
+   const draft = await createBusinessDocumentDraft(command);
+   expect(draft.document.snapshot).toMatchObject({ subtotal: "12.00", taxTotal: "1.80", grossTotal: "13.80" });
+   await expect(issueBusinessDocument({ context: context(), kind: "SUPPLIER_BILL", sourceNumber: command.sourceNumber,
+     expectedVersion: draft.document.version, idempotencyKey: randomUUID() })).rejects.toThrow(/review/i);
+   const reviewed = await editBusinessDocumentDraft({ ...command, expectedVersion: draft.document.version, idempotencyKey: randomUUID(),
+     lines: [{ ...command.lines[0], tax: { ...tax, sourceTaxOverride: { ...tax.sourceTaxOverride, reviewedTreatment: "FULLY_RECOVERABLE" as const } } }] });
+   const issue = { context: context(), kind: "SUPPLIER_BILL" as const, sourceNumber: command.sourceNumber,
+     expectedVersion: reviewed.document.version, idempotencyKey: randomUUID() };
+   const posted = await issueBusinessDocument(issue);
+   const replay = await issueBusinessDocument(issue);
+   expect(replay).toMatchObject({ journalId: posted.journalId, openItemId: posted.openItemId, idempotentReplay: true });
+   const lines = (await owner.query("SELECT account_combination_id, debit_functional::text debit, credit_functional::text credit FROM journal_lines WHERE organization_id=$1 AND journal_entry_id=$2", [id.org, posted.journalId])).rows;
+   expect(lines).toHaveLength(3);
+   expect(lines).toEqual(expect.arrayContaining([
+     expect.objectContaining({ account_combination_id: id.expenseCombination, debit: "12.000000000", credit: "0.000000000" }),
+     expect.objectContaining({ account_combination_id: id.cashCombination, debit: "1.800000000", credit: "0.000000000" }),
+     expect.objectContaining({ account_combination_id: id.payableCombination, debit: "0.000000000", credit: "13.800000000" }),
+   ]));
+   expect((await owner.query("SELECT count(*)::int n FROM open_items WHERE organization_id=$1 AND id=$2", [id.org, posted.openItemId])).rows[0].n).toBe(1);
+ });
+
+ it("paginates receivables and settles the discovered ID with replay and over-allocation protection", async () => {
+   const customer = randomUUID(), otherCustomer = randomUUID(), ar = randomUUID(), arCombination = randomUUID(), revenueCombination = id.gainCombination;
+   await owner.query("INSERT INTO role_permissions(organization_id,role_id,permission_key) SELECT $1,$2,unnest($3::text[]) ON CONFLICT DO NOTHING", [id.org,id.role,["receivables.read","receivables.manage","receivables.post","receivables.settle"]]);
+   await owner.query("INSERT INTO gl_accounts(id,organization_id,ledger_id,code,display_name,class,control_kind,postable,active,valid_from) VALUES($1,$2,$3,'1100','Synthetic AR','ASSET','AR',true,true,'2025-01-01')", [ar,id.org,id.ledger]);
+   await owner.query("INSERT INTO account_combinations(id,organization_id,ledger_id,entity_id,account_id) VALUES($1,$2,$3,$4,$5)", [arCombination,id.org,id.ledger,id.entity,ar]);
+   for (const [account, number] of [[customer,"CUSTOMER"],[otherCustomer,"OTHER-CUSTOMER"]]) {
+     await owner.query("INSERT INTO party_accounts(id,organization_id,legal_entity_id,ledger_id,party_id,role,account_number,control_account_id) VALUES($1,$2,$3,$4,$5,'CUSTOMER',$6,$7)", [account,id.org,id.entity,id.ledger,id.party,number,ar]);
+   }
+   const fx = { rate: "1", source: "FUNCTIONAL", effectiveAt: "2025-12-15T00:00:00Z", quoteConvention: "FUNCTIONAL_UNITS_PER_TRANSACTION_UNIT" as const };
+   const issued = [];
+   for (let index = 0; index < 4; index += 1) {
+     const sourceNumber = `SYNTHETIC-AR-${index}`;
+     const draft = await createBusinessDocumentDraft({ context: context(), kind: "SALES_INVOICE", sourceNumber,
+       ledgerId:id.ledger, legalEntityId:id.entity, partyAccountId:customer, controlAccountCombinationId:arCombination,
+       documentDate:"2025-12-15", accountingDate:"2025-12-15", periodId:id.period, dueOn:"2025-12-31",
+       currency:"CAD", fx, description:"Synthetic receivable lookup",
+       lines:[{description:"Service",accountCombinationId:revenueCombination,netAmount:"100",tax:{packKey:"ca.on.hst",category:"OUT_OF_SCOPE",destinationCountry:"CA",destinationRegion:"ON",registrationId:id.taxRegistration}}],idempotencyKey:randomUUID() });
+     issued.push(await issueBusinessDocument({context:context(),kind:"SALES_INVOICE",sourceNumber,expectedVersion:draft.document.version,idempotencyKey:randomUUID()}));
+   }
+   const scope = { context: context(), legalEntityId: id.entity, ledgerId: id.ledger, partyAccountId: customer, currency: "CAD" };
+   const first = await listReceivableOpenItems({ ...scope, limit: 2 });
+   const cursor = (row: typeof first[number]) => ({ dueDate:row.dueDate,sourceNumber:row.sourceNumber,openItemId:row.openItemId });
+   const second = await listReceivableOpenItems({ ...scope, limit: 2, after: cursor(first[1]) });
+   expect([...first,...second].map(row=>row.openItemId)).toEqual(issued.map(row=>row.openItemId));
+   expect(await listReceivableOpenItems({...scope,limit:2,after:cursor(second[1])})).toEqual([]);
+   const item = (await listReceivableOpenItems({...scope,sourceDocumentId:issued[0].document.id}))[0];
+   expect(item).toMatchObject({openItemId:issued[0].openItemId,remainingAmount:"100.000000000",settlementStatus:"OPEN"});
+   expect(await listReceivableOpenItems({...scope,partyAccountId:otherCustomer})).toEqual([]);
+   expect(await listReceivableOpenItems({...scope,legalEntityId:randomUUID()})).toEqual([]);
+   expect(await listReceivableOpenItems({...scope,currency:"USD"})).toEqual([]);
+   await expect(listReceivableOpenItems({...scope,context:{...context(),organizationId:randomUUID()}})).rejects.toThrow();
+   const receipt = { context: context(), kind:"CUSTOMER_RECEIPT" as const, sourceNumber:"SYNTHETIC-AR-RECEIPT-1",
+     ledgerId:id.ledger,legalEntityId:id.entity,partyAccountId:customer,controlAccountCombinationId:arCombination,
+     bankAccountCombinationId:id.cashCombination,realizedFxGainAccountCombinationId:id.gainCombination,realizedFxLossAccountCombinationId:id.expenseCombination,periodId:id.period,accountingDate:"2025-12-20",settlementDate:"2025-12-20",
+     currency:"CAD",amount:"40",fx:{...fx,effectiveAt:"2025-12-20T00:00:00Z"},description:"Synthetic partial receipt",
+     allocations:[{openItemId:item.openItemId,transactionAmount:"40"}],idempotencyKey:randomUUID() };
+   const partial = await recordCustomerReceiptOrSupplierPayment(receipt);
+   expect((await recordCustomerReceiptOrSupplierPayment(receipt)).document.id).toBe(partial.document.id);
+   expect((await listReceivableOpenItems({...scope,sourceNumber:item.sourceNumber}))[0]).toMatchObject({remainingAmount:"60.000000000",settlementStatus:"PARTIALLY_SETTLED"});
+   expect((await listReceivableOpenItems({...scope,sourceNumber:item.sourceNumber,asOfDate:"2025-12-19"}))[0]).toMatchObject({remainingAmount:"100.000000000",settlementStatus:"OPEN"});
+   await expect(recordCustomerReceiptOrSupplierPayment({...receipt,partyAccountId:otherCustomer,sourceNumber:"SYNTHETIC-AR-WRONG-CUSTOMER",idempotencyKey:randomUUID()})).rejects.toThrow();
+   const final = {...receipt,amount:"60",allocations:[{openItemId:item.openItemId,transactionAmount:"60"}]};
+   const competing = await Promise.allSettled([1,2].map(n=>recordCustomerReceiptOrSupplierPayment({...final,sourceNumber:`SYNTHETIC-AR-FINAL-${n}`,idempotencyKey:randomUUID()})));
+   expect(competing.filter(result=>result.status==="fulfilled")).toHaveLength(1);
+   expect(competing.filter(result=>result.status==="rejected")).toHaveLength(1);
+   expect(await listReceivableOpenItems({...scope,sourceNumber:item.sourceNumber})).toEqual([]);
+   expect((await listReceivableOpenItems({...scope,sourceNumber:item.sourceNumber,statuses:["SETTLED"]}))[0]).toMatchObject({openItemId:item.openItemId,remainingAmount:"0.000000000",settlementStatus:"SETTLED"});
+   expect((await owner.query("SELECT sum(transaction_amount)::text amount,count(*)::int n FROM document_settlement_allocations WHERE organization_id=$1 AND open_item_id=$2",[id.org,item.openItemId])).rows[0]).toEqual({amount:"100.000000000",n:2});
  },30000);
  it("captures an encrypted immutable draft and replays the same create without posting",async()=>{manual=await journalRecord();const args=batch([manual]);review=await createBookingBatch(context(),args);expect(review.status).toBe("DRAFT");expect(review.snapshot.entries[0].linesArePosted).toBe(false);expect((await createBookingBatch(context(),args)).reportId).toBe(review.reportId);await expect(createBookingBatch(context(),{...args,title:"Changed"})).rejects.toThrow(/Idempotency/);
  const raw=(await owner.query("SELECT snapshot_ciphertext FROM booking_batch_reports WHERE id=$1",[review.reportId])).rows[0];expect(raw.snapshot_ciphertext).not.toContain("Synthetic booked journal");expect((await owner.query("SELECT status FROM journal_entries WHERE id=$1",[manual.id])).rows[0].status).toBe("DRAFT");});

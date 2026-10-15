@@ -1,10 +1,13 @@
 "use client";
+import { TaxDraftReview } from "./tax-draft-review.client";
+import type { TaxDraftRow, TaxDraftKind } from "@/modules/tax/draft-service";
+
 
 import { CompactDisclosure } from "./compact-disclosure.client";
 
 import { SectionTabs } from "./section-tabs.client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { useRouter } from "next/navigation";
 import { MutationFeedback } from "@/app/_components/mutation-feedback.client";
 import type { TaxFilingField, TaxMappingBalanceBasis } from "@/modules/tax/filing-template";
@@ -161,18 +164,33 @@ function idempotencyCommand() {
   return { fingerprint: "", key: crypto.randomUUID() };
 }
 
-export function TaxFilingWorkspace({ workspace, refreshFilingId }: { workspace: TaxFilingWorkspaceDto; refreshFilingId?: string }) {
-  const refreshSource = workspace.filings.find((filing) => filing.id === refreshFilingId);
+// Keep server-rendered controls disabled until hydration can retain their edits.
+const subscribeHydration = () => () => {};
+const clientReady = () => true;
+const serverReady = () => false;
+
+export function TaxFilingWorkspace({ workspace, refreshFilingId, initialDraft }: { workspace: TaxFilingWorkspaceDto; refreshFilingId?: string; initialDraft?: TaxDraftRow }) {
+  const [activeDraft,setActiveDraft]=useState<TaxDraftRow | null>(initialDraft??null);
+  const [draftDirty,setDraftDirty]=useState(false);
+  const draftInput=initialDraft?.payload;
+  const refreshSource = workspace.filings.find((filing) => filing.id === (refreshFilingId ?? initialDraft?.payload.refreshFromFilingId));
   const router = useRouter();
+  const interactive = useSyncExternalStore(subscribeHydration, clientReady, serverReady);
   const today = new Date().toISOString().slice(0, 10);
   const initialConfiguration = [...(workspace.configurations ?? [])]
     .filter((configuration) => configuration.state === "ACTIVE" && configuration.effectiveFrom <= today && (!configuration.effectiveTo || configuration.effectiveTo >= today))
     .sort((left, right) => right.effectiveFrom.localeCompare(left.effectiveFrom) || right.version - left.version)[0];
-  const initialTemplateId = refreshSource?.freshness.readiness.configuration?.templateId ?? refreshSource?.templateId ?? initialConfiguration?.templateId ?? workspace.templates[0]?.id ?? "";
-  const initialLedgerId = refreshSource?.ledgerId ?? initialConfiguration?.ledgerId ?? workspace.ledgers.find(
+  const initialTemplateId = (draftInput?.templateId as string | undefined) ?? refreshSource?.freshness.readiness.configuration?.templateId ?? refreshSource?.templateId ?? initialConfiguration?.templateId ?? workspace.templates[0]?.id ?? "";
+  const initialLedgerId = (draftInput?.ledgerId as string | undefined) ?? refreshSource?.ledgerId ?? initialConfiguration?.ledgerId ?? workspace.ledgers.find(
     (candidate) => candidate.currencyCode === workspace.templates[0]?.currencyCode,
   )?.ledgerId ?? workspace.ledgers[0]?.ledgerId ?? "";
   const initialSelections = mappingSelections(workspace, initialTemplateId, initialLedgerId);
+  if(initialDraft?.kind==="MAPPING" && Array.isArray(draftInput?.mappings)){
+    initialSelections.accounts={}; initialSelections.bases={};
+    for(const line of draftInput.mappings as {fieldKey:string;glAccountId:string;balanceBasis:TaxMappingBalanceBasis}[]){
+      (initialSelections.accounts[line.fieldKey]??=[]).push(line.glAccountId);initialSelections.bases[line.fieldKey]=line.balanceBasis;
+    }
+  }
   const [templateId, setTemplateId] = useState(initialTemplateId);
   const [ledgerId, setLedgerId] = useState(initialLedgerId);
   const [accountSelections, setAccountSelections] = useState<Record<string, string[]>>(
@@ -181,8 +199,9 @@ export function TaxFilingWorkspace({ workspace, refreshFilingId }: { workspace: 
   const [basisSelections, setBasisSelections] = useState<Record<string, TaxMappingBalanceBasis>>(
     () => initialSelections.bases,
   );
-  const [mappingEffectiveFrom, setMappingEffectiveFrom] = useState(today);
-  const [mappingReason, setMappingReason] = useState("");
+  const [mappingEffectiveFrom, setMappingEffectiveFrom] = useState(initialDraft?.kind==="MAPPING"?String(draftInput?.effectiveFrom??today):today);
+  const [mappingEffectiveTo,setMappingEffectiveTo]=useState(initialDraft?.kind==="MAPPING"?String(draftInput?.effectiveTo??""):"");
+  const [mappingReason, setMappingReason] = useState(initialDraft?.kind==="MAPPING"?String(draftInput?.reason??""):"");
   const [mappingQuery, setMappingQuery] = useState("");
   const [mappingFeedback, setMappingFeedback] = useState<Feedback | null>(null);
   const [mappingBusy, setMappingBusy] = useState(false);
@@ -199,10 +218,10 @@ export function TaxFilingWorkspace({ workspace, refreshFilingId }: { workspace: 
     affectedPeriods: { id: string; label: string }[];
   } | null>(null);
   const mappingCorrectionCommand = useRef(idempotencyCommand());
-  const [configurationReason, setConfigurationReason] = useState("");
-  const [configurationEffectiveFrom, setConfigurationEffectiveFrom] = useState(() => new Date().toISOString().slice(0, 10));
-  const [configurationEffectiveTo, setConfigurationEffectiveTo] = useState("");
-  const [configurationState, setConfigurationState] = useState<"ACTIVE" | "INACTIVE">("ACTIVE");
+  const [configurationReason, setConfigurationReason] = useState(initialDraft?.kind==="CONFIGURATION"?String(draftInput?.reason??""):"");
+  const [configurationEffectiveFrom, setConfigurationEffectiveFrom] = useState(initialDraft?.kind==="CONFIGURATION"?String(draftInput?.effectiveFrom??today):today);
+  const [configurationEffectiveTo, setConfigurationEffectiveTo] = useState(initialDraft?.kind==="CONFIGURATION"?String(draftInput?.effectiveTo??""):"");
+  const [configurationState, setConfigurationState] = useState<"ACTIVE" | "INACTIVE" | "NEEDS_CONFIGURATION">(draftInput?.state==="INACTIVE"?"INACTIVE":draftInput?.state==="NEEDS_CONFIGURATION"?"NEEDS_CONFIGURATION":"ACTIVE");
   const [showConfigurationHistory, setShowConfigurationHistory] = useState(false);
   const [configurationBusy, setConfigurationBusy] = useState(false);
   const configurationCommand = useRef(idempotencyCommand());
@@ -219,13 +238,13 @@ export function TaxFilingWorkspace({ workspace, refreshFilingId }: { workspace: 
   } | null>(null);
   const correctionCommand = useRef(idempotencyCommand());
 
-  const [filingType, setFilingType] = useState<"PREPARED" | "HISTORICAL_IMPORT">(refreshSource ? "HISTORICAL_IMPORT" : "PREPARED");
-  const [periodStart, setPeriodStart] = useState(refreshSource?.periodStart ?? "");
-  const [periodEnd, setPeriodEnd] = useState(refreshSource?.periodEnd ?? "");
-  const [externalReference, setExternalReference] = useState(refreshSource?.externalReference ?? (refreshSource ? `Workpaper ${refreshSource.id}` : ""));
-  const [sourceFileName, setSourceFileName] = useState(refreshSource?.sourceFileName ?? "");
-  const [manualValues, setManualValues] = useState<Record<string, string>>({ ...refreshSource?.manualValues });
-  const [reportedValues, setReportedValues] = useState<Record<string, string>>({ ...refreshSource?.reportedValues });
+  const [filingType, setFilingType] = useState<"PREPARED" | "HISTORICAL_IMPORT">(draftInput?.filingType==="HISTORICAL_IMPORT" || refreshSource ? "HISTORICAL_IMPORT" : "PREPARED");
+  const [periodStart, setPeriodStart] = useState(String(draftInput?.periodStart??refreshSource?.periodStart??""));
+  const [periodEnd, setPeriodEnd] = useState(String(draftInput?.periodEnd??refreshSource?.periodEnd??""));
+  const [externalReference, setExternalReference] = useState(String(draftInput?.externalReference??refreshSource?.externalReference??(refreshSource?`Workpaper ${refreshSource.id}`:"")));
+  const [sourceFileName, setSourceFileName] = useState(String(draftInput?.sourceFileName??refreshSource?.sourceFileName??""));
+  const [manualValues, setManualValues] = useState<Record<string, string>>({ ...refreshSource?.manualValues, ...(draftInput?.manualValues as Record<string,string>|undefined) });
+  const [reportedValues, setReportedValues] = useState<Record<string, string>>({ ...refreshSource?.reportedValues, ...(draftInput?.reportedValues as Record<string,string>|undefined) });
   const [filingFeedback, setFilingFeedback] = useState<Feedback | null>(null);
   const [filingBusy, setFilingBusy] = useState(false);
   const filingCommand = useRef(idempotencyCommand());
@@ -312,6 +331,16 @@ export function TaxFilingWorkspace({ workspace, refreshFilingId }: { workspace: 
     setCorrectionReview(null);
   };
 
+  const draftIdentity=useRef<Partial<Record<TaxDraftKind,string>>>({});
+  async function saveInputDraft(kind:TaxDraftKind,payload:Record<string,unknown>,idempotencyKey:string){
+    const existing=activeDraft?.kind===kind?activeDraft:null;
+    if(existing?.state==="LOCKED" || existing?.state==="DISCARDED")throw new Error("Create a corrected version or restore the discarded draft before editing.");
+    const draftId=existing?.draft_id??(draftIdentity.current[kind]??=crypto.randomUUID());
+    const response=await fetch("/api/tax/drafts",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({kind,action:"SAVE",draftId,expectedVersion:existing?.version??0,payload,reason:String(payload.reason??"Save workpaper preparation inputs"),idempotencyKey:`${idempotencyKey}:${existing?.version??0}`})});
+    const result=await response.json();if(!response.ok)throw new Error(result.error??"The tax draft could not be saved.");
+    setActiveDraft(result.draft);setDraftDirty(false);router.refresh();
+  }
+
   const saveConfiguration = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (!template || !ledger || configurationBusy) return;
@@ -329,7 +358,7 @@ export function TaxFilingWorkspace({ workspace, refreshFilingId }: { workspace: 
       filingTypeKey: template.templateKey,
       templateId: template.id,
       mappingSetId: mapping.mappingSetId,
-      expectedConfigurationVersion: currentConfiguration?.version ?? 0,
+      expectedConfigurationVersion: activeDraft?.kind==="CONFIGURATION" && activeDraft.payload.templateId===template.id ? Number(activeDraft.payload.expectedConfigurationVersion) : currentConfiguration?.version ?? 0,
       state: configurationState,
       effectiveFrom: configurationEffectiveFrom,
       ...(configurationEffectiveTo ? { effectiveTo: configurationEffectiveTo } : {}),
@@ -339,14 +368,8 @@ export function TaxFilingWorkspace({ workspace, refreshFilingId }: { workspace: 
     if (configurationCommand.current.fingerprint !== fingerprint) configurationCommand.current = { fingerprint, key: crypto.randomUUID() };
     setConfigurationBusy(true); setMappingFeedback(null);
     try {
-      const response = await fetch("/api/tax/configurations", {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ...fields, idempotencyKey: configurationCommand.current.key }),
-      });
-      const payload = await response.json() as { error?: string; version?: number };
-      if (!response.ok) throw new Error(payload.error ?? "The filing configuration could not be saved.");
-      setMappingFeedback({ kind: "success", message: `Filing configuration version ${payload.version ?? "new"} activated without changing any existing workpaper.` });
-      setConfigurationReason(""); router.refresh();
+      await saveInputDraft("CONFIGURATION",fields,configurationCommand.current.key);
+      setMappingFeedback({kind:"success",message:"Configuration draft saved. Review its exact dates and mapping, then lock to activate the selected configuration state."});
     } catch (error) {
       setMappingFeedback({ kind: "error", message: error instanceof Error ? error.message : "The filing configuration could not be saved." });
     } finally { setConfigurationBusy(false); }
@@ -462,15 +485,16 @@ export function TaxFilingWorkspace({ workspace, refreshFilingId }: { workspace: 
       fieldKey: field.key,
       glAccountId,
       balanceBasis: basisSelections[field.key] ?? field.defaultBalanceBasis ?? "NET_DEBIT",
-      multiplier: "1",
+      multiplier: activeDraft?.kind==="MAPPING" ? (activeDraft.payload.mappings as {fieldKey:string;glAccountId:string;multiplier:string}[]).find(line=>line.fieldKey===field.key&&line.glAccountId===glAccountId)?.multiplier??"1" : "1",
     })));
     return {
       legalEntityId: ledger.legalEntityId,
       ledgerId: ledger.ledgerId,
       templateId: template.id,
       expectedTemplateVersion: template.version,
-      expectedMappingVersion: currentMappingVersion?.mappingVersion ?? 0,
+      expectedMappingVersion: activeDraft?.kind==="MAPPING" && activeDraft.payload.templateId===template.id ? Number(activeDraft.payload.expectedMappingVersion) : currentMappingVersion?.mappingVersion ?? 0,
       effectiveFrom: mappingEffectiveFrom,
+      ...(mappingEffectiveTo?{effectiveTo:mappingEffectiveTo}:{}),
       mappings,
       reason: mappingReason.trim(),
     };
@@ -487,16 +511,8 @@ export function TaxFilingWorkspace({ workspace, refreshFilingId }: { workspace: 
     setMappingBusy(true);
     setMappingFeedback(null);
     try {
-      const response = await fetch("/api/tax/mappings", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ...fields, idempotencyKey: mappingCommand.current.key }),
-      });
-      const payload = await response.json() as { error?: string; version?: number };
-      if (!response.ok) throw new Error(payload.error ?? "The account mapping could not be saved.");
-      setMappingFeedback({ kind: "success", message: `Mapping version ${payload.version ?? "new"} saved. Review and activate a filing configuration using this mapping before creating a new workpaper.` });
-      setMappingReason("");
-      router.refresh();
+      await saveInputDraft("MAPPING",fields,mappingCommand.current.key);
+      setMappingFeedback({kind:"success",message:"Mapping draft saved. Review changes and lock the version. This does not activate a filing configuration."});
     } catch (error) {
       setMappingFeedback({ kind: "error", message: error instanceof Error ? error.message : "The account mapping could not be saved." });
     } finally {
@@ -586,6 +602,7 @@ export function TaxFilingWorkspace({ workspace, refreshFilingId }: { workspace: 
       ...(selectedConfiguration ? { configurationId: selectedConfiguration.id } : {}),
       filingType,
       ...(refreshSource ? { refreshFromFilingId: refreshSource.id } : {}),
+      ...(activeDraft?.payload.correctionOfFilingId ? {correctionOfFilingId:activeDraft.payload.correctionOfFilingId} : {}),
       periodStart,
       periodEnd,
       manualValues: Object.fromEntries(Object.entries(manualValues).filter(([, value]) => value.trim() !== "")),
@@ -604,23 +621,8 @@ export function TaxFilingWorkspace({ workspace, refreshFilingId }: { workspace: 
     setFilingBusy(true);
     setFilingFeedback(null);
     try {
-      const response = await fetch("/api/tax/filings", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ...fields, idempotencyKey: filingCommand.current.key }),
-      });
-      const payload = await response.json() as {
-        error?: string;
-        status?: string;
-        varianceCount?: number;
-        failedValidationCount?: number;
-      };
-      if (!response.ok) throw new Error(payload.error ?? "The filing workpaper could not be created.");
-      setFilingFeedback({
-        kind: "success",
-        message: `${filingType === "PREPARED" ? "Return prepared" : "Historical filing reconciled"}: ${payload.status?.replaceAll("_", " ") ?? "saved"}, ${payload.varianceCount ?? 0} variances, ${payload.failedValidationCount ?? 0} rule exceptions.`,
-      });
-      router.refresh();
+      await saveInputDraft("WORKPAPER",fields,filingCommand.current.key);
+      setFilingFeedback({kind:"success",message:"Workpaper input draft saved. Review its exact period and values, then lock to create the frozen calculation."});
     } catch (error) {
       setFilingFeedback({ kind: "error", message: error instanceof Error ? error.message : "The filing workpaper could not be created." });
     } finally {
@@ -662,7 +664,8 @@ export function TaxFilingWorkspace({ workspace, refreshFilingId }: { workspace: 
   const visibleFeedback = mappingCorrectionFeedback ?? correctionFeedback ?? filingFeedback ?? mappingFeedback;
 
   return (
-    <div className={styles.workspace}>
+    <fieldset className={styles.workspace} aria-label="Tax preparation workspace" disabled={!interactive} onChangeCapture={()=>setDraftDirty(true)}>
+      {activeDraft&&<TaxDraftReview draft={activeDraft} dirty={draftDirty} canManage={!!(activeDraft.kind==="MAPPING"?workspace.canManageMappings:activeDraft.kind==="CONFIGURATION"?workspace.canManageConfigurations:workspace.canPrepareFilings)} onChange={draft=>{setActiveDraft(draft);setDraftDirty(false);}}/>}
       {visibleFeedback && <MutationFeedback {...visibleFeedback} onDismiss={() => { setMappingCorrectionFeedback(null); setCorrectionFeedback(null); setMappingFeedback(null); setFilingFeedback(null); }} />}
       <section className={styles.scopeBar} aria-label="Tax filing scope">
         <label><span>Template</span>
@@ -703,13 +706,13 @@ export function TaxFilingWorkspace({ workspace, refreshFilingId }: { workspace: 
             <div className="form-grid form-grid-three">
               <label><span>Effective from</span><input type="date" value={configurationEffectiveFrom} onChange={(event) => setConfigurationEffectiveFrom(event.target.value)} required /></label>
               <label><span>Effective to</span><input type="date" min={configurationEffectiveFrom} value={configurationEffectiveTo} onChange={(event) => setConfigurationEffectiveTo(event.target.value)} /></label>
-              <label><span>Revision state</span><select value={configurationState} onChange={(event) => setConfigurationState(event.target.value as "ACTIVE" | "INACTIVE")}><option value="ACTIVE">Active</option><option value="INACTIVE">Inactive prospectively</option></select></label>
+              <label><span>Revision state</span><select value={configurationState} onChange={(event) => setConfigurationState(event.target.value as "ACTIVE" | "INACTIVE" | "NEEDS_CONFIGURATION")}><option value="ACTIVE">Active</option><option value="INACTIVE">Inactive prospectively</option><option value="NEEDS_CONFIGURATION">Needs configuration</option></select></label>
               <label className="full-field"><span>Configuration reason</span><textarea value={configurationReason} onChange={(event) => setConfigurationReason(event.target.value)} minLength={8} maxLength={500} required placeholder="Why should this exact template and mapping govern future workpapers?" /></label>
             </div>
             {!workspace.canManageConfigurations && <p className="validation-message">{workspace.capabilities?.manageConfigurations.reason ?? "Configuration activation requires tax.filing.configuration.manage. Ask an authorized organization owner to review access."} <Link href="/app/settings">Review organization access</Link></p>}
             {!workspace.canManageCanonical && <p className="validation-message">Canonical selection and lifecycle changes require tax.filing.canonical.manage independently of configuration and preparation permissions. Ask an authorized owner to review access in <Link href="/app/settings">Organization settings</Link>.</p>}
             <p className="form-footnote">Saving a mapping does not activate it. Activation is a separate review of the exact template and mapping. Activation is versioned and prospective. It never rewrites an existing prepared or historical workpaper and never submits a return.</p>
-            <div className="form-actions"><button className="primary-button" disabled={!workspace.canManageConfigurations || configurationBusy || !mappingReady || (template.templateKey === "ca.gst-hst.return" && !scopeRegistration)}>{configurationBusy ? "Activating…" : currentConfiguration ? "Create configuration revision" : "Activate configuration"}</button></div>
+            <div className="form-actions"><button className="primary-button" disabled={!workspace.canManageConfigurations || configurationBusy || !mappingReady || (template.templateKey === "ca.gst-hst.return" && !scopeRegistration)}>{configurationBusy ? "Saving…" : "Save configuration draft"}</button></div>
           </form>
           {currentConfiguration && workspace.canManageConfigurations && <div className="form-footnote">
             <p>An incorrect unused committed revision can be corrected only after reviewing its exact references. The original revision and audit history remain. Ordinary configuration changes use the prospective action above.</p>
@@ -801,13 +804,15 @@ export function TaxFilingWorkspace({ workspace, refreshFilingId }: { workspace: 
                 </label>
               </fieldset></CompactDisclosure>)}
             </div>
+            {workspace.templates.some(candidate=>candidate.templateKey===template.templateKey&&candidate.version>template.version)&&<p className="validation-message">Historical shared template v{template.version}: saving a tenant mapping draft does not change this shared template or activate this version for filing.</p>}
             <label><span>Mapping effective from</span><input type="date" required value={mappingEffectiveFrom} disabled={!workspace.canManageMappings || mappingBusy} onChange={(event) => setMappingEffectiveFrom(event.target.value)} /><small>A revision must start after the preceding mapping. Choose a date applicable to the reporting period.</small></label>
+            <label><span>Mapping effective to (optional)</span><input type="date" value={mappingEffectiveTo} disabled={!workspace.canManageMappings || mappingBusy} onChange={event=>setMappingEffectiveTo(event.target.value)}/></label>
             <label><span>Change reason</span>
               <textarea value={mappingReason} minLength={8} maxLength={500} required disabled={!workspace.canManageMappings || mappingBusy} onChange={(event) => setMappingReason(event.target.value)} placeholder="Why does this account mapping apply to this client?" />
             </label>
             {!workspace.canManageMappings && <p className="validation-message">Your role can view tax workpapers but cannot change client mappings.</p>}
             <div className="form-actions">
-              <button className="primary-button" type="submit" disabled={!workspace.canManageMappings || mappingBusy || !mappingReady}>{mappingBusy ? "Saving…" : "Save mapping version"}</button>
+              <button className="primary-button" type="submit" disabled={!workspace.canManageMappings || mappingBusy || !mappingReady}>{mappingBusy ? "Saving…" : "Save mapping draft"}</button>
             </div>
           </form>
           {currentMappingVersion?.state === "ACTIVE" && workspace.canManageMappings && <div className="form-footnote">
@@ -907,11 +912,11 @@ export function TaxFilingWorkspace({ workspace, refreshFilingId }: { workspace: 
             {mappingReady && !configurationReady && <p className="validation-message validation-error">Activate the exact template and mapping in Filing configuration for this period before preparing a return.</p>}
             {!workspace.canPrepareFilings && <p className="validation-message">Your role can view tax workpapers but cannot prepare or import filings.</p>}
             <div className="form-actions">
-              <button className="primary-button" type="submit" disabled={!workspace.canPrepareFilings || filingBusy || !mappingReady || !configurationReady}>{filingBusy ? "Calculating…" : refreshSource ? "Refresh / reconcile as new comparison" : filingType === "PREPARED" ? "Prepare return" : "Reconcile historical filing"}</button>
+              <button className="primary-button" type="submit" disabled={!workspace.canPrepareFilings || filingBusy || !mappingReady || !configurationReady}>{filingBusy ? "Saving…" : "Save workpaper draft"}</button>
             </div>
           </form>
         </section>
       </SectionTabs>
-    </div>
+    </fieldset>
   );
 }

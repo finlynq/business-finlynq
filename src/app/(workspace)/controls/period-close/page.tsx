@@ -1,3 +1,5 @@
+import { CloseChecklist } from "../../../_components/close-checklist.client";
+import { loadCloseChecklistWorkspace } from "@/modules/close/checklist-service";
 import Link from "next/link";
 import { CompactDisclosure } from "../../../_components/compact-disclosure.client";
 import { demoClosePackages } from "@/modules/demo/dashboard-data";
@@ -32,6 +34,7 @@ export default async function PeriodClosePage() {
   if (principal.sessionMode === "real" || principalCanWrite(principal)) {
     const workspace = await loadPeriodControlWorkspace(principal);
     const closeMonitor = await loadCloseMonitor(principal, workspace.periods);
+    const checklist = await loadCloseChecklistWorkspace(principal);
     return (
       <div className="page-content">
         <PageHeader
@@ -44,7 +47,8 @@ export default async function PeriodClosePage() {
           <p>OPEN moves to ADJUSTMENT ONLY before HARD CLOSED. SEALED is irreversible, and unposted journals block hard close and seal.</p>
         </aside>
         <CompactDisclosure summary="Add fiscal periods" defaultOpen={workspace.periods.length === 0}><PeriodCreationForm workspace={workspace} defaultFiscalYear={new Date().getUTCFullYear()} /></CompactDisclosure>
-        <CloseSourceMonitor periods={closeMonitor} />
+        <CloseChecklist workspace={{...checklist,canManage:checklist.canManage&&principalCanWrite(principal)}} />
+        <CompactDisclosure summary="Additional current source counts"><CloseSourceMonitor periods={closeMonitor} /></CompactDisclosure>
         <PeriodTransitionForm
           key={workspace.periods.map((period) => `${period.id}:${period.version}`).join("|")}
           workspace={workspace}

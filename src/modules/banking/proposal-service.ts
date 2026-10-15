@@ -75,6 +75,16 @@ export const getBankAccountingProposalSchema = z.object({
 
 type ProposalSnapshot = z.output<typeof prepareBankAccountingProposalSchema>;
 
+function assertProposalEvidenceResolved(snapshot: ProposalSnapshot): void {
+  if (snapshot.confidence !== "HIGH" || snapshot.warnings.length > 0 || snapshot.duplicateReferences.length > 0) {
+    throw new BankingServiceError(
+      "Resolve the proposal's confidence, warnings, and duplicate evidence before review or draft creation. Reject the prepared proposal and prepare corrected facts.",
+      409,
+      "BANK_PROPOSAL_REVIEW_REQUIRED",
+    );
+  }
+}
+
 function proposalHash(snapshot: unknown): string {
   return createHash("sha256").update(JSON.stringify(snapshot), "utf8").digest("hex");
 }
@@ -238,7 +248,7 @@ export async function prepareBankAccountingProposal(input: Readonly<{ principal:
       duplicateReferences: [...new Set([...command.duplicateReferences, ...detectedDuplicateReferences])].sort(),
       warnings: detectedDuplicateReferences.length === 0
         ? command.warnings
-        : [...new Set([...command.warnings, "Potential same-date, same-amount bank-line duplicates require explicit reviewer confirmation."])],
+        : [...new Set([...command.warnings, "Potential same-date, same-amount bank-line duplicates must be resolved before draft creation."])],
     };
     const contentHash = proposalHash(normalized);
     if (command.taxEvidence === undefined && command.lines.some((line) => line.memo?.toLowerCase().includes("tax"))) {
@@ -364,6 +374,7 @@ export async function decideBankAccountingProposal(input: Readonly<{ principal: 
     }
     const current = await currentProposal(client, principal.organizationId, command.proposalId);
     if (current.version !== command.expectedVersion || current.proposal_hash !== command.expectedProposalHash || current.status !== "PREPARED") throw new BankingServiceError("The proposal changed or is no longer awaiting review.", 409, "BANK_PROPOSAL_VERSION_CONFLICT");
+    if (command.decision === "REVIEW") assertProposalEvidenceResolved(prepareBankAccountingProposalSchema.parse(current.proposal_snapshot));
     return { ...await appendProposalVersion({ client, principal, previous: current, status: command.decision === "REVIEW" ? "REVIEWED" : "REJECTED", reason: command.reason, idempotencyKey: command.idempotencyKey, commandHash }), idempotentReplay: false };
   });
 }
@@ -385,6 +396,7 @@ export async function commitBankAccountingProposal(input: Readonly<{ principal: 
     const proposal = await currentProposal(client, principal.organizationId, command.proposalId);
     if (proposal.version !== command.expectedVersion || proposal.proposal_hash !== command.expectedProposalHash || proposal.status !== "REVIEWED") throw new BankingServiceError("Only the exact reviewed proposal can create a draft.", 409, "BANK_PROPOSAL_VERSION_CONFLICT");
     const snapshot = prepareBankAccountingProposalSchema.parse(proposal.proposal_snapshot);
+    assertProposalEvidenceResolved(snapshot);
     const journal = await createManualJournal({
       context: mutationContext(principal, requestId, { reason: command.reason, sourceSurface: "MCP" }),
       ledgerId: snapshot.ledgerId,
