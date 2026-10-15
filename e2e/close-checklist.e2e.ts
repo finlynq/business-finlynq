@@ -1,0 +1,61 @@
+import { build } from "esbuild";
+import { resolve } from "node:path";
+import { test, expect } from "@playwright/test";
+import { defaultCloseTemplate } from "../src/modules/close/checklist-model";
+import type { loadCloseChecklistWorkspace, inspectCloseInstance, listCloseNotifications } from "../src/modules/close/checklist-service";
+const id = (n: number) => `60000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
+test("persistent close browser: truthful stages, saved evidence and review invalidation", async ({ page }) => {
+    const definition = { ...defaultCloseTemplate, tasks: [...defaultCloseTemplate.tasks, { key: "manual", label: "Manual close evidence", source: "MANUAL" as const, prerequisites: [], ownerId: id(1), reviewerId: id(1), dueOffsetDays: 5 }] };
+    const instance = { id: id(2), legal_entity_id: id(3), ledger_id: id(4), period_id: id(5), template_revision_id: id(6), task_definitions: definition.tasks, created_by: id(1), created_at: "2026-01-01T00:00:00Z", reason: "Synthetic close fixture", command_hash: "a".repeat(64) };
+    const workspace: Awaited<ReturnType<typeof loadCloseChecklistWorkspace>> = { templates: [{ id: id(6), template_id: id(7), version: 1, definition, created_by: id(1), created_at: instance.created_at, reason: instance.reason, command_hash: instance.command_hash }], instances: [instance], periods: [{ id: id(5), ledgerId: id(4), entityId: id(3), label: "Synthetic company · PRIMARY · September 2025", startsOn: "2025-09-01", endsOn: "2025-09-30", state: "OPEN" }], people: [{ id: id(1), label: "Synthetic reviewer" }], actorId: id(1), canManage: true, defaultTemplate: definition };
+    const view: Awaited<ReturnType<typeof inspectCloseInstance>> = { instance, scope: { periodId: id(5), ledgerId: id(4), legalEntityId: id(3), fiscalYear: 2025, startsOn: "2025-09-01", endsOn: "2025-09-30", periodState: "OPEN", periodVersion: 1, entityName: "Synthetic company", ledgerCode: "PRIMARY", currency: "CAD", label: "September 2025" }, history: [], ready: false, checkedAt: instance.created_at, tasks: definition.tasks.map(definition => ({ key: definition.key, definition, version: 0, input: { ownerId: definition.ownerId, reviewerId: definition.reviewerId, dueOn: "2025-10-05", status: "NOT_STARTED", blockingReason: null, evidence: [] }, effectiveStatus: "NOT_STARTED", stale: false, blockers: [], source: { source: definition.source, available: true, ready: !["DEPRECIATION", "TAX_PROVISION"].includes(definition.source), stage: definition.source === "DEPRECIATION" ? "DUE" : definition.source === "PREPAIDS" ? "POSTED" : definition.source === "TAX_PROVISION" ? "NOT_COMPUTED" : "REVIEW_REQUIRED", detail: definition.source === "DEPRECIATION" ? "CAD 37.50 depreciation remains due; no journal link." : definition.source === "PREPAIDS" ? "Prepaid release posted; existing journal retained." : definition.source === "TAX_PROVISION" ? "No period-end tax calculation exists." : "Inspect source evidence.", href: "/app/assets", evidence: { synthetic: true }, hash: "b".repeat(64) }, sourceHash: "c".repeat(64), review: null, record: null, sourcePeriodId: id(5), carriedFromRevisionId: null, allowedActions: ["UPDATE", "REVIEW"], dependencies: [] })) };
+    const notices: Awaited<ReturnType<typeof listCloseNotifications>> = { channel: "IN_APP", asOfDate: "2026-01-01", preference: null, pending: [] };
+    const root = resolve(__dirname, ".."), result = await build({ absWorkingDir: root, bundle: true, write: false, platform: "browser", format: "iife", jsx: "automatic", outfile: "close.js", stdin: { resolveDir: root, loader: "tsx", contents: `import{createRoot}from'react-dom/client';import{CloseChecklist}from'@/app/_components/close-checklist.client';createRoot(document.getElementById('root')).render(<CloseChecklist workspace={${JSON.stringify(workspace)}}/>);` }, plugins: [{ name: "next-fixture", setup(b) { b.onResolve({ filter: /^next\/(navigation|link)$/ }, args => ({ path: args.path, namespace: "fixture" })); b.onLoad({ filter: /.*/, namespace: "fixture" }, args => ({ loader: "tsx", resolveDir: root, contents: args.path.endsWith("navigation") ? 'export function useRouter(){return{refresh(){}}}' : 'import React from "react";export default function Link(props){return <a {...props}/>;}' })); } }] });
+    await page.route("**/__e2e__/close", route => route.fulfill({ contentType: "text/html", body: `<!doctype html><html><body><div id="root"></div><script>${result.outputFiles[0]!.text.replaceAll("</script", "<\\/script")}</script></body></html>` }));
+    await page.route("**/api/close/checklist/preview?*", route => route.fulfill({ json: { view, notices } }));
+    const actions: string[] = [];
+    await page.route("**/api/close/checklist/tasks", async (route) => {
+        const c = route.request().postDataJSON(), task = view.tasks.find(t => t.key === c.taskKey)!;
+        expect(c.expectedVersion).toBe(task.version);
+        actions.push(c.action);
+        task.version++;
+        if (c.action === "UPDATE") {
+            task.input = c.input;
+            task.review = null;
+            task.effectiveStatus = c.input.status;
+        }
+        else {
+            expect(c.sourceHash).toBe(task.sourceHash);
+            task.input.status = c.action === "REVIEW" ? "REVIEWED" : "COMPLETE";
+            task.effectiveStatus = task.input.status;
+            task.review = { actorId: id(1) };
+        }
+        await route.fulfill({ json: { task, idempotentReplay: false } });
+    });
+    await page.goto("/__e2e__/close");
+    await page.getByRole("button", { name: "Resume this close" }).click();
+    expect(actions).toEqual([]);
+    await expect(page.locator("summary").filter({ hasText: "Post due depreciation" })).toContainText("Source: due");
+    await expect(page.locator("summary").filter({ hasText: "Post due prepaid" })).toContainText("Source: posted");
+    await expect(page.locator("summary").filter({ hasText: "Current-tax provision" })).toContainText("Source: not computed");
+    const manual = page.locator("details").filter({ has: page.locator("summary", { hasText: "Manual close evidence" }) }).first();
+    await manual.locator("summary").first().click();
+    await manual.getByLabel("Supporting evidence, one reference or explanation per line").fill("Synthetic reviewed completeness reference");
+    await manual.getByLabel("Reason for this decision").fill("Synthetic evidence saved for review");
+    await expect(manual.getByRole("button", { name: "Review current evidence" })).toBeDisabled();
+    await manual.getByRole("button", { name: "Save task changes" }).click();
+    await manual.locator("summary").first().click();
+    await manual.getByLabel("Reason for this decision").fill("Synthetic assigned reviewer decision");
+    await manual.getByRole("button", { name: "Review current evidence" }).click();
+    await manual.locator("summary").first().click();
+    await manual.getByLabel("Reason for this decision").fill("Synthetic completion of current review");
+    await expect(manual.getByRole("button", { name: "Complete reviewed task" })).toBeEnabled();
+    await manual.getByLabel("Due date").fill("2025-10-06");
+    await expect(manual.getByRole("button", { name: "Complete reviewed task" })).toBeDisabled();
+    await manual.getByLabel("Due date").fill("2025-10-05");
+    await manual.getByRole("button", { name: "Complete reviewed task" }).click();
+    await expect(manual.locator("summary").first()).toContainText("complete");
+    expect(actions).toEqual(["UPDATE", "REVIEW", "COMPLETE"]);
+    await page.locator("summary").filter({ hasText: "My in-app close notices" }).click();
+    await expect(page.getByLabel("Enable my in-app notices")).not.toBeChecked();
+});

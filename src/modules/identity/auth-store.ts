@@ -1,3 +1,4 @@
+import type { SigninNotificationContext } from "./signin-notification";
 import { queryDatabase } from "@/db/transaction";
 
 export type LoginIdentity = Readonly<{
@@ -160,13 +161,16 @@ export async function issueMfaUserSession(input: {
   userId: string; organizationId: string; membershipId: string; factorId: string; totpCounter: number;
   tokenHash: string; ipHash: string; userAgentHash: string; requestId: string;
   replacedDemoSessionTokenHash?: string | null;
+  notificationContext?: SigninNotificationContext;
 }): Promise<string | null> {
   // The login route supplies a replacement token only after resolving it as a
   // DEMO principal. Keeping issuance and revocation in one PostgreSQL statement
   // prevents a failed replacement from orphaning a newly issued REAL session.
   const result = await queryDatabase<{ session_id: string | null }>(
-    `WITH issued AS MATERIALIZED (
-       SELECT app.auth_issue_mfa_user_session($1,$2,$3,$4,$5,$6,$7,$8,$9) AS session_id
+    `WITH notification_context AS MATERIALIZED (
+       SELECT set_config('app.signin_notification_context', $11::text, true) AS configured
+     ), issued AS MATERIALIZED (
+       SELECT app.auth_issue_mfa_user_session(CASE WHEN notification_context.configured IS NOT NULL THEN $1::uuid END,$2,$3,$4,$5,$6,$7,$8,$9) AS session_id FROM notification_context
      ), demo_replacement AS MATERIALIZED (
        SELECT app.auth_revoke_session($10,$9) AS revoked
        FROM issued
@@ -178,7 +182,8 @@ export async function issueMfaUserSession(input: {
      LEFT JOIN demo_replacement ON true`,
     [input.userId, input.organizationId, input.membershipId, input.factorId, input.totpCounter,
       input.tokenHash, input.ipHash, input.userAgentHash, input.requestId,
-      input.replacedDemoSessionTokenHash ?? null],
+      input.replacedDemoSessionTokenHash ?? null,
+      JSON.stringify(input.notificationContext ? { ...input.notificationContext, sessionTokenHash: input.tokenHash } : {})],
   );
   return result.rows[0]?.session_id ?? null;
 }
@@ -187,14 +192,17 @@ export async function issueMfaUserSessionWithTrust(input: {
   userId: string; organizationId: string; membershipId: string; factorId: string; totpCounter: number;
   tokenHash: string; trustedBrowserTokenHash: string; ipHash: string; userAgentHash: string;
   browserLabel: string; requestId: string; replacedDemoSessionTokenHash?: string | null;
+  notificationContext?: SigninNotificationContext;
 }): Promise<TrustedBrowserSessionIssuance | null> {
   const result = await queryDatabase<{
     session_id: string | null;
     trusted_browser_id: string | null;
     trusted_browser_expires_at: Date | null;
   }>(
-    `WITH issued AS MATERIALIZED (
-       SELECT * FROM app.auth_issue_mfa_user_session_trusted($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+    `WITH notification_context AS MATERIALIZED (
+       SELECT set_config('app.signin_notification_context', $13::text, true) AS configured
+     ), issued AS MATERIALIZED (
+       SELECT issuance.* FROM notification_context CROSS JOIN LATERAL app.auth_issue_mfa_user_session_trusted(CASE WHEN notification_context.configured IS NOT NULL THEN $1::uuid END,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) issuance
      ), demo_replacement AS MATERIALIZED (
        SELECT app.auth_revoke_session($12,$11) AS revoked
        FROM issued
@@ -208,7 +216,8 @@ export async function issueMfaUserSessionWithTrust(input: {
     [input.userId, input.organizationId, input.membershipId, input.factorId,
       input.totpCounter, input.tokenHash, input.trustedBrowserTokenHash,
       input.ipHash, input.userAgentHash, input.browserLabel, input.requestId,
-      input.replacedDemoSessionTokenHash ?? null],
+      input.replacedDemoSessionTokenHash ?? null,
+      JSON.stringify(input.notificationContext ? { ...input.notificationContext, sessionTokenHash: input.tokenHash } : {})],
   );
   const row = result.rows[0];
   if (!row?.session_id || !row.trusted_browser_id || !row.trusted_browser_expires_at) return null;
@@ -224,14 +233,17 @@ export async function issueTrustedBrowserUserSession(input: {
   trustedBrowserTokenHash: string; replacementTrustedBrowserTokenHash: string;
   sessionTokenHash: string; ipHash: string; userAgentHash: string; requestId: string;
   replacedDemoSessionTokenHash?: string | null;
+  notificationContext?: SigninNotificationContext;
 }): Promise<TrustedBrowserSessionIssuance | null> {
   const result = await queryDatabase<{
     session_id: string | null;
     trusted_browser_id: string | null;
     trusted_browser_expires_at: Date | null;
   }>(
-    `WITH issued AS MATERIALIZED (
-       SELECT * FROM app.auth_issue_trusted_browser_user_session($1,$2,$3,$4,$5,$6,$7,$8,$9)
+    `WITH notification_context AS MATERIALIZED (
+       SELECT set_config('app.signin_notification_context', $11::text, true) AS configured
+     ), issued AS MATERIALIZED (
+       SELECT issuance.* FROM notification_context CROSS JOIN LATERAL app.auth_issue_trusted_browser_user_session(CASE WHEN notification_context.configured IS NOT NULL THEN $1::uuid END,$2,$3,$4,$5,$6,$7,$8,$9) issuance
      ), demo_replacement AS MATERIALIZED (
        SELECT app.auth_revoke_session($10,$9) AS revoked
        FROM issued
@@ -245,7 +257,8 @@ export async function issueTrustedBrowserUserSession(input: {
     [input.userId, input.organizationId, input.membershipId,
       input.trustedBrowserTokenHash, input.replacementTrustedBrowserTokenHash,
       input.sessionTokenHash, input.ipHash, input.userAgentHash, input.requestId,
-      input.replacedDemoSessionTokenHash ?? null],
+      input.replacedDemoSessionTokenHash ?? null,
+      JSON.stringify(input.notificationContext ? { ...input.notificationContext, sessionTokenHash: input.sessionTokenHash } : {})],
   );
   const row = result.rows[0];
   if (!row?.session_id || !row.trusted_browser_id || !row.trusted_browser_expires_at) return null;
@@ -260,10 +273,13 @@ export async function issuePasswordUserSession(input: {
   userId: string; organizationId: string; membershipId: string;
   tokenHash: string; ipHash: string; userAgentHash: string; requestId: string;
   replacedDemoSessionTokenHash?: string | null;
+  notificationContext?: SigninNotificationContext;
 }): Promise<string | null> {
   const result = await queryDatabase<{ session_id: string | null }>(
-    `WITH issued AS MATERIALIZED (
-       SELECT app.auth_issue_password_user_session($1,$2,$3,$4,$5,$6,$7) AS session_id
+    `WITH notification_context AS MATERIALIZED (
+       SELECT set_config('app.signin_notification_context', $9::text, true) AS configured
+     ), issued AS MATERIALIZED (
+       SELECT app.auth_issue_password_user_session(CASE WHEN notification_context.configured IS NOT NULL THEN $1::uuid END,$2,$3,$4,$5,$6,$7) AS session_id FROM notification_context
      ), demo_replacement AS MATERIALIZED (
        SELECT app.auth_revoke_session($8,$7) AS revoked
        FROM issued
@@ -275,7 +291,8 @@ export async function issuePasswordUserSession(input: {
      LEFT JOIN demo_replacement ON true`,
     [input.userId, input.organizationId, input.membershipId, input.tokenHash,
       input.ipHash, input.userAgentHash, input.requestId,
-      input.replacedDemoSessionTokenHash ?? null],
+      input.replacedDemoSessionTokenHash ?? null,
+      JSON.stringify(input.notificationContext ? { ...input.notificationContext, sessionTokenHash: input.tokenHash } : {})],
   );
   return result.rows[0]?.session_id ?? null;
 }
@@ -285,10 +302,13 @@ export async function issueOidcUserSession(input: {
   tokenHash: string; ipHash: string; userAgentHash: string; requestId: string;
   credentialHash: string; mfaAssurance: "NONE" | "AMR_MFA" | "AUTH_CONTEXT";
   replacedDemoSessionTokenHash?: string | null;
+  notificationContext?: SigninNotificationContext;
 }): Promise<string | null> {
   const result = await queryDatabase<{ session_id: string | null }>(
-    `WITH issued AS MATERIALIZED (
-       SELECT app.auth_issue_oidc_user_session($1,$2,$3,$4,$5,$6,$7,$8,$9) AS session_id
+    `WITH notification_context AS MATERIALIZED (
+       SELECT set_config('app.signin_notification_context', $11::text, true) AS configured
+     ), issued AS MATERIALIZED (
+       SELECT app.auth_issue_oidc_user_session(CASE WHEN notification_context.configured IS NOT NULL THEN $1::uuid END,$2,$3,$4,$5,$6,$7,$8,$9) AS session_id FROM notification_context
      ), demo_replacement AS MATERIALIZED (
        SELECT app.auth_revoke_session($10,$7) AS revoked
        FROM issued
@@ -300,7 +320,8 @@ export async function issueOidcUserSession(input: {
      LEFT JOIN demo_replacement ON true`,
     [input.userId, input.organizationId, input.membershipId, input.tokenHash,
       input.ipHash, input.userAgentHash, input.requestId, input.credentialHash, input.mfaAssurance,
-      input.replacedDemoSessionTokenHash ?? null],
+      input.replacedDemoSessionTokenHash ?? null,
+      JSON.stringify(input.notificationContext ? { ...input.notificationContext, sessionTokenHash: input.tokenHash } : {})],
   );
   return result.rows[0]?.session_id ?? null;
 }
