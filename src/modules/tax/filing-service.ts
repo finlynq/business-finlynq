@@ -88,6 +88,7 @@ export const createTaxFilingSchema = z.object({
   templateId: z.uuid(),
   configurationId: z.uuid().optional(),
   refreshFromFilingId: z.uuid().optional(),
+  correctionOfFilingId: z.uuid().optional(),
   filingType: z.enum(["PREPARED", "HISTORICAL_IMPORT"]),
   periodStart: z.iso.date(),
   periodEnd: z.iso.date(),
@@ -199,7 +200,7 @@ function assertWritableTaxSession(principal: SessionPrincipal): void {
   }
 }
 
-async function withAuthorizedTaxWrite<T>(input: Readonly<{
+export async function withAuthorizedTaxWrite<T>(input: Readonly<{
   principal: SessionPrincipal;
   requestId: string;
   permission: Permission;
@@ -207,29 +208,27 @@ async function withAuthorizedTaxWrite<T>(input: Readonly<{
   sourceSurface?: "API" | "IMPORT" | "MCP";
   isolationLevel?: "REPEATABLE READ" | "SERIALIZABLE";
   idempotencyKey?: string;
-}>, work: (client: PoolClient) => Promise<T>): Promise<T> {
+}>, work: (client: PoolClient) => Promise<T>, transactionClient?: PoolClient): Promise<T> {
   const context = mutationContext(input.principal, input.requestId, {
     reason: input.reason,
     sourceSurface: input.sourceSurface ?? "API",
   });
   assertTenantWritesEnabled(context);
-  return withTenantTransaction(context, async (client) => {
+  const authorizedWork = async (client: PoolClient) => {
     await assertWritableOrganization(client, context);
     await assertActorHasActivePermission(client, {
       organizationId: input.principal.organizationId,
       actorId: input.principal.userId,
       permission: input.permission,
     });
+    // One consistent lock order protects append-only decisions and their dependencies.
+    await client.query("SELECT pg_advisory_xact_lock(hashtextextended('tax-governance:' || $1::text, 0))", [context.organizationId]);
     if (input.idempotencyKey) {
       await client.query("SELECT pg_advisory_xact_lock(hashtextextended('tax-command:' || $1::text || ':' || $2::text, 0))", [context.organizationId, input.idempotencyKey]);
     }
-    // Governance rows are append-only: row locks would require forbidden UPDATE
-    // grants. Serialize canonical/lifecycle decisions with one shared fence.
-    if (input.permission === PERMISSIONS.manageTaxFilingCanonical) {
-      await client.query("SELECT pg_advisory_xact_lock(hashtextextended('tax-governance:' || $1::text, 0))", [context.organizationId]);
-    }
     return work(client);
-  }, input.isolationLevel ? { isolationLevel: input.isolationLevel } : undefined);
+  };
+  return transactionClient ? authorizedWork(transactionClient) : withTenantTransaction(context, authorizedWork, input.isolationLevel ? { isolationLevel: input.isolationLevel } : undefined);
 }
 
 type TemplateRow = Readonly<{
@@ -408,7 +407,7 @@ export async function saveTaxAccountMappings(input: Readonly<{
   requestId: string;
   sourceSurface?: "API" | "MCP";
   correction?: Readonly<{ mappingSetId: string; previewHash: string }>;
-}> & SaveTaxAccountMappingsInput): Promise<Readonly<{
+}> & SaveTaxAccountMappingsInput, transactionClient?: PoolClient): Promise<Readonly<{
   mappingSetId: string;
   version: number;
   idempotentReplay: boolean;
@@ -607,7 +606,7 @@ export async function saveTaxAccountMappings(input: Readonly<{
       ],
     );
     return { mappingSetId, version, idempotentReplay: false };
-  });
+  }, transactionClient);
 }
 
 export async function correctTaxAccountMappings(input: Readonly<{
@@ -833,7 +832,7 @@ export async function saveTaxFilingConfiguration(input: Readonly<{
   requestId: string;
   sourceSurface?: "API" | "MCP";
   correction?: Readonly<{ configurationId: string; previewHash: string }>;
-}> & SaveTaxFilingConfigurationInput): Promise<Readonly<{
+}> & SaveTaxFilingConfigurationInput, transactionClient?: PoolClient): Promise<Readonly<{
   configurationId: string;
   version: number;
   state: "ACTIVE" | "INACTIVE" | "NEEDS_CONFIGURATION";
@@ -979,7 +978,7 @@ export async function saveTaxFilingConfiguration(input: Readonly<{
         command.idempotencyKey, commandHash, input.principal.userId],
     );
     return { configurationId, version, state: command.state, idempotentReplay: false };
-  });
+  }, transactionClient);
 }
 
 export async function correctTaxFilingConfiguration(input: Readonly<{
@@ -1060,7 +1059,7 @@ export async function createTaxFiling(input: Readonly<{
   principal: SessionPrincipal;
   requestId: string;
   sourceSurface?: "API" | "MCP";
-}> & CreateTaxFilingInput): Promise<Readonly<{
+}> & CreateTaxFilingInput, transactionClient?: PoolClient): Promise<Readonly<{
   filingId: string;
   filingType: "PREPARED" | "HISTORICAL_IMPORT";
   status: "READY" | "MATCHED" | "REVIEW_REQUIRED";
@@ -1147,6 +1146,16 @@ export async function createTaxFiling(input: Readonly<{
       };
     }
 
+    if (command.correctionOfFilingId) {
+      const source=(await client.query(`SELECT 1 FROM tax_filings filing
+        JOIN tax_filing_templates original ON original.id=filing.template_id
+        JOIN tax_filing_templates selected ON selected.id=$7 AND selected.template_key=original.template_key
+        WHERE filing.organization_id=$1 AND filing.id=$2 AND filing.legal_entity_id=$3 AND filing.ledger_id=$4
+          AND filing.period_start=$5::date AND filing.period_end=$6::date AND filing.filing_type='PREPARED'
+          AND NOT app.tax_workpaper_deleted(filing.organization_id,filing.id)`,
+        [input.principal.organizationId,command.correctionOfFilingId,command.legalEntityId,command.ledgerId,command.periodStart,command.periodEnd,command.templateId])).rows[0];
+      if(!source || command.filingType!=="PREPARED" || command.refreshFromFilingId) throw new TaxFilingError("A correction must retain the original prepared workpaper's company, ledger, filing type and period.",409,"CORRECTION_SCOPE_MISMATCH");
+    }
     if (command.refreshFromFilingId) {
       const source = (await client.query<{ external_reference: string | null; source_file_name: string | null }>(
         `SELECT filing.external_reference,filing.source_file_name FROM tax_filings filing
@@ -1253,7 +1262,7 @@ export async function createTaxFiling(input: Readonly<{
     if (!mappingSet) {
       throw new TaxFilingError("Configure client account mappings before preparing or reconciling a return.", 400, "MAPPING_REQUIRED");
     }
-    if (command.filingType === "PREPARED") {
+    if (command.filingType === "PREPARED" && !command.correctionOfFilingId) {
       const current = (await client.query(
         `SELECT 1 FROM tax_filings filing
          JOIN tax_filing_configurations existing_configuration
@@ -1265,7 +1274,7 @@ export async function createTaxFiling(input: Readonly<{
            AND existing_configuration.registration_id IS NOT DISTINCT FROM $3::uuid
            AND existing_configuration.filing_type_key=$4
            AND filing.period_start=$5::date AND filing.period_end=$6::date
-           AND lifecycle.state='CURRENT'
+           AND lifecycle.state='CURRENT' AND NOT app.tax_workpaper_deleted(filing.organization_id,filing.id)
            AND NOT EXISTS (SELECT 1 FROM tax_filing_lifecycle_events successor
              WHERE successor.organization_id=lifecycle.organization_id
                AND successor.supersedes_event_id=lifecycle.id)
@@ -1338,6 +1347,8 @@ export async function createTaxFiling(input: Readonly<{
       ledgerFingerprint: readiness.ledgerFingerprint,
       mappingCoverage: readiness.coverage,
       manualValues: command.manualValues,
+      inputReportedValues: command.reportedValues,
+      correctionOfFilingId: command.correctionOfFilingId ?? null,
       refreshedFromFilingId: command.refreshFromFilingId ?? null,
     };
     const filingId = randomUUID();
@@ -1378,7 +1389,7 @@ export async function createTaxFiling(input: Readonly<{
         input.principal.userId,
       ],
     );
-    const lifecycleState = command.filingType === "PREPARED" ? "CURRENT" : "HISTORICAL";
+    const lifecycleState = command.filingType === "PREPARED" && !command.correctionOfFilingId ? "CURRENT" : "HISTORICAL";
     await client.query(
       `INSERT INTO tax_filing_lifecycle_events(
          id,organization_id,filing_id,version,state,replacement_filing_id,
@@ -1404,7 +1415,7 @@ export async function createTaxFiling(input: Readonly<{
       failedValidationCount: evaluation.failedValidationCount,
       idempotentReplay: false,
     };
-  });
+  }, transactionClient);
 }
 
 export async function setTaxFilingCanonical(input: Readonly<{

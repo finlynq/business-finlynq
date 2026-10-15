@@ -1,5 +1,7 @@
 import "server-only";
 
+import { z } from "zod";
+
 import { withTenantTransaction } from "@/db/transaction";
 import { assertPermission, permissionForOwner } from "./ar-ap-access";
 import type {
@@ -8,6 +10,12 @@ import type {
   PayableOpenItemStatus,
   SourceDocumentStatus,
 } from "./ar-ap-types";
+
+export const openItemCursorSchema = z.object({
+  dueDate: z.iso.date().nullable(),
+  sourceNumber: z.string().min(1).max(80),
+  openItemId: z.uuid(),
+}).strict();
 
 const payableOpenItemStatuses = new Set<PayableOpenItemStatus>([
   "OPEN",
@@ -38,7 +46,11 @@ async function listOpenItems(
   if (statuses.length === 0 || statuses.some((status) => !payableOpenItemStatuses.has(status))) {
     throw new Error("At least one valid open-item status is required");
   }
-  const limit = Math.min(Math.max(command.limit ?? 100, 1), 500);
+  const limit = command.limit ?? 100;
+  if (!Number.isInteger(limit) || limit < 1 || limit > 500) {
+    throw new Error("Open-item limit must be an integer between 1 and 500");
+  }
+  const after = command.after ? openItemCursorSchema.parse(command.after) : null;
 
   return withTenantTransaction(command.context, async (client) => {
     await assertPermission(client, command.context, permissionForOwner(ownerModule, "read"));
@@ -150,6 +162,9 @@ async function listOpenItems(
        )
        SELECT * FROM scoped_items
        WHERE settlement_status = ANY($9::text[])
+         AND ($17::uuid IS NULL OR
+           (due_date IS NULL, coalesce(due_date, ''), source_number, open_item_id) >
+           ($14::boolean, coalesce($15::text, ''), $16::text, $17::uuid))
        ORDER BY due_date NULLS LAST, source_number, open_item_id
        LIMIT $10`,
       [
@@ -166,6 +181,10 @@ async function listOpenItems(
         ownerModule,
         ownerModule === "payables" ? "payables.supplier-bill" : "receivables.sales-invoice",
         ownerModule === "payables" ? "SUPPLIER" : "CUSTOMER",
+        after ? after.dueDate === null : null,
+        after?.dueDate ?? null,
+        after?.sourceNumber ?? null,
+        after?.openItemId ?? null,
       ],
     );
     return result.rows.map((row) => ({

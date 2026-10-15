@@ -1,4 +1,4 @@
-.workspace { display:grid; gap:12px; }
+.workspace { display:grid; gap:12px; margin:0; padding:0; border:0; }
 .workspace,.scopeBar,.scopeBar>*,.mappingField>*,.valueGrid>* { min-width:0; }
 .scopeBar { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1.2fr) minmax(140px,.55fr) auto; align-items:end; gap:10px; padding:12px 14px; border:1px solid var(--line); border-radius:11px; background:#f8fbfb; box-shadow:var(--shadow); }
 .scopeBar label>span,.scopeStatus>span { display:block; margin-bottom:7px; color:#53657a; font-size:12px; font-weight:850; letter-spacing:.06em; text-transform:uppercase; }

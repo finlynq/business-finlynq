@@ -132,6 +132,7 @@ export type TaxFilingSummaryDto = Readonly<{
   reportedValues: Readonly<Record<string, string>>;
   manualInputsNeedReview: boolean;
   refreshedFromFilingId: string | null;
+  correctionOfFilingId?: string | null;
   freshness: Readonly<{ mayBeStale: boolean; reasons: readonly string[]; readiness: TaxFilingReadiness }>;
   legalEntityId: string;
   entityCode: string;
@@ -599,7 +600,7 @@ export async function loadTaxFilingWorkspace(
              WHERE successor.organization_id=selection.organization_id AND successor.supersedes_selection_id=selection.id)
          ORDER BY selection.version DESC LIMIT 1
        ) canonical ON true
-       WHERE filing.organization_id = $1
+       WHERE filing.organization_id = $1 AND NOT app.tax_workpaper_deleted(filing.organization_id,filing.id)
        ORDER BY filing.created_at DESC, filing.id DESC
        LIMIT 50`,
         [principal.organizationId],
@@ -626,6 +627,7 @@ export async function loadTaxFilingWorkspace(
       capturedAt: saved.capturedAt ?? row.created_at, manualValues: saved.manualValues,
       reportedValues: saved.reportedValues, manualInputsNeedReview: saved.manualInputsNeedReview,
       refreshedFromFilingId: saved.refreshedFromFilingId,
+      correctionOfFilingId: saved.correctionOfFilingId,
       freshness: { mayBeStale: reasons.length > 0, reasons, readiness },
       legalEntityId: row.legal_entity_id,
       entityCode: row.entity_code,

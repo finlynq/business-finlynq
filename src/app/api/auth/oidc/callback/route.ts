@@ -1,3 +1,5 @@
+import { prepareSigninNotification } from "@/modules/identity/signin-notification";
+import { identityLookupHash } from "@/security/identity-secret";
 import { NextRequest, NextResponse } from "next/server";
 import { logRouteFailure } from "@/app/api/_shared/route-failure-log";
 import { requestIdFor } from "@/observability/request-correlation";
@@ -147,6 +149,7 @@ async function get(request: NextRequest) {
       ? hashOpaqueToken(existingSessionToken)
       : null;
     const { ipHash, userAgentHash } = requestFingerprints(request);
+    const notification = prepareSigninNotification(request, identity, `oidc:${identityLookupHash(`${principal.issuer}|${principal.externalTenantId}`)}`);
     const sessionToken = createOpaqueToken();
     const sessionId = await issueOidcUserSession({
       userId: identity.userId,
@@ -159,6 +162,7 @@ async function get(request: NextRequest) {
       credentialHash: principal.credentialHash,
       mfaAssurance: principal.mfaAssurance,
       replacedDemoSessionTokenHash,
+      notificationContext: notification.context,
     });
     if (!sessionId) throw new OidcAuthenticationError("identity_unassigned");
 
@@ -167,6 +171,7 @@ async function get(request: NextRequest) {
     clearOidcLoginCookie(response);
     clearOidcSignupCookie(response);
     setSessionCookie(response, sessionToken.raw, 24 * 60 * 60);
+    notification.setCookie(response);
     return response;
   } catch (error) {
     logRouteFailure("oidc-login", requestId, error);

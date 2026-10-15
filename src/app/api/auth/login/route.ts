@@ -1,3 +1,4 @@
+import { prepareSigninNotification } from "@/modules/identity/signin-notification";
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { readAuthMutationJson } from "@/app/api/_shared/auth-mutation-route";
@@ -127,6 +128,7 @@ async function post(request: NextRequest) {
       return NextResponse.json({ error: "Invalid email address or password." }, { status: 401, headers: noStoreHeaders });
     }
 
+    const notification = prepareSigninNotification(request, { userId: identity.user_id, organizationId: identity.organization_id }, "password");
     const token = createOpaqueToken();
     const sessionInput = {
       userId: identity.user_id,
@@ -137,6 +139,7 @@ async function post(request: NextRequest) {
       userAgentHash,
       requestId,
       replacedDemoSessionTokenHash,
+      notificationContext: notification.context,
     };
 
     if (!identity.mfa_required) {
@@ -144,6 +147,7 @@ async function post(request: NextRequest) {
       if (!sessionId) throw new Error("The selected membership is no longer available");
       const response = NextResponse.json({ success: true, next: safeAppPath(parsed.data.next) }, { headers: noStoreHeaders });
       setSessionCookie(response, token.raw, 24 * 60 * 60);
+      notification.setCookie(response);
       return response;
     }
 
@@ -162,6 +166,7 @@ async function post(request: NextRequest) {
         userAgentHash,
         requestId,
         replacedDemoSessionTokenHash,
+        notificationContext: notification.context,
       });
       if (trustedSession) {
         const response = NextResponse.json({
@@ -170,6 +175,7 @@ async function post(request: NextRequest) {
           authentication: "PASSWORD_TRUSTED_BROWSER",
         }, { headers: noStoreHeaders });
         setSessionCookie(response, token.raw, 24 * 60 * 60);
+      notification.setCookie(response);
         setTrustedBrowserCookie(
           response,
           replacementTrustToken.raw,
@@ -229,6 +235,7 @@ async function post(request: NextRequest) {
 
     const response = NextResponse.json({ success: true, next: safeAppPath(parsed.data.next) }, { headers: noStoreHeaders });
     setSessionCookie(response, token.raw, 24 * 60 * 60);
+      notification.setCookie(response);
     if (enrolledTrustedBrowser) {
       setTrustedBrowserCookie(response, enrolledTrustedBrowser.raw, enrolledTrustedBrowser.expiresAt);
       clearRejectedTrust = false;

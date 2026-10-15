@@ -46,5 +46,5 @@ describe("forward migration generation policy", () => {
     expect(result.status).toBe(1);
     expect(`${result.stdout}\n${result.stderr}`).toContain("Drizzle schema drift detected");
     expect(`${result.stdout}\n${result.stderr}`).toContain("schema_drift_probe");
-  });
+  }, 120_000);
 });

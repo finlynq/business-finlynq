@@ -1,3 +1,6 @@
+import { listTaxDrafts } from "@/modules/tax/draft-service";
+import { listDeletedTaxWorkpapers } from "@/modules/tax/workpaper-controls";
+import { TaxWorkpaperControls } from "../../_components/tax-workpaper-controls.client";
 import { ExpandableTableRow } from "../../_components/expandable-table-row.client";
 import { CompactDisclosure } from "../../_components/compact-disclosure.client";
 import { formatMoney } from "@/kernel/money";
@@ -24,14 +27,16 @@ function requiresReview(status: string): boolean {
   return status.includes("REVIEW");
 }
 
-export default async function TaxPage({ searchParams }: { searchParams: Promise<{ status?: string; view?: string; refresh?: string; history?: string }> }) {
+export default async function TaxPage({ searchParams }: { searchParams: Promise<{ status?: string; view?: string; refresh?: string; history?: string; draft?: string }> }) {
   const principal = await requireWorkspacePrincipal("/app/tax");
   const parameters = await searchParams;
   const reviewOnly = parameters.status === "review";
-  const view = reviewOnly ? "review" : ["history", "templates", "transactions"].includes(parameters.view ?? "") ? parameters.view! : "prepare";
-  const [determinations, filingWorkspace] = await Promise.all([
+  const view = reviewOnly ? "review" : ["drafts", "deleted", "history", "templates", "transactions"].includes(parameters.view ?? "") ? parameters.view! : "prepare";
+  const [determinations, filingWorkspace, drafts, deletedWorkpapers] = await Promise.all([
     loadTaxDeterminations(principal, { reviewOnly }),
     loadTaxFilingWorkspace(principal),
+    listTaxDrafts(principal),
+    parameters.view === "deleted" ? listDeletedTaxWorkpapers(principal) : Promise.resolve([]),
   ]);
   const reviewCount = determinations.filter((decision) => requiresReview(decision.status)).length;
   const filingReviewCount = filingWorkspace.filings.filter((filing) => filing.status === "REVIEW_REQUIRED").length;
@@ -53,6 +58,9 @@ export default async function TaxPage({ searchParams }: { searchParams: Promise<
       />
       <RouteTabs label="Tax workspace views" active={view} documentNavigation tabs={[
         { key: "prepare", label: "Prepare return", href: "/app/tax" },
+        { key: "provision", label: "Income-tax provision", href: "/app/tax/provision" },
+        { key: "drafts", label: "Drafts & locks", href: "/app/tax?view=drafts" },
+        { key: "deleted", label: "Deleted drafts", href: "/app/tax?view=deleted" },
         { key: "history", label: "Filing history", href: "/app/tax?view=history" },
         { key: "templates", label: "Templates & rules", href: "/app/tax?view=templates" },
         { key: "transactions", label: "Transaction tax", href: "/app/tax?view=transactions" },
@@ -83,7 +91,14 @@ export default async function TaxPage({ searchParams }: { searchParams: Promise<
           <div><dt>Reconciliation review</dt><dd>{filingReviewCount}</dd></div>
         </dl>
 
-        {view === "prepare" && <TaxFilingWorkspace key={parameters.refresh ?? "new"} workspace={filingWorkspace} refreshFilingId={parameters.refresh} />}
+        {view === "prepare" && <TaxFilingWorkspace key={parameters.draft ?? parameters.refresh ?? "new"} workspace={filingWorkspace} refreshFilingId={parameters.refresh} initialDraft={drafts.find(draft=>draft.draft_id===parameters.draft)} />}
+
+        {view === "drafts" && <section className="panel"><h2>Drafts, review and locks</h2><p>Input revisions remain separate from effective configurations, calculated workpapers and external filing.</p>
+          {drafts.length?<ul>{drafts.map(draft=><li key={draft.draft_id}><a href={`/app/tax?draft=${draft.draft_id}`}>{draft.kind.toLowerCase()} · {draft.state.toLowerCase()} · revision {draft.version}</a><p>{draft.draft_id} · {String(draft.payload.periodStart??draft.payload.effectiveFrom??"")} {String(draft.payload.periodEnd??"")}</p><small>{draft.reason} · {draft.created_by} · {new Date(draft.created_at).toISOString()}</small></li>)}</ul>:<p>No saved tax input drafts.</p>}
+        </section>}
+        {view === "deleted" && <section className="panel"><h2>Deleted workpaper drafts</h2><p>Snapshots and audit history remain retained. Restore preserves the same UUID and never makes a workpaper canonical.</p>
+          {deletedWorkpapers.length?deletedWorkpapers.map(filing=><article key={filing.id}><h3>{filing.entityName} · {filing.periodStart} – {filing.periodEnd}</h3><TaxWorkpaperControls filingId={filing.id} canManage={!!filingWorkspace.canManageCanonical}/></article>):<p>No recoverably deleted workpapers.</p>}
+        </section>}
 
         {view === "templates" && <section className="panel" aria-labelledby="tax-template-rules-title">
           <div className="panel-heading">
@@ -147,6 +162,8 @@ export default async function TaxPage({ searchParams }: { searchParams: Promise<
                   <td><strong>{variances.length} monetary variance{variances.length === 1 ? "" : "s"}</strong><small>{matched.length} matched · {notReported.length} not reported · {failedRules.length} rule exception{failedRules.length === 1 ? "" : "s"}</small></td>
                   </>}>
                       <p>Workpaper ID: <code>{filing.id}</code>. Source: {filing.sourceFileName ?? "manual entry"}.</p>
+                      <TaxWorkpaperControls filingId={filing.id} canManage={!!filingWorkspace.canManageCanonical}/>
+                      {filing.correctionOfFilingId&&<p>Corrected calculation of workpaper {filing.correctionOfFilingId}. The original remains retained; canonical selection is a separate decision.</p>}
                       <p>Snapshot captured: <time dateTime={new Date(filing.capturedAt).toISOString()}>{new Date(filing.capturedAt).toISOString()}</time>. Period {filing.periodStart} – {filing.periodEnd}. Template v{filing.templateVersion}, mapping v{filing.mappingVersion}, configuration v{filing.configurationVersion ?? "legacy"}.</p>
                       <p><strong>{filing.freshness.mayBeStale ? "Comparison may be stale" : "Comparison matches the current ledger snapshot"}</strong></p>
                       {filing.freshness.reasons.length > 0 && <ul>{filing.freshness.reasons.map((reason) => <li key={reason}>{reason}</li>)}</ul>}

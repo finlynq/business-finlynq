@@ -527,3 +527,44 @@ export const taxFilingAssetAdjustments = pgTable(
     foreignKey({ columns: [table.organizationId, table.assetTaxScheduleId], foreignColumns: [assetTaxSchedules.organizationId, assetTaxSchedules.id], name: "tax_filing_asset_adjustments_org_schedule_fk" }).onDelete("restrict"),
   ],
 );
+
+/** Immutable draft revisions; approval is separate from effective activation. */
+export const taxDraftRevisions = pgTable("tax_draft_revisions", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  organizationId: uuid("organization_id").notNull().references(() => organizations.id, { onDelete: "restrict" }),
+  draftId: uuid("draft_id").notNull(), version: integer("version").notNull(),
+  kind: text("kind").notNull(), state: text("state").notNull(),
+  payload: jsonb("payload").notNull(), review: jsonb("review"), reviewHash: text("review_hash"),
+  result: jsonb("result"), correctionOfDraftId: uuid("correction_of_draft_id"),
+  reason: text("reason").notNull(), idempotencyKey: text("idempotency_key").notNull(),
+  commandHash: text("command_hash").notNull(), createdBy: uuid("created_by").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  uniqueIndex("tax_draft_revision_unique").on(table.organizationId, table.draftId, table.version),
+  uniqueIndex("tax_draft_replay_unique").on(table.organizationId, table.idempotencyKey),
+  check("tax_draft_version_check", sql`${table.version} > 0`),
+  check("tax_draft_kind_check", sql`${table.kind} IN ('MAPPING','CONFIGURATION','WORKPAPER')`),
+  check("tax_draft_state_check", sql`${table.state} IN ('DRAFT','REVIEWED','LOCKED','DISCARDED')`),
+  check("tax_draft_payload_check", sql`jsonb_typeof(${table.payload})='object' AND (${table.review} IS NULL OR jsonb_typeof(${table.review})='object') AND (${table.result} IS NULL OR jsonb_typeof(${table.result})='object')`),
+  check("tax_draft_review_check", sql`(${table.state} NOT IN ('REVIEWED','LOCKED') OR (${table.review} IS NOT NULL AND ${table.reviewHash} IS NOT NULL)) AND (${table.state}<>'LOCKED' OR ${table.result} IS NOT NULL)`),
+  check("tax_draft_hash_check", sql`${table.commandHash} ~ '^[a-f0-9]{64}$' AND (${table.reviewHash} IS NULL OR ${table.reviewHash} ~ '^[a-f0-9]{64}$')`),
+  check("tax_draft_reason_check", sql`length(${table.reason}) BETWEEN 8 AND 500`),
+]);
+
+/** Retention and reversible hiding never rewrite a workpaper snapshot. */
+export const taxWorkpaperControlEvents = pgTable("tax_workpaper_control_events", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  organizationId: uuid("organization_id").notNull().references(() => organizations.id, { onDelete: "restrict" }),
+  filingId: uuid("filing_id").notNull(), version: integer("version").notNull(),
+  action: text("action").notNull(), reason: text("reason").notNull(),
+  idempotencyKey: text("idempotency_key").notNull(), commandHash: text("command_hash").notNull(),
+  createdBy: uuid("created_by").notNull(), createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  uniqueIndex("tax_workpaper_control_version_unique").on(table.organizationId, table.filingId, table.version),
+  uniqueIndex("tax_workpaper_control_replay_unique").on(table.organizationId, table.idempotencyKey),
+  foreignKey({ columns: [table.organizationId, table.filingId], foreignColumns: [taxFilings.organizationId, taxFilings.id], name: "tax_workpaper_control_filing_fk" }).onDelete("restrict"),
+  check("tax_workpaper_control_version_check", sql`${table.version} > 0`),
+  check("tax_workpaper_control_action_check", sql`${table.action} IN ('CREATED','DELETE','RESTORE','REVIEW','LOCK','EXPORT')`),
+  check("tax_workpaper_control_hash_check", sql`${table.commandHash} ~ '^[a-f0-9]{64}$'`),
+  check("tax_workpaper_control_reason_check", sql`length(${table.reason}) BETWEEN 8 AND 500`),
+]);

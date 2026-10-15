@@ -10,7 +10,7 @@ const fixtures = vi.hoisted(() => {
     entityId: entity.id, entityCode: entity.code, entityName: entity.displayName,
     ledgerId: entity.ledgerId, ledgerCode: entity.ledgerCode, currency: entity.currency,
     basis: "date", fromDate: "2026-01-01", toDate: "2026-12-31",
-    fromPeriodId: null, toPeriodId: null, accountId: null, accountCode: null, segmentFilters: {},
+    fromPeriodId: null, toPeriodId: null, accountId: null, accountCode: "4000", segmentFilters: { department: "SALES" },
   };
   const report = {
     selection, fiscalYear: 2026, asOfDate: "2026-10-14", snapshotHash: "a".repeat(64),
@@ -52,6 +52,8 @@ describe("monthly P&L workbook export", () => {
     const rows = XLSX.utils.sheet_to_json<readonly string[]>(book.Sheets["Monthly P&L"]!, { header: 1 });
     expect(rows).toContainEqual(expect.arrayContaining(["CA01.4000 · Sales", "100.00", "100.00"]));
     expect(rows).toContainEqual(expect.arrayContaining(["Net income (loss)", "100.00", "100.00"]));
+    expect(rows).toContainEqual(["Filters", "Account 4000 · department: SALES"]);
+    expect(rows).toContainEqual(["Snapshot SHA-256", fixtures.report.snapshotHash]);
     const stale = await GET(new Request(`https://example.test/app/reports/profit-and-loss.xlsx?snapshot=${"b".repeat(64)}`));
     expect(stale.status).toBe(409);
     expect(await stale.text()).toContain("Rerun");

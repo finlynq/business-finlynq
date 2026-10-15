@@ -37,6 +37,13 @@ test("workspace navigation stays clear, accessible and state-preserving", async 
   await expect(tabs.getByRole("tab", { name: "Entities & ledgers" })).toHaveAttribute("aria-selected", "true");
   await expect(page.getByRole("tabpanel")).toHaveCount(1);
 
+  const provision = await page.goto("/app/tax/provision");
+  expect(provision?.status()).toBe(200);
+  await expect(page.getByRole("heading", { level: 1, name: "Current income-tax provision", exact: true })).toBeVisible();
+  await page.goto("/tax/provision");
+  await expect(page).toHaveURL(/\/app\/tax\/provision$/);
+  await expect(page.getByRole("heading", { level: 1, name: "Current income-tax provision", exact: true })).toBeVisible();
+
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto("/app/tax");
   const taxTabs = page.getByRole("tablist", { name: "Tax preparation sections" });

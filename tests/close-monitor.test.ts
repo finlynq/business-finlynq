@@ -46,7 +46,7 @@ describe("month-end close source monitor", () => {
     expect(monitor.checks.find((check) => check.key === "depreciation")?.status).toBe("BLOCKED");
     expect(monitor.checks.find((check) => check.key === "prepaids")?.status).toBe("SOURCE CHECK");
     expect(monitor.checks.find((check) => check.key === "unposted-journals")?.status).toBe("BLOCKED");
-    expect(monitor.checks.find((check) => check.key === "tax-provision")?.status).toBe("NOT COMPUTED");
+    expect(monitor.checks.find((check) => check.key === "tax-provision")?.status).toBe("NEEDS REVIEW");
   });
 
   it("marks a failed source unknown without treating it as zero", async () => {
