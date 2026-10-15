@@ -31,6 +31,7 @@ export type ClosePeriodMonitor = Readonly<{
 type Bank = { period_id: string; account_count: number; reconciled_count: number };
 type Assets = { period_id: string; eligible_count: number; missing_count: number; due_depreciation: number; due_prepaid: number; drafted_count: number; posted_prepaid: number };
 type OpenItems = { period_id: string; receivable_count: number; payable_count: number };
+type JournalActivity = { period_id: string; posted_count: number; posted_digest: string };
 
 function sourceRead<T>(principal: SessionPrincipal, work: (client: PoolClient) => Promise<T>): Promise<T> {
   return withWorkspaceTenantRead({
@@ -93,11 +94,26 @@ async function openItems(client: PoolClient, org: string, ids: string[]): Promis
   return new Map(rows.rows.map((row) => [row.period_id, row]));
 }
 
+async function journalActivity(client: PoolClient, org: string, ids: string[]): Promise<Map<string, JournalActivity>> {
+  const rows = await client.query<JournalActivity>(`SELECT period.id AS period_id,
+    count(journal.id)::int AS posted_count,
+    encode(public.digest(coalesce(string_agg(concat_ws('|', journal.id, journal.command_hash,
+      journal.content_hash, journal.accounting_date, journal.posted_at,
+      journal.total_debit_functional, journal.total_credit_functional), ',' ORDER BY journal.id), ''),
+      'sha256'), 'hex') AS posted_digest
+    FROM fiscal_periods period
+    LEFT JOIN journal_entries journal ON journal.organization_id = period.organization_id
+      AND journal.period_id = period.id AND journal.status = 'POSTED'
+    WHERE period.organization_id = $1 AND period.id = ANY($2::uuid[])
+    GROUP BY period.id`, [org, ids]);
+  return new Map(rows.rows.map((row) => [row.period_id, row]));
+}
+
 function check(key: string, label: string, detail: string, status: CloseCheck["status"], href: string): CloseCheck {
   return { key, label, detail, status, href };
 }
 
-async function trySource<T>(client: PoolClient, name: "bank" | "asset" | "items", work: () => Promise<T>): Promise<T | undefined> {
+async function trySource<T>(client: PoolClient, name: "bank" | "asset" | "items" | "journals", work: () => Promise<T>): Promise<T | undefined> {
   const savepoint = `close_monitor_${name}`;
   await client.query(`SAVEPOINT ${savepoint}`);
   try {
@@ -122,12 +138,14 @@ export async function loadCloseMonitor(principal: SessionPrincipal, periods: rea
     bank: await trySource(client, "bank", () => banks(client, principal.organizationId, ids)),
     asset: await trySource(client, "asset", () => assets(client, principal.organizationId, ids)),
     items: await trySource(client, "items", () => openItems(client, principal.organizationId, ids)),
+    journals: await trySource(client, "journals", () => journalActivity(client, principal.organizationId, ids)),
   }));
   const checkedAt = new Date().toISOString();
   return selected.map((period) => {
     const bank = sources.bank?.get(period.id);
     const asset = sources.asset?.get(period.id);
     const items = sources.items?.get(period.id);
+    const journals = sources.journals?.get(period.id);
     const checks: CloseCheck[] = [
       bank ? check("bank", "Bank reconciliation", bank.account_count === 0 ? "No active mapped bank accounts; review applicability and statement coverage." : `${bank.reconciled_count} of ${bank.account_count} active accounts have a finalized reconciliation covering the period.`, bank.account_count > 0 && bank.reconciled_count === bank.account_count ? "SOURCE CHECK" : "NEEDS REVIEW", "/app/banking")
         : check("bank", "Bank reconciliation", "Bank source could not be read. Check it before closing.", "UNKNOWN", "/app/banking"),
@@ -143,13 +161,14 @@ export async function loadCloseMonitor(principal: SessionPrincipal, periods: rea
         : check("asset-drafts", "Unposted asset schedules", "Asset source could not be read.", "UNKNOWN", "/app/assets"),
       check("unposted-journals", "Unposted journals", `${period.unpostedJournalCount} draft, submitted or approved journals remain.`, period.unpostedJournalCount > 0 ? "BLOCKED" : "SOURCE CHECK", "/app/journals"),
       check("tax-provision", "Corporate tax provision", "No reviewed period-specific provision model or sign-off is connected to this monitor.", "NOT COMPUTED", "/app/tax"),
-      check("statements", "Statement review", "Trial balance and financial statements need an explicit reviewer decision after postings are final.", "NEEDS REVIEW", "/app/reports"),
+      journals ? check("statements", "Statement review", `${journals.posted_count} posted journals in this period. Trial balance and financial statements need an explicit reviewer decision after postings are final.`, "NEEDS REVIEW", "/app/reports")
+        : check("statements", "Statement review", "Posted journal activity could not be read; statement review is blocked.", "UNKNOWN", "/app/reports"),
     ];
     return {
       periodId: period.id, entityCode: period.entityCode, ledgerCode: period.ledgerCode,
       label: period.label, startsOn: period.startsOn, endsOn: period.endsOn,
       periodState: period.state, periodVersion: period.version, checkedAt,
-      sourceFingerprint: createHash("sha256").update(JSON.stringify({ periodId: period.id, version: period.version, bank, asset, items, unposted: period.unpostedJournalCount })).digest("hex"),
+      sourceFingerprint: createHash("sha256").update(JSON.stringify({ periodId: period.id, version: period.version, bank, asset, items, journals, unposted: period.unpostedJournalCount })).digest("hex"),
       checks,
     };
   });
