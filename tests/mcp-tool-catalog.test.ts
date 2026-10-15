@@ -275,6 +275,7 @@ describe("remote MCP advertised tool catalog", () => {
       permission: "payables.read",
     });
     expect(Object.keys(schema.properties ?? {}).sort()).toEqual([
+      "after",
       "asOfDate",
       "currency",
       "ledgerId",
@@ -298,7 +299,7 @@ describe("remote MCP advertised tool catalog", () => {
       permission: "receivables.read",
     });
     expect(Object.keys(schema.properties ?? {}).sort()).toEqual([
-      "asOfDate", "currency", "ledgerId", "legalEntityId", "limit",
+      "after", "asOfDate", "currency", "ledgerId", "legalEntityId", "limit",
       "partyAccountId", "sourceDocumentId", "sourceNumber", "statuses",
     ]);
     expect(tool.description).toContain("customer-receipt allocation IDs");

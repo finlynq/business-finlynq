@@ -1,6 +1,7 @@
 import { taxFilingReadinessSchema } from "@/modules/tax/filing-readiness";
 import { mcpTaxFilingWorkspace } from "./tax-filing-capabilities";
 import "server-only";
+import { openItemCursorSchema } from "@/modules/subledger/ar-ap-open-items";
 import { BOOKING_MCP_TOOLS } from "./booking-tools";
 import { EVIDENCE_MCP_TOOLS } from "./evidence-tools";
 
@@ -501,7 +502,7 @@ export const DAILY_MCP_TOOLS: readonly McpToolDefinition[] = [
   defineMcpTool({
     policy: { name: "finlynq_daily_list_receivable_open_items", group: "DAILY", access: "READ", permission: PERMISSIONS.readReceivables },
     title: "List receivable open items",
-    description: "Find tenant-owned posted sales-invoice open items and their exact customer-receipt allocation IDs. Results include current source-document ID/version, customer party account, control account combination, original, allocated and remaining exact amounts, dates, currency, entity, ledger and settlement status. Open and partially settled items are returned by default; use statuses to request closed history.",
+    description: "Find tenant-owned posted sales-invoice open items and their exact customer-receipt allocation IDs. Results include current source-document ID/version, customer party account, control account combination, original, allocated and remaining exact amounts, dates, currency, entity, ledger and settlement status. Open and partially settled items are returned by default; use statuses to request closed history. Page with after={dueDate, sourceNumber, openItemId} from the last returned row, retaining the same filters; an empty page ends the scan. asOfDate reconstructs issue, allocation and reversal balances through that date. Receipt/payment commands revalidate the current balance at commit.",
     inputSchema: z.object({
       legalEntityId: z.uuid().optional(),
       ledgerId: z.uuid().optional(),
@@ -511,6 +512,7 @@ export const DAILY_MCP_TOOLS: readonly McpToolDefinition[] = [
       currency: z.string().trim().toUpperCase().regex(/^[A-Z]{3}$/).optional(),
       statuses: z.array(z.enum(["OPEN", "PARTIALLY_SETTLED", "SETTLED", "REVERSED"])).min(1).optional(),
       asOfDate: z.iso.date().optional(),
+      after: openItemCursorSchema.optional(),
       limit: z.number().int().min(1).max(500).default(100),
     }).strict(),
     invoke: (args, runtime) => listReceivableOpenItems({
@@ -521,7 +523,7 @@ export const DAILY_MCP_TOOLS: readonly McpToolDefinition[] = [
   defineMcpTool({
     policy: { name: "finlynq_daily_list_payable_open_items", group: "DAILY", access: "READ", permission: PERMISSIONS.readPayables },
     title: "List payable open items",
-    description: "Find tenant-owned supplier-bill open items and their exact settlement IDs. Results include the current source-document ID/version, supplier party account, control account combination, original, allocated and remaining exact amounts, dates, currency, entity, ledger and settlement status. Open and partially settled items are returned by default; use statuses to request closed history.",
+    description: "Find tenant-owned supplier-bill open items and their exact settlement IDs. Results include the current source-document ID/version, supplier party account, control account combination, original, allocated and remaining exact amounts, dates, currency, entity, ledger and settlement status. Open and partially settled items are returned by default; use statuses to request closed history. Page with after={dueDate, sourceNumber, openItemId} from the last returned row, retaining the same filters; an empty page ends the scan. asOfDate reconstructs issue, allocation and reversal balances through that date. Receipt/payment commands revalidate the current balance at commit.",
     inputSchema: z.object({
       legalEntityId: z.uuid().optional(),
       ledgerId: z.uuid().optional(),
@@ -531,6 +533,7 @@ export const DAILY_MCP_TOOLS: readonly McpToolDefinition[] = [
       currency: z.string().trim().toUpperCase().regex(/^[A-Z]{3}$/).optional(),
       statuses: z.array(z.enum(["OPEN", "PARTIALLY_SETTLED", "SETTLED", "REVERSED"])).min(1).optional(),
       asOfDate: z.iso.date().optional(),
+      after: openItemCursorSchema.optional(),
       limit: z.number().int().min(1).max(500).default(100),
     }).strict(),
     invoke: (args, runtime) => listPayableOpenItems({
