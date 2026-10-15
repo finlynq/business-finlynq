@@ -7,7 +7,7 @@ import { CompactDisclosure } from "./compact-disclosure.client";
 
 import { SectionTabs } from "./section-tabs.client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { useRouter } from "next/navigation";
 import { MutationFeedback } from "@/app/_components/mutation-feedback.client";
 import type { TaxFilingField, TaxMappingBalanceBasis } from "@/modules/tax/filing-template";
@@ -164,12 +164,18 @@ function idempotencyCommand() {
   return { fingerprint: "", key: crypto.randomUUID() };
 }
 
+// Keep server-rendered controls disabled until hydration can retain their edits.
+const subscribeHydration = () => () => {};
+const clientReady = () => true;
+const serverReady = () => false;
+
 export function TaxFilingWorkspace({ workspace, refreshFilingId, initialDraft }: { workspace: TaxFilingWorkspaceDto; refreshFilingId?: string; initialDraft?: TaxDraftRow }) {
   const [activeDraft,setActiveDraft]=useState<TaxDraftRow | null>(initialDraft??null);
   const [draftDirty,setDraftDirty]=useState(false);
   const draftInput=initialDraft?.payload;
   const refreshSource = workspace.filings.find((filing) => filing.id === (refreshFilingId ?? initialDraft?.payload.refreshFromFilingId));
   const router = useRouter();
+  const interactive = useSyncExternalStore(subscribeHydration, clientReady, serverReady);
   const today = new Date().toISOString().slice(0, 10);
   const initialConfiguration = [...(workspace.configurations ?? [])]
     .filter((configuration) => configuration.state === "ACTIVE" && configuration.effectiveFrom <= today && (!configuration.effectiveTo || configuration.effectiveTo >= today))
@@ -658,7 +664,7 @@ export function TaxFilingWorkspace({ workspace, refreshFilingId, initialDraft }:
   const visibleFeedback = mappingCorrectionFeedback ?? correctionFeedback ?? filingFeedback ?? mappingFeedback;
 
   return (
-    <div className={styles.workspace} onChangeCapture={()=>setDraftDirty(true)}>
+    <fieldset className={styles.workspace} aria-label="Tax preparation workspace" disabled={!interactive} onChangeCapture={()=>setDraftDirty(true)}>
       {activeDraft&&<TaxDraftReview draft={activeDraft} dirty={draftDirty} canManage={!!(activeDraft.kind==="MAPPING"?workspace.canManageMappings:activeDraft.kind==="CONFIGURATION"?workspace.canManageConfigurations:workspace.canPrepareFilings)} onChange={draft=>{setActiveDraft(draft);setDraftDirty(false);}}/>}
       {visibleFeedback && <MutationFeedback {...visibleFeedback} onDismiss={() => { setMappingCorrectionFeedback(null); setCorrectionFeedback(null); setMappingFeedback(null); setFilingFeedback(null); }} />}
       <section className={styles.scopeBar} aria-label="Tax filing scope">
@@ -911,6 +917,6 @@ export function TaxFilingWorkspace({ workspace, refreshFilingId, initialDraft }:
           </form>
         </section>
       </SectionTabs>
-    </div>
+    </fieldset>
   );
 }
