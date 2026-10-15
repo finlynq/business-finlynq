@@ -1,0 +1,17 @@
+[Unit]
+Description=Reset the fixed Business Finlynq %i shared demo
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+ExecStart=/usr/local/sbin/business-finlynq-reset-nonproduction-demo %i
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=read-only
+TimeoutStartSec=130min
