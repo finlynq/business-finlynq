@@ -58,4 +58,13 @@ test("persistent close browser: truthful stages, saved evidence and review inval
     expect(actions).toEqual(["UPDATE", "REVIEW", "COMPLETE"]);
     await page.locator("summary").filter({ hasText: "My in-app close notices" }).click();
     await expect(page.getByLabel("Enable my in-app notices")).not.toBeChecked();
+    const templateVersions: number[] = [];
+    await page.route("**/api/close/checklist/templates", async (route) => { const c = route.request().postDataJSON(); templateVersions.push(c.expectedVersion); await route.fulfill({ json: { template: { ...workspace.templates[0]!, id: id(20 + c.expectedVersion), template_id: c.templateId, version: c.expectedVersion + 1, definition: c.definition }, idempotentReplay: false } }); });
+    await page.locator("summary").filter({ hasText: "Reusable template and prerequisites" }).click();
+    await page.getByLabel("Reason for starting or revising the template").fill("Synthetic continuing template revision");
+    await page.getByRole("button", { name: "Edit selected revision" }).click();
+    await page.getByRole("button", { name: "Save template revision" }).click();
+    await expect.poll(() => templateVersions.length).toBe(1);
+    await page.getByRole("button", { name: "Save template revision" }).click();
+    await expect.poll(() => templateVersions).toEqual([1, 2]);
 });

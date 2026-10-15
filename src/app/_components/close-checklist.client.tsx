@@ -41,6 +41,11 @@ export function CloseChecklist({ workspace }: {
             const data = await response.json();
             if (!response.ok)
                 throw new Error(data.error ?? "The close change failed.");
+            if (data.template) {
+                setTemplateId(data.template.id);
+                setEditingTemplate({ id: data.template.template_id, version: data.template.version });
+                setDefinition(data.template.definition);
+            }
             if (data.instance)
                 await load(data.instance.id);
             else if (view)
