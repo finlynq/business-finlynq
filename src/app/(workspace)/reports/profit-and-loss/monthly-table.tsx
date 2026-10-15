@@ -7,6 +7,7 @@ import {
   type ReportEntityOption,
 } from "@/modules/reporting/tenant-reporting";
 import type { MonthlyProfitAndLoss, MonthlyProfitAndLossRow } from "@/modules/reporting/monthly-profit-and-loss";
+import { monthlyReportFilterLabel } from "@/modules/reporting/monthly-profit-and-loss-export";
 import styles from "../financial-statements.module.css";
 import printStyles from "./monthly-print.module.css";
 
@@ -73,7 +74,9 @@ export function MonthlyProfitAndLossTable({
         <div>
           <p className="eyebrow">{selection.ledgerCode} · fiscal {report.fiscalYear} · {selection.basis} basis · as of {report.asOfDate}</p>
           <h2 id="monthly-profit-loss-title">{selection.entityCode} · Monthly profit &amp; loss</h2>
+          <p>{selection.entityName} · {monthlyReportFilterLabel(report)}</p>
           <p>Posted activity in {currency}, {selection.fromDate} to {selection.toDate}. Partial, future and excluded months are labelled.</p>
+          <p className={printStyles.snapshot}>Snapshot SHA-256: <code>{report.snapshotHash}</code></p>
         </div>
       </div>
       <div className="table-scroll" tabIndex={0} aria-label="Monthly profit and loss; scroll horizontally if needed">

@@ -16,6 +16,7 @@ import {
 } from "@/modules/reporting/monthly-profit-and-loss";
 import {
   monthlyProfitAndLossExportRows,
+  monthlyReportFilterLabel,
   monthlyReportPresentationHash,
 } from "@/modules/reporting/monthly-profit-and-loss-export";
 
@@ -70,6 +71,7 @@ export async function GET(request: Request) {
     ["Profit and loss by month", report.selection.entityCode, report.selection.ledgerCode, report.selection.currency],
     ["Fiscal year", String(report.fiscalYear), "Basis", report.selection.basis],
     ["Selected range", report.selection.fromDate, report.selection.toDate, "As of", report.asOfDate],
+    ["Filters", safeCell(monthlyReportFilterLabel(report))],
     ["Snapshot SHA-256", report.snapshotHash],
     [],
     header,
