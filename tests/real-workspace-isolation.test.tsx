@@ -77,6 +77,7 @@ const mocks = vi.hoisted(() => {
       periods: [],
     })),
     loadCloseMonitor: vi.fn(async () => []),
+    loadCloseChecklistWorkspace: vi.fn(async () => ({templates:[],instances:[],periods:[],people:[],actorId:principal.userId,canManage:false,defaultTemplate:{name:"Second organization close",tasks:[]}})),
     loadEntitySummaries: vi.fn(async () => ([{
       id: "30000000-0000-4000-8000-000000000001",
       code: "SECOND",
@@ -173,6 +174,7 @@ vi.mock("@/modules/ledger/tenant-workspace", () => ({
   loadManualJournalOptions: mocks.loadManualJournalOptions,
   loadPeriodControlWorkspace: mocks.loadPeriodControlWorkspace,
 }));
+vi.mock("@/modules/close/checklist-service", () => ({loadCloseChecklistWorkspace:mocks.loadCloseChecklistWorkspace}));
 vi.mock("@/modules/close/monitor", () => ({ loadCloseMonitor: mocks.loadCloseMonitor }));
 vi.mock("@/modules/parties/party-workspace", () => ({
   loadPartyAccountCreationOptions: mocks.loadPartyAccountCreationOptions,
@@ -359,6 +361,7 @@ describe("real organization workspace isolation", () => {
     expect(mocks.loadManualJournalOptions).toHaveBeenCalledWith(mocks.principal);
     expect(mocks.currentWorkspaceEntityContext).toHaveBeenCalledWith(mocks.principal);
     expect(mocks.loadPeriodControlWorkspace).toHaveBeenCalledWith(mocks.principal);
+    expect(mocks.loadCloseChecklistWorkspace).toHaveBeenCalledWith(mocks.principal);
   });
 
   it("shows due depreciation, posted prepaid release, and uncomputed tax as different close signals", async () => {
@@ -374,7 +377,8 @@ describe("real organization workspace isolation", () => {
       ],
     }] as never);
     const page = await PeriodClosePage();
-    const output = serialized(CloseSourceMonitor(page.props.children[3].props));
+    const monitorContainer=page.props.children.find((child:{props?:{children?:{type?:unknown}}})=>child?.props?.children?.type===CloseSourceMonitor)!;
+    const output = serialized(CloseSourceMonitor(monitorContainer.props.children.props));
     expect(output).toContain("Depreciation and amortization");
     expect(output).toContain("1 entries remain due without a journal");
     expect(output).toContain("1 releases have a posted journal; 0 remain due");
@@ -402,6 +406,7 @@ describe("real organization workspace isolation", () => {
       expect(output).not.toContain("Northstar");
       expect(mocks.loadPeriodControlWorkspace).toHaveBeenCalledOnce();
       expect(mocks.loadPeriodControlWorkspace).toHaveBeenCalledWith(mocks.principal);
+      expect(mocks.loadCloseChecklistWorkspace).toHaveBeenCalledWith(mocks.principal);
     } finally {
       mocks.principal.organizationWritesEnabled = previousActivation;
     }

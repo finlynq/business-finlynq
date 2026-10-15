@@ -687,6 +687,13 @@
       "when": 1792065901650,
       "tag": "0097_income_tax_provision",
       "breakpoints": true
+    },
+    {
+      "idx": 98,
+      "version": "7",
+      "when": 1792068101755,
+      "tag": "0098_persistent_close_checklist",
+      "breakpoints": true
     }
   ]
 }

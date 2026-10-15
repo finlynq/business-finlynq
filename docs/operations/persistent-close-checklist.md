@@ -1,0 +1,19 @@
+# Persistent month-end close checklist
+
+The Period controls workspace supports reusable versioned templates and one saved checklist per entity/ledger/period. The original source-count monitor remains available as an additional view. Opening either view creates no checklist records, journals, notifications or period transitions.
+
+Templates retain the twelve required source checks and optional manual tasks. Instances freeze their template revision. Owner/reviewer, due date, working status, blocking reason and evidence changes append task revisions. The assigned active reviewer must supply evidence and inspect the current source fingerprint before review. Completion requires that exact review and completed prerequisites. Explicit not-applicable exceptions require a reviewer and reason, remain visible and cannot replace final sign-off or unavailable source reads.
+
+Source checks distinguish due, drafted, submitted, approved, posted, reconciled and reviewed stages. Missing bank coverage, unposted AP/AR documents, missing asset schedules/mappings, register/GL differences, unavailable reads and incomplete tax calculations stay actionable. AP/AR completeness, missing-register coverage, accruals and statement interpretation still require explicit human evidence. The source checker never assumes that zero recorded items establishes completeness.
+
+Each review retains source evidence, fingerprint, dependency versions, reviewer, time and reason. Source/dependency changes make an earlier reviewed/complete/exception decision stale and block readiness while preserving its original record. Final sign-off depends on every task, including carried work. A draft is never accepted as a posted expense. A provision's own generated posting is recognized without falsely making its calculation stale; subsequent books or assumption changes require refresh.
+
+Carry-forward requires an unresolved individual task and a later saved instance in the same entity/ledger. It freezes an origin revision, retains the original source period and initial due date, and creates a new unresolved task. It never copies completion, changes accounting dates, reposts a source or completes the originating period. To complete an old period, revisit its own tasks.
+
+Due/overdue/blocker notices are recipient-owned opt-in **in-app** notices. No background email, chat or external delivery is configured. Reading notices is side-effect free; an explicit acknowledgement records a receipt. Stable notice keys suppress acknowledged unchanged conditions. Source/task changes may create a new actionable notice.
+
+Reads use `mcp.ledger.read`, with source-specific banking/AP/AR/tax permissions checked independently. Management uses the existing `ledger.period.close` permission, the active write gates, version checks, idempotency keys, tenant transactions and append-only database guards. There is no new permission grant. The database keeps forced tenant RLS and immutable history; demo reset includes these records in dependency order. Close management never invokes posting, reopen, close or seal. Use the existing supported source and period-control workflows for those separately authorized actions.
+
+The `/api/close/checklist` routes and nine `finlynq_daily_*close*` MCP tools share the same services. MCP lists expose original task IDs, source fingerprints, stages, versions, blockers, dependencies and origin references. Web source evidence and history can be expanded for the exact retained snapshot.
+
+Validation uses disposable PostgreSQL runtime roles and synthetic assets/journals. Browser acceptance drives the production component through intercepted transport fixtures; it does not establish hosted authentication or an external-client acceptance result. Hosted/external verification remains a separate deployment gate.

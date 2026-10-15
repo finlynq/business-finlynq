@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, it, expect, vi } from "vitest";
 import { Pool } from "pg";
-import { closeDatabasePool } from "@/db/transaction";
+import {loadCloseChecklistSources} from "@/modules/close/checklist-sources";
+import { closeDatabasePool, withTenantTransaction } from "@/db/transaction";
 import type { SessionPrincipal } from "@/modules/identity/session";
 import { createManualJournal, reversePostedJournal } from "@/modules/ledger/journal-service";
 import { createAssetCategory, createAssetRecord, generateAssetScheduleJournal } from "@/modules/assets/service";
@@ -22,6 +23,7 @@ run("reviewed income-tax provision", () => {
     let assumptionsId = "", assumptionVersion = 0, calculationVersion = 0, postedProvision = "";
     const assumptionCommand = (action: "SAVE" | "REVIEW", extra: Partial<ProvisionAssumptions> = {}) => commandProvisionAssumptions({ ...commandContext(), action, legalEntityId: id.entity, ledgerId: id.ledger, fiscalYear: 2025, yearStart: "2025-01-01", yearEnd: "2025-12-31", expectedVersion: assumptionVersion, payload: { ...payload, ...extra } });
     const inspect = () => previewProvision(principal, { assumptionsId, periodId: id.period, throughDate: "2025-12-31" });
+    const closeFacts=()=>withTenantTransaction(context(),client=>loadCloseChecklistSources(client,id.org,id.actor,id.period));
     async function calculate() { const result = await saveProvisionCalculation({ ...commandContext(), assumptionsId, periodId: id.period, throughDate: "2025-12-31", expectedVersion: calculationVersion }); calculationVersion = result.calculation.version; return result.calculation; }
     const event = (calc: ProvisionCalculationRow, action: "REVIEW" | "DRAFT", version: number, key = randomUUID()) => commandProvisionEvent({ ...commandContext(), calculationId: calc.id, sourceHash: calc.source_hash, action, expectedVersion: version, idempotencyKey: key });
     async function journal(debit: string, credit: string, amount: string, post = true) { const line = (accountCombinationId: string, isDebit: boolean) => ({ accountCombinationId, debitFunctional: isDebit ? amount : "0", creditFunctional: isDebit ? "0" : amount, debitTransaction: isDebit ? amount : "0", creditTransaction: isDebit ? "0" : amount, transactionCurrency: "CAD", fxRate: "1", fxRateSource: "functional", fxRateEffectiveAt: "2025-12-15T00:00:00Z" }); const created = await createManualJournal({ context: context(), legalEntityId: id.entity, ledgerId: id.ledger, periodId: id.period, accountingDate: "2025-12-15", purpose: "ROUTINE", origin: "API", description: "Synthetic provision source", idempotencyKey: randomUUID(), lines: [line(debit, true), line(credit, false)] }); if (post)
@@ -36,7 +38,7 @@ run("reviewed income-tax provision", () => {
         await owner.query("INSERT INTO organization_memberships(id,organization_id,user_id,active) VALUES($1,$2,$3,true)", [id.member, id.org, id.actor]);
         await owner.query(`INSERT INTO auth_sessions(id,token_hash,user_id,organization_id,membership_id,auth_method,session_mode,user_agent_hash,idle_timeout_seconds,idle_expires_at,expires_at,mfa_verified_at,step_up_expires_at) VALUES($1,$2,$3,$4,$5,'OIDC','REAL',repeat('u',64),7200,now()+interval '2 hours',now()+interval '24 hours',now(),now()+interval '10 minutes')`, [principal.sessionId, `provision-${principal.sessionId}`, id.actor, id.org, id.member]);
         await owner.query("INSERT INTO roles(id,organization_id,key,display_name,system_template) VALUES($1,$2,'TAX_REFRESH_TEST','Synthetic tax role',false)", [id.role, id.org]);
-        await owner.query("INSERT INTO role_permissions(organization_id,role_id,permission_key) SELECT $1,$2,unnest($3::text[])", [id.org, id.role, ["organization.settings.manage", "tax.mappings.manage", "tax.read", "tax.filings.prepare", "tax.filing.configuration.manage", "ledger.journal.draft", "ledger.journal.post", "ledger.journal.reverse", "ledger.posting_policy.manage", "ledger.period.close", "ledger.period.reopen"]]);
+        await owner.query("INSERT INTO role_permissions(organization_id,role_id,permission_key) SELECT $1,$2,unnest($3::text[])", [id.org, id.role, ["organization.settings.manage", "tax.mappings.manage", "tax.read", "tax.filings.prepare", "tax.filing.configuration.manage", "ledger.journal.draft", "ledger.journal.post", "ledger.journal.reverse", "ledger.posting_policy.manage", "ledger.period.close", "ledger.period.reopen", "mcp.ledger.read", "banking.read", "payables.read", "receivables.read"]]);
         await owner.query("INSERT INTO membership_roles(organization_id,membership_id,role_id,assigned_by) VALUES($1,$2,$3,$4)", [id.org, id.member, id.role, id.actor]);
         await owner.query("INSERT INTO legal_entities(id,organization_id,code,display_name,country_code,region_code) VALUES($1,$2,'TAX','Synthetic entity','CA','ON')", [id.entity, id.org]);
         await owner.query("INSERT INTO ledgers(id,organization_id,legal_entity_id,code,display_name,kind,accounting_profile,functional_currency) VALUES($1,$2,$3,'PRIMARY','Synthetic ledger','PRIMARY','CAN_ASPE','CAD')", [id.ledger, id.org, id.entity]);
@@ -76,9 +78,11 @@ run("reviewed income-tax provision", () => {
         await event(calc, "REVIEW", 0);
         const key = randomUUID(), generated = await event(calc, "DRAFT", 1, key);
         postedProvision = generated.event.journal_id!;
+        expect((await closeFacts()).facts.TAX_PROVISION).toMatchObject({available:true,ready:false,stage:"DRAFT"});
         expect((await owner.query("SELECT status FROM journal_entries WHERE id=$1", [postedProvision])).rows[0].status).toBe("DRAFT");
         await expect(owner.query("UPDATE journal_lines SET memo='Changed generated line' WHERE journal_entry_id=$1", [postedProvision])).rejects.toMatchObject({ code: "23514" });
         await postJournal({ context: context(), journalId: postedProvision });
+        expect((await closeFacts()).facts.TAX_PROVISION).toMatchObject({available:true,ready:true,stage:"POSTED"});
         expect((await event(calc, "DRAFT", 1, key)).event.journal_id).toBe(postedProvision);
         expect((await event(calc, "DRAFT", 1)).event.journal_id).toBe(postedProvision);
         expect((await inspect()).snapshot).toMatchObject({ bookPreTaxIncome: "1000.00", priorPostedProvision: "100.00", incrementalAdjustment: "0.00" });
@@ -87,6 +91,7 @@ run("reviewed income-tax provision", () => {
         await journal(id.payableCombination, id.cashCombination, "20.00");
         const preview = await inspect();
         expect(preview.snapshot).toMatchObject({ bookPreTaxIncome: "1000.00", priorPostedProvision: "100.00", incrementalAdjustment: "0.00", liabilityRollforward: { closingCreditBalance: "80.00", unclassifiedMovementCount: 1 } });
+        expect((await closeFacts()).facts.TAX_PROVISION).toMatchObject({available:true,ready:false,stage:"STALE"});
         const prior = await journal(id.expenseCombination, id.payableCombination, "5.00");
         expect((await inspect()).snapshot.ready).toBe(false);
         const classifications: ProvisionAssumptions["journalClassifications"] = [{ journalId: prior, kind: "PRIOR_YEAR_TRUE_UP", taxYear: 2024, evidence: "Synthetic supported prior-year true-up" }];

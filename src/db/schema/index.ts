@@ -16,3 +16,5 @@ export * from "./booking-reports";
 export * from "./agent-guidance";
 
 export * from "./tax-provision";
+
+export * from "./close";
