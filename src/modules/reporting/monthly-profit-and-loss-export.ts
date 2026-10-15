@@ -9,6 +9,16 @@ import {
 } from "./tenant-reporting";
 import type { MonthlyProfitAndLoss } from "./monthly-profit-and-loss";
 
+export function monthlyReportFilterLabel(report: MonthlyProfitAndLoss): string {
+  const selection = report.selection;
+  const segments = Object.entries(selection.segmentFilters ?? {}).sort(([a], [b]) => a.localeCompare(b));
+  return [
+    selection.accountCode ? `Account ${selection.accountCode}` : "All accounts",
+    ...segments.map(([key, value]) => `${key}: ${value}`),
+    ...(selection.combinationId ? [`Combination ${selection.combinationId}`] : []),
+  ].join(" · ");
+}
+
 export type MonthlyExportRow = Readonly<{
   label: string;
   values: readonly (string | null)[];
