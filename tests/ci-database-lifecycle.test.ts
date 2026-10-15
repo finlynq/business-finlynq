@@ -64,11 +64,11 @@ describe("CI predecessor-upgrade and restore verification", () => {
     );
   });
 
-  it("replays exactly 0000-0024 before preserving a tenant sentinel through 0094", () => {
+  it("replays exactly 0000-0024 before preserving a tenant sentinel through 0095", () => {
     expect(migrationJournal.entries.map((entry) => entry.idx)).toEqual(
-      Array.from({ length: 95 }, (_, index) => index),
+      Array.from({ length: 96 }, (_, index) => index),
     );
-    expect(migrationJournal.entries.at(-1)?.tag).toBe("0094_elite_pixie");
+    expect(migrationJournal.entries.at(-1)?.tag).toBe("0095_signin_notification_novelty");
     expect(migrationJournal.entries.find((entry) => entry.idx === 25)?.tag).toBe(
       "0025_tenant_rls_completion",
     );

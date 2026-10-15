@@ -666,6 +666,13 @@
       "when": 1792001216880,
       "tag": "0094_elite_pixie",
       "breakpoints": true
+    },
+    {
+      "idx": 95,
+      "version": "7",
+      "when": 1792062865646,
+      "tag": "0095_signin_notification_novelty",
+      "breakpoints": true
     }
   ]
 }

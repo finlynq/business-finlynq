@@ -12,6 +12,8 @@ const runtimeRoleName = "business_finlynq_app";
 const ownerOnlyRlsTables = new Set([
   "audit_outbox_pair_contract",
   "auth_email_outbox",
+  "auth_login_contexts",
+  "auth_login_notification_decisions",
   "auth_one_time_tokens",
   "auth_oidc_identities",
   "auth_organization_signups",
