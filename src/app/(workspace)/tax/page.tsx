@@ -58,6 +58,7 @@ export default async function TaxPage({ searchParams }: { searchParams: Promise<
       />
       <RouteTabs label="Tax workspace views" active={view} documentNavigation tabs={[
         { key: "prepare", label: "Prepare return", href: "/app/tax" },
+        { key: "provision", label: "Income-tax provision", href: "/app/tax/provision" },
         { key: "drafts", label: "Drafts & locks", href: "/app/tax?view=drafts" },
         { key: "deleted", label: "Deleted drafts", href: "/app/tax?view=deleted" },
         { key: "history", label: "Filing history", href: "/app/tax?view=history" },

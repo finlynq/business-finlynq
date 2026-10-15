@@ -30,6 +30,8 @@ export type RouteFailureOperation =
   | "session-mfa-enrollment-start"
   | "session-revocation"
   | "subledger-mutation"
+  | "tax-provision-command"
+  | "tax-provision-preview"
   | "tax-draft-command"
   | "tax-workpaper-control"
   | "tax-workpaper-control-preview"
