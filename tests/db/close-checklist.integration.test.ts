@@ -1,3 +1,4 @@
+import {exact} from "@/kernel/money";
 import { transitionFiscalPeriod } from "@/modules/ledger/period-service";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, it, expect, vi } from "vitest";
@@ -158,6 +159,11 @@ run("persistent close checklist", () => {
         await expect(configureCloseNotifications({ ...c, recipientId: id.outsider, idempotencyKey: randomUUID() })).rejects.toBeDefined();
         expect((await owner.query("SELECT state,version FROM fiscal_periods WHERE id=$1", [id.period])).rows[0]).toEqual(before);
         expect((await loadCloseChecklistWorkspace(principal)).instances).toHaveLength(2);
+    });
+    it("keeps sub-cent register-to-GL differences visible",async()=>{
+        const source=(await task("asset-reconciliation")).source.evidence as {reconciliation:{combinationId:string;difference:string}[]};const cash=source.reconciliation.find(row=>row.combinationId===id.cashCombination)!;const difference=exact(cash.difference);
+        await journal(difference.isNegative()?id.cashCombination:id.revenueCombination,difference.isNegative()?id.revenueCombination:id.cashCombination,difference.abs().toFixed(9));expect((await task("asset-reconciliation")).source.ready).toBe(true);
+        await journal(id.cashCombination,id.revenueCombination,"0.000000001");const changed=await task("asset-reconciliation");expect(changed.source.ready).toBe(false);expect(JSON.stringify(changed.source.evidence)).toContain('"difference":"0.000000001"');
     });
     it("retains locked-period state when opening and managing its evidence", async () => {
         await transitionFiscalPeriod({ context: context(), periodId: id.period, expectedVersion: 1, toState: "ADJUSTMENT_ONLY", idempotencyKey: randomUUID() });
