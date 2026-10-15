@@ -31,6 +31,7 @@ const nextConfig: NextConfig = {
       "/settings",
       "/settings/:path*",
       "/tax",
+      "/tax/:path*",
     ];
 
     return legacyWorkspaceRoutes.map((source) => ({
@@ -55,6 +56,7 @@ const nextConfig: NextConfig = {
       { source: "/app/settings", destination: "/settings" },
       { source: "/app/settings/:path*", destination: "/settings/:path*" },
       { source: "/app/tax", destination: "/tax" },
+      { source: "/app/tax/:path*", destination: "/tax/:path*" },
     ];
   },
   async headers() {
