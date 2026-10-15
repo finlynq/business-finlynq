@@ -1,4 +1,3 @@
-import {exact} from "@/kernel/money";
 import { transitionFiscalPeriod } from "@/modules/ledger/period-service";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, it, expect, vi } from "vitest";
@@ -160,10 +159,26 @@ run("persistent close checklist", () => {
         expect((await owner.query("SELECT state,version FROM fiscal_periods WHERE id=$1", [id.period])).rows[0]).toEqual(before);
         expect((await loadCloseChecklistWorkspace(principal)).instances).toHaveLength(2);
     });
-    it("keeps sub-cent register-to-GL differences visible",async()=>{
-        const source=(await task("asset-reconciliation")).source.evidence as {reconciliation:{combinationId:string;difference:string}[]};const cash=source.reconciliation.find(row=>row.combinationId===id.cashCombination)!;const difference=exact(cash.difference);
-        await journal(difference.isNegative()?id.cashCombination:id.revenueCombination,difference.isNegative()?id.revenueCombination:id.cashCombination,difference.abs().toFixed(9));expect((await task("asset-reconciliation")).source.ready).toBe(true);
-        await journal(id.cashCombination,id.revenueCombination,"0.000000001");const changed=await task("asset-reconciliation");expect(changed.source.ready).toBe(false);expect(JSON.stringify(changed.source.evidence)).toContain('"difference":"0.000000001"');
+    it("keeps three-decimal currency register-to-GL differences visible", async () => {
+        const ledger = randomUUID(), period = randomUUID();
+        await owner.query("INSERT INTO ledgers(id,organization_id,legal_entity_id,code,display_name,kind,accounting_profile,functional_currency) VALUES($1,$2,$3,'BHD','Synthetic three-decimal ledger','SECONDARY','CAN_ASPE','BHD')", [ledger, id.org, id.entity]);
+        await owner.query("INSERT INTO fiscal_periods(id,organization_id,ledger_id,fiscal_year,period_number,label,starts_on,ends_on) VALUES($1,$2,$3,2025,9,'September BHD','2025-09-01','2025-09-30')", [period, id.org, ledger]);
+        const combinations: string[] = [];
+        for (const [code, kind] of [["1000", "ASSET"], ["1500", "ASSET"], ["6000", "EXPENSE"], ["4000", "REVENUE"]]) {
+            const account = randomUUID(), combination = randomUUID();
+            await owner.query("INSERT INTO gl_accounts(id,organization_id,ledger_id,code,display_name,class,control_kind,postable,active,valid_from) VALUES($1,$2,$3,$4,'Synthetic three-decimal account',$5,'NONE',true,true,'2025-01-01')", [account, id.org, ledger, code, kind]);
+            await owner.query("INSERT INTO account_combinations(id,organization_id,ledger_id,entity_id,account_id) VALUES($1,$2,$3,$4,$5)", [combination, id.org, ledger, id.entity, account]);
+            combinations.push(combination);
+        }
+        const category = await createAssetCategory({ context: context(), legalEntityId: id.entity, ledgerId: ledger, kind: "TANGIBLE", code: "BHD", displayName: "Synthetic precision category", costAccountCombinationId: combinations[0]!, contraAccountCombinationId: combinations[1]!, expenseAccountCombinationId: combinations[2]!, effectiveFrom: "2025-01-01", reason: "Synthetic three-decimal fixture", idempotencyKey: randomUUID() });
+        await createAssetRecord({ context: context(), categoryId: category.categoryId, assetNumber: "BHD", displayName: "Synthetic precision asset", acquisitionDate: "2025-09-01", inServiceOn: "2025-09-01", cost: "900", usefulLifeMonths: 24, idempotencyKey: randomUUID() });
+        const line = (accountCombinationId: string, debit: boolean) => ({ accountCombinationId, debitFunctional: debit ? "900.001" : "0", creditFunctional: debit ? "0" : "900.001", debitTransaction: debit ? "900.001" : "0", creditTransaction: debit ? "0" : "900.001", transactionCurrency: "BHD", fxRate: "1", fxRateSource: "functional", fxRateEffectiveAt: "2025-09-15T00:00:00Z" });
+        const journal = await createManualJournal({ context: context(), legalEntityId: id.entity, ledgerId: ledger, periodId: period, accountingDate: "2025-09-15", purpose: "ROUTINE", origin: "API", description: "Synthetic three-decimal acquisition difference", idempotencyKey: randomUUID(), lines: [line(combinations[0]!, true), line(combinations[3]!, false)] });
+        await postJournal({ context: context(), journalId: journal.journalId });
+        const created = await createCloseInstance({ ...commandContext(), periodId: period, templateRevisionId });
+        const check = (await inspectCloseInstance(principal, created.instance.id)).tasks.find(t => t.key === "asset-reconciliation")!;
+        expect(check.source).toMatchObject({ available: true, ready: false });
+        expect(JSON.stringify(check.source.evidence)).toContain('"difference":"0.001000000"');
     });
     it("retains locked-period state when opening and managing its evidence", async () => {
         await transitionFiscalPeriod({ context: context(), periodId: id.period, expectedVersion: 1, toState: "ADJUSTMENT_ONLY", idempotencyKey: randomUUID() });
