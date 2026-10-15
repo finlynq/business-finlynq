@@ -107,7 +107,7 @@ export async function loadCloseChecklistSources(client: PoolClient, org: string,
         const assets = assetData.register.filter(row => row.status !== "DISPOSED");
         const expected = assets.reduce((sum, row) => sum.plus(row.costCombinationId === combinationId ? exact(String(row.cost)).minus(row.kind === "PREPAID" ? recognition(row.id) : "0") : "0").minus(row.kind !== "PREPAID" && row.contraCombinationId === combinationId ? recognition(row.id) : "0"), exact("0"));
         const actual = exact(assetData.balances.find(row => row.combinationId === combinationId)?.balance ?? "0");
-        return { combinationId, expected: expected.toFixed(2), actual: actual.toFixed(2), difference: actual.minus(expected).toFixed(2) };
+        return { combinationId, expected: expected.toFixed(9), actual: actual.toFixed(9), difference: actual.minus(expected).toFixed(9) };
     }) : [];
     const assetRecon = assetData ? fact("ASSET_RECONCILIATION", asset.ready && recon.every(row => exact(row.difference).isZero()), "REVIEW_REQUIRED", "Compare register cost and period-end posted recognition with cost/contra GL balances. Differences require correction or an explicit reviewed exception; substantiate missing register entries, disposals and impairment separately.", { register: assetData.register, reconciliation: recon, balances: assetData.balances.filter(row => assetData.register.some(asset => asset.costCombinationId === row.combinationId || asset.contraCombinationId === row.combinationId)), schedules: assetData.schedules }) : fact("ASSET_RECONCILIATION", false, "UNKNOWN", asset.detail, null, false);
     const tax = await safe("TAX_PROVISION", PERMISSIONS.readTax, async () => {
