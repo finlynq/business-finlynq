@@ -61,7 +61,7 @@ describe("receivable open-item lookup", () => {
     expect(params).toEqual([
       ids.organization, ids.entity, null, null, null,
       "PCGL1466450", null, null, ["OPEN", "PARTIALLY_SETTLED"], 100,
-      "receivables", "receivables.sales-invoice", "CUSTOMER",
+      "receivables", "receivables.sales-invoice", "CUSTOMER", null, null, null, null,
     ]);
   });
 });
@@ -137,7 +137,7 @@ describe("payable open-item lookup", () => {
       20,
       "payables",
       "payables.supplier-bill",
-      "SUPPLIER",
+      "SUPPLIER", null, null, null, null,
     ]);
   });
 
@@ -146,5 +146,21 @@ describe("payable open-item lookup", () => {
 
     expect(mocks.query.mock.calls[0]?.[1]?.[8]).toEqual(["OPEN", "PARTIALLY_SETTLED"]);
     expect(mocks.query.mock.calls[0]?.[0]).toContain("settlement_status = ANY($9::text[])");
+  });
+});
+
+
+describe("open-item cursor validation", () => {
+  it("rejects malformed cursors and invalid page sizes before a database read", async () => {
+    for (const limit of [0, -1, 501, 1.5, Number.NaN]) {
+      await expect(listReceivableOpenItems({ context, limit })).rejects.toThrow(/limit/);
+    }
+    await expect(listReceivableOpenItems({ context, after: {
+      dueDate: "2026-02-30", sourceNumber: "INV", openItemId: ids.openItem,
+    } })).rejects.toThrow();
+    await expect(listReceivableOpenItems({ context, after: {
+      dueDate: null, sourceNumber: "INV", openItemId: "not-an-id",
+    } })).rejects.toThrow();
+    expect(mocks.query).not.toHaveBeenCalled();
   });
 });
