@@ -39,6 +39,7 @@ const principal: SessionPrincipal = {
 
 function rowsFor(sql: string) {
   if(sql.includes("pg_advisory_xact_lock") || sql.includes("INSERT INTO tax_workpaper_control_events")) return [];
+  if (sql.includes("SELECT app.tax_workpaper_deleted")) return [{ deleted: false }];
   if (sql.includes('filing.id AS "filingId"')) return [{ filingId, workpaperVersion: 1 }];
   if (sql.includes("FROM tax_filings filing")) return [{
     id: filingId,
@@ -175,6 +176,24 @@ describe("tax filing workpaper export", () => {
     expect(decoded).not.toContain("rawDocument");
     expect(Buffer.from(csv.contentBase64, "base64").toString("utf8"))
       .toContain('"section","key","value"');
+  });
+
+  it("rejects export if the report moves to Trash after its preview", async () => {
+    const preview = await previewTaxFilingExport(principal, filingId);
+    mocks.query.mockImplementation(async (sql: string) => ({
+      rows: sql.includes("SELECT app.tax_workpaper_deleted") ? [{ deleted: true }] : rowsFor(sql),
+    }));
+
+    await expect(exportTaxFilingWorkpaper(principal, {
+      filingId,
+      format: "JSON",
+      expectedContentHash: preview.contentHash,
+      allowDraftWithWarnings: true,
+    })).rejects.toMatchObject({ code: "WORKPAPER_DELETED" });
+    expect(mocks.query).not.toHaveBeenCalledWith(
+      expect.stringContaining("INSERT INTO tax_workpaper_control_events"),
+      expect.anything(),
+    );
   });
 
   it("rejects export when the caller's preview hash is stale", async () => {

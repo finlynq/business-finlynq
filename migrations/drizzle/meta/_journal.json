@@ -694,6 +694,13 @@
       "when": 1792068101755,
       "tag": "0098_persistent_close_checklist",
       "breakpoints": true
+    },
+    {
+      "idx": 99,
+      "version": "7",
+      "when": 1792146091914,
+      "tag": "0099_owner_tax_report_trash",
+      "breakpoints": true
     }
   ]
 }
