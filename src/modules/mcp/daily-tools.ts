@@ -347,13 +347,13 @@ export const DAILY_MCP_TOOLS: readonly McpToolDefinition[] = [
     inputSchema:taxDraftCommandSchema.extend({kind:z.literal("WORKPAPER")}),idempotent:true,
     invoke:(args,runtime)=>commandTaxDraft({...args,principal:runtime.sessionPrincipal,requestId:runtime.requestId,sourceSurface:"MCP"}) }),
   defineMcpTool({ policy:{name:"finlynq_daily_preview_tax_workpaper_control",group:"DAILY",access:"READ",permission:PERMISSIONS.readTax},
-    title:"Inspect workpaper retention and cleanup eligibility",description:"Read the exact UUID, scope, frozen versions, review/lock/export history and inbound dependencies before a recoverable Delete draft or Restore draft. Historical/source evidence and unknown legacy history are retained.",
+    title:"Inspect tax report and Trash access",description:"Read the exact UUID, scope, frozen versions, review/lock/export history, dependencies and current owner-only Trash capability. Owners may recoverably delete historical, reviewed, locked and referenced reports.",
     inputSchema:z.object({filingId:z.uuid()}).strict(),invoke:(args,runtime)=>previewTaxWorkpaperControl(runtime.sessionPrincipal,args.filingId) }),
   defineMcpTool({ policy:{name:"finlynq_daily_control_tax_workpaper",group:"DAILY",access:"WRITE",permission:PERMISSIONS.manageTaxFilingCanonical},
-    title:"Review, lock, delete or restore a workpaper draft",description:"Requires exact preview hash, expected version and confirmation ACTION UUID; DELETE additionally requires UNFILED. Delete is recoverable hiding only for eligible unfiled, unreviewed, unlocked, unreferenced PREPARED records. Rechecks dependencies atomically. No permanent deletion, posting, payment or external filing.",
+    title:"Review, lock, move tax report to Trash or restore",description:"Requires exact preview hash, expected version and confirmation ACTION UUID. DELETE and RESTORE require a live organization OWNER role in addition to tax.filing.canonical.manage. Owners may move any tax report, including historical, reviewed, locked or referenced history, to recoverable Trash. Saved contents, history and existing links remain restorable. No permanent deletion, posting, payment or external filing.",
     inputSchema:taxWorkpaperControlSchema,idempotent:true,invoke:(args,runtime)=>commandTaxWorkpaperControl({...args,principal:runtime.sessionPrincipal,requestId:runtime.requestId,sourceSurface:"MCP"}) }),
   defineMcpTool({ policy:{name:"finlynq_daily_list_deleted_tax_workpapers",group:"DAILY",access:"READ",permission:PERMISSIONS.readTax},
-    title:"List recoverably deleted tax drafts",description:"Explicit deleted-drafts view retains the same record IDs for dependency preview and authorized restoration.",
+    title:"List tax report Trash",description:"List recoverably deleted tax reports with the same record IDs for preview and owner-only restoration.",
     inputSchema:z.object({}).strict(),invoke:(_args,runtime)=>listDeletedTaxWorkpapers(runtime.sessionPrincipal) }),
 
   defineMcpTool({
