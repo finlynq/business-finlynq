@@ -60,7 +60,7 @@ export default async function TaxPage({ searchParams }: { searchParams: Promise<
         { key: "prepare", label: "Prepare return", href: "/app/tax" },
         { key: "provision", label: "Income-tax provision", href: "/app/tax/provision" },
         { key: "drafts", label: "Drafts & locks", href: "/app/tax?view=drafts" },
-        { key: "deleted", label: "Deleted drafts", href: "/app/tax?view=deleted" },
+        { key: "deleted", label: "Trash", href: "/app/tax?view=deleted" },
         { key: "history", label: "Filing history", href: "/app/tax?view=history" },
         { key: "templates", label: "Templates & rules", href: "/app/tax?view=templates" },
         { key: "transactions", label: "Transaction tax", href: "/app/tax?view=transactions" },
@@ -96,8 +96,8 @@ export default async function TaxPage({ searchParams }: { searchParams: Promise<
         {view === "drafts" && <section className="panel"><h2>Drafts, review and locks</h2><p>Input revisions remain separate from effective configurations, calculated workpapers and external filing.</p>
           {drafts.length?<ul>{drafts.map(draft=><li key={draft.draft_id}><a href={`/app/tax?draft=${draft.draft_id}`}>{draft.kind.toLowerCase()} · {draft.state.toLowerCase()} · revision {draft.version}</a><p>{draft.draft_id} · {String(draft.payload.periodStart??draft.payload.effectiveFrom??"")} {String(draft.payload.periodEnd??"")}</p><small>{draft.reason} · {draft.created_by} · {new Date(draft.created_at).toISOString()}</small></li>)}</ul>:<p>No saved tax input drafts.</p>}
         </section>}
-        {view === "deleted" && <section className="panel"><h2>Deleted workpaper drafts</h2><p>Snapshots and audit history remain retained. Restore preserves the same UUID and never makes a workpaper canonical.</p>
-          {deletedWorkpapers.length?deletedWorkpapers.map(filing=><article key={filing.id}><h3>{filing.entityName} · {filing.periodStart} – {filing.periodEnd}</h3><TaxWorkpaperControls filingId={filing.id} canManage={!!filingWorkspace.canManageCanonical}/></article>):<p>No recoverably deleted workpapers.</p>}
+        {view === "deleted" && <section className="panel"><h2>Tax report Trash</h2><p>Reports in Trash are removed from active reports and filing history. An organization owner can restore each report with its saved contents, history and existing links.</p>
+          {deletedWorkpapers.length?deletedWorkpapers.map(filing=><article key={filing.id}><h3>{filing.entityName} · {filing.periodStart} – {filing.periodEnd}</h3><TaxWorkpaperControls filingId={filing.id} canManage={!!filingWorkspace.canManageCanonical}/></article>):<p>Trash is empty.</p>}
         </section>}
 
         {view === "templates" && <section className="panel" aria-labelledby="tax-template-rules-title">
