@@ -73,3 +73,5 @@ sudo env \
 ```
 
 Do not clear the latch merely to retry a failed migration or paused scheduler. Follow the failure and forward-repair guidance in the [production release runbook](./release-runbook.md) first.
+
+During a journaled forward repair, the exact retained source application remains a valid anchor even if the failed candidate image has been removed. Its image, revision, stopped state, hardening, and network checks still apply. Only a retained candidate container requires the candidate image tag, and superseding a failed release still requires the exact source anchor. Updating this logic requires installing the reviewed `deploy-main.sh` as the root-owned production entry point; merging application code alone does not update that installed copy.
