@@ -1,0 +1,9 @@
+[Unit]
+Description=Verify private scanner identity and loaded signature freshness
+After=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/opt/finlynq-shared-scanner/manage.sh verify
+TimeoutStartSec=180
+UMask=0077
