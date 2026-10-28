@@ -13,6 +13,7 @@
     "test:db": "vitest run tests/db",
     "test:e2e": "playwright test",
     "test:watch": "vitest",
+    "test:scanner-gateway": "node --test deploy/evidence/shared/*-check.mjs",
     "auth:email-worker": "tsx src/workers/auth-email-worker.ts",
     "auth:invite": "tsx scripts/invite-account.ts",
     "auth:grant-platform-admin": "tsx scripts/grant-platform-administrator.ts",
@@ -30,7 +31,7 @@
     "org:onboard": "tsx scripts/onboard-organization.ts",
     "demo:bootstrap": "tsx scripts/bootstrap-demo.ts",
     "demo:reset": "tsx scripts/reset-demo.ts",
-    "check": "npm run lint && npm run typecheck && npm run test",
+    "check": "npm run lint && npm run typecheck && npm run test && npm run test:scanner-gateway",
     "check:predeploy": "npm run db:check-drift && npm run journal-types:check-seed && npm run check && npm run build"
   },
   "engines": {

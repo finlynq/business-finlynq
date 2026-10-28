@@ -195,6 +195,11 @@ refresh_installed_deployer_if_needed() {
 compose() {
   local edge_mode edge_mode_count
   local -a controlled_environment=()
+  local scanner_mode scanner_channel
+  local -a scanner_files scanner_environment_values
+  source "$repository/deploy/evidence/shared/compose-contract.sh"
+  scanner_compose_contract "$compose_environment" "$project" "$repository" \
+    || fail "scanner mode or consumer channel is invalid"
   edge_mode="$(awk -F= '$1 == "BUSINESS_FINLYNQ_EDGE_MODE" { sub(/^[^=]*=/, ""); print }' \
     "$compose_environment")" \
     || fail "BUSINESS_FINLYNQ_EDGE_MODE could not be read"
@@ -213,11 +218,19 @@ compose() {
       "BUSINESS_FINLYNQ_RELEASE_ACCEPTANCE_TOKEN=$release_acceptance_token"
     )
   fi
-  env -i PATH="$clean_path" "${controlled_environment[@]}" docker compose \
+  env -i PATH="$clean_path" "${controlled_environment[@]}" "${scanner_environment_values[@]}" docker compose \
     --project-name "$project" \
     --project-directory "$repository" \
     --env-file "$compose_environment" \
-    -f "$repository/docker-compose.yml" -f "$compose_override" "$@"
+    -f "$repository/docker-compose.yml" -f "$compose_override" "${scanner_files[@]}" "$@"
+}
+
+verify_shared_scanner_if_selected() {
+  local scanner_mode scanner_channel
+  local -a scanner_files scanner_environment_values
+  source "$repository/deploy/evidence/shared/compose-contract.sh"
+  scanner_compose_contract "$compose_environment" "$project" "$repository" || return 1
+  [[ "$scanner_mode" != shared ]] || python3 "$repository/deploy/evidence/shared/attest.py" "${@}"
 }
 
 compose_release_router_build() {
@@ -2187,6 +2200,7 @@ if [[ "$source_revision" == "$candidate_revision" ]]; then
     elif [[ "$same_revision_topology" != router ]]; then
       write_accepted_revision "$candidate_revision"
     fi
+    verify_shared_scanner_if_selected "$project" || fail "shared scanner verification failed"
     printf 'Development already runs accepted dev revision %s.\n' "$candidate_revision"
     exit 0
   fi
@@ -2323,11 +2337,13 @@ else
 fi
 
 deployment_stage=database-mutation-chain
+verify_shared_scanner_if_selected || fail "shared scanner owner is unavailable before migration"
 run_candidate_database_chain "$candidate_revision" \
   || fail "development candidate database migration and grant chain failed"
 
 deployment_stage=live-apply
 compose up --detach --wait --no-deps --no-build evidence_scanner
+verify_shared_scanner_if_selected "$project" || fail "shared scanner and private forwarder verification failed"
 compose up --detach --wait --no-deps --no-build app
 if [[ "$source_topology" == router ]]; then
   [[ "$(running_release_router_container)" == "$persistent_release_router_id" ]] \
