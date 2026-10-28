@@ -153,6 +153,10 @@ application configuration and scanners were not switched.
   976.8 MiB daemon and 62.4 MiB gateway; no resource cap was lowered.
 - The real Consult client scanned a 36-MiB, three-member synthetic ZIP in 5.63 s
   cold and about 0.5 s warm. Concurrent production scans: maximum 100 ms, p95 86 ms.
+- A 294-KiB ZIP expanding to 72 MiB scanned in 2.29 s while concurrent production
+  scans stayed below 429 ms. Sampled daemon peak was 1003 MiB at 198% CPU; gateway
+  peak was 51.57 MiB. The original 128 MiB scanner tmpfs and all content limits
+  remained unchanged.
 
 Keep live application/API, worst-case archive load, alert receipt, update/reboot,
 rollback and final RAM evidence distinct from these isolated tests. The required
