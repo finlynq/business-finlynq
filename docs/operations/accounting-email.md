@@ -188,6 +188,73 @@ Use synthetic data in a real writable development organization:
 
 ## Incidents, retries, and retention
 
+### Automatic inbound retries (BUSINESS-FINLYNQ-80)
+
+The Node application starts its inbound retry consumer through Next.js
+`instrumentation.register`. It runs when real business writes and the verified
+inbound relay configuration are enabled. It uses the app's existing runtime
+role, tenant checks, encryption keys, scanner, and cloud-storage authorization;
+the authentication-email worker remains separate. Deploy migration
+`0100_inbound_email_retries` and reconcile the runtime grants before starting the
+new application. No new systemd/cron entry or provider credential is required.
+
+Each cycle selects at most ten due messages and processes messages and their
+attachments sequentially. The next cycle starts 30 seconds after the prior one
+finishes. With an idle queue, due work starts within 30 seconds; provider latency
+and a backlog add time. A five-minute database claim prevents overlapping
+initial, automatic and manual processing. The claim is renewed before each
+attachment. A crash leaves the encrypted original and stable upload key intact;
+the work becomes claimable after expiry. A stale claimant cannot finalize a
+replacement claim. A lost cloud-upload response is recovered by the original
+upload key and content hash, including after a database rollback.
+
+After initial intake, retry delays are 1 minute, then 2, 5, 15 and 60 minutes.
+There are at most five retries. The last failed retry (or recovery after a crash
+on the last retry) moves remaining attachments and the message to `DEAD_LETTER`.
+This requires operator review; do not resend the email or directly reset counts.
+Manual message and attachment retries use the same claim and retry ceiling.
+Quarantine clearance still requires its existing authorized review and never
+bypasses scanning. This worker cannot create/post purchases, settle payables,
+send mail, or execute booking rules.
+
+The dispatcher exposes only organization, message, actor and provider routing
+identifiers. Its organization/member checks use the job's tenant context; it
+restores the caller's context on exit. Only the table owner can use the two
+queue-routing SELECT policies. Ordinary runtime reads remain tenant-scoped.
+The storage exception requires a server-minted, immutable worker capability;
+an `authMethod` string or copied context is insufficient.
+
+`finlynq_daily_get_email_operations` includes each recent message's attachment
+status, `attemptCount`, `failureCode`, `failureStage`, and `nextRetryAt`.
+Stages distinguish `AUTHORIZATION`, `CONFIGURATION`, `SCAN`, `CONTENT`, and
+`STORAGE`. These are fixed categories, never raw exception messages or URLs.
+Successful recovery clears the active error fields and preserves the minimized
+attempt events. A null message error is not a substitute for attachment status.
+
+Monitor `overdueRetryCount`, `oldestOverdueRetrySeconds`, `oldestQueueSeconds`
+and `retryAlert`. Alert when due work has been unclaimed for more than five
+minutes (`retryAlert=true`), when dead-letter totals increase, or when
+`email.inbound.retry_cycle_failed` appears. A healthy configured app logs
+`email.inbound.retry_cycle` with selected/processed/failed counts each cycle;
+silence for more than five minutes is a worker-liveness alert. These logs contain
+no tenant IDs, sender addresses, document names, provider messages or content.
+
+For a configuration/authorization failure, restore the intended connection or
+membership/module access through the normal settings workflow, then retry the
+existing pending message or use authorized quarantine clearance for an access
+denial. For a scan rejection, inspect the quarantined fixture
+under the existing security policy; never disable scanning. For a persistent
+outage, leave the durable originals in place and investigate provider/scanner
+health. After an authorized release, prove a signed synthetic invoice and
+receipt create two review files and zero accounting records, then exercise one
+transient failure through a complete scheduled cycle. Record the revision,
+counts and safe operation codes. Production verification is a separate gate.
+
+Rolling back the application stops the in-process consumer. Keep the additive
+migration and retained originals; existing manual retry remains available in
+the prior application. Avoid running old and new consumers simultaneously
+during rollback, because the old code does not participate in the new claims.
+
 - Provider outage: leave failed operations durable, keep retries bounded, and
   do not rotate aliases or create new invoices merely to force a resend.
 - Replay spike: disable the affected alias or organization outbound switch,

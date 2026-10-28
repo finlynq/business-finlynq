@@ -7,6 +7,8 @@ import { assertWritableOrganization } from "@/modules/workspace/write-policy";
 import { attachmentSafety, groupAccountingAttachments } from "./policy";
 import { activeEmailKeyVersion, decryptEmailValue, encryptEmailValue } from "./crypto";
 import { inboundProviderMessageSchema, normalizeEmailAddress, type InboundProviderMessage } from "./model";
+import { inboundWorkerContext } from "./worker-context";
+import { inboundFailure, retryDelaySeconds } from "./retry-policy";
 
 type ResolvedAlias = Readonly<{
   organization_id: string;
@@ -24,6 +26,7 @@ type MessageRow = Readonly<{
   provider_event_id: string; provider_message_id: string; received_at: Date;
   envelope_ciphertext: string | null; key_version: number; routing_result: string; status: string;
   retry_count: number; next_retry_at: Date | null; error_code: string | null;
+  processing_token: string | null; processing_expires_at: Date | null;
 }>;
 type AttachmentRow = Readonly<{
   id: string; organization_id: string; message_id: string; attachment_key: string;
@@ -54,15 +57,12 @@ async function resolveAlias(recipient: string): Promise<ResolvedAlias | null> {
 }
 
 function workerContext(alias: ResolvedAlias, message: InboundProviderMessage): TenantTransactionContext {
-  return {
+  return inboundWorkerContext({
     organizationId: alias.organization_id,
     actorId: alias.actor_id,
-    sessionMode: "real",
     requestId: `email-inbound:${message.provider}:${message.eventId}:${alias.alias_id}`.slice(0, 200),
-    authMethod: "self-smtp-webhook",
-    sourceSurface: "WORKER",
-    reason: "Verified inbound accounting email",
-  };
+    provider: message.provider,
+  });
 }
 
 async function recordOperation(
@@ -171,12 +171,12 @@ async function stageForAlias(alias: ResolvedAlias, message: InboundProviderMessa
         : null;
       stored.push((await client.query<AttachmentRow>(
         `INSERT INTO inbound_email_attachments
-         (id,organization_id,message_id,attachment_key,filename_ciphertext,content_ciphertext,key_version,mime_type,byte_size,sha256,evidence_purpose,status,quarantine_code)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING *`,
+         (id,organization_id,message_id,attachment_key,filename_ciphertext,content_ciphertext,key_version,mime_type,byte_size,sha256,evidence_purpose,status,quarantine_code,error_stage)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) RETURNING *`,
         [attachmentId, alias.organization_id, id, `${index}:${attachment.id}`, filename, content,
           scope.key_version, attachment.mimeType, declaredSize, sha256,
           purpose.get(attachment.id) ?? "SUPPORTING", safety.allowed ? "RETRY_PENDING" : "QUARANTINED",
-          safety.allowed ? null : safety.code],
+          safety.allowed ? null : safety.code, safety.allowed ? null : "CONTENT"],
       )).rows[0]);
     }
     return { context, row, attachments: stored, replay: false, ignored: false };
@@ -201,34 +201,82 @@ async function attachmentContent(context: TenantTransactionContext, attachmentId
   });
 }
 
+type InboundClaim = Readonly<{
+  row: MessageRow;
+  token: string;
+  exhausted: boolean;
+  alias: { id: string; connection_id: string | null };
+}>;
+
+async function renewClaim(context: TenantTransactionContext, claim: InboundClaim) {
+  return withTenantTransaction(context, async (client) => {
+    const alias = await client.query(
+      `SELECT id FROM email_ingestion_aliases WHERE organization_id=$1 AND id=$2 AND status='ACTIVE'
+       AND app.lock_active_email_membership(owner_membership_id) FOR SHARE`,
+      [context.organizationId, claim.alias.id],
+    );
+    if (!alias.rows[0]) throw new Error("Inbound email alias is unavailable");
+    const renewed = await client.query(
+      `UPDATE inbound_email_messages SET processing_expires_at=now()+interval '5 minutes'
+       WHERE organization_id=$1 AND id=$2 AND processing_token=$3 AND processing_expires_at>now()
+       RETURNING id`, [context.organizationId, claim.row.id, claim.token],
+    );
+    if (!renewed.rows[0]) throw new Error("Inbound email processing lease was lost");
+  });
+}
+
 async function finishAttachment(
   context: TenantTransactionContext,
+  claim: InboundClaim,
   attachmentId: string,
   status: "INBOXED" | "RETRY_PENDING" | "QUARANTINED",
-  input: { inboxItemId?: string; errorCode?: string } = {},
+  input: { inboxItemId?: string; errorCode?: string; errorStage?: string } = {},
 ) {
   await withTenantTransaction(context, async (client) => {
+    const updated = await client.query(
+      `UPDATE inbound_email_attachments attachment SET status=$4,
+         inbox_item_id=coalesce($5,inbox_item_id),quarantine_code=$6,error_stage=$7,updated_at=now()
+       WHERE organization_id=$1 AND id=$2 AND message_id=$3
+         AND EXISTS (SELECT 1 FROM inbound_email_messages message
+           WHERE message.organization_id=$1 AND message.id=$3
+             AND message.processing_token=$8 AND message.processing_expires_at>now()) RETURNING id`,
+      [context.organizationId, attachmentId, claim.row.id, status, input.inboxItemId ?? null,
+        input.errorCode ?? null, input.errorStage ?? null, claim.token],
+    );
+    if (!updated.rows[0]) throw new Error("Inbound email processing lease was lost");
     await client.query(
-      `UPDATE inbound_email_attachments SET status=$3,inbox_item_id=coalesce($4,inbox_item_id),quarantine_code=$5,updated_at=now()
-       WHERE organization_id=$1 AND id=$2`,
-      [context.organizationId, attachmentId, status, input.inboxItemId ?? null, input.errorCode ?? null],
+      `INSERT INTO email_operation_events(organization_id,category,event_type,aggregate_id,outcome,safe_details)
+       VALUES ($1,'ATTACHMENT','PROCESSING_ATTEMPT',$2,$3,$4)`,
+      [context.organizationId, attachmentId, status === "INBOXED" ? "SUCCEEDED" : status,
+        { code: input.errorCode ?? null, stage: input.errorStage ?? null }],
     );
   });
 }
 
-export async function processStagedInboundAttachment(
+async function processStagedInboundAttachment(
   context: TenantTransactionContext,
-  alias: Pick<ResolvedAlias, "alias_id" | "connection_id">,
+  claim: InboundClaim,
   attachmentId: string,
 ) {
-  if (!alias.connection_id) {
-    await finishAttachment(context, attachmentId, "RETRY_PENDING", { errorCode: "STORAGE_NOT_CONFIGURED" });
-    return { status: "RETRY_PENDING" as const };
-  }
-  const staged = await attachmentContent(context, attachmentId);
+  await renewClaim(context, claim);
+  await withTenantTransaction(context, async (client) => {
+    await client.query(
+      `UPDATE inbound_email_attachments SET attempt_count=attempt_count+1,updated_at=now()
+       WHERE organization_id=$1 AND message_id=$2 AND id=$3 AND status='RETRY_PENDING'`,
+      [context.organizationId, claim.row.id, attachmentId],
+    );
+  });
+  let staged: Awaited<ReturnType<typeof attachmentContent>> | undefined;
   try {
+    if (!claim.alias.connection_id) {
+      await finishAttachment(context, claim, attachmentId, "RETRY_PENDING", {
+        errorCode: "STORAGE_NOT_CONFIGURED", errorStage: "CONFIGURATION",
+      });
+      return { status: "RETRY_PENDING" as const };
+    }
+    staged = await attachmentContent(context, attachmentId);
     const uploaded = await uploadInboxDocument(context, {
-      connectionId: alias.connection_id,
+      connectionId: claim.alias.connection_id,
       filename: staged.filename,
       mimeType: "application/pdf",
       byteSize: staged.row.byte_size,
@@ -236,40 +284,58 @@ export async function processStagedInboundAttachment(
       contentBase64: staged.bytes.toString("base64"),
       idempotencyKey: `email:${staged.row.message_id}:${staged.row.attachment_key}`,
     });
-    await finishAttachment(context, attachmentId, "INBOXED", { inboxItemId: uploaded.item.id });
+    await finishAttachment(context, claim, attachmentId, "INBOXED", { inboxItemId: uploaded.item.id });
     return { status: "INBOXED" as const, inboxItemId: uploaded.item.id };
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Email attachment processing failed";
-    const quarantine = /malware|password|encrypted|unsupported|invalid evidence/i.test(message);
-    await finishAttachment(context, attachmentId, quarantine ? "QUARANTINED" : "RETRY_PENDING", {
-      errorCode: quarantine ? "ATTACHMENT_SECURITY_REJECTED" : "STORAGE_RETRYABLE",
+    const failure = inboundFailure(error);
+    const status = failure.quarantine ? "QUARANTINED" as const : "RETRY_PENDING" as const;
+    await finishAttachment(context, claim, attachmentId, status, {
+      errorCode: failure.code, errorStage: failure.stage,
     });
-    return { status: quarantine ? "QUARANTINED" as const : "RETRY_PENDING" as const };
+    return { status };
   } finally {
-    staged.bytes.fill(0);
+    staged?.bytes.fill(0);
   }
 }
 
-async function finishMessage(context: TenantTransactionContext, messageId: string) {
+async function finishMessage(context: TenantTransactionContext, claim: InboundClaim) {
   return withTenantTransaction(context, async (client) => {
-    const counts = await client.query<{ status: string; count: string }>(
-      `SELECT status,count(*)::text AS count FROM inbound_email_attachments
-       WHERE organization_id=$1 AND message_id=$2 GROUP BY status`,
-      [context.organizationId, messageId],
+    const held = await client.query(
+      `SELECT id FROM inbound_email_messages WHERE organization_id=$1 AND id=$2
+       AND processing_token=$3 AND processing_expires_at>now() FOR UPDATE`,
+      [context.organizationId, claim.row.id, claim.token],
     );
-    const byStatus = new Map(counts.rows.map((row) => [row.status, Number(row.count)]));
-    const status = byStatus.get("RETRY_PENDING")
-      ? "RETRY_PENDING"
-      : byStatus.get("QUARANTINED")
-        ? "NEEDS_REVIEW"
-        : byStatus.get("INBOXED")
-          ? "READY"
-          : "QUARANTINED";
+    if (!held.rows[0]) throw new Error("Inbound email processing lease was lost");
+    if (claim.row.retry_count >= 5) {
+      await client.query(
+        `UPDATE inbound_email_attachments SET status='DEAD_LETTER',updated_at=now()
+         WHERE organization_id=$1 AND message_id=$2 AND status='RETRY_PENDING'`,
+        [context.organizationId, claim.row.id],
+      );
+    }
+    const attachments = (await client.query<{ status: string; quarantine_code: string | null }>(
+      `SELECT status,quarantine_code FROM inbound_email_attachments
+       WHERE organization_id=$1 AND message_id=$2 ORDER BY id`,
+      [context.organizationId, claim.row.id],
+    )).rows;
+    const has = (status: string) => attachments.some((row) => row.status === status);
+    const status = has("RETRY_PENDING") ? "RETRY_PENDING"
+      : has("DEAD_LETTER") ? "DEAD_LETTER"
+      : has("QUARANTINED") ? "NEEDS_REVIEW"
+      : has("INBOXED") ? "READY" : "QUARANTINED";
+    const errorCode = status === "READY" ? null : status === "DEAD_LETTER" ? "RETRY_EXHAUSTED"
+      : attachments.find((row) => row.quarantine_code)?.quarantine_code ?? "NO_SUPPORTED_ATTACHMENTS";
     await client.query(
-      `UPDATE inbound_email_messages SET status=$3,error_code=$4,
-         next_retry_at=CASE WHEN $3='RETRY_PENDING' THEN now()+interval '1 minute' ELSE NULL END,updated_at=now()
+      `UPDATE inbound_email_messages SET status=$3,error_code=$4,processing_token=NULL,processing_expires_at=NULL,
+         next_retry_at=CASE WHEN $3='RETRY_PENDING' THEN now()+make_interval(secs=>$5) ELSE NULL END,updated_at=now()
        WHERE organization_id=$1 AND id=$2`,
-      [context.organizationId, messageId, status, status === "QUARANTINED" ? "NO_SUPPORTED_ATTACHMENTS" : null],
+      [context.organizationId, claim.row.id, status, errorCode, retryDelaySeconds(claim.row.retry_count)],
+    );
+    await client.query(
+      `INSERT INTO email_operation_events(organization_id,category,event_type,aggregate_id,outcome,safe_details)
+       VALUES ($1,'INBOUND','PROCESSING_FINISHED',$2,$3,$4)`,
+      [context.organizationId, claim.row.id, status === "DEAD_LETTER" ? "FAILED" : status,
+        { code: errorCode, retryCount: claim.row.retry_count }],
     );
     return status;
   });
@@ -296,60 +362,71 @@ export async function ingestInboundEmail(unparsed: InboundProviderMessage): Prom
     }
     if (staged.row.status === "QUARANTINED") {
       await recordOperation(staged.context, "INBOUND", "MESSAGE_INGESTED", staged.row.id, "QUARANTINED", {
-        attachmentCount: staged.attachments.length,
-        quarantineCode: staged.row.error_code,
-        replay: false,
+        attachmentCount: staged.attachments.length, quarantineCode: staged.row.error_code, replay: false,
       });
       continue;
     }
-    const results = await Promise.all(staged.attachments
-      .filter((attachment) => attachment.status === "RETRY_PENDING")
-      .map((attachment) => processStagedInboundAttachment(staged.context, alias, attachment.id)));
-    const status = await finishMessage(staged.context, staged.row.id);
-    retryPending ||= status === "RETRY_PENDING" || results.some((result) => result.status === "RETRY_PENDING");
-    await recordOperation(staged.context, "INBOUND", "MESSAGE_INGESTED", staged.row.id, status, {
-      attachmentCount: staged.attachments.length,
-      replay: false,
-    });
+    const result = await retryInboundMessage(staged.context, staged.row.id, { initial: true });
+    retryPending ||= result.status === "RETRY_PENDING";
   }
   return { accepted: true, routedRecipients, ignoredRecipients, replays, retryPending };
 }
 
-export async function loadInboundMessageForRetry(context: TenantTransactionContext, messageId: string) {
+export async function loadInboundMessageForRetry(
+  context: TenantTransactionContext,
+  messageId: string,
+  options: { initial?: boolean; dueOnly?: boolean } = {},
+): Promise<InboundClaim | null> {
   return withTenantTransaction(context, async (client) => {
-    const row = (await client.query<MessageRow>(
-      "SELECT * FROM inbound_email_messages WHERE organization_id=$1 AND id=$2 FOR UPDATE",
-      [context.organizationId, z.uuid().parse(messageId)],
+    await assertWritableOrganization(client, context);
+    const row = (await client.query<MessageRow & { eligible: boolean }>(
+      `SELECT *, (processing_expires_at IS NULL OR processing_expires_at<=now())
+         AND (NOT $3::boolean OR next_retry_at IS NULL OR next_retry_at<=now()) AS eligible
+       FROM inbound_email_messages WHERE organization_id=$1 AND id=$2 FOR UPDATE`,
+      [context.organizationId, z.uuid().parse(messageId), options.dueOnly === true],
     )).rows[0];
     if (!row) throw new Error("Inbound email message is unavailable");
-    if (row.status !== "RETRY_PENDING") throw new Error("Only a retry-pending inbound message can be retried");
-    if (row.retry_count >= 5) throw new Error("Inbound email retry limit has been reached");
+    if (row.status !== "RETRY_PENDING" || !row.eligible) return null;
     const alias = (await client.query<{ id: string; connection_id: string | null }>(
-      "SELECT id,connection_id FROM email_ingestion_aliases WHERE organization_id=$1 AND id=$2",
+      `SELECT id,connection_id FROM email_ingestion_aliases
+       WHERE organization_id=$1 AND id=$2 AND status='ACTIVE'
+         AND app.lock_active_email_membership(owner_membership_id) FOR SHARE`,
       [context.organizationId, row.alias_id],
     )).rows[0];
-    const attachments = await client.query<AttachmentRow>(
-      "SELECT * FROM inbound_email_attachments WHERE organization_id=$1 AND message_id=$2 AND status='RETRY_PENDING' ORDER BY id",
-      [context.organizationId, row.id],
-    );
-    await client.query(
-      "UPDATE inbound_email_messages SET retry_count=retry_count+1,next_retry_at=NULL,updated_at=now() WHERE organization_id=$1 AND id=$2",
-      [context.organizationId, row.id],
-    );
-    return { row, alias, attachments: attachments.rows };
+    if (!alias) throw new Error("Inbound email alias is unavailable");
+    const token = randomUUID();
+    const updated = (await client.query<MessageRow>(
+      `UPDATE inbound_email_messages SET retry_count=least(5,retry_count+$3),next_retry_at=NULL,
+         processing_token=$4,processing_expires_at=now()+interval '5 minutes',updated_at=now()
+       WHERE organization_id=$1 AND id=$2 RETURNING *`,
+      [context.organizationId, row.id, options.initial ? 0 : row.retry_count >= 5 ? 0 : 1, token],
+    )).rows[0];
+    return { row: updated, token, alias, exhausted: row.retry_count >= 5 };
   });
 }
 
-export async function retryInboundMessage(context: TenantTransactionContext, messageId: string) {
-  const loaded = await loadInboundMessageForRetry(context, messageId);
-  if (!loaded.alias) throw new Error("Inbound email alias is unavailable");
+export async function retryInboundMessage(
+  context: TenantTransactionContext,
+  messageId: string,
+  options: { initial?: boolean; dueOnly?: boolean; attachmentId?: string } = {},
+) {
+  const claim = await loadInboundMessageForRetry(context, messageId, options);
+  if (!claim) return { messageId, status: "UNCHANGED", results: [] };
+  // A crash during the fifth retry still consumes that attempt. A subsequent
+  // claimant settles it as dead-letter rather than granting a sixth retry.
+  const attachments = await withTenantTransaction(context, (client) => client.query<AttachmentRow>(
+    `SELECT * FROM inbound_email_attachments WHERE organization_id=$1 AND message_id=$2
+       AND status='RETRY_PENDING' AND ($3::uuid IS NULL OR id=$3) ORDER BY id`,
+    [context.organizationId, claim.row.id, options.attachmentId ?? null],
+  ));
   const results = [];
-  for (const attachment of loaded.attachments) {
-    results.push(await processStagedInboundAttachment(context, {
-      alias_id: loaded.alias.id,
-      connection_id: loaded.alias.connection_id,
-    }, attachment.id));
+  // The last allowed retry is processed; recovered claims with five attempts
+  // are marked by the claim helper and are settled without provider I/O.
+  if (!claim.exhausted) {
+    for (const attachment of attachments.rows) {
+      results.push(await processStagedInboundAttachment(context, claim, attachment.id));
+    }
   }
-  const status = await finishMessage(context, loaded.row.id);
-  return { messageId: loaded.row.id, status, results };
+  const status = await finishMessage(context, claim);
+  return { messageId: claim.row.id, status, results };
 }
