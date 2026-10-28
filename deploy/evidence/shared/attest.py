@@ -122,7 +122,7 @@ def attest(project=None, *, owner='finlynq-shared-scanner', prefix='finlynq_scan
 function check(p,uid,gid,mode,socket){const s=fs.lstatSync(p);
 if(s.uid!==uid||s.gid!==gid||(s.mode&511)!==mode||!(socket?s.isSocket():s.isDirectory()))process.exit(1);}
 for(const c of ['business-prod','business-stage','business-dev','consult-dev','consult-dev2','consult-stage']){
-check('/channels/'+c,10001,10001,448,false);check('/channels/'+c+'/clamd.sock',10001,10001,384,true);}
+check('/channels/'+c,10001,10001,c==='consult-stage'?456:448,false);check('/channels/'+c+'/clamd.sock',10001,10001,c==='consult-stage'?432:384,true);}
 check('/upstream',100,101,504,false);check('/upstream/clamd.sock',100,101,432,true);""")
     # Validate actual loaded signatures, not just file modification times.
     version = docker('exec', gateway['Id'], 'node', '-e', """const net=require('node:net'); const c=net.createConnection('/upstream/clamd.sock');

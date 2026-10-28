@@ -4,7 +4,7 @@ import { CHANNELS } from './gateway.mjs';
 // Only pristine, dedicated volumes may be initialized. Existing ownership must
 // already match: this never repairs arbitrary directories or signature stores.
 const paths = CHANNELS.map(channel => ({ path: `/channels/${channel}`, uid: 10001,
-  gid: 10001, mode: 0o700 }));
+  gid: 10001, mode: channel === 'consult-stage' ? 0o710 : 0o700 }));
 paths.push({ path: '/upstream', uid: 100, gid: 101, mode: 0o770 },
            { path: '/signatures', uid: 100, gid: 101, mode: 0o700 });
 for (const { path, uid, gid, mode } of paths) {

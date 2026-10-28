@@ -68,7 +68,7 @@ test('all private channels stream exact verdicts and retain per-application sock
   const f = await fixture(t);
   for (const channel of CHANNELS) {
     assert.equal(await f.request(channel, frame(Buffer.from('Veltrix synthetic fixture'))), 'stream: OK\0');
-    assert.equal((await stat(`${f.root}/${channel}/clamd.sock`)).mode & 0o777, 0o600);
+    assert.equal((await stat(`${f.root}/${channel}/clamd.sock`)).mode & 0o777, channel === 'consult-stage' ? 0o660 : 0o600);
   }
   assert.match(await f.request('consult-dev', frame(Buffer.from('EICAR-STANDARD'))), / FOUND\0$/);
 });

@@ -25,6 +25,8 @@ retains the original reload-memory behavior.
 The pinned Node gateway has no network access, 128 MiB memory, 0.5 CPU and 32 PIDs.
 It mounts the upstream socket read-only and exposes six sockets in six separate
 named volumes. Directories are UID/GID 10001:10001 mode 0700, sockets mode 0600.
+Consult staging alone uses directory 0710/socket 0660 so its legacy UID 1001 can
+use supplemental group 10001 without changing application data ownership.
 Each consumer receives only its own volume read-only. Gateway commands are limited
 to VERSION and INSTREAM, 64 KiB frames, 21 MiB streams, 2 KiB replies and 45 seconds.
 Path scans, shutdown, malformed/truncated input and excess capacity are refused.
@@ -35,7 +37,8 @@ only that environment's socket volume; it has no signatures, credentials, storag
 or other network. Sixteen connections and 45-second lifetimes bound forwarding.
 The unchanged endpoint also supports older application images during rollback.
 
-Consult uses the Unix socket directly as its normal UID 10001. Its coordinated
+Consult uses the Unix socket directly as UID 10001, or legacy staging UID 1001
+with the dedicated supplemental group. Its coordinated
 source and policy are documented in that repository's
 `deploy/server04/SCANNING.md`. Large workspace ZIPs use bounded member/metadata
 scans while retaining the 2 GiB package ceiling; ordinary/email files fit 21 MiB.

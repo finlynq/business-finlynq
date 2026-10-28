@@ -126,7 +126,9 @@ export async function startGateway({ root = '/channels', upstream = '/upstream/c
       });
       servers.push(server);
       await new Promise((resolve, reject) => { server.once('error', reject); server.listen(path, resolve); });
-      await chmod(path, 0o600);
+      // Legacy Consult staging keeps UID 1001 and receives only supplemental
+      // group 10001 plus its own read-only channel mount. No data chown is needed.
+      await chmod(path, channel === 'consult-stage' ? 0o660 : 0o600);
     }
   } catch (error) {
     for (const server of servers) server.close();
