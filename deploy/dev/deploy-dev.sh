@@ -192,14 +192,48 @@ refresh_installed_deployer_if_needed() {
   exec env -i PATH="$clean_path" "$installed_deployer"
 }
 
+scanner_compose_inputs() {
+  local relative_path=deploy/evidence/shared/compose-contract.sh checkout_revision tree_entry
+  scanner_mode=local
+  scanner_channel=""
+  scanner_files=()
+  scanner_environment_values=()
+  checkout_revision="$(git_as_deploy rev-parse HEAD)" || return 1
+  tree_entry="$(git_as_deploy ls-tree "$checkout_revision" -- "$relative_path")" || return 1
+  if [[ -z "$tree_entry" ]]; then
+    # Before the first shared-scanner upgrade (and when recovering that source),
+    # the reviewed predecessor still owns its local scanner. Never treat a missing
+    # file in a scanner-aware candidate as permission to fall back.
+    [[ "$checkout_revision" != "$candidate_revision" ]] || return 1
+    git_as_deploy merge-base --is-ancestor "$checkout_revision" "$candidate_revision" || return 1
+    git_as_deploy cat-file -e "$candidate_revision:$relative_path" || return 1
+    return 0
+  fi
+  [[ -f "$repository/$relative_path" && ! -L "$repository/$relative_path" ]] || return 1
+  source "$repository/$relative_path"
+  scanner_compose_contract "$compose_environment" "$project" "$repository"
+}
+
+scanner_runtime_matches() {
+  local rendered="$1" expected_image expected_user scanner_container
+  expected_image="$(jq -er '.services.evidence_scanner.image' <<<"$rendered")" || return 1
+  expected_user="$(jq -er '.services.evidence_scanner.user' <<<"$rendered")" || return 1
+  scanner_container="$(docker ps --quiet --no-trunc \
+    --filter label=com.docker.compose.project="$project" \
+    --filter label=com.docker.compose.service=evidence_scanner)" || return 1
+  [[ "$scanner_container" =~ ^[a-f0-9]{64}$ ]] || return 1
+  docker inspect "$scanner_container" | jq -e --arg image "$expected_image" --arg user "$expected_user" '
+    length == 1 and .[0].Config.Image == $image and .[0].Config.User == $user and
+    .[0].State.Running == true and .[0].State.Health.Status == "healthy"
+  ' >/dev/null
+}
+
 compose() {
   local edge_mode edge_mode_count
   local -a controlled_environment=()
   local scanner_mode scanner_channel
   local -a scanner_files scanner_environment_values
-  source "$repository/deploy/evidence/shared/compose-contract.sh"
-  scanner_compose_contract "$compose_environment" "$project" "$repository" \
-    || fail "scanner mode or consumer channel is invalid"
+  scanner_compose_inputs || fail "scanner mode or consumer channel is invalid"
   edge_mode="$(awk -F= '$1 == "BUSINESS_FINLYNQ_EDGE_MODE" { sub(/^[^=]*=/, ""); print }' \
     "$compose_environment")" \
     || fail "BUSINESS_FINLYNQ_EDGE_MODE could not be read"
@@ -228,8 +262,7 @@ compose() {
 verify_shared_scanner_if_selected() {
   local scanner_mode scanner_channel
   local -a scanner_files scanner_environment_values
-  source "$repository/deploy/evidence/shared/compose-contract.sh"
-  scanner_compose_contract "$compose_environment" "$project" "$repository" || return 1
+  scanner_compose_inputs || return 1
   [[ "$scanner_mode" != shared ]] || python3 "$repository/deploy/evidence/shared/attest.py" "${@}"
 }
 
@@ -1107,7 +1140,7 @@ refresh_installed_deployer_if_needed "$candidate_revision"
 
 verify_compose_boundary() {
   local revision="$1" topology rendered resource expected app_port app_origin app_alias
-  local app_frontend_alias router_image found_resource_output
+  local app_frontend_alias router_image found_resource_output shared_scanner_resource=""
   local -a found_resources expected_resources=(
     "business_finlynq_dev_pgdata"
     "business_finlynq_dev_private"
@@ -1176,6 +1209,16 @@ verify_compose_boundary() {
     [[ "$(jq -r '.services | has("release_router")' <<<"$rendered")" == false ]] \
       || fail "legacy development Compose unexpectedly defines a release router"
   fi
+  if jq -e '.volumes | has("shared_scanner_channel")' <<<"$rendered" >/dev/null; then
+    shared_scanner_resource="finlynq_scanner_business_dev_v1"
+    jq -e --arg channel "$shared_scanner_resource" '
+      .volumes.shared_scanner_channel == {name: $channel, external: true} and
+      .services.evidence_scanner.volumes == [{type: "volume", source: "shared_scanner_channel",
+        target: "/run/finlynq-scanner", read_only: true, volume: {nocopy: true}}] and
+      ([.services | to_entries[] | select(.key != "evidence_scanner") |
+        .value.volumes[]? | select(.source == "shared_scanner_channel")] | length) == 0
+    ' <<<"$rendered" >/dev/null || fail "shared scanner channel is not the exact private read-only consumer"
+  fi
   found_resource_output="$(jq -er '.volumes[].name, .networks[].name' <<<"$rendered" \
     | sort -u)" \
     || fail "development Compose resource inventory could not be rendered"
@@ -1188,7 +1231,8 @@ verify_compose_boundary() {
       || fail "development resource is not isolated: $expected"
   done
   for resource in "${found_resources[@]}"; do
-    [[ "$resource" == business_finlynq_dev_* ]] \
+    [[ "$resource" == business_finlynq_dev_* \
+      || ( -n "$shared_scanner_resource" && "$resource" == "$shared_scanner_resource" ) ]] \
       || fail "development Compose references a non-development resource: $resource"
   done
 }
@@ -1617,6 +1661,7 @@ release_is_accepted() {
     mapfile -t router_containers <<<"$router_container_output" || return 1
   fi
   rendered="$(compose config --format json)" || return 1
+  scanner_runtime_matches "$rendered" || return 1
   if [[ "$topology" == router ]]; then
     ensure_release_router_image false || return 1
     jq -e '
@@ -1731,6 +1776,9 @@ start_revision_runtime() {
     release_router_runtime_is_accepted || return 1
   fi
   compose up --detach --wait --no-deps --no-build database || return 1
+  verify_shared_scanner_if_selected || return 1
+  compose up --detach --wait --no-deps --no-build evidence_scanner || return 1
+  verify_shared_scanner_if_selected "$project" || return 1
   compose up --detach --wait --no-deps --no-build app || return 1
   account_login_enabled="$(read_environment_value ACCOUNT_LOGIN_ENABLED)" || return 1
   [[ "$account_login_enabled" == true || "$account_login_enabled" == false ]] || return 1

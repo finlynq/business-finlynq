@@ -1,6 +1,6 @@
 # Shared private scanner — BUSINESS-FINLYNQ-81
 
-Status: implementation and isolated validation. Live migration, reboot acceptance,
+Status: shared owner commissioned; Business dev/stage migration in progress. Reboot acceptance,
 operator approval and ticket closure are separate gates. Scope is this server's
 Business production/stage/dev and Consult dev/dev2/stage. Remote Consult production
 is excluded. No Caddy route, public port, VPN or application credential is needed.
@@ -170,3 +170,31 @@ Keep live application/API, worst-case archive load, alert receipt, update/reboot
 rollback and final RAM evidence distinct from these isolated tests. The required
 Development Manager test cases stay pending until their complete criteria pass.
 CI's existing local scanner exception remains disposable and is always cleaned up.
+
+## Operational checkpoint, 2026-10-28
+
+The operator separately approved shared-owner installation and Business dev/stage
+integration. Production scanner cutover and live Consult deployment remain pending.
+The root-owned service and its minute monitor are enabled; fresh signatures were
+initialized independently and full attestation plus all six clean/EICAR/stream-limit
+channel probes passed. Business production continues using its local scanner.
+
+Before switching consumers, both public non-production upload APIs accepted clean
+PDF evidence with scanner version/time, reused the original asset on replay, and
+refused a verified EICAR carrier, encrypted PDF and the existing 2 MiB limit. The
+EICAR carrier contains the standard harmless test file in a small ZIP with a PDF
+prefix, so it reaches scanning through the existing file-signature gate; simply
+appending the string to an arbitrary PDF is not a reliable test of this engine.
+Fixtures and accepted assets were confined to the synthetic public demos.
+
+The first dev transition stopped during preflight while the previous runtime stayed
+healthy. The deployer had depended on a helper absent from pre-scanner checkouts.
+The follow-up recognizes the exact historical Git tree, uses its existing local
+scanner only for predecessor inspection/recovery, and refuses missing/substituted
+helpers in scanner-aware revisions. Recovery starts and verifies the selected
+scanner before its app. Namespace checks accept only the environment's exact
+external read-only channel; other projects and writable/substituted mounts fail.
+The acceptance predicate also compares the running scanner image/user/health
+with the rendered mode, so a same-revision cutover or rollback cannot silently
+return as an application no-op. Actual dev/stage acceptance, redeploy, outage
+and rollback remain gates.
