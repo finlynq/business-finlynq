@@ -127,6 +127,7 @@ const runtimeExecuteFunctions = [
     "app.tax_workpaper_deleted(uuid, uuid)",
   "app.current_actor_has_permission(text)",
   "app.resolve_inbound_email_alias(text)",
+  "app.due_inbound_email_retries(integer)",
   "app.lock_active_email_membership(uuid)",
   "app.resolve_outbound_email_attempt(text)",
   "app.mcp_user_is_active(uuid)",
@@ -1912,61 +1913,70 @@ export function compareSchemaContracts(snapshotContract, databaseContract) {
         diagnostics.push(`[RLS_NOT_FORCED] public.${tableName} must use FORCE ROW LEVEL SECURITY`);
       }
       const policies = Array.isArray(actualTable.policies) ? actualTable.policies : [];
-      const expectedPolicy = expectedRlsPolicy(expectedTable);
+      const expectedPolicies = [expectedRlsPolicy(expectedTable)];
+      if (["inbound_email_messages", "email_ingestion_aliases"].includes(tableName)) {
+        expectedPolicies.push({
+          name: "email_queue_owner_read", command: "SELECT", permissive: true, roles: ["PUBLIC"],
+          usingExpression: `current_user=pg_get_userbyid((SELECT pg_class.relowner FROM pg_class WHERE pg_class.oid='public.${tableName}'::regclass))`,
+          withCheckExpression: null,
+        });
+      }
       if (policies.length === 0) {
         diagnostics.push(
           `[RLS_POLICY_MISSING] public.${tableName} must define at least one explicit row-level security policy`,
         );
         continue;
       }
-      if (policies.length !== 1) {
+      if (policies.length !== expectedPolicies.length) {
         diagnostics.push(
-          `[RLS_POLICY_COUNT] public.${tableName} must define exactly one reviewed RLS policy; found ${policies.length}`,
+          `[RLS_POLICY_COUNT] public.${tableName} must define exactly ${expectedPolicies.length === 1 ? "one reviewed RLS policy" : "two reviewed RLS policies"}; found ${policies.length}`,
         );
       }
 
-      const matchingPolicy = policies.find((policy) => policy.name === expectedPolicy.name);
       for (const policy of policies) {
-        if (policy.name !== expectedPolicy.name) {
+        if (!expectedPolicies.some((expectedPolicy) => policy.name === expectedPolicy.name)) {
           diagnostics.push(
             `[RLS_POLICY_EXTRA] public.${tableName} has unreviewed RLS policy ${String(policy.name)}`,
           );
         }
       }
-      if (!matchingPolicy) {
-        diagnostics.push(
-          `[RLS_POLICY_EXPECTED_MISSING] public.${tableName} must define reviewed RLS policy ${expectedPolicy.name}`,
-        );
-        continue;
-      }
-      if (matchingPolicy.command !== expectedPolicy.command) {
-        diagnostics.push(
-          `[RLS_POLICY_COMMAND] public.${tableName}.${expectedPolicy.name} must use FOR ${expectedPolicy.command}; found ${String(matchingPolicy.command)}`,
-        );
-      }
-      if (matchingPolicy.permissive !== expectedPolicy.permissive) {
-        diagnostics.push(
-          `[RLS_POLICY_PERMISSIVE] public.${tableName}.${expectedPolicy.name} must be permissive=${expectedPolicy.permissive}`,
-        );
-      }
-      if (!Array.isArray(matchingPolicy.roles)
-        || matchingPolicy.roles.length !== 1
-        || matchingPolicy.roles[0] !== expectedPolicy.roles[0]) {
-        diagnostics.push(
-          `[RLS_POLICY_ROLES] public.${tableName}.${expectedPolicy.name} must apply only to PUBLIC`,
-        );
-      }
-      if (normalizeRlsPolicyExpression(matchingPolicy.usingExpression)
-        !== normalizeRlsPolicyExpression(expectedPolicy.usingExpression)) {
-        diagnostics.push(
-          `[RLS_POLICY_USING] public.${tableName}.${expectedPolicy.name} USING predicate differs from the reviewed contract`,
-        );
-      }
-      if (normalizeRlsPolicyExpression(matchingPolicy.withCheckExpression)
-        !== normalizeRlsPolicyExpression(expectedPolicy.withCheckExpression)) {
-        diagnostics.push(
-          `[RLS_POLICY_WITH_CHECK] public.${tableName}.${expectedPolicy.name} WITH CHECK predicate differs from the reviewed contract`,
-        );
+      for (const expectedPolicy of expectedPolicies) {
+        const matchingPolicy = policies.find((policy) => policy.name === expectedPolicy.name);
+        if (!matchingPolicy) {
+          diagnostics.push(
+            `[RLS_POLICY_EXPECTED_MISSING] public.${tableName} must define reviewed RLS policy ${expectedPolicy.name}`,
+          );
+          continue;
+        }
+        if (matchingPolicy.command !== expectedPolicy.command) {
+          diagnostics.push(
+            `[RLS_POLICY_COMMAND] public.${tableName}.${expectedPolicy.name} must use FOR ${expectedPolicy.command}; found ${String(matchingPolicy.command)}`,
+          );
+        }
+        if (matchingPolicy.permissive !== expectedPolicy.permissive) {
+          diagnostics.push(
+            `[RLS_POLICY_PERMISSIVE] public.${tableName}.${expectedPolicy.name} must be permissive=${expectedPolicy.permissive}`,
+          );
+        }
+        if (!Array.isArray(matchingPolicy.roles)
+          || matchingPolicy.roles.length !== 1
+          || matchingPolicy.roles[0] !== expectedPolicy.roles[0]) {
+          diagnostics.push(
+            `[RLS_POLICY_ROLES] public.${tableName}.${expectedPolicy.name} must apply only to PUBLIC`,
+          );
+        }
+        if (normalizeRlsPolicyExpression(matchingPolicy.usingExpression)
+          !== normalizeRlsPolicyExpression(expectedPolicy.usingExpression)) {
+          diagnostics.push(
+            `[RLS_POLICY_USING] public.${tableName}.${expectedPolicy.name} USING predicate differs from the reviewed contract`,
+          );
+        }
+        if (normalizeRlsPolicyExpression(matchingPolicy.withCheckExpression)
+          !== normalizeRlsPolicyExpression(expectedPolicy.withCheckExpression)) {
+          diagnostics.push(
+            `[RLS_POLICY_WITH_CHECK] public.${tableName}.${expectedPolicy.name} WITH CHECK predicate differs from the reviewed contract`,
+          );
+        }
       }
     }
   }
