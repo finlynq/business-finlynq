@@ -78,9 +78,14 @@ incomplete verdicts. An owner outage stops new accepted files in every consumer.
    `10.240.12.0/28` must be free on this host. No application is switched by install.
 3. Through each environment's protected-configuration review, set
    `BUSINESS_FINLYNQ_SCANNER_MODE=shared` for development, then staging. Reinstall
-   changed root-owned deployers/finalizers through their normal installers. Refresh
-   protected configuration hashes using the existing release procedure; do not
-   edit an attested configuration behind the deployer's back.
+   changed root-owned deployers/finalizers through their normal installers with
+   `--scanner-mode shared` (respectively `deploy/dev/install-dev.sh` and
+   `deploy/development/install-development.sh`). The installers take the deployment
+   lock, attest the healthy shared owner, and atomically change only the requested
+   scanner setting. Omit `--enable` while timers are deliberately paused. The normal
+   deployer then reconciles the changed configuration. Use `--scanner-mode local`
+   through the same installers for the reviewed rollback; do not edit protected
+   configuration behind the deployer's back.
 4. Each normal deployment verifies the owner before migration, starts only its
    private forwarder, verifies that forwarder, then starts the app. Run real clean,
    EICAR, outage/retry, restart and redeploy acceptance. Shared rehearsals use the
