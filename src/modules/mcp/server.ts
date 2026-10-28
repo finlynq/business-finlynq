@@ -31,6 +31,7 @@ import { registerMcpTools } from "./tool-types";
 import { MAX_CLOUD_DOCUMENT_BYTES } from "@/modules/document-storage/limits";
 
 export const ALL_MCP_TOOLS = [...SHARED_MCP_TOOLS, ...GUIDANCE_MCP_TOOLS, ...DAILY_MCP_TOOLS, ...ASSET_MCP_TOOLS, ...INBOX_MCP_TOOLS, ...STORAGE_SETUP_MCP_TOOLS, ...STATEMENT_MCP_TOOLS, ...SETUP_MCP_TOOLS, ...EMAIL_MCP_TOOLS] as const;
+const MCP_MAX_REQUEST_BODY_BYTES = 4 * Math.ceil(MAX_CLOUD_DOCUMENT_BYTES / 3) + 16 * 1024;
 
 export const MCP_TOOL_CATALOG_REVISION = createHash("sha256").update(JSON.stringify(
   [...ALL_MCP_TOOLS]
@@ -82,6 +83,7 @@ const handler = createMcpHandler(async (context) => {
 }, {
   legacy: "stateless",
   responseMode: "auto",
+  maxRequestBodySize: MCP_MAX_REQUEST_BODY_BYTES,
   onerror(error) {
     console.error("MCP request failed", { name: error.name, message: error.message.slice(0, 500) });
   },
@@ -90,6 +92,7 @@ const handler = createMcpHandler(async (context) => {
 export async function handleMcpRequest(request: Request): Promise<Response> {
   const resource = mcpResourceUrl(request.url);
   const gate = requireBearerAuth({
+    expectedResource: resource,
     resourceMetadataUrl: getOAuthProtectedResourceMetadataUrl(resource),
     verifier: {
       async verifyAccessToken(rawToken): Promise<AuthInfo> {
@@ -115,7 +118,7 @@ export async function handleMcpRequest(request: Request): Promise<Response> {
   let boundedRequest = request;
   if (request.method === "POST") {
     try {
-      const body = await readBoundedJson(request, 4 * Math.ceil(MAX_CLOUD_DOCUMENT_BYTES / 3) + 16 * 1024);
+      const body = await readBoundedJson(request, MCP_MAX_REQUEST_BODY_BYTES);
       const headers = new Headers(request.headers);
       headers.delete("content-length");
       boundedRequest = new Request(request.url, { method: "POST", headers, body: JSON.stringify(body), signal: request.signal });
