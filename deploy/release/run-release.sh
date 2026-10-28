@@ -622,6 +622,13 @@ run_compose() {
     )
     compose_files+=(-f "$candidate_source_root/deploy/release/docker-compose.candidate-images.yml")
   fi
+  local scanner_mode scanner_channel
+  local -a scanner_files scanner_environment_values
+  source "$candidate_source_root/deploy/evidence/shared/compose-contract.sh"
+  scanner_compose_contract "$environment_file" "$command_project" "$candidate_source_root" \
+    || fail "scanner mode or consumer channel is invalid"
+  compose_files+=("${scanner_files[@]}")
+  controlled_environment+=("${scanner_environment_values[@]}")
 
   # Callers may override only values owned by a named release stage. Ambient
   # variables never cross this boundary.
@@ -2454,8 +2461,13 @@ fi
 backup_directory="$(jq -r '.services.backup.volumes[] | select(.target == "/backups") | .source' <<<"$rendered_compose")"
 verify_backup_directory="$(jq -r '.services.verify_latest_backup.volumes[] | select(.target == "/backups") | .source' <<<"$rendered_compose")"
 scanner_image_reference="$(jq -r '.services.evidence_scanner.image // empty' <<<"$rendered_compose")"
-[[ "$scanner_image_reference" =~ ^clamav/clamav@sha256:[a-f0-9]{64}$ ]] \
+[[ "$scanner_image_reference" == clamav/clamav@sha256:f0954d679017eb6d48221e2b2be3ac5457bf278a844f39b672376f55a085f591 \
+  || "$scanner_image_reference" == node:24-alpine@sha256:e67514e5d0f6c46656005e1b693b2ec9d52e80b641307de684d4a015ba7a4eaf ]] \
   || fail "evidence scanner is not pinned to the reviewed ClamAV digest"
+if [[ "$scanner_image_reference" == node:* ]]; then
+  python3 "$candidate_source_root/deploy/evidence/shared/attest.py" >/dev/null \
+    || fail "the shared scanner owner must pass attestation before release preparation"
+fi
 [[ -n "$backup_directory" && "$backup_directory" == "$verify_backup_directory" ]] \
   || fail "backup writer and verifier do not use the same host directory"
 [[ "$backup_directory" == /* ]] || fail "backup directory must resolve to an absolute host path"
@@ -2718,9 +2730,21 @@ scanner_evidence_network_name="$(jq -r '.networks.business_finlynq_evidence.name
   || fail "evidence-scanner private network name could not be read"
 scanner_egress_network_name="$(jq -r '.networks.business_finlynq_scanner_egress.name // empty' <<<"$rendered_compose")" \
   || fail "evidence-scanner egress network name could not be read"
-[[ -n "$scanner_volume_name" && -n "$scanner_evidence_network_name" \
-  && -n "$scanner_egress_network_name" ]] \
-  || fail "evidence-scanner resource names are missing"
+[[ -n "$scanner_evidence_network_name" ]] || fail "evidence-scanner private network is missing"
+if [[ "$scanner_image_reference" == node:* ]]; then
+  expected_scanner_channel=business_prod
+  [[ "$mode" != rehearsal ]] || expected_scanner_channel=business_stage
+  jq -e --arg name "finlynq_scanner_${expected_scanner_channel}_v1" '
+    .volumes.shared_scanner_channel.external == true and
+    .volumes.shared_scanner_channel.name == $name and
+    (.services.evidence_scanner.volumes | length) == 1 and
+    .services.evidence_scanner.volumes[0].source == "shared_scanner_channel" and
+    .services.evidence_scanner.volumes[0].read_only == true
+  ' <<<"$rendered_compose" >/dev/null || fail "shared scanner channel differs from its consumer"
+else
+  [[ -n "$scanner_volume_name" && -n "$scanner_egress_network_name" ]] \
+    || fail "evidence-scanner resource names are missing"
+fi
 
 compose_hash="$(canonical_compose_sha256 "$rendered_compose")" \
   || fail "rendered Compose configuration checksum could not be computed"
@@ -3573,6 +3597,12 @@ if [[ "$mode" == "initial" && "$initial_state" == "resume" ]]; then
 fi
 
 attest_evidence_scanner() {
+  if [[ "$scanner_image_reference" == node:* ]]; then
+    python3 "$candidate_source_root/deploy/evidence/shared/attest.py" "$compose_project" \
+      >"$evidence_directory/14-evidence-scanner.json" || return 1
+    chmod 0600 "$evidence_directory/14-evidence-scanner.json"
+    return
+  fi
   local scanner_container scanner_runtime expected_scanner_image_id now signature_record
   local signature_path signature_uid signature_gid signature_mode signature_mtime
   local signature_count=0 signature_inventory signature_evidence='[]' verified_at
@@ -5216,6 +5246,16 @@ if [[ "$mode" == release && "$router_was_preexisting" != true ]]; then
 fi
 write_surfaces_stopped="true"
 write_checkpoint 26-write-surfaces-stopped.json write-surfaces-stopped-before-backup
+
+if [[ "$mode" == release && "$scanner_image_reference" == node:* ]]; then
+  stage="shared-evidence-scanner-boundary"
+  # Selected only by the separately reviewed protected shared-mode setting.
+  # The independent daemon is never started or recreated by application releases.
+  run_logged 26-shared-scanner-owner.log python3 "$candidate_source_root/deploy/evidence/shared/attest.py"
+  run_logged 26-shared-scanner-forwarder.log compose_timed 2m up --detach --wait --no-deps --no-build evidence_scanner
+  run_logged 26-shared-scanner-attestation.log attest_evidence_scanner
+  run_logged 26-shared-scanner-probe.log probe_evidence_scanner
+fi
 
 if [[ "$router_was_preexisting" != "true" ]]; then
   stage="bootstrap-release-router"

@@ -1,0 +1,71 @@
+# Selected only by a validated shared-scanner deployment mode. The legacy
+# service name is a bounded forwarder; it contains no signature database.
+services:
+  evidence_scanner:
+    image: node:24-alpine@sha256:e67514e5d0f6c46656005e1b693b2ec9d52e80b641307de684d4a015ba7a4eaf
+    user: "10001:10001"
+    entrypoint: [node, --input-type=module, -e]
+    command:
+      - |
+        import net from 'node:net';
+        const peers = new Set();
+        const server = net.createServer(client => {
+          if (peers.size >= 16) { client.destroy(); return; }
+          peers.add(client);
+          const upstream = net.createConnection('/run/finlynq-scanner/clamd.sock');
+          const close = () => { client.destroy(); upstream.destroy(); peers.delete(client); };
+          const timer = setTimeout(close, 45000);
+          client.on('error', close); upstream.on('error', close);
+          client.on('close', () => { clearTimeout(timer); close(); });
+          // pipe() drains a complete reply before ending the client. Destroying
+          // it on the upstream close event could truncate a buffered verdict.
+          upstream.on('close', () => { if (!upstream.readableEnded) close(); });
+          client.pipe(upstream); upstream.pipe(client);
+        });
+        server.listen(3310, '0.0.0.0');
+        for (const signal of ['SIGTERM', 'SIGINT']) process.once(signal, () => {
+          for (const client of peers) client.destroy();
+          server.close(() => process.exit(0));
+        });
+    environment: !reset {}
+    volumes: !override
+      - type: volume
+        source: shared_scanner_channel
+        target: /run/finlynq-scanner
+        read_only: true
+        volume: {nocopy: true}
+    tmpfs: !reset []
+    networks: !override
+      business_finlynq_evidence: {}
+    cpus: "0.25"
+    mem_limit: 64m
+    pids_limit: 32
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - |
+          const net = require('node:net');
+          const client = net.createConnection({host:'127.0.0.1',port:3310});
+          const timer = setTimeout(() => process.exit(1), 5000);
+          let reply = '';
+          client.on('error', () => process.exit(1));
+          client.on('connect', () => client.write('zVERSION\0'));
+          client.on('data', bytes => {
+            reply += bytes.toString();
+            if (reply.length > 2048) process.exit(1);
+            if (!reply.endsWith('\0')) return;
+            const match = /^ClamAV [^/]+\/\d+\/(.+)\0$/.exec(reply);
+            const updated = match ? Date.parse(match[1] + ' UTC') : NaN;
+            clearTimeout(timer); client.destroy();
+            process.exit(Number.isFinite(updated) && updated <= Date.now()+300000 && Date.now()-updated <= 604800000 ? 0 : 1);
+          });
+      interval: 30s
+      timeout: 6s
+      start_period: 15s
+      retries: 5
+volumes:
+  shared_scanner_channel:
+    name: finlynq_scanner_${FINLYNQ_SCANNER_CHANNEL:?validated scanner channel required}_v1
+    external: true

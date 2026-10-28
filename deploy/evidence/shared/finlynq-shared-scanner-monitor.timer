@@ -1,0 +1,10 @@
+[Unit]
+Description=Check the independent scanner every minute
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=1min
+Unit=finlynq-shared-scanner-monitor.service
+
+[Install]
+WantedBy=timers.target
