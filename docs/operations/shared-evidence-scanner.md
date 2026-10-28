@@ -63,8 +63,10 @@ under representative peak archive/PDF workloads before production migration.
 The monitor verifies running image IDs, configuration hashes and commands,
 capabilities, mounts, socket ownership, networks, resources, health and loaded
 signature freshness every minute. It reports failures as a failed systemd service
-and in journald; connect that service to the existing operator alerting mechanism
-and exercise receipt before cutover. It sends no new external notifications itself.
+and in journald. The opt-in `operator-alerts.conf` drop-in connects failures to
+the existing Business operator notification route; install it only after that
+route and test delivery are explicitly approved. The base installation does not
+send external notifications.
 Application clients also refuse unavailable, stale, future-dated, malformed or
 incomplete verdicts. An owner outage stops new accepted files in every consumer.
 
@@ -198,3 +200,33 @@ The acceptance predicate also compares the running scanner image/user/health
 with the rendered mode, so a same-revision cutover or rollback cannot silently
 return as an application no-op. Actual dev/stage acceptance, redeploy, outage
 and rollback remain gates.
+
+## Operator alert activation (separate approval)
+
+Before production cutover, verify the existing
+`business-finlynq-monitor-notify@.service` is loaded and its protected webhook
+configuration is present. Reuse that route; do not introduce recipients or put
+webhook values into source, command arguments, logs or ticket evidence. The
+notification unit's success without a configured webhook is not delivery proof.
+
+After explicit approval to activate that route and perform the notification
+drill, install `deploy/evidence/shared/operator-alerts.conf` as root-owned mode
+0644 at both of these paths, preserving any unrelated drop-ins:
+
+- `/etc/systemd/system/finlynq-shared-scanner.service.d/10-operator-alerts.conf`
+- `/etc/systemd/system/finlynq-shared-scanner-monitor.service.d/10-operator-alerts.conf`
+
+Create the directories root-owned 0755, refuse symlinked paths or conflicting
+existing files, and reload systemd. No application or owner restart is needed.
+Verify both units' effective `OnFailure` points to the existing notification
+template with their own service names. The monitor checks every minute; repeated
+failures follow the existing route's delivery policy, so confirm its deduplication
+or escalation behavior with its owner before activation.
+
+Exercise the route with a separately named synthetic failed service whose
+`OnFailure` uses the same template; do not corrupt scanner configuration or halt
+production uploads merely to raise an alert. Record the UTC trigger and actual
+operator receipt through the existing channels, then remove only that temporary
+drill unit. A journal entry or successful webhook request alone is not proof that
+the required operators received it. Restore normal monitoring and verify fresh
+loaded signatures after the drill. Alert activation and receipt remain pending.
