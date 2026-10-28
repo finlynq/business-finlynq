@@ -1,6 +1,6 @@
 # Shared private scanner — BUSINESS-FINLYNQ-81
 
-Status: shared owner commissioned; Business dev/stage migration in progress. Reboot acceptance,
+Status: shared owner commissioned; Business dev/stage accepted with rollback and restart proof. Reboot acceptance,
 operator approval and ticket closure are separate gates. Scope is this server's
 Business production/stage/dev and Consult dev/dev2/stage. Remote Consult production
 is excluded. No Caddy route, public port, VPN or application credential is needed.
@@ -198,8 +198,8 @@ scanner before its app. Namespace checks accept only the environment's exact
 external read-only channel; other projects and writable/substituted mounts fail.
 The acceptance predicate also compares the running scanner image/user/health
 with the rendered mode, so a same-revision cutover or rollback cannot silently
-return as an application no-op. Actual dev/stage acceptance, redeploy, outage
-and rollback remain gates.
+return as an application no-op. The completed dev/stage acceptance, redeploy, outage and rollback evidence is
+recorded below; production and Consult remain separate gates.
 
 ## Operator alert activation (separate approval)
 
@@ -230,3 +230,51 @@ operator receipt through the existing channels, then remove only that temporary
 drill unit. A journal entry or successful webhook request alone is not proof that
 the required operators received it. Restore normal monitoring and verify fresh
 loaded signatures after the drill. Alert activation and receipt remain pending.
+
+## Business non-production acceptance, 2026-10-28
+
+The operator-approved dev/stage phase completed through normal deployment and
+root finalization. Both paused deployment timers were restored and verified active
+afterward. The shared-owner minute monitor passed again after restart.
+
+| Environment | Accepted revision | Evidence |
+| --- | --- | --- |
+| Development | `58ba11fbf73c2a57d1844e8dff24b65dfb743b0f` | Required CI 40760400769, normal release, exact root finalizer, public upload checks |
+| Staging | `2ea825b6e774e6730133d2bd397b387cc6b641fd` | PR 246, required CI 40763341689, normal release accepted 20:58:05 UTC, exact root finalizer, public upload checks |
+
+Every deployment/rehearsal passed 25 browser checks, with one pre-existing check
+requiring a separately authorized reviewer skipped. Public synthetic demos in
+both environments accepted clean PDF evidence (201 with scan version/time/hash),
+reused the same asset on replay (200), refused the verified EICAR carrier and
+encrypted PDF (409/no asset), and retained the 2 MiB upload limit (400/no asset).
+
+Development also returned to its retained environment-local ClamAV scanner via
+the protected installer and normal release path. The exact-revision finalizer and
+public clean/replay/rejection checks passed at 20:37 UTC. Returning to shared mode
+passed the same gates again at 20:47 UTC. Old signature volumes were retained;
+application/accounting storage was not altered by the scanner configuration change.
+
+Ordinary app deployments and this rollback/rejoin preserved owner ID
+`75b7c2c16b4b27d6088f577c11b8a51c68e01a0b3e47d07b6e1bf46827c44ccd` and
+gateway ID `49e6a4edf1e9c889d0365ed91c8aee4c0bb72acc3e1cff6b297b64d5e1c1b9c8`.
+The separately approved explicit owner restart then intentionally recreated them.
+At 20:59:44 UTC both public APIs had refused uploads during observed unavailability
+(409/no asset), accepted the same requests after recovery (201), and reused the
+assets on replay (200). Both root finalizers subsequently passed against the new
+owner `c8090a644c1f027a8aff4f87fbef355d9542debdd71228a1619662dd2a3e9e1f` and
+gateway `34cbc5b0093d06571cc5def677c84b1ed0ca837bd5d07b94b44ea468ffb586cc`,
+with fresh loaded database 28167. Existing forwarder IDs remained unchanged by
+that owner restart. Synthetic review evidence follows normal demo retention.
+
+The 21:01 UTC idle snapshot was 948.9 MiB shared daemon, 15.84 MiB gateway,
+16.39 MiB dev forwarder, 21.95 MiB stage forwarder and 904.4 MiB production's
+retained local daemon: 1,907.48 MiB total. Compared with the earlier three local
+daemons' 2,768.6 MiB snapshot, this phase reduced observed scanner working memory
+by 861.12 MiB (about 0.84 GiB). These are comparable snapshots, not a peak budget
+guarantee. Two persistent ClamAV daemons remain deliberately: shared and production
+local. The final one-daemon count and full memory saving remain unproven.
+
+Remaining operational gates: separately approved local Consult and Business
+production cutovers, every Consult public ingestion/redeploy/recovery path, operator
+alert activation and actual receipt, an approved host reboot, and final one-daemon
+idle/load measurements. Remote Consult production remains excluded.
