@@ -1074,6 +1074,33 @@ describe("database schema verifier", () => {
     ]);
   });
 
+  it("requires the exact SELECT-only owner predicate for inbound retry routing", () => {
+    const fixture = snapshot();
+    const expected = buildSnapshotSchemaContract({ tables: {
+      "public.inbound_email_messages": { ...fixture.tables["public.journal_lines"], name: "inbound_email_messages" },
+    } });
+    const sample = matchingDatabaseContract().tables.get("journal_lines")!;
+    const table = { ...sample, name: "inbound_email_messages", policies: [...sample.policies, {
+      name: "email_queue_owner_read", command: "SELECT", permissive: true, roles: ["PUBLIC"],
+      usingExpression: "current_user=pg_get_userbyid((SELECT pg_class.relowner FROM pg_class WHERE pg_class.oid='public.inbound_email_messages'::regclass))",
+      withCheckExpression: null,
+    }] };
+    const actual = { tables: new Map([["inbound_email_messages", table]]) };
+    expect(compareSchemaContracts(expected, actual)).toEqual([]);
+    table.policies[1].usingExpression = "true";
+    expect(compareSchemaContracts(expected, actual)).toContain(
+      "[RLS_POLICY_USING] public.inbound_email_messages.email_queue_owner_read USING predicate differs from the reviewed contract",
+    );
+    table.policies[1].command = "ALL";
+    expect(compareSchemaContracts(expected, actual)).toContain(
+      "[RLS_POLICY_COMMAND] public.inbound_email_messages.email_queue_owner_read must use FOR SELECT; found ALL",
+    );
+    table.policies.pop();
+    expect(compareSchemaContracts(expected, actual)).toContain(
+      "[RLS_POLICY_EXPECTED_MISSING] public.inbound_email_messages must define reviewed RLS policy email_queue_owner_read",
+    );
+  });
+
   it("reports every mismatch with qualified, actionable diagnostics", () => {
     const expected = buildSnapshotSchemaContract(snapshot());
     const actual = matchingDatabaseContract();

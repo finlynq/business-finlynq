@@ -6,7 +6,7 @@ import { PERMISSIONS } from "@/modules/identity/permissions";
 import { assertTenantWritesEnabled, assertWritableOrganization } from "@/modules/workspace/write-policy";
 import { decryptEmailValue } from "./crypto";
 import { clearEmailQuarantineSchema, retryEmailOperationSchema } from "./model";
-import { processStagedInboundAttachment, retryInboundMessage } from "./inbound";
+import { retryInboundMessage } from "./inbound";
 import { retryInvoiceDelivery } from "./outbound";
 import { emailProviderReadiness } from "./configuration";
 
@@ -46,15 +46,19 @@ function maskAddress(address: string): string {
 export async function loadEmailOperations(context: TenantTransactionContext) {
   await assertOperationsRead(context);
   return withTenantTransaction(context, async (client) => {
-    const [messageCounts, attachmentCounts, deliveryCounts, queueAge, settings, messages, deliveries] = await Promise.all([
+    const [messageCounts, attachmentCounts, deliveryCounts, queueAge, settings, messages, deliveries, attachments] = await Promise.all([
       client.query<{ status: string; count: string }>(
         "SELECT status,count(*)::text AS count FROM inbound_email_messages WHERE organization_id=$1 GROUP BY status", [context.organizationId]),
       client.query<{ status: string; count: string }>(
         "SELECT status,count(*)::text AS count FROM inbound_email_attachments WHERE organization_id=$1 GROUP BY status", [context.organizationId]),
       client.query<{ status: string; count: string }>(
         "SELECT status,count(*)::text AS count FROM invoice_delivery_attempts WHERE organization_id=$1 GROUP BY status", [context.organizationId]),
-      client.query<{ oldest_seconds: string | null }>(
-        `SELECT extract(epoch FROM now()-min(created_at))::bigint::text AS oldest_seconds
+      client.query<{ oldest_seconds: string | null; overdue_count: string; overdue_seconds: string | null }>(
+        `SELECT extract(epoch FROM now()-min(created_at))::bigint::text AS oldest_seconds,
+           count(*) FILTER (WHERE coalesce(next_retry_at,created_at)<now()
+             AND (processing_expires_at IS NULL OR processing_expires_at<=now()))::text AS overdue_count,
+           extract(epoch FROM now()-min(coalesce(next_retry_at,created_at)) FILTER
+             (WHERE processing_expires_at IS NULL OR processing_expires_at<=now()))::bigint::text AS overdue_seconds
          FROM inbound_email_messages WHERE organization_id=$1 AND status IN ('STAGED','RETRY_PENDING')`, [context.organizationId]),
       client.query<{ outbound_enabled: boolean; auto_send_enabled: boolean; transient_retention_days: number; quarantine_retention_days: number; operation_retention_days: number }>(
         "SELECT outbound_enabled,auto_send_enabled,transient_retention_days,quarantine_retention_days,operation_retention_days FROM email_delivery_settings WHERE organization_id=$1", [context.organizationId]),
@@ -65,6 +69,14 @@ export async function loadEmailOperations(context: TenantTransactionContext) {
       client.query<{ id: string; source_document_id: string; status: string; failure_code: string | null; retry_count: number; created_at: Date; updated_at: Date }>(
         `SELECT id,source_document_id,status,failure_code,retry_count,created_at,updated_at
          FROM invoice_delivery_attempts WHERE organization_id=$1 ORDER BY created_at DESC,id DESC LIMIT 50`, [context.organizationId]),
+      client.query<{ id: string; message_id: string; status: string; quarantine_code: string | null;
+        error_stage: string | null; attempt_count: number; next_retry_at: Date | null }>(
+        `SELECT attachment.id,attachment.message_id,attachment.status,attachment.quarantine_code,
+           attachment.error_stage,attachment.attempt_count,message.next_retry_at
+         FROM inbound_email_attachments attachment
+         JOIN (SELECT id,next_retry_at FROM inbound_email_messages WHERE organization_id=$1
+           ORDER BY received_at DESC,id DESC LIMIT 50) message ON message.id=attachment.message_id
+         WHERE attachment.organization_id=$1 ORDER BY attachment.message_id,attachment.id`, [context.organizationId]),
     ]);
     const messageDtos = [];
     for (const row of messages.rows) {
@@ -83,6 +95,11 @@ export async function loadEmailOperations(context: TenantTransactionContext) {
         sender, subject, status: row.status, retryCount: row.retry_count,
         nextRetryAt: row.next_retry_at?.toISOString() ?? null, errorCode: row.error_code,
         updatedAt: row.updated_at.toISOString(),
+        attachments: attachments.rows.filter((attachment) => attachment.message_id === row.id).map((attachment) => ({
+          id: attachment.id, status: attachment.status, attemptCount: attachment.attempt_count,
+          failureCode: attachment.quarantine_code, failureStage: attachment.error_stage,
+          nextRetryAt: attachment.status === "RETRY_PENDING" ? attachment.next_retry_at?.toISOString() ?? null : null,
+        })),
       });
     }
     const counts = (rows: readonly { status: string; count: string }[]) => Object.fromEntries(rows.map((row) => [row.status, Number(row.count)]));
@@ -94,6 +111,9 @@ export async function loadEmailOperations(context: TenantTransactionContext) {
         attachments: counts(attachmentCounts.rows),
         deliveries: counts(deliveryCounts.rows),
         oldestQueueSeconds: Number(queueAge.rows[0]?.oldest_seconds ?? "0"),
+        overdueRetryCount: Number(queueAge.rows[0]?.overdue_count ?? "0"),
+        oldestOverdueRetrySeconds: Math.max(0, Number(queueAge.rows[0]?.overdue_seconds ?? "0")),
+        retryAlert: Number(queueAge.rows[0]?.overdue_seconds ?? "0") > 300,
       },
       messages: messageDtos,
       deliveries: deliveries.rows.map((row) => ({
@@ -124,7 +144,7 @@ export async function retryEmailOperation(unparsed: ContextCommand & z.input<typ
     if (!alias) throw new Error("Inbound email alias is unavailable");
     return { attachment, alias };
   });
-  return processStagedInboundAttachment(unparsed.context, { alias_id: loaded.alias.id, connection_id: loaded.alias.connection_id }, loaded.attachment.id);
+  return retryInboundMessage(unparsed.context, loaded.attachment.message_id, { attachmentId: loaded.attachment.id });
 }
 
 export async function clearEmailQuarantine(unparsed: ContextCommand & z.input<typeof clearEmailQuarantineSchema>) {
@@ -150,13 +170,18 @@ export async function clearEmailQuarantine(unparsed: ContextCommand & z.input<ty
       [unparsed.context.organizationId, attachment.id],
     );
     await client.query(
+      `UPDATE inbound_email_messages SET status='RETRY_PENDING',next_retry_at=now(),error_code=NULL,updated_at=now()
+       WHERE organization_id=$1 AND id=$2 AND status IN ('NEEDS_REVIEW','QUARANTINED')`,
+      [unparsed.context.organizationId, attachment.message_id],
+    );
+    await client.query(
       `INSERT INTO email_operation_events(organization_id,category,event_type,aggregate_id,outcome,safe_details)
        VALUES ($1,'QUARANTINE','CLEARED',$2,'AUTHORIZED',$3)`,
       [unparsed.context.organizationId, attachment.id, { reason: command.reason }],
     );
     return { attachment, alias };
   });
-  return processStagedInboundAttachment(unparsed.context, { alias_id: loaded.alias.id, connection_id: loaded.alias.connection_id }, loaded.attachment.id);
+  return retryInboundMessage(unparsed.context, loaded.attachment.message_id, { attachmentId: loaded.attachment.id });
 }
 
 export async function runEmailRetention(context: TenantTransactionContext) {
