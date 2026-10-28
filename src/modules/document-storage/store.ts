@@ -10,6 +10,7 @@ import { PERMISSIONS } from "@/modules/identity/permissions";
 import { assertTenantWritesEnabled, assertWritableOrganization } from "@/modules/workspace/write-policy";
 import { CloudDrive, credentialSchema, exchangeStorageToken, locationSchema, StorageError, type StorageCredentials, type StorageLocation } from "./provider";
 import type { StorageProvider } from "./model";
+import { isInboundWorkerContext } from "@/modules/email/worker-context";
 
 export type ConnectionRow = {
   id: string; organization_id: string; legal_entity_id: string; owner_module: "payables" | "receivables";
@@ -18,9 +19,7 @@ export type ConnectionRow = {
   oauth_state_hash: string | null;
 };
 export function realStorageContext(context: TenantTransactionContext) {
-  const trustedInboundWorker = context.sourceSurface === "WORKER"
-    && context.authMethod === "resend-webhook"
-    && !context.sessionId;
+  const trustedInboundWorker = isInboundWorkerContext(context);
   if (context.sessionMode === "demo" || /demo/i.test(context.authMethod) || (!context.sessionId && !trustedInboundWorker)) {
     throw new StorageError("STORAGE_REAL_ACCOUNT", "Cloud storage requires a signed-in real account or the verified inbound-email worker.");
   }

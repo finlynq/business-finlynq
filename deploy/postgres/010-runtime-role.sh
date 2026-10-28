@@ -346,6 +346,7 @@ BEGIN
     'app.tax_workpaper_deleted(uuid,uuid)',
     'app.current_actor_has_permission(text)',
     'app.resolve_inbound_email_alias(text)',
+    'app.due_inbound_email_retries(integer)',
     'app.lock_active_email_membership(uuid)',
     'app.resolve_outbound_email_attempt(text)',
     'app.mcp_user_is_active(uuid)',
