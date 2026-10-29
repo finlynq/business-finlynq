@@ -1560,12 +1560,17 @@ verify_prepared_configuration_content() {
 
 render_and_verify_initial_configuration() {
   local rendered rehearsal_environment rehearsal_project rehearsal_port rehearsal_backup
+  local scanner_mode scanner_channel
+  local -a scanner_files scanner_environment_values
   verify_prepared_configuration_content
-  rendered="$(env -i "PATH=$clean_path" docker compose \
+  source "$repository/deploy/evidence/shared/compose-contract.sh"
+  scanner_compose_contract "$compose_environment" business-finlynq "$repository" \
+    || fail "initial scanner mode is invalid"
+  rendered="$(env -i "PATH=$clean_path" "${scanner_environment_values[@]}" docker compose \
     --project-name business-finlynq \
     --project-directory "$repository" \
     --env-file "$compose_environment" \
-    -f "$repository/docker-compose.yml" \
+    -f "$repository/docker-compose.yml" "${scanner_files[@]}" \
     --profile operations --profile auth-email --profile acceptance \
     config --format json)" \
     || fail "initial production Compose configuration could not be rendered"
@@ -1633,14 +1638,19 @@ render_and_verify_initial_configuration() {
       rehearsal_port=3311
       rehearsal_backup="$rehearsal_evidence_root/backups/second"
     fi
+    scanner_compose_contract "$rehearsal_environment" "$rehearsal_project" "$repository" \
+      || fail "rehearsal scanner mode is invalid"
     rendered="$(env -i "PATH=$clean_path" "RELEASE_REHEARSAL_PROJECT=$rehearsal_project" \
+      "${scanner_environment_values[@]}" \
       docker compose --project-name "$rehearsal_project" \
       --project-directory "$repository" --env-file "$rehearsal_environment" \
       -f "$repository/docker-compose.yml" \
-      -f "$repository/deploy/release/docker-compose.rehearsal.yml" \
+      -f "$repository/deploy/release/docker-compose.rehearsal.yml" "${scanner_files[@]}" \
       --profile operations --profile auth-email --profile acceptance \
       config --format json)" \
       || fail "rehearsal Compose configuration could not be rendered"
+    scanner_rehearsal_resources "$rendered" "$rehearsal_project" >/dev/null \
+      || fail "rehearsal scanner or resource isolation is invalid"
     jq -e --arg revision "$revision" --arg project "$rehearsal_project" \
       --arg releaseRouterReference "$release_router_reference" \
       --arg port "$rehearsal_port" --arg backup "$rehearsal_backup" '
@@ -1684,7 +1694,7 @@ render_and_verify_initial_configuration() {
       } and
       .volumes.business_finlynq_release_router_state.name ==
         ($project + "-release-router-state-v2") and
-      ([.volumes[].name, .networks[].name] |
+      (del(.volumes.shared_scanner_channel) | [.volumes[].name, .networks[].name] |
         all(.[]; startswith($project + "-"))) and
       ([.services.backup.volumes[] | select(.target == "/backups") | .source] == [$backup])
     ' <<<"$rendered" >/dev/null \
@@ -3112,6 +3122,7 @@ verify_initial_resume_router_boundary() {
 
 verify_live_accepted_initial_runtime() {
   local accepted_evidence="$1" project_container_output container_id inspect_json service
+  local shared_scanner_inventory
   local expected_app_image expected_router_image expected_database_image expected_scanner_image
   local -A service_containers=()
   verify_release_image_inventory \
@@ -3134,7 +3145,7 @@ verify_live_accepted_initial_runtime() {
   expected_database_image="$(jq -er '.images[] | select(.name == "database") | .imageId' \
     "$accepted_evidence/11-images.json")" \
     || fail "accepted database image ID is unavailable"
-  expected_scanner_image="$(jq -er '.imageId' \
+  expected_scanner_image="$(jq -er '.relayImageId // .imageId' \
     "$accepted_evidence/14-evidence-scanner.json")" \
     || fail "accepted scanner image ID is unavailable"
   project_container_output="$(docker ps --all --quiet --no-trunc \
@@ -3231,6 +3242,14 @@ verify_live_accepted_initial_runtime() {
         verify_database_mount_contract "$inspect_json" "live database"
         ;;
       evidence_scanner)
+        if [[ "$(jq -r '.sharedContract // empty' "$accepted_evidence/14-evidence-scanner.json")" == v1 ]]; then
+          shared_scanner_inventory="$(python3 "$repository/deploy/evidence/shared/attest.py" business-finlynq)" \
+            || fail "accepted shared scanner or private forwarder differs from its contract"
+          [[ "$(jq -r '.relayContainerId' <<<"$shared_scanner_inventory")" == "$container_id" \
+            && "$(jq -r '.relayImageId' <<<"$shared_scanner_inventory")" == "$expected_scanner_image" ]] \
+            || fail "accepted shared forwarder identity differs from release evidence"
+          continue
+        fi
         jq -e --arg imageId "$expected_scanner_image" '
           length == 1 and .[0].Image == $imageId and
           .[0].Config.Labels["com.docker.compose.project"] == "business-finlynq" and
@@ -3270,6 +3289,7 @@ verify_live_accepted_initial_runtime() {
 
 recover_accepted_stopped_app() {
   local accepted_evidence="$1" project_container_output container_id service
+  local shared_scanner_inventory
   local app_container router_container inspect_json supporting_inspect
   local expected_app_image expected_router_image expected_database_image expected_scanner_image
   local app_state start_output readiness health_state
@@ -3290,7 +3310,7 @@ recover_accepted_stopped_app() {
     '.images[] | select(.name == "database") | .imageId' \
     "$accepted_evidence/11-images.json")" \
     || fail "accepted database image ID is unavailable for terminal recovery"
-  expected_scanner_image="$(jq -er '.imageId' \
+  expected_scanner_image="$(jq -er '.relayImageId // .imageId' \
     "$accepted_evidence/14-evidence-scanner.json")" \
     || fail "accepted scanner image ID is unavailable for terminal recovery"
   project_container_output="$(docker ps --all --quiet --no-trunc \
@@ -3349,6 +3369,13 @@ recover_accepted_stopped_app() {
   verify_database_mount_contract "$supporting_inspect" "terminal-recovery database"
   supporting_inspect="$(docker inspect "${recovery_containers[evidence_scanner]}")" \
     || fail "terminal-recovery scanner could not be inspected"
+  if [[ "$(jq -r '.sharedContract // empty' "$accepted_evidence/14-evidence-scanner.json")" == v1 ]]; then
+    shared_scanner_inventory="$(python3 "$repository/deploy/evidence/shared/attest.py" business-finlynq)" \
+      || fail "terminal recovery requires the verified shared scanner and private forwarder"
+    [[ "$(jq -r '.relayContainerId' <<<"$shared_scanner_inventory")" == "${recovery_containers[evidence_scanner]}" \
+      && "$(jq -r '.relayImageId' <<<"$shared_scanner_inventory")" == "$expected_scanner_image" ]] \
+      || fail "terminal recovery shared forwarder identity differs from release evidence"
+  else
   jq -e --arg imageId "$expected_scanner_image" '
     length == 1 and .[0].Image == $imageId and
     .[0].Config.Labels["com.docker.compose.project"] == "business-finlynq" and
@@ -3395,6 +3422,7 @@ recover_accepted_stopped_app() {
     || fail "terminal-recovery ClamD version could not be queried"
   clamd_database_is_fresh "$clamd_version" "$now" \
     || fail "terminal-recovery ClamD loaded signatures are unavailable, stale, or future-dated"
+  fi
   app_container="${recovery_containers[app]}"
   inspect_json="$(docker inspect "$app_container")" \
     || fail "stopped accepted app could not be inspected"

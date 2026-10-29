@@ -1,0 +1,119 @@
+name: finlynq-shared-scanner
+
+x-node: &node node:24-alpine@sha256:e67514e5d0f6c46656005e1b693b2ec9d52e80b641307de684d4a015ba7a4eaf
+
+services:
+  initialize:
+    profiles: [initialize]
+    image: *node
+    user: "0:0"
+    network_mode: none
+    read_only: true
+    cap_drop: [ALL]
+    cap_add: [CHOWN]
+    security_opt: [no-new-privileges:true]
+    entrypoint: [node, /opt/scanner/initialize.mjs]
+    volumes:
+      - ./initialize.mjs:/opt/scanner/initialize.mjs:ro
+      - ./gateway.mjs:/opt/scanner/gateway.mjs:ro
+      - signatures:/signatures
+      - upstream:/upstream
+      - business_prod:/channels/business-prod
+      - business_stage:/channels/business-stage
+      - business_dev:/channels/business-dev
+      - consult_dev:/channels/consult-dev
+      - consult_dev2:/channels/consult-dev2
+      - consult_stage:/channels/consult-stage
+    mem_limit: 64m
+    pids_limit: 16
+
+  scanner:
+    image: clamav/clamav@sha256:f0954d679017eb6d48221e2b2be3ac5457bf278a844f39b672376f55a085f591
+    user: "100:101"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    restart: unless-stopped
+    entrypoint: [/sbin/tini, -g, --, /bin/sh, -ec]
+    command:
+      - |
+        freshclam --foreground --stdout --user=clamav
+        freshclam --checks=12 --daemon --foreground --stdout --user=clamav &
+        exec clamd --foreground --config-file=/etc/clamav/clamd.conf
+    volumes:
+      - ./clamd.conf:/etc/clamav/clamd.conf:ro
+      - signatures:/var/lib/clamav
+      - upstream:/upstream
+    tmpfs:
+      - /tmp:size=128m,mode=1777,noexec,nosuid,nodev
+      - /var/log/clamav:size=8m,uid=100,gid=101,mode=0700
+    networks: [signature_egress]
+    cpus: "2.00"
+    mem_limit: 3g
+    pids_limit: 64
+    healthcheck:
+      test: [CMD, clamdscan, --ping=1, --config-file=/etc/clamav/clamd.conf]
+      interval: 30s
+      timeout: 10s
+      start_period: 180s
+      retries: 5
+    logging:
+      options: {max-size: 10m, max-file: "3"}
+
+  gateway:
+    image: *node
+    user: "10001:10001"
+    group_add: ["101"]
+    network_mode: none
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    restart: unless-stopped
+    entrypoint: [node, /opt/scanner/gateway.mjs]
+    volumes:
+      - ./gateway.mjs:/opt/scanner/gateway.mjs:ro
+      - upstream:/upstream:ro
+      - business_prod:/channels/business-prod
+      - business_stage:/channels/business-stage
+      - business_dev:/channels/business-dev
+      - consult_dev:/channels/consult-dev
+      - consult_dev2:/channels/consult-dev2
+      - consult_stage:/channels/consult-stage
+    depends_on:
+      scanner: {condition: service_healthy}
+    cpus: "0.50"
+    mem_limit: 128m
+    pids_limit: 32
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - |
+          const fs=require('node:fs');
+          for(const name of ['business-prod','business-stage','business-dev','consult-dev','consult-dev2','consult-stage']) {
+            const s=fs.lstatSync('/channels/'+name+'/clamd.sock');
+            if(!s.isSocket()||s.uid!==10001||s.gid!==10001||(s.mode&511)!==(name==='consult-stage'?432:384))process.exit(1);
+          }
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+    logging:
+      options: {max-size: 10m, max-file: "3"}
+
+volumes:
+  signatures: {name: finlynq_scanner_signatures_v1}
+  upstream: {name: finlynq_scanner_upstream_v1}
+  business_prod: {name: finlynq_scanner_business_prod_v1}
+  business_stage: {name: finlynq_scanner_business_stage_v1}
+  business_dev: {name: finlynq_scanner_business_dev_v1}
+  consult_dev: {name: finlynq_scanner_consult_dev_v1}
+  consult_dev2: {name: finlynq_scanner_consult_dev2_v1}
+  consult_stage: {name: finlynq_scanner_consult_stage_v1}
+
+networks:
+  signature_egress:
+    name: finlynq_scanner_signature_egress_v1
+    ipam:
+      config: [{subnet: 10.240.12.0/28}]
