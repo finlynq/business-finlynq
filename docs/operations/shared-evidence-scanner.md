@@ -315,3 +315,19 @@ backup/upgrade rehearsal. The current host still intentionally has the shared
 daemon and production's local daemon. Actual Consult owner-outage checks, operator
 alert activation/receipt, approved reboot and final one-daemon measurements remain
 open. No external notification was sent.
+
+### Browser workflow budget correction
+
+Follow-up diagnostics reproduced both long workflows completing all unchanged
+assertions in 32.130 and 30.132 seconds, beyond the global 30-second test budget.
+Only the SHAREHOLDER_ADVANCE lifecycle and payment-filter lifecycle now receive
+60 seconds for their complete sequence. Per-step expectations, upload deadlines,
+security checks, other tests and the global budget remain unchanged.
+
+Using the edited test source against public development, with no command-line
+budget override, both passed (38.436 and 37.638 seconds). Targeted ESLint and the
+full TypeScript check passed. The host lacks npx, so those checks used the installed
+Node entry points directly. Metadata-only diagnostic reports are retained with
+this task's temporary evidence. This source correction still needs normal PR/CI
+promotion and the full release suite; it does not retroactively pass the earlier
+failed scheduled runs. Consult source and the reviewed next rollout are unchanged.
