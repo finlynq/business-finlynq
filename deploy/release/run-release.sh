@@ -2700,7 +2700,9 @@ if [[ "$mode" != "rehearsal" ]]; then
     || fail "production release requires the host-only secure session cookie"
   public_base_url="$MONITOR_BASE_URL"
 else
-  rehearsal_resources="$(jq -r '.volumes[].name, .networks[].name' <<<"$rendered_compose")"
+  source "$candidate_source_root/deploy/evidence/shared/compose-contract.sh"
+  rehearsal_resources="$(scanner_rehearsal_resources "$rendered_compose" "$compose_project")" \
+    || fail "rehearsal resource can escape its isolated project"
   [[ -n "$rehearsal_resources" ]] || fail "rehearsal resource names are missing"
   while IFS= read -r resource_name; do
     [[ "$resource_name" == "$compose_project"-* ]] \

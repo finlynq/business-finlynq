@@ -26,3 +26,33 @@ scanner_compose_contract() {
   scanner_files=(-f "$scanner_root/deploy/evidence/shared/business-relay.yml")
   scanner_environment_values=("FINLYNQ_SCANNER_CHANNEL=$scanner_channel")
 }
+
+# Rehearsal cleanup owns every resource except the exact read-only staging
+# scanner socket. Never accept another external volume or network, even when
+# its name happens to use this run's prefix.
+scanner_rehearsal_resources() {
+  local rendered="$1" project="$2"
+  [[ "$project" =~ ^business-finlynq-rehearsal-[a-z0-9-]+$ ]] || return 1
+  jq -er --arg project "$project" '
+    if .volumes | has("shared_scanner_channel") then
+      if .services.evidence_scanner.image ==
+          "node:24-alpine@sha256:e67514e5d0f6c46656005e1b693b2ec9d52e80b641307de684d4a015ba7a4eaf" and
+        .volumes.shared_scanner_channel.external == true and
+        .volumes.shared_scanner_channel.name == "finlynq_scanner_business_stage_v1" and
+        (.services.evidence_scanner.volumes | length) == 1 and
+        .services.evidence_scanner.volumes[0].type == "volume" and
+        .services.evidence_scanner.volumes[0].source == "shared_scanner_channel" and
+        .services.evidence_scanner.volumes[0].target == "/run/finlynq-scanner" and
+        .services.evidence_scanner.volumes[0].read_only == true and
+        .services.evidence_scanner.volumes[0].volume.nocopy == true and
+        all(.services | to_entries[]; .key == "evidence_scanner" or
+          all(.value.volumes[]?; .source != "shared_scanner_channel"))
+      then del(.volumes.shared_scanner_channel)
+      else error("invalid rehearsal scanner channel") end
+    else . end |
+    [.volumes[], .networks[]] |
+    if length > 0 and all(.[];
+      (.external // false) == false and (.name | startswith($project + "-")))
+    then .[].name else error("rehearsal resources are not run-isolated") end
+  ' <<<"$rendered"
+}

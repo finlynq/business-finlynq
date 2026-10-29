@@ -952,6 +952,7 @@ const releaseRehearsalRendered = execFileSync(
     "--project-name", releaseRehearsalProject,
     "-f", "docker-compose.yml",
     "-f", "deploy/release/docker-compose.rehearsal.yml",
+    ...(sharedScanner ? ["-f", "deploy/evidence/shared/business-relay.yml"] : []),
     "--profile", "operations",
     "--profile", "auth-email",
     "config",
@@ -969,19 +970,16 @@ const releaseRehearsalRendered = execFileSync(
       MONITOR_BACKUP_DIR: "/tmp/business-finlynq-release-evidence/rehearsal-backup",
       MONITOR_REQUIRE_OFFSITE: "false",
       RELEASE_REHEARSAL_PROJECT: releaseRehearsalProject,
+      FINLYNQ_SCANNER_CHANNEL: "business_stage",
       SESSION_COOKIE_NAME: "business_finlynq_rehearsal_session",
     },
   },
 );
 const releaseRehearsal = JSON.parse(releaseRehearsalRendered);
-for (const resource of [
-  ...Object.values(releaseRehearsal.volumes ?? {}),
-  ...Object.values(releaseRehearsal.networks ?? {}),
-]) {
-  if (!resource.name?.startsWith(`${releaseRehearsalProject}-`)) {
-    fail(`release rehearsal resource is not run-isolated: ${resource.name ?? "unnamed"}`);
-  }
-}
+execFileSync("bash", ["-ec",
+  'source deploy/evidence/shared/compose-contract.sh; scanner_rehearsal_resources "$(cat)" "$1"',
+  "rehearsal-resource-check", releaseRehearsalProject,
+], { input: releaseRehearsalRendered, encoding: "utf8" });
 const rehearsalRouterPort = (releaseRehearsal.services?.release_router?.ports ?? [])
   .find((port) => port.target === 3000);
 if (rehearsalRouterPort?.host_ip !== "127.0.0.1" || rehearsalRouterPort?.published !== "3311") {
