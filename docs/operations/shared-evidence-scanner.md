@@ -1,7 +1,8 @@
 # Shared private scanner — BUSINESS-FINLYNQ-81
 
-Status: shared owner commissioned; Business dev/stage accepted with rollback and restart proof. Reboot acceptance,
-operator approval and ticket closure are separate gates. Scope is this server's
+Status: shared owner commissioned; Business dev/stage and all three local Consult
+environments accepted. Production cutover, wider owner recovery, alert receipt,
+reboot acceptance and ticket closure remain separate gates. Scope is this server's
 Business production/stage/dev and Consult dev/dev2/stage. Remote Consult production
 is excluded. No Caddy route, public port, VPN or application credential is needed.
 
@@ -331,3 +332,44 @@ Node entry points directly. Metadata-only diagnostic reports are retained with
 this task's temporary evidence. This source correction still needs normal PR/CI
 promotion and the full release suite; it does not retroactively pass the earlier
 failed scheduled runs. Consult source and the reviewed next rollout are unchanged.
+
+## Consult completion and rehearsal isolation follow-up, 2026-10-29 UTC
+
+Consult development 2 and staging completed their separately approved rollouts at
+`fef7038b4f8c9fe014b8f24711f4f5d2fab41d8a`. Staging's guarded transaction deleted
+exactly 1,830 approved orphan records, then a fresh clean backup/restore and all
+56 pending migrations passed. The original forensic backup and clean post-repair
+backup remain private and retained. No runtime role was newly enabled.
+
+Both environments passed public file/email/work-item ingestion, access and
+malware/limit refusals, bounded workspace imports and rejected-upload cleanup,
+capacity refusal/retry, independent redeployment and retained-file integrity.
+The exact normal development 2 image passed all 51 release gates. Its initial
+image-identity mismatch and reviewed packaging differences remain in the evidence;
+no failed attempt was relabeled. Consult PR 1 at `b3fea6cd` records the full details.
+A subsequent independent development 2 release at `df28efe8` preserved the scanner
+integration and passed its normal root verifier and public retained-file readback.
+
+Business development revision `ff0eb853` passed its normal deployment: 25 browser
+checks passed with one existing reviewer-dependent skip. Its independent root
+finalizer returned the exact revision and attested the shared owner and forwarder.
+Staging promotion PR 248 passed CI and its normal deployment at 04:03 UTC:
+25 browser checks passed with the same existing skip. The independent root finalizer
+returned exact revision `e10d9de5` and attested the unchanged owner and forwarder.
+Production promotion PR 249 remains a draft and does not authorize cutover.
+
+Final preparation found that the release and initial-install rehearsal validators
+still required the shared scanner channel name to have the rehearsal's own prefix.
+The corrected boundary permits only the pinned forwarder's read-only staging
+socket; every writable volume and every network must remain owned by that isolated
+run. Other external resources, production/development channels, writable socket
+mounts, mutable forwarder images and access from another service are refused.
+Actual local/shared Compose regression checks reproduce the original rejection and
+verify the corrected boundary. They do not replace full release-rehearsal evidence.
+
+The wider owner restart has not occurred: automatic approval review required a new
+explicit maintenance approval now that all three Consult consumers are live.
+Business production remains on its local scanner. Operator notification activation
+and receipt, an approved reboot and final one-daemon memory measurements remain
+pending. The existing notification script has no local deduplication; confirm the
+receiving route's repeat/escalation policy before activating scanner alerts.

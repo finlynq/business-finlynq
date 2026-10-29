@@ -1649,6 +1649,8 @@ render_and_verify_initial_configuration() {
       --profile operations --profile auth-email --profile acceptance \
       config --format json)" \
       || fail "rehearsal Compose configuration could not be rendered"
+    scanner_rehearsal_resources "$rendered" "$rehearsal_project" >/dev/null \
+      || fail "rehearsal scanner or resource isolation is invalid"
     jq -e --arg revision "$revision" --arg project "$rehearsal_project" \
       --arg releaseRouterReference "$release_router_reference" \
       --arg port "$rehearsal_port" --arg backup "$rehearsal_backup" '
@@ -1692,7 +1694,7 @@ render_and_verify_initial_configuration() {
       } and
       .volumes.business_finlynq_release_router_state.name ==
         ($project + "-release-router-state-v2") and
-      ([.volumes[].name, .networks[].name] |
+      (del(.volumes.shared_scanner_channel) | [.volumes[].name, .networks[].name] |
         all(.[]; startswith($project + "-"))) and
       ([.services.backup.volumes[] | select(.target == "/backups") | .source] == [$backup])
     ' <<<"$rendered" >/dev/null \

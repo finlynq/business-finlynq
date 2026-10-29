@@ -71,3 +71,48 @@ ${check}`], { env: { ...environment, fixture_namespace: namespace, rendered: JSO
     }
   });
 }
+
+for (const mode of ['local', 'shared']) {
+  test(`${mode} rehearsal keeps every writable resource isolated`, () => {
+    const project = 'business-finlynq-rehearsal-scanner-check';
+    const environment = { ...process.env, BUSINESS_FINLYNQ_SECRET_GID: '20001',
+      BUSINESS_FINLYNQ_IMAGE_REVISION: '1'.repeat(40), FINLYNQ_SCANNER_CHANNEL: 'business_stage',
+      RELEASE_REHEARSAL_PROJECT: project };
+    const files = ['-f', 'docker-compose.yml', '-f', 'deploy/release/docker-compose.rehearsal.yml'];
+    if (mode === 'shared') files.push('-f', 'deploy/evidence/shared/business-relay.yml');
+    const rendered = spawnSync('docker', ['compose', '--project-name', project,
+      '--env-file', '.env.example', ...files, 'config', '--format', 'json'],
+    { env: environment, encoding: 'utf8', maxBuffer: 4 * 1024 ** 2 });
+    assert.equal(rendered.status, 0, rendered.stderr);
+    const configuration = JSON.parse(rendered.stdout);
+    const source = readFileSync('deploy/release/run-release.sh', 'utf8');
+    const start = source.indexOf('  rehearsal_resources=');
+    const end = source.indexOf('  [[ "$app_port"', start);
+    assert.ok(start > 0 && end > start);
+    const run = value => spawnSync('bash', ['-euc',
+      `fail(){ echo "$*" >&2; exit 1; }
+source deploy/evidence/shared/compose-contract.sh
+${source.slice(start, end)}`],
+    { env: { ...environment, rendered_compose: JSON.stringify(value), compose_project: project }, encoding: 'utf8' });
+    const good = run(configuration);
+    assert.equal(good.status, 0, good.stderr);
+    const mutations = [
+      value => { value.volumes.business_finlynq_pgdata.name = 'business_finlynq_pgdata'; },
+      value => { value.volumes.business_finlynq_pgdata.external = true; },
+      value => { value.networks.business_finlynq_private.name = 'business_finlynq_private'; },
+      value => { value.networks.business_finlynq_private.external = true; },
+    ];
+    if (mode === 'shared') mutations.push(
+      value => { value.volumes.shared_scanner_channel.name = 'finlynq_scanner_business_prod_v1'; },
+      value => { value.volumes.shared_scanner_channel.external = false; },
+      value => { value.services.evidence_scanner.volumes[0].read_only = false; },
+      value => { value.services.app.volumes = [value.services.evidence_scanner.volumes[0]]; },
+      value => { value.services.evidence_scanner.image = 'node:latest'; },
+      value => { value.volumes.alias = { ...value.volumes.shared_scanner_channel }; },
+    );
+    for (const mutate of mutations) {
+      const changed = structuredClone(configuration); mutate(changed);
+      assert.notEqual(run(changed).status, 0);
+    }
+  });
+}
