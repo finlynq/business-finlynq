@@ -278,3 +278,40 @@ Remaining operational gates: separately approved local Consult and Business
 production cutovers, every Consult public ingestion/redeploy/recovery path, operator
 alert activation and actual receipt, an approved host reboot, and final one-daemon
 idle/load measurements. Remote Consult production remains excluded.
+
+
+## Consult development acceptance, 2026-10-28 (Toronto)
+
+The separately approved Consult development switch completed at 2026-10-29
+00:57:44 UTC on tested source c12dfe64 after private backup/restore rehearsal and
+28 migrations. Sixteen public upload/browser checks passed, including malware,
+encrypted/oversize and unauthorized rejection, scanned email attachments and
+work-item retention. Busy-slot refusal/retry and an ordinary independent redeploy
+passed. Owner c8090a644c1f and gateway 34cbc5b0093d remained unchanged; both Business
+app identities remained unchanged and healthy. The redeployed Consult app retained
+its scanner configuration automatically and previously accepted evidence read back
+with matching hashes and scan metadata.
+
+The actual public Consult workspace import also accepted a 2,097,177,770-byte
+fictive archive using 251 chunks of at most 8 MiB. Seven expected artifacts and the
+bounded archive scan receipt were retained. EICAR and expanded-member-limit inputs
+were refused without imports, and upload staging files were removed. Sampled peaks
+were 585.7 MiB Consult app, 1,011 MiB shared scanner and 39.83 MiB gateway. This is
+actual application-path evidence; the earlier concurrent reserved-slot load remains
+the separate contention proof. Details and harness corrections are recorded in
+Consult PR 1's SCANNING.md. No remote Consult production changes occurred.
+
+Both Business public scanner probes passed again at 01:07 UTC: clean/replay,
+EICAR/encrypted refusal and the unchanged size limit. Both deployment timers and
+the scanner minute monitor are active. However, same-revision scheduled browser
+rechecks before the Consult switch reported two settlement/logout timeouts
+(23 passed, one existing reviewer skip). Those failures are unresolved; neither
+the earlier accepted releases nor these focused scanner probes waive them.
+Investigate before a subsequent promotion relying on the full browser gate.
+
+Consult dev2/stage and Business production remain pending separate rollout
+approval. Dev2 has no pending migrations; staging needs 56 and its own private
+backup/upgrade rehearsal. The current host still intentionally has the shared
+daemon and production's local daemon. Actual Consult owner-outage checks, operator
+alert activation/receipt, approved reboot and final one-daemon measurements remain
+open. No external notification was sent.
