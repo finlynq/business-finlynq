@@ -94,6 +94,19 @@ the `dev` branch. The centrally owned shared edge joins each ingress network
 only to reach that environment's alias; application databases and private
 networks remain inaccessible from the edge and from the other environments.
 
+Dev and staging polling checks skip the browser acceptance suite when the
+candidate matches the revision recorded before recovery and the running
+release is already accepted with durably active routing. These checks retain
+private and public readiness probes, runtime configuration checks, and the
+read-only edge and scanner verifiers. The log explicitly records that the
+unchanged revision passed health checks and skipped full acceptance. New
+releases, configuration reconciliation, missing or interrupted acceptance
+records, and recovery from router maintenance retain full public acceptance
+when it is enabled. The protected acceptance record also tracks whether that
+revision passed the public browser suite. A missing public acceptance record
+(including older installations) or first-time public activation runs the suite
+once and records success before later checks may skip it.
+
 Staging data is disposable and must never be restored from an unsanitized production backup. Staging starts with demo login/writes and the real-business write engine enabled, but real account login, signup, email delivery, Turnstile, and bank feeds disabled. Enable those identity gates only after installing staging-specific provider credentials; never copy production provider credentials or encryption keys.
 
 ## Installation

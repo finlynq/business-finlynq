@@ -31,6 +31,7 @@ readonly release_router_state_volume="business_finlynq_dev_private-release-route
 readonly build_cache_limit="8GB"
 readonly clean_path="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 release_acceptance_token=""
+public_acceptance_verified_revision=""
 persistent_release_router_id=""
 development_router_live_uncommitted="false"
 initial_development_bootstrap="false"
@@ -469,16 +470,19 @@ read_state_value() {
 }
 
 write_accepted_revision() {
-  local revision="$1" temporary accepted_at
+  local revision="$1" temporary accepted_at public_acceptance_verified=false
   validate_revision "$revision"
+  if [[ "$public_acceptance_verified_revision" == "$revision" ]]; then
+    public_acceptance_verified=true
+  fi
   accepted_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
     || fail "the accepted-revision timestamp could not be generated"
   [[ "$accepted_at" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] \
     || fail "the accepted-revision timestamp is invalid"
   temporary="$(mktemp "${accepted_revision_file}.XXXXXX")" \
     || fail "the accepted-revision staging file could not be created"
-  printf 'revision=%s\nacceptedAt=%s\n' \
-    "$revision" "$accepted_at" >"$temporary" \
+  printf 'revision=%s\nacceptedAt=%s\npublicAcceptanceVerified=%s\n' \
+    "$revision" "$accepted_at" "$public_acceptance_verified" >"$temporary" \
     || fail "the accepted-revision state could not be written"
   chmod 0600 "$temporary" \
     || fail "the accepted-revision staging mode could not be set"
@@ -1976,6 +1980,7 @@ run_public_acceptance() {
   for attempt in 1 2; do
     if ( wait_for_public_readiness ) \
       && compose --profile acceptance run --rm --no-deps release_acceptance; then
+      public_acceptance_verified_revision="$candidate_revision"
       return 0
     fi
     printf 'Development public acceptance attempt %s failed. Retrying once.\n' "$attempt" >&2
@@ -2059,8 +2064,20 @@ if [[ -e "$accepted_revision_file" || -L "$accepted_revision_file" ]]; then
   validate_revision "$accepted_revision"
   git_as_deploy merge-base --is-ancestor "$accepted_revision" "$candidate_revision" \
     || fail "the accepted development revision is not an ancestor of the candidate"
+  if grep -q '^publicAcceptanceVerified=' "$accepted_revision_file"; then
+    accepted_public_verified="$(read_state_value "$accepted_revision_file" publicAcceptanceVerified)" \
+      || fail "the accepted public-verification state could not be read"
+    [[ "$accepted_public_verified" == true || "$accepted_public_verified" == false ]] \
+      || fail "the accepted public-verification state is invalid"
+    if [[ "$accepted_public_verified" == true ]]; then
+      public_acceptance_verified_revision="$accepted_revision"
+    fi
+  fi
 fi
 
+# Keep the original acceptance record: recovery may update it before the
+# same-revision check, but still requires the full public acceptance suite.
+accepted_revision_before_recovery="$accepted_revision"
 if [[ -z "$accepted_revision" ]]; then
   if release_is_accepted "$source_revision"; then
     write_accepted_revision "$source_revision"
@@ -2211,10 +2228,18 @@ if [[ "$source_revision" == "$candidate_revision" ]]; then
   if release_is_accepted "$candidate_revision" private; then
     same_revision_router_requires_commit=false
     same_revision_edge_boundary=normal
+    same_revision_requires_full_acceptance=false
+    if [[ "$accepted_revision_before_recovery" != "$candidate_revision" ]]; then
+      same_revision_requires_full_acceptance=true
+    fi
     require_public_acceptance="$(read_environment_value DEVELOPMENT_REQUIRE_PUBLIC_ACCEPTANCE)" \
       || fail "DEVELOPMENT_REQUIRE_PUBLIC_ACCEPTANCE could not be read"
     [[ "$require_public_acceptance" == true || "$require_public_acceptance" == false ]] \
       || fail "DEVELOPMENT_REQUIRE_PUBLIC_ACCEPTANCE must be true or false"
+    if [[ "$require_public_acceptance" == true \
+      && "$public_acceptance_verified_revision" != "$candidate_revision" ]]; then
+      same_revision_requires_full_acceptance=true
+    fi
     if [[ "$same_revision_topology" == router ]]; then
       same_revision_router="$(running_release_router_container)" \
         || fail "same-revision development release router could not be identified"
@@ -2227,6 +2252,7 @@ if [[ "$source_revision" == "$candidate_revision" ]]; then
         maintenance)
           development_router_live_uncommitted="true"
           same_revision_router_requires_commit=true
+          same_revision_requires_full_acceptance=true
           same_revision_edge_boundary=live-uncommitted
           reload_release_router_live active \
             || fail "same-revision development finalization could not restore active live routing"
@@ -2236,7 +2262,9 @@ if [[ "$source_revision" == "$candidate_revision" ]]; then
       esac
     fi
     if [[ "$require_public_acceptance" == true ]]; then
-      run_public_acceptance || fail "same-revision development public acceptance failed twice"
+      if [[ "$same_revision_requires_full_acceptance" == true ]]; then
+        run_public_acceptance || fail "same-revision development public acceptance failed twice"
+      fi
       verify_external_edge_if_selected "$candidate_revision" "$same_revision_edge_boundary"
     fi
     release_is_accepted "$candidate_revision" \
@@ -2245,10 +2273,15 @@ if [[ "$source_revision" == "$candidate_revision" ]]; then
       commit_release_router_acceptance "$candidate_revision" "$accepted_revision" \
         || fail "same-revision development finalization could not commit active routing"
       development_router_live_uncommitted="false"
-    elif [[ "$same_revision_topology" != router ]]; then
+    elif [[ "$same_revision_topology" != router \
+      || "$same_revision_requires_full_acceptance" == true ]]; then
       write_accepted_revision "$candidate_revision"
     fi
     verify_shared_scanner_if_selected "$project" || fail "shared scanner verification failed"
+    if [[ "$same_revision_requires_full_acceptance" == false ]]; then
+      printf 'Unchanged development revision %s passed health checks; full acceptance skipped.\n' \
+        "$candidate_revision"
+    fi
     printf 'Development already runs accepted dev revision %s.\n' "$candidate_revision"
     exit 0
   fi
