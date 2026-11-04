@@ -352,6 +352,8 @@ test("writable demo can create, post, and void an AR invoice", async ({ page }) 
 
 for (const fundingMethod of ["BANK", "SHAREHOLDER_ADVANCE"] as const) {
 test(`writable demo completes and exactly reverses an AP bill ${fundingMethod} settlement lifecycle`, async ({ page }) => {
+  // Upload and retention checks add round trips to the full settlement/reversal workflow.
+  if (fundingMethod === "SHAREHOLDER_ADVANCE") test.setTimeout(60_000);
   const errors = collectBrowserErrors(page);
   const billNumber = `BILL-E2E-PAY-${crypto.randomUUID().slice(0, 8).toUpperCase()}`;
   const paymentNumber = `PAY-E2E-${crypto.randomUUID().slice(0, 8).toUpperCase()}`;
@@ -440,6 +442,8 @@ test(`writable demo completes and exactly reverses an AP bill ${fundingMethod} s
 }
 
 test("payment filters follow partial payments, full payment and reversal", async ({ page }) => {
+  // Two postings, a reversal and repeated list reloads share this test's budget.
+  test.setTimeout(60_000);
   const suffix = crypto.randomUUID().slice(0,8).toUpperCase();
   const number = `BILL-FILTER-${suffix}`;
   await openDemo(page, "/app/payables/bills");
