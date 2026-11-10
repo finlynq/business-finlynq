@@ -5,8 +5,11 @@ import { CHANNELS } from './gateway.mjs';
 // already match: this never repairs arbitrary directories or signature stores.
 const paths = CHANNELS.map(channel => ({ path: `/channels/${channel}`, uid: 10001,
   gid: 10001, mode: channel === 'consult-stage' ? 0o710 : 0o700 }));
+// On the scanner's first start Docker copies the pinned image's /var/lib/clamav
+// (2755 100:101, seed databases) into the still-empty signatures volume, so the
+// volume keeps that mode afterwards; 0o700 failed every later start and reboot.
 paths.push({ path: '/upstream', uid: 100, gid: 101, mode: 0o770 },
-           { path: '/signatures', uid: 100, gid: 101, mode: 0o700 });
+           { path: '/signatures', uid: 100, gid: 101, mode: 0o755 });
 for (const { path, uid, gid, mode } of paths) {
   const value = await lstat(path);
   if (!value.isDirectory() || value.isSymbolicLink()) throw new Error('unsafe volume');

@@ -373,3 +373,14 @@ Business production remains on its local scanner. Operator notification activati
 and receipt, an approved reboot and final one-daemon memory measurements remain
 pending. The existing notification script has no local deduplication; confirm the
 receiving route's repeat/escalation policy before activating scanner alerts.
+
+A host reboot on 2026-11-10 (kernel update; owner and consumers stopped cleanly
+first, then started by an explicit ordered start) showed that the owner unit
+cannot start after its first activation. `manage.sh start` always runs
+`initialize`, which expected the signatures volume at `0700`; Docker's first-start
+copy of the pinned ClamAV image's `/var/lib/clamav` had left it `2755 100:101`, so
+`initialize` refused it as not pristine. The containers themselves ran healthy and
+`manage.sh verify` attested. `initialize.mjs` now expects `0755` for signatures.
+Fresh throwaway volumes reproduce the old failure on the second start and pass with
+the change; the live volumes pass it read-only. The installed owner still carries
+the old file until this reviewed revision is installed through the upgrade path.
