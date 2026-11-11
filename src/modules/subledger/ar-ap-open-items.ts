@@ -65,6 +65,7 @@ async function listOpenItems(
       party_account_id: string;
       control_account_combination_id: string;
       currency: string;
+      document_kind: "BILL" | "CREDIT";
       original_amount: string;
       allocated_amount: string;
       remaining_amount: string;
@@ -83,6 +84,7 @@ async function listOpenItems(
            item.party_account_id,
            issued_source.snapshot->>'controlAccountCombinationId' AS control_account_combination_id,
            item.transaction_currency AS currency,
+           CASE WHEN issued_source.source_type='payables.supplier-credit-note' THEN 'CREDIT' ELSE 'BILL' END AS document_kind,
            item.original_transaction_amount::text AS original_amount,
            allocation.allocated_amount::text,
            CASE WHEN void_event.id IS NOT NULL THEN '0'
@@ -104,7 +106,7 @@ async function listOpenItems(
            ON issued_source.organization_id = event.organization_id
           AND issued_source.id = event.source_document_id
           AND issued_source.owner_module = $11::text
-          AND issued_source.source_type = $12::text
+          AND issued_source.source_type = ANY($12::text[])
           AND issued_source.status = 'POSTED'
          JOIN party_accounts party_account
            ON party_account.organization_id = item.organization_id
@@ -179,7 +181,10 @@ async function listOpenItems(
         statuses,
         limit,
         ownerModule,
-        ownerModule === "payables" ? "payables.supplier-bill" : "receivables.sales-invoice",
+        ownerModule === "payables"
+          ? command.documentKind === "CREDIT" ? ["payables.supplier-credit-note"]
+            : command.documentKind === "ALL" ? ["payables.supplier-bill", "payables.supplier-credit-note"] : ["payables.supplier-bill"]
+          : ["receivables.sales-invoice"],
         ownerModule === "payables" ? "SUPPLIER" : "CUSTOMER",
         after ? after.dueDate === null : null,
         after?.dueDate ?? null,
@@ -198,6 +203,7 @@ async function listOpenItems(
       partyAccountId: row.party_account_id,
       controlAccountCombinationId: row.control_account_combination_id,
       currency: row.currency,
+      documentKind: row.document_kind,
       originalAmount: row.original_amount,
       allocatedAmount: row.allocated_amount,
       remainingAmount: row.remaining_amount,

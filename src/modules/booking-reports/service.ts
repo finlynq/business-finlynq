@@ -110,7 +110,7 @@ export async function postBookingBatch(context:TenantTransactionContext,input:un
       if(entry.linesArePosted)continue;
       if(entry.heldReason || entry.differences.length) {failures[selected.id]=entry.heldReason ?? "Selected entry changed; create a new review";continue;}
       const childContext={...context,reason:args.reason,requestId:`booking:${args.batchId}:${selected.id}`};
-      if(selected.type==="SOURCE_DOCUMENT" && (entry.kind==="SUPPLIER_BILL" || entry.kind==="SALES_INVOICE")) {
+      if(selected.type==="SOURCE_DOCUMENT" && (entry.kind==="SUPPLIER_BILL" || entry.kind==="SALES_INVOICE" || entry.kind==="SUPPLIER_CREDIT_NOTE")) {
         await issueBusinessDocument({context:childContext,kind:entry.kind,sourceNumber:entry.sourceNumber,expectedVersion:selected.expectedVersion,idempotencyKey:`booking:${args.batchId}:${selected.id}`});
       } else if(selected.type==="JOURNAL") {
         await postJournal({context:childContext,journalId:selected.id,expectedContentHash:selected.expectedContentHash,...(selected.expectedVersion>0?{expectedApprovalVersion:selected.expectedVersion}:{})});

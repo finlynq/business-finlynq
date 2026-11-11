@@ -7,6 +7,8 @@ VALUES
   ('88888888-8888-4888-8888-888888888889', 'ledger.reversal', 1, 'ledger', 'Full journal reversal', '/app/journals'),
   ('88888888-8888-4888-8888-888888888886', 'payables.bill-void', 1, 'payables', 'Supplier bill void', '/app/payables/bills'),
   ('88888888-8888-4888-8888-888888888882', 'payables.supplier-bill', 1, 'payables', 'Supplier bill', '/app/payables/bills'),
+  ('82828282-8282-4282-8282-828282828202', 'payables.supplier-credit-application', 1, 'payables', 'Supplier credit application', '/app/payables/bills'),
+  ('82828282-8282-4282-8282-828282828201', 'payables.supplier-credit-note', 1, 'payables', 'Supplier credit note', '/app/payables/bills'),
   ('88888888-8888-4888-8888-888888888885', 'payables.supplier-payment', 1, 'payables', 'Supplier payment', '/app/payables/bills'),
   ('88888888-8888-4888-8888-888888888883', 'receivables.customer-receipt', 1, 'receivables', 'Customer receipt', '/app/receivables/invoices'),
   ('88888888-8888-4888-8888-888888888884', 'receivables.invoice-void', 1, 'receivables', 'Sales invoice void', '/app/receivables/invoices'),

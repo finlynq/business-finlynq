@@ -1215,7 +1215,7 @@ export async function loadAccountingOverview(
            WHERE source.organization_id = $1
              AND ($2::uuid IS NULL OR source.legal_entity_id = $2::uuid)
              AND source.status = 'DRAFT'
-             AND source.source_type IN ('receivables.sales-invoice', 'payables.supplier-bill')
+             AND source.source_type IN ('receivables.sales-invoice', 'payables.supplier-bill', 'payables.supplier-credit-note')
              AND NOT EXISTS (
                SELECT 1 FROM source_documents newer
                WHERE newer.organization_id = source.organization_id
@@ -1239,8 +1239,10 @@ export async function loadAccountingOverview(
     const openBalances = canReadReceivables || canReadPayables
         ? await client.query<{ role: "CUSTOMER" | "SUPPLIER"; currency: string; amount: string }>(
         `SELECT account.role, balance.transaction_currency AS currency,
-           coalesce(sum(balance.open_transaction_amount), 0)::text AS amount
+           coalesce(sum(CASE WHEN source.source_type='payables.supplier-credit-note' THEN -balance.open_transaction_amount ELSE balance.open_transaction_amount END), 0)::text AS amount
          FROM open_item_balances balance
+         JOIN subledger_events event ON event.organization_id=balance.organization_id AND event.id=balance.source_event_id
+         JOIN source_documents source ON source.organization_id=event.organization_id AND source.id=event.source_document_id
          JOIN party_accounts account ON account.organization_id = balance.organization_id
            AND account.id = balance.party_account_id
          WHERE balance.organization_id = $1 AND balance.open_transaction_amount > 0
@@ -1388,7 +1390,7 @@ export async function loadTaxDeterminations(
            WITH ORDINALITY AS line(value, ordinality)
          WHERE source.organization_id = $1
            AND source.status = 'DRAFT'
-           AND source.source_type IN ('receivables.sales-invoice', 'payables.supplier-bill')
+           AND source.source_type IN ('receivables.sales-invoice', 'payables.supplier-bill', 'payables.supplier-credit-note')
            AND line.value -> 'taxDecision' ->> 'status' = 'MANUAL_REVIEW_REQUIRED'
            AND NOT EXISTS (
              SELECT 1 FROM source_documents newer

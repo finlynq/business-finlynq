@@ -1,3 +1,4 @@
+import { readInvoiceNotifications } from "@/modules/email/invoice-notifications";
 import { createHmac, randomBytes, randomUUID } from "node:crypto";
 import { Pool } from "pg";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
@@ -166,6 +167,9 @@ run("signed inbound email and durable retries with tenant-restricted storage", (
     expect(attachments).toHaveLength(2);
     expect(new Set(attachments.map(a => a.inbox_item_id)).size).toBe(2);
     expect(attachments.every(a => a.status === "INBOXED" && a.inbox_status === "PENDING" && a.source_document_id === null)).toBe(true);
+    const notice=await readInvoiceNotifications(context());
+    expect(notice).toMatchObject({availability:"AVAILABLE",invoiceCount:1,emailCount:1,readyCount:1,shouldNotify:true});
+    expect(notice.items[0].messageId).toBe(message.id);
     expect((await POST(delivery(providerId, { attachments: 2 }))).status).toBe(200);
     expect((await retryInboundMessage(context(), message.id)).status).toBe("UNCHANGED");
     expect(cloud.uploads).toBe(before+2);

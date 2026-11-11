@@ -32,7 +32,7 @@ export function subledgerDocumentDueDate(document: SubledgerWorkspaceDocumentDto
 
 export function subledgerPaymentStatus(document: SubledgerWorkspaceDocumentDto): "Open" | "Partially paid" | "Paid" | null {
   if (document.status !== "POSTED" || document.openAmount === null || document.openStatus === "REVERSED"
-    || (document.snapshot.kind !== "SUPPLIER_BILL" && document.snapshot.kind !== "SALES_INVOICE")) return null;
+    || (document.snapshot.kind !== "SUPPLIER_BILL" && document.snapshot.kind !== "SALES_INVOICE" && document.snapshot.kind !== "SUPPLIER_CREDIT_NOTE")) return null;
   const remaining = exact(document.openAmount);
   if (remaining.isZero()) return "Paid";
   if (remaining.isNegative()) return null;

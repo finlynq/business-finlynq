@@ -251,8 +251,8 @@ export async function insertOpenItem(
       input.snapshot.partyAccountId,
       input.sourceEventId,
       input.snapshot.currency,
-      input.snapshot.grossTotal,
-      input.snapshot.grossFunctional,
+      input.snapshot.grossTotal.startsWith("-") ? input.snapshot.grossTotal.slice(1) : input.snapshot.grossTotal,
+      input.snapshot.grossFunctional.startsWith("-") ? input.snapshot.grossFunctional.slice(1) : input.snapshot.grossFunctional,
       input.snapshot.dueOn,
     ],
   );
@@ -443,6 +443,8 @@ export async function lockSettlementOpenItems(
            AND allocation.open_item_id = item.id
        ), 0)::text AS allocated_carrying_amount,
        source.source_type,
+       source.snapshot->>'controlAccountCombinationId' AS control_account_combination_id,
+       source.snapshot->>'accountingDate' AS source_accounting_date,
        source.snapshot->'fx'->>'source' AS source_fx_source,
        source.snapshot->'fx'->>'effectiveAt' AS source_fx_effective_at,
        void_event.id AS void_event_id
@@ -490,13 +492,13 @@ export async function insertSettlementAllocations(
      SELECT input.id, $1, $2, $3, input.open_item_id, 'APPLY', NULL,
        $4, input.transaction_amount, input.carrying_functional_amount,
        input.settlement_functional_amount, input.realized_fx_functional,
-       $5, $6, $7, input.idempotency_key, $8, $9, $17::date
+       input.fx_rate, $6, $7, input.idempotency_key, $8, $9, $17::date
      FROM unnest(
        $10::uuid[], $11::uuid[], $12::numeric[], $13::numeric[],
-       $14::numeric[], $15::numeric[], $16::text[]
+       $14::numeric[], $15::numeric[], $16::text[], $5::numeric[]
      ) AS input(
        id, open_item_id, transaction_amount, carrying_functional_amount,
-       settlement_functional_amount, realized_fx_functional, idempotency_key
+       settlement_functional_amount, realized_fx_functional, idempotency_key, fx_rate
      )
      RETURNING id`,
     [
@@ -504,7 +506,7 @@ export async function insertSettlementAllocations(
       input.snapshot.ledgerId,
       input.sourceDocumentId,
       input.snapshot.currency,
-      input.snapshot.fx.rate,
+      input.allocations.map((allocation) => input.snapshot.kind === "SUPPLIER_CREDIT_APPLICATION" ? allocation.carryingFxRate : input.snapshot.fx.rate),
       input.snapshot.fx.source,
       input.snapshot.fx.effectiveAt,
       input.commandHash,

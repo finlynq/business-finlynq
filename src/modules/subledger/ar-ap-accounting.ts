@@ -237,7 +237,7 @@ function assertBusinessAccountMappings(
     if (snapshot.kind === "SALES_INVOICE" && combination.account_class !== "REVENUE") {
       throw new Error("Sales-invoice source lines require revenue account combinations");
     }
-    if (snapshot.kind === "SUPPLIER_BILL" &&
+    if (snapshot.ownerModule === "payables" &&
         combination.account_class !== "EXPENSE" && combination.account_class !== "ASSET") {
       throw new Error("Supplier-bill source lines require expense or asset account combinations");
     }
@@ -250,7 +250,7 @@ function assertBusinessAccountMappings(
     if (snapshot.kind === "SALES_INVOICE" && tax.account_class !== "LIABILITY") {
       throw new Error("Sales tax payable mapping requires a liability account");
     }
-    if (snapshot.kind === "SUPPLIER_BILL") {
+    if (snapshot.ownerModule === "payables") {
       const treatments = new Set(snapshot.lines.flatMap((line) =>
         line.taxDecision.components.map((component) => component.treatment)));
       const hasRecoverableTax = treatments.has("RECOVERABLE");
@@ -382,6 +382,17 @@ export async function validateDraftConfiguration(
   context: TenantTransactionContext,
   snapshot: BusinessDocumentSnapshot,
 ): Promise<AccountingSetup> {
+  if (snapshot.originalInvoiceSourceDocumentId) {
+    if (snapshot.kind !== "SUPPLIER_CREDIT_NOTE") throw new Error("Only supplier credits can reference an original bill");
+    const original = await client.query(
+      `SELECT id FROM source_documents WHERE organization_id=$1 AND id=$2
+       AND source_type='payables.supplier-bill' AND status='POSTED'
+       AND legal_entity_id=$3 AND snapshot->>'ledgerId'=$4
+       AND snapshot->>'partyAccountId'=$5 AND snapshot->>'currency'=$6`,
+      [context.organizationId, snapshot.originalInvoiceSourceDocumentId, snapshot.legalEntityId,
+        snapshot.ledgerId, snapshot.partyAccountId, snapshot.currency]);
+    if (!original.rows[0]) throw new Error("Original invoice must be a posted bill for the same supplier, ledger, entity and currency");
+  }
   const policy = DOCUMENT_KIND_POLICY[snapshot.kind];
   const setup = await loadAccountingSetup(client, {
     organizationId: context.organizationId,
