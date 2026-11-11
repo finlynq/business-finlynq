@@ -29,7 +29,7 @@ vi.mock("@/modules/mcp/tool-types", async (original) => ({
 beforeEach(() => {
   vi.stubEnv("APP_ORIGIN", "https://business.example.test");
   vi.stubEnv("BUSINESS_FINLYNQ_PUBLIC_URL", "");
-  mocks.snapshots.mockReset().mockImplementation(async principal => ({ principal }));
+  mocks.snapshots.mockReset().mockImplementation(async principal => ({ principal, permissions: new Set(), dailyMode: "OFF", setupMode: "OFF", toolOverrides: {} }));
 });
 afterEach(() => vi.unstubAllEnvs());
 

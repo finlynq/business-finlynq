@@ -19,6 +19,7 @@ vi.mock("@modelcontextprotocol/server", async (importOriginal) => {
       token: "catalog-contract-token",
       clientId: "catalog-contract-client",
       scopes: [],
+      extra: { finlynqPrincipal: { organizationId: "catalog-tenant", connectionId: "catalog-connection" } },
     }),
   };
 });
