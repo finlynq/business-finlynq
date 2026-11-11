@@ -11,7 +11,7 @@ export function SupplierCreditApplicationPanel({ workspace }: { workspace: Suble
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
-  const credit = credits.find((item) => item.id === creditId);
+  const credit = credits.find((item) => item.id === creditId) ?? credits[0];
   const bills = workspace.openItems.filter((item) => item.sourceType !== "payables.supplier-credit-note"
     && item.partyAccountId === credit?.partyAccountId && item.ledgerId === credit?.ledgerId && item.currency === credit?.currency);
   const entity = workspace.entities.find((item) => item.ledgerId === credit?.ledgerId);
@@ -41,7 +41,7 @@ export function SupplierCreditApplicationPanel({ workspace }: { workspace: Suble
   return <details className="panel"><summary>Apply supplier credit to a bill</summary>
     {error && <p role="alert">{error}</p>}{message && <p role="status">{message}</p>}
     <form onSubmit={(event) => void submit(event)} className="form-grid">
-      <label className="field"><span>Supplier credit</span><select value={creditId} onChange={(event) => setCreditId(event.target.value)} required>
+      <label className="field"><span>Supplier credit</span><select value={credit?.id ?? ""} onChange={(event) => setCreditId(event.target.value)} required>
         {credits.map((item) => <option key={item.id} value={item.id}>{item.sourceNumber} · {item.partyName} · {item.currency} {item.openAmount}</option>)}
       </select></label>
       <label className="field"><span>Bill</span><select name="billOpenItemId" key={creditId} required>
