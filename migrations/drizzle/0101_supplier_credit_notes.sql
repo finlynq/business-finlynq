@@ -315,28 +315,39 @@ END $$;
 CREATE FUNCTION app.guard_credit_application_complete() RETURNS trigger
 LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,public,pg_temp AS $$
 DECLARE
+  selected_source source_documents%ROWTYPE;
   allocations_count integer;
   credit_count integer;
   bill_count integer;
+  correct_amounts boolean;
 BEGIN
-  IF NEW.source_type <> 'payables.supplier-credit-application' THEN RETURN NULL; END IF;
-  SELECT count(*), count(*) FILTER(WHERE origin.source_type='payables.supplier-credit-note'),
-    count(*) FILTER(WHERE origin.source_type='payables.supplier-bill')
-  INTO allocations_count,credit_count,bill_count
+  IF TG_TABLE_NAME='source_documents' THEN selected_source := NEW;
+  ELSE
+    SELECT * INTO selected_source FROM source_documents
+    WHERE organization_id=NEW.organization_id AND id=NEW.payment_source_document_id;
+  END IF;
+  IF selected_source.source_type <> 'payables.supplier-credit-application' THEN RETURN NULL; END IF;
+  SELECT count(*), count(*) FILTER(WHERE origin.source_type='payables.supplier-credit-note'
+      AND item.id::text=selected_source.snapshot->>'creditOpenItemId'),
+    count(*) FILTER(WHERE origin.source_type='payables.supplier-bill'),
+    bool_and(allocation.transaction_amount=(selected_source.snapshot->>'amount')::numeric)
+  INTO allocations_count,credit_count,bill_count,correct_amounts
   FROM document_settlement_allocations allocation
   JOIN open_items item ON item.organization_id=allocation.organization_id AND item.id=allocation.open_item_id
   JOIN subledger_events event ON event.organization_id=item.organization_id AND event.id=item.source_event_id
   JOIN source_documents origin ON origin.organization_id=event.organization_id AND origin.id=event.source_document_id
-  WHERE allocation.organization_id=NEW.organization_id AND allocation.payment_source_document_id=NEW.id
-    AND allocation.allocation_type=CASE WHEN NEW.status='VOIDED' THEN 'REVERSAL' ELSE 'APPLY' END
-    AND allocation.transaction_amount=(NEW.snapshot->>'amount')::numeric;
-  IF allocations_count<>2 OR credit_count<>1 OR bill_count<>1 THEN
+  WHERE allocation.organization_id=selected_source.organization_id AND allocation.payment_source_document_id=selected_source.id
+    AND allocation.allocation_type=CASE WHEN selected_source.status='VOIDED' THEN 'REVERSAL' ELSE 'APPLY' END;
+  IF allocations_count<>2 OR credit_count<>1 OR bill_count<>1 OR correct_amounts IS NOT TRUE THEN
     RAISE EXCEPTION 'Credit application requires exactly one matching bill and credit allocation' USING ERRCODE='23514';
   END IF;
   RETURN NULL;
 END $$;
 CREATE CONSTRAINT TRIGGER credit_application_complete
   AFTER INSERT ON source_documents DEFERRABLE INITIALLY DEFERRED
+  FOR EACH ROW EXECUTE FUNCTION app.guard_credit_application_complete();
+CREATE CONSTRAINT TRIGGER credit_application_allocations_complete
+  AFTER INSERT ON document_settlement_allocations DEFERRABLE INITIALLY DEFERRED
   FOR EACH ROW EXECUTE FUNCTION app.guard_credit_application_complete();
 REVOKE ALL ON FUNCTION app.guard_credit_application_complete() FROM PUBLIC;
 

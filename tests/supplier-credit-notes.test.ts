@@ -1,3 +1,4 @@
+import { businessDocumentMatchesMetadata } from "@/modules/document-storage/source-metadata";
 import { describe, expect, it } from "vitest";
 import { randomUUID } from "node:crypto";
 import { buildBusinessDocumentSnapshot, assertSnapshotTaxDecisionsCurrent } from "@/modules/subledger/document-model";
@@ -34,6 +35,14 @@ describe("supplier credit-note accounting", () => {
   it("rejects negative credit entry and preserves rejection of a net-negative supplier bill", () => {
     expect(() => buildBusinessDocumentSnapshot({ ...input, lines: [{ ...input.lines[0], netAmount: "-100.00" }] }, "CAD")).toThrow(/positive credit/);
     expect(() => buildBusinessDocumentSnapshot({ ...input, kind: "SUPPLIER_BILL", lines: [{ ...input.lines[0], netAmount: "-100.00", lineType: "ADJUSTMENT" }] }, "CAD")).toThrow(/net supplier credit/);
+  });
+  it("matches positive or signed credit-note source totals without accepting the wrong document type or amount", () => {
+    const snapshot = buildBusinessDocumentSnapshot(input, "CAD");
+    const metadata = { documentType: "CREDIT_NOTE", documentDate: input.documentDate, currency: "CAD", total: "113.00" };
+    expect(businessDocumentMatchesMetadata(snapshot, metadata)).toBe(true);
+    expect(businessDocumentMatchesMetadata(snapshot, { ...metadata, total: "-113.00" })).toBe(true);
+    expect(businessDocumentMatchesMetadata(snapshot, { ...metadata, documentType: "PURCHASE_INVOICE" })).toBe(false);
+    expect(businessDocumentMatchesMetadata(snapshot, { ...metadata, total: "112.00" })).toBe(false);
   });
   it("uses the exact remaining carrying balance on a final partial application and rejects over-application", () => {
     const item: LockedOpenItemRow = { id: randomUUID(), ledger_id: input.ledgerId, party_account_id: input.partyAccountId,

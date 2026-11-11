@@ -5,7 +5,9 @@ supplier, original reference and dates, expense/asset and tax mappings, currency
 and any reviewed source-tax evidence. An original posted bill is optional; when
 selected it must belong to the same supplier, ledger, entity and currency.
 Attach source evidence through the normal invoice evidence workflow before
-posting. Draft edits create new immutable versions.
+posting. Cloud inbox `CREATE_DRAFT` accepts `CREDIT_NOTE` metadata and either
+a positive or negative printed source total, while checking its exact magnitude
+against the signed credit snapshot. Draft edits create new immutable versions.
 
 Posting a CAD 100 credit plus CAD 13 recoverable HST debits AP 113, credits the
 expense 100 and credits recoverable tax 13. Saved purchase/tax facts and totals

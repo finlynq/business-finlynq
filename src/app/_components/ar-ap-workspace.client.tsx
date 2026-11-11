@@ -249,13 +249,13 @@ export function businessDraftCanPreserveFx(
   draft: Pick<
     BusinessDraft,
     "editingVersion" | "sourceNumber" | "legalEntityId" | "currency" | "accountingDate"
-  >,
+  > & { kind?: BusinessDocumentSnapshot["kind"] },
 ): boolean {
   if (draft.editingVersion === null) return false;
   const document = workspace.documents.find((candidate) => (
     candidate.sourceNumber === draft.sourceNumber
     && candidate.version === draft.editingVersion
-    && (candidate.snapshot.kind === workspace.businessKind || candidate.snapshot.kind === "SUPPLIER_CREDIT_NOTE")
+    && candidate.snapshot.kind === (draft.kind ?? workspace.businessKind)
   ));
   if (!document || (document.snapshot.kind !== "SALES_INVOICE"
       && document.snapshot.kind !== "SUPPLIER_BILL" && document.snapshot.kind !== "SUPPLIER_CREDIT_NOTE")) return false;
@@ -861,7 +861,8 @@ export function ArApWorkspace({
     () => exactAllocationTotal(settlementDraft.allocations, settlementDraft.currency),
     [settlementDraft.allocations, settlementDraft.currency],
   );
-  const businessLabel = documentDraft.kind === "SUPPLIER_CREDIT_NOTE" ? "credit note" : workspace.ownerModule === "receivables" ? "invoice" : "bill";
+  const businessLabel = workspace.ownerModule === "receivables" ? "invoice" : "bill";
+  const draftLabel = documentDraft.kind === "SUPPLIER_CREDIT_NOTE" ? "credit note" : businessLabel;
   const settlementLabel = workspace.ownerModule === "receivables" ? "receipt" : "settlement";
   const counterpartyLabel = workspace.ownerModule === "receivables" ? "customer" : "supplier";
   const hasRegisterCriteria = Boolean(
@@ -1118,9 +1119,9 @@ export function ArApWorkspace({
     };
     try {
       await mutate(documentDraft.kind === "SUPPLIER_CREDIT_NOTE" ? "/api/payables/credits" : base.business, documentDraft.editingVersion ? "PATCH" : "POST", payload);
-      finish(`${businessLabel[0]?.toUpperCase()}${businessLabel.slice(1)} draft ${documentDraft.editingVersion ? "updated" : "created"}.`);
+      finish(`${draftLabel[0]?.toUpperCase()}${draftLabel.slice(1)} draft ${documentDraft.editingVersion ? "updated" : "created"}.`);
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : `Unable to save the ${businessLabel}`);
+      setError(cause instanceof Error ? cause.message : `Unable to save the ${draftLabel}`);
     } finally {
       setBusy(false);
     }
@@ -1391,7 +1392,7 @@ export function ArApWorkspace({
           <div className="panel-heading">
             <div>
               <p className="eyebrow">{documentDraft.editingVersion ? `Draft version ${documentDraft.editingVersion}` : "New source document"}</p>
-              <h2 id="document-composer-title">{documentDraft.editingVersion ? "Edit" : "Create"} {businessLabel}</h2>
+              <h2 id="document-composer-title">{documentDraft.editingVersion ? "Edit" : "Create"} {draftLabel}</h2>
             </div>
             <button className="secondary-button compact-button" type="button" onClick={closePanel}>Cancel</button>
           </div>
@@ -1403,7 +1404,7 @@ export function ArApWorkspace({
                   {workspace.documents.filter((item) => item.snapshot.kind === "SUPPLIER_BILL" && item.status === "POSTED" && item.snapshot.partyAccountId === documentDraft.partyAccountId && item.snapshot.currency === documentDraft.currency).map((item) => <option key={item.id} value={item.id}>{item.sourceNumber}</option>)}
                 </select><small>Enter positive credit amounts. Posting reverses the purchase and related tax.</small></label>}
               <label className="full-field">
-                <span>{businessLabel[0]?.toUpperCase()}{businessLabel.slice(1)} number</span>
+                <span>{draftLabel[0]?.toUpperCase()}{draftLabel.slice(1)} number</span>
                 <input value={documentDraft.sourceNumber} onChange={(event) => setDocumentDraft((draft) => ({ ...draft, sourceNumber: event.target.value.toUpperCase() }))} pattern="[A-Z0-9](?:[A-Z0-9._]|-|/)*" maxLength={50} disabled={documentDraft.editingVersion !== null} required />
               </label>
               <label className="full-field">

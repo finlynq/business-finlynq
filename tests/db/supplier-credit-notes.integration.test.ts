@@ -1,7 +1,7 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { Pool } from "pg";
-import { closeDatabasePool } from "@/db/transaction";
+import { closeDatabasePool, withTenantTransaction } from "@/db/transaction";
 import { LocalRootKeyProvider, serializeWrappedKey, encryptField, serializeEncryptedField } from "@/security/organization-encryption";
 import { loadOrganizationRootKek } from "@/security/root-secret";
 import { createBusinessDocumentDraft, editBusinessDocumentDraft, issueBusinessDocument, listPayableOpenItems,
@@ -89,6 +89,18 @@ run("supplier credit posting and application",()=>{
      realizedFxLossAccountCombinationId:id.expenseCombination,description:"Apply synthetic supplier credit",idempotencyKey:randomUUID()};
    const applied=await applySupplierCredit(command);
    expect((await applySupplierCredit(command)).journalId).toBe(applied.journalId);
+   // A second pair of direct allocation inserts against the same source must
+   // fail at commit even when both remaining balances could cover the amount.
+   await expect(withTenantTransaction(context(), client => client.query(`
+     INSERT INTO document_settlement_allocations (
+       id,organization_id,ledger_id,payment_source_document_id,open_item_id,allocation_type,reverses_allocation_id,
+       transaction_currency,transaction_amount,carrying_functional_amount,settlement_functional_amount,realized_fx_functional,
+       settlement_fx_rate,fx_rate_source,fx_rate_effective_at,idempotency_key,command_hash,created_by,effective_on
+     ) SELECT gen_random_uuid(),organization_id,ledger_id,payment_source_document_id,open_item_id,'APPLY',NULL,
+       transaction_currency,transaction_amount,carrying_functional_amount,settlement_functional_amount,realized_fx_functional,
+       settlement_fx_rate,fx_rate_source,fx_rate_effective_at,gen_random_uuid()::text,command_hash,created_by,effective_on
+       FROM document_settlement_allocations WHERE payment_source_document_id=$1 AND allocation_type='APPLY'`,
+     [applied.document.id]))).rejects.toThrow(/exactly one matching bill and credit allocation/);
    const balances=await listPayableOpenItems({context:context(),documentKind:"ALL"});
    expect(balances.find(item=>item.openItemId===bill.openItemId)).toMatchObject({remainingAmount:"169.500000000",documentKind:"BILL"});
    expect(balances.find(item=>item.openItemId===credit.openItemId)).toMatchObject({remainingAmount:"56.500000000",documentKind:"CREDIT"});
