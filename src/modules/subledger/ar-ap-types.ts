@@ -128,6 +128,7 @@ export type PayableOpenItemRecord = Readonly<{
   originalAmount: string;
   allocatedAmount: string;
   remainingAmount: string;
+  documentKind: "BILL" | "CREDIT";
   documentDate: string;
   dueDate: string | null;
   settlementStatus: PayableOpenItemStatus;
@@ -142,6 +143,7 @@ export type ListPayableOpenItemsCommand = Readonly<{
   sourceNumber?: string;
   currency?: string;
   statuses?: readonly PayableOpenItemStatus[];
+  documentKind?: "BILL" | "CREDIT" | "ALL";
   asOfDate?: string;
   limit?: number;
   after?: Readonly<{ dueDate: string | null; sourceNumber: string; openItemId: string }>;
@@ -192,7 +194,7 @@ export type EntityTaxRegistrationRow = Readonly<{
 
 export const SOURCE_TYPES_BY_OWNER: Readonly<Record<SubledgerOwnerModule, readonly string[]>> = {
   receivables: ["receivables.sales-invoice", "receivables.customer-receipt"],
-  payables: ["payables.supplier-bill", "payables.supplier-payment"],
+  payables: ["payables.supplier-bill", "payables.supplier-payment", "payables.supplier-credit-note", "payables.supplier-credit-application"],
 };
 
 export type LockedOpenItemRow = Readonly<{
@@ -205,6 +207,8 @@ export type LockedOpenItemRow = Readonly<{
   allocated_transaction_amount: string;
   allocated_carrying_amount: string;
   source_type: string;
+  control_account_combination_id: string;
+  source_accounting_date: string;
   source_fx_source: string | null;
   source_fx_effective_at: string | null;
   void_event_id: string | null;

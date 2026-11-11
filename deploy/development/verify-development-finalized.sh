@@ -237,4 +237,15 @@ env -i PATH="$clean_path" bash "$external_edge_verifier" \
   --scope development \
   --warmup-host development
 
+verify_installed_blob "$repository/deploy/evidence/shared/compose-contract.sh" deploy/evidence/shared/compose-contract.sh
+source "$repository/deploy/evidence/shared/compose-contract.sh"
+scanner_compose_contract "$compose_environment" "$project" "$repository" \
+  || fail "scanner mode is invalid"
+if [[ "$scanner_mode" == shared ]]; then
+  for scanner_file in attest.py compose.yml clamd.conf gateway.mjs business-relay.yml; do
+    verify_installed_blob "$repository/deploy/evidence/shared/$scanner_file" "deploy/evidence/shared/$scanner_file"
+  done
+  python3 "$repository/deploy/evidence/shared/attest.py" "$project" \
+    || fail "shared scanner attestation failed"
+fi
 printf 'FINALIZED revision=%s\n' "$accepted_revision"

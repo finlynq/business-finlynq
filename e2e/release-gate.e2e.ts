@@ -107,7 +107,7 @@ async function createBillDraft(
 ): Promise<void> {
   await page.getByRole("button", { name: /New bill/ }).click();
   await page.getByLabel("Bill number").fill(input.number);
-  await page.getByLabel("Description", { exact: true }).first().fill(input.description);
+  await page.locator("#subledger-composer").getByLabel("Description", { exact: true }).first().fill(input.description);
   const line = page.getByRole("group", { name: "Line 1" });
   await line.getByLabel("Description").fill(`${input.description} line`);
   await line.getByLabel("Net amount").fill(input.amount);
@@ -155,7 +155,7 @@ async function attachInvoiceAndReceipt(page: Page, sourceNumber: string) {
   await page.reload();
   const bill = page.getByRole("row").filter({ hasText: sourceNumber });
   await bill.getByRole("button", { name: "Edit draft", exact: true }).click();
-  await page.getByLabel("Description", { exact: true }).first().fill("Supplier bill with retained invoice and receipt");
+  await page.locator("#subledger-composer").getByLabel("Description", { exact: true }).first().fill("Supplier bill with retained invoice and receipt");
   await page.getByRole("button", { name: "Save draft" }).click();
   await bill.getByRole("button", { name: "View details", exact: true }).click();
   for (const attachment of attachments) {
@@ -323,7 +323,7 @@ test("writable demo can create, post, and void an AR invoice", async ({ page }) 
 
   await page.getByRole("button", { name: /New invoice/ }).click();
   await page.getByLabel("Invoice number").fill(invoiceNumber);
-  await page.getByLabel("Description", { exact: true }).first().fill("Release-gate consulting invoice");
+  await page.locator("#subledger-composer").getByLabel("Description", { exact: true }).first().fill("Release-gate consulting invoice");
   const line = page.getByRole("group", { name: "Line 1" });
   await line.getByLabel("Description").fill("Implementation services");
   await line.getByLabel("Net amount").fill("100.00");
@@ -352,10 +352,31 @@ test("writable demo can create, post, and void an AR invoice", async ({ page }) 
 
 for (const fundingMethod of ["BANK", "SHAREHOLDER_ADVANCE"] as const) {
 test(`writable demo completes and exactly reverses an AP bill ${fundingMethod} settlement lifecycle`, async ({ page }) => {
+  // Retained-credit and upload checks add real posting/reversal round trips.
+  test.setTimeout(60_000);
   const errors = collectBrowserErrors(page);
   const billNumber = `BILL-E2E-PAY-${crypto.randomUUID().slice(0, 8).toUpperCase()}`;
   const paymentNumber = `PAY-E2E-${crypto.randomUUID().slice(0, 8).toUpperCase()}`;
   await openDemo(page, "/app/payables/bills");
+  const retainedCreditNumber = fundingMethod === "BANK" ? `CREDIT-E2E-RETAIN-${crypto.randomUUID().slice(0, 8).toUpperCase()}` : null;
+  if (retainedCreditNumber) {
+    await page.getByRole("button", { name: /New credit note/ }).click();
+    const composer = page.locator("#subledger-composer");
+    await composer.getByLabel("Credit note number", { exact: true }).fill(retainedCreditNumber);
+    await composer.getByLabel("Description", { exact: true }).first().fill("Retained supplier credit acceptance fixture");
+    const line = composer.getByRole("group", { name: "Line 1" });
+    await line.getByLabel("Description", { exact: true }).fill("Retained credit line");
+    await line.getByLabel("Net amount").fill("10.00");
+    await line.getByRole("combobox", { name: /^Tax treatment/ }).selectOption("OUT_OF_SCOPE");
+    await composer.getByRole("button", { name: "Save draft", exact: true }).click();
+    const credit = page.getByRole("row").filter({ hasText: retainedCreditNumber });
+    await expect(credit).toContainText("DRAFT");
+    await credit.getByRole("button", { name: "Issue", exact: true }).click();
+    await expect(credit).toContainText("POSTED");
+    const application = page.locator("details").filter({ has: page.locator("summary", { hasText: "Apply supplier credit to a bill" }) });
+    await expect(application).toBeVisible();
+    await expect(application.getByLabel("Description", { exact: true })).toBeHidden();
+  }
 
   await createBillDraft(page, {
     number: billNumber,
@@ -374,7 +395,7 @@ test(`writable demo completes and exactly reverses an AP bill ${fundingMethod} s
   await expect(page.getByRole("heading", { name: "Record settlement" })).toBeVisible();
   await page.getByLabel("Settlement number").fill(paymentNumber);
   await page.getByRole("combobox", { name: /^Settlement method/ }).selectOption(fundingMethod);
-  await page.getByLabel("Description", { exact: true }).fill("Release-gate supplier payment");
+  await page.locator("#subledger-composer").getByLabel("Description", { exact: true }).fill("Release-gate supplier payment");
   await page.getByLabel(`Allocation for ${billNumber}`).fill("100.00");
   await expect(page.getByLabel("Total allocated")).toHaveValue("CAD 100.00");
   await page.getByRole("button", { name: "Record and post settlement" }).click();
@@ -430,6 +451,15 @@ test(`writable demo completes and exactly reverses an AP bill ${fundingMethod} s
     });
     expect(forbidden.status()).toBe(409);
   }
+  if (retainedCreditNumber) {
+    const credit = page.getByRole("row").filter({ hasText: retainedCreditNumber });
+    await expect(credit).toContainText("Outstanding CAD 10.00");
+    await credit.getByRole("button", { name: "Void", exact: true }).click();
+    const composer = page.locator("#subledger-composer");
+    await composer.getByLabel("Mandatory reason").fill("Reverse retained-credit acceptance fixture");
+    await composer.getByRole("button", { name: "Void and reverse", exact: true }).click();
+    await expect(credit).toContainText("VOIDED");
+  }
   await revokeDemoSession(page);
   for (const attachment of evidence) {
     expect((await releaseGet(page.request, attachment.downloadUrl)).status()).toBe(401);
@@ -440,6 +470,8 @@ test(`writable demo completes and exactly reverses an AP bill ${fundingMethod} s
 }
 
 test("payment filters follow partial payments, full payment and reversal", async ({ page }) => {
+  // Two postings, a reversal and repeated list reloads share this test's budget.
+  test.setTimeout(60_000);
   const suffix = crypto.randomUUID().slice(0,8).toUpperCase();
   const number = `BILL-FILTER-${suffix}`;
   await openDemo(page, "/app/payables/bills");
@@ -450,7 +482,7 @@ test("payment filters follow partial payments, full payment and reversal", async
   for (const [index, amount] of ["40.00", "60.00"].entries()) {
     await bill.getByRole("button", { name: "Record settlement", exact: true }).click();
     await page.getByLabel("Settlement number").fill(`PAY-FILTER-${suffix}-${index}`);
-    await page.getByLabel("Description", { exact: true }).fill("Synthetic payment filter allocation");
+    await page.locator("#subledger-composer").getByLabel("Description", { exact: true }).fill("Synthetic payment filter allocation");
     await page.getByLabel(`Allocation for ${number}`).fill(amount);
     await page.getByRole("button", { name: "Record and post settlement" }).click();
     await expect(bill).toContainText(index === 0 ? "Partially paid" : "Paid");
@@ -484,7 +516,7 @@ test("supplier invoice rounding preserves reviewed totals through posting and re
   await openDemo(page, "/app/payables/bills");
   await page.getByRole("button", { name: /New bill/ }).click();
   await page.getByLabel("Bill number").fill(billNumber);
-  await page.getByLabel("Description", { exact: true }).first().fill("Verified supplier rounding regression");
+  await page.locator("#subledger-composer").getByLabel("Description", { exact: true }).first().fill("Verified supplier rounding regression");
   const charge = page.getByRole("group", { name: "Line 1" });
   await charge.getByLabel("Description").fill("Original subscription charge");
   await charge.getByLabel("Net amount").fill("85.00");

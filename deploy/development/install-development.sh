@@ -54,6 +54,7 @@ enable_all_features=false
 edge_mode="external"
 public_acceptance_mode=""
 yahoo_fx_mode=""
+scanner_mode=""
 migrate_stage_hostname=false
 auth_email_from=""
 auth_email_reply_to=""
@@ -79,6 +80,12 @@ while (( $# > 0 )); do
     --skip-public-acceptance)
       public_acceptance_mode="false"
       shift
+      ;;
+    --scanner-mode)
+      [[ "$#" -ge 2 && ( "$2" == local || "$2" == shared ) ]] \
+        || fail "--scanner-mode requires local or shared"
+      scanner_mode="$2"
+      shift 2
       ;;
     --enable-yahoo-fx-experimental)
       yahoo_fx_mode="true"
@@ -174,6 +181,16 @@ chown root:"$deploy_gid" "$host_deployment_lock"
 chmod 0660 "$host_deployment_lock"
 [[ "$(stat -c '%u:%g:%a:%h' -- "$host_deployment_lock")" == "0:$deploy_gid:660:1" ]] \
   || fail "the shared deployment lock must be root:deploy mode 0660"
+
+exec 9>"$host_deployment_lock"
+flock --exclusive --nonblock 9 || fail "a Business deployment is active"
+if [[ "$scanner_mode" == shared ]]; then
+  [[ -f /opt/finlynq-shared-scanner/manage.sh && ! -L /opt/finlynq-shared-scanner/manage.sh \
+    && "$(stat -c '%U:%G:%a' /opt/finlynq-shared-scanner/manage.sh)" == root:root:755 ]] \
+    || fail "the protected shared scanner manager is unavailable"
+  /opt/finlynq-shared-scanner/manage.sh verify \
+    || fail "the shared scanner must pass attestation before changing its mode"
+fi
 
 if [[ ! -e "$compose_environment" ]]; then
   owner_password="$(checked_random_hex_32)" || fail "could not prepare the database owner credential"
@@ -409,6 +426,30 @@ if [[ "$enable_all_features" == true ]]; then
   mv -f -- "$feature_environment_temporary" "$compose_environment"
   sync -f -- "$compose_environment"
   printf 'Development account, write, bot-protection, and bank-feed gates enabled.\n'
+fi
+
+if [[ -n "$scanner_mode" ]]; then
+  scanner_environment_temporary="$(mktemp "$configuration_directory/.compose.env.scanner.XXXXXX")"
+  awk -F= -v selected="$scanner_mode" '
+    BEGIN { key = "BUSINESS_FINLYNQ_SCANNER_MODE" }
+    {
+      if ($1 == key) {
+        if (seen++) exit 42
+        print key "=" selected
+        next
+      }
+      print
+    }
+    END { if (!seen) print key "=" selected }
+  ' "$compose_environment" >"$scanner_environment_temporary" || {
+    rm -f -- "$scanner_environment_temporary"
+    fail "could not update the scanner mode"
+  }
+  chown root:deploy "$scanner_environment_temporary"
+  chmod 0600 "$scanner_environment_temporary"
+  mv -f -- "$scanner_environment_temporary" "$compose_environment"
+  sync -f -- "$compose_environment"
+  printf 'Scanner mode set to %s; use the normal deployment and final verifier.\n' "$scanner_mode"
 fi
 
 if [[ -n "$yahoo_fx_mode" ]]; then

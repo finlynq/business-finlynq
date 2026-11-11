@@ -35,8 +35,8 @@ export default async function BillsPage({
     <div className="page-content">
       <PageHeader
         eyebrow="Accounts payable"
-        title="Supplier bills & payments"
-        description="Record supplier bills, review due dates and track settlements. Open a document to review its lines, tax and supporting evidence."
+        title="Supplier bills, credits & payments"
+        description="Record supplier bills and credit notes, apply credits, review due dates and track settlements. Open a document to review its lines, tax and supporting evidence."
         actions={<Link className="secondary-button" href="/app/parties">Manage suppliers</Link>}
       />
       {workspace.demoOnly && (
@@ -54,4 +54,4 @@ export default async function BillsPage({
     </div>
   );
 }
-export const metadata = { title: "Supplier bills & payments" };
+export const metadata = { title: "Supplier bills, credits & payments" };

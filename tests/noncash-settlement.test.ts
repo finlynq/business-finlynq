@@ -33,7 +33,7 @@ function mappings(fundingClass: AccountCombinationRow["account_class"] = "LIABIL
 }
 const item: LockedOpenItemRow = { id: id(9), ledger_id: id(1), party_account_id: id(3),
   transaction_currency: "CAD", original_transaction_amount: "158.20", original_functional_amount: "158.20",
-  allocated_transaction_amount: "0", allocated_carrying_amount: "0", source_type: "payables.supplier-bill",
+  allocated_transaction_amount: "0", allocated_carrying_amount: "0", source_type: "payables.supplier-bill", control_account_combination_id: id(4), source_accounting_date: "2026-09-03",
   source_fx_source: "FUNCTIONAL", source_fx_effective_at: "2026-08-27T12:00:00Z", void_event_id: null };
 
 describe("non-cash supplier funding", () => {

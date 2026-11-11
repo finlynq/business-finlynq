@@ -708,6 +708,13 @@
       "when": 1793203632153,
       "tag": "0100_inbound_email_retries",
       "breakpoints": true
+    },
+    {
+      "idx": 101,
+      "version": "7",
+      "when": 1794421092687,
+      "tag": "0101_supplier_credit_notes",
+      "breakpoints": true
     }
   ]
 }

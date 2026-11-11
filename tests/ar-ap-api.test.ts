@@ -112,6 +112,8 @@ import { POST as voidBill } from "@/app/api/payables/bills/void/route";
 import { POST as recordPayment } from "@/app/api/payables/payments/route";
 import { POST as voidPayment } from "@/app/api/payables/payments/void/route";
 
+import { POST as voidCreditApplication } from "@/app/api/payables/credit-applications/void/route";
+
 const ids = {
   ledgerId: "40000000-0000-4000-8000-000000000001",
   legalEntityId: "40000000-0000-4000-8000-000000000002",
@@ -394,6 +396,21 @@ describe("AR/AP mutation routes", () => {
       kind: "SUPPLIER_PAYMENT",
       context: expect.objectContaining({ reason: "Payment was assigned to the wrong supplier." }),
     }));
+  });
+
+  it("binds the credit application reversal reason to its audit context and reversal rate limit", async () => {
+    const reason = "Reverse the synthetic supplier credit application.";
+    const response = await voidCreditApplication(request("/api/payables/credit-applications/void", "POST", {
+      kind: "SUPPLIER_CREDIT_APPLICATION", sourceNumber: "CREDIT-APPLY-1001", expectedVersion: 1,
+      periodId: ids.periodId, accountingDate: "2026-08-27", reason,
+      description: "Reverse supplier credit application", idempotencyKey: "credit-apply-void-1",
+    }));
+    expect(response.status).toBe(201);
+    expect(mocks.voidSettlement).toHaveBeenCalledWith(expect.objectContaining({
+      kind: "SUPPLIER_CREDIT_APPLICATION", reason,
+      context: expect.objectContaining({ reason }),
+    }));
+    expect(mocks.consumeLimit).toHaveBeenCalledWith(expect.anything(), "reverse");
   });
 
   it("allows only the explicitly enabled session mode and marks demo commands", async () => {

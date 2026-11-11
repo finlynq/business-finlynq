@@ -31,6 +31,7 @@ readonly release_router_state_volume="business_finlynq_dev_private-release-route
 readonly build_cache_limit="8GB"
 readonly clean_path="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 release_acceptance_token=""
+public_acceptance_verified_revision=""
 persistent_release_router_id=""
 development_router_live_uncommitted="false"
 initial_development_bootstrap="false"
@@ -192,9 +193,48 @@ refresh_installed_deployer_if_needed() {
   exec env -i PATH="$clean_path" "$installed_deployer"
 }
 
+scanner_compose_inputs() {
+  local relative_path=deploy/evidence/shared/compose-contract.sh checkout_revision tree_entry
+  scanner_mode=local
+  scanner_channel=""
+  scanner_files=()
+  scanner_environment_values=()
+  checkout_revision="$(git_as_deploy rev-parse HEAD)" || return 1
+  tree_entry="$(git_as_deploy ls-tree "$checkout_revision" -- "$relative_path")" || return 1
+  if [[ -z "$tree_entry" ]]; then
+    # Before the first shared-scanner upgrade (and when recovering that source),
+    # the reviewed predecessor still owns its local scanner. Never treat a missing
+    # file in a scanner-aware candidate as permission to fall back.
+    [[ "$checkout_revision" != "$candidate_revision" ]] || return 1
+    git_as_deploy merge-base --is-ancestor "$checkout_revision" "$candidate_revision" || return 1
+    git_as_deploy cat-file -e "$candidate_revision:$relative_path" || return 1
+    return 0
+  fi
+  [[ -f "$repository/$relative_path" && ! -L "$repository/$relative_path" ]] || return 1
+  source "$repository/$relative_path"
+  scanner_compose_contract "$compose_environment" "$project" "$repository"
+}
+
+scanner_runtime_matches() {
+  local rendered="$1" expected_image expected_user scanner_container
+  expected_image="$(jq -er '.services.evidence_scanner.image' <<<"$rendered")" || return 1
+  expected_user="$(jq -er '.services.evidence_scanner.user' <<<"$rendered")" || return 1
+  scanner_container="$(docker ps --quiet --no-trunc \
+    --filter label=com.docker.compose.project="$project" \
+    --filter label=com.docker.compose.service=evidence_scanner)" || return 1
+  [[ "$scanner_container" =~ ^[a-f0-9]{64}$ ]] || return 1
+  docker inspect "$scanner_container" | jq -e --arg image "$expected_image" --arg user "$expected_user" '
+    length == 1 and .[0].Config.Image == $image and .[0].Config.User == $user and
+    .[0].State.Running == true and .[0].State.Health.Status == "healthy"
+  ' >/dev/null
+}
+
 compose() {
   local edge_mode edge_mode_count
   local -a controlled_environment=()
+  local scanner_mode scanner_channel
+  local -a scanner_files scanner_environment_values
+  scanner_compose_inputs || fail "scanner mode or consumer channel is invalid"
   edge_mode="$(awk -F= '$1 == "BUSINESS_FINLYNQ_EDGE_MODE" { sub(/^[^=]*=/, ""); print }' \
     "$compose_environment")" \
     || fail "BUSINESS_FINLYNQ_EDGE_MODE could not be read"
@@ -213,11 +253,18 @@ compose() {
       "BUSINESS_FINLYNQ_RELEASE_ACCEPTANCE_TOKEN=$release_acceptance_token"
     )
   fi
-  env -i PATH="$clean_path" "${controlled_environment[@]}" docker compose \
+  env -i PATH="$clean_path" "${controlled_environment[@]}" "${scanner_environment_values[@]}" docker compose \
     --project-name "$project" \
     --project-directory "$repository" \
     --env-file "$compose_environment" \
-    -f "$repository/docker-compose.yml" -f "$compose_override" "$@"
+    -f "$repository/docker-compose.yml" -f "$compose_override" "${scanner_files[@]}" "$@"
+}
+
+verify_shared_scanner_if_selected() {
+  local scanner_mode scanner_channel
+  local -a scanner_files scanner_environment_values
+  scanner_compose_inputs || return 1
+  [[ "$scanner_mode" != shared ]] || python3 "$repository/deploy/evidence/shared/attest.py" "${@}"
 }
 
 compose_release_router_build() {
@@ -423,16 +470,19 @@ read_state_value() {
 }
 
 write_accepted_revision() {
-  local revision="$1" temporary accepted_at
+  local revision="$1" temporary accepted_at public_acceptance_verified=false
   validate_revision "$revision"
+  if [[ "$public_acceptance_verified_revision" == "$revision" ]]; then
+    public_acceptance_verified=true
+  fi
   accepted_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
     || fail "the accepted-revision timestamp could not be generated"
   [[ "$accepted_at" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] \
     || fail "the accepted-revision timestamp is invalid"
   temporary="$(mktemp "${accepted_revision_file}.XXXXXX")" \
     || fail "the accepted-revision staging file could not be created"
-  printf 'revision=%s\nacceptedAt=%s\n' \
-    "$revision" "$accepted_at" >"$temporary" \
+  printf 'revision=%s\nacceptedAt=%s\npublicAcceptanceVerified=%s\n' \
+    "$revision" "$accepted_at" "$public_acceptance_verified" >"$temporary" \
     || fail "the accepted-revision state could not be written"
   chmod 0600 "$temporary" \
     || fail "the accepted-revision staging mode could not be set"
@@ -1094,7 +1144,7 @@ refresh_installed_deployer_if_needed "$candidate_revision"
 
 verify_compose_boundary() {
   local revision="$1" topology rendered resource expected app_port app_origin app_alias
-  local app_frontend_alias router_image found_resource_output
+  local app_frontend_alias router_image found_resource_output shared_scanner_resource=""
   local -a found_resources expected_resources=(
     "business_finlynq_dev_pgdata"
     "business_finlynq_dev_private"
@@ -1163,6 +1213,16 @@ verify_compose_boundary() {
     [[ "$(jq -r '.services | has("release_router")' <<<"$rendered")" == false ]] \
       || fail "legacy development Compose unexpectedly defines a release router"
   fi
+  if jq -e '.volumes | has("shared_scanner_channel")' <<<"$rendered" >/dev/null; then
+    shared_scanner_resource="finlynq_scanner_business_dev_v1"
+    jq -e --arg channel "$shared_scanner_resource" '
+      .volumes.shared_scanner_channel == {name: $channel, external: true} and
+      .services.evidence_scanner.volumes == [{type: "volume", source: "shared_scanner_channel",
+        target: "/run/finlynq-scanner", read_only: true, volume: {nocopy: true}}] and
+      ([.services | to_entries[] | select(.key != "evidence_scanner") |
+        .value.volumes[]? | select(.source == "shared_scanner_channel")] | length) == 0
+    ' <<<"$rendered" >/dev/null || fail "shared scanner channel is not the exact private read-only consumer"
+  fi
   found_resource_output="$(jq -er '.volumes[].name, .networks[].name' <<<"$rendered" \
     | sort -u)" \
     || fail "development Compose resource inventory could not be rendered"
@@ -1175,7 +1235,8 @@ verify_compose_boundary() {
       || fail "development resource is not isolated: $expected"
   done
   for resource in "${found_resources[@]}"; do
-    [[ "$resource" == business_finlynq_dev_* ]] \
+    [[ "$resource" == business_finlynq_dev_* \
+      || ( -n "$shared_scanner_resource" && "$resource" == "$shared_scanner_resource" ) ]] \
       || fail "development Compose references a non-development resource: $resource"
   done
 }
@@ -1604,6 +1665,7 @@ release_is_accepted() {
     mapfile -t router_containers <<<"$router_container_output" || return 1
   fi
   rendered="$(compose config --format json)" || return 1
+  scanner_runtime_matches "$rendered" || return 1
   if [[ "$topology" == router ]]; then
     ensure_release_router_image false || return 1
     jq -e '
@@ -1718,6 +1780,9 @@ start_revision_runtime() {
     release_router_runtime_is_accepted || return 1
   fi
   compose up --detach --wait --no-deps --no-build database || return 1
+  verify_shared_scanner_if_selected || return 1
+  compose up --detach --wait --no-deps --no-build evidence_scanner || return 1
+  verify_shared_scanner_if_selected "$project" || return 1
   compose up --detach --wait --no-deps --no-build app || return 1
   account_login_enabled="$(read_environment_value ACCOUNT_LOGIN_ENABLED)" || return 1
   [[ "$account_login_enabled" == true || "$account_login_enabled" == false ]] || return 1
@@ -1915,6 +1980,7 @@ run_public_acceptance() {
   for attempt in 1 2; do
     if ( wait_for_public_readiness ) \
       && compose --profile acceptance run --rm --no-deps release_acceptance; then
+      public_acceptance_verified_revision="$candidate_revision"
       return 0
     fi
     printf 'Development public acceptance attempt %s failed. Retrying once.\n' "$attempt" >&2
@@ -1998,8 +2064,20 @@ if [[ -e "$accepted_revision_file" || -L "$accepted_revision_file" ]]; then
   validate_revision "$accepted_revision"
   git_as_deploy merge-base --is-ancestor "$accepted_revision" "$candidate_revision" \
     || fail "the accepted development revision is not an ancestor of the candidate"
+  if grep -q '^publicAcceptanceVerified=' "$accepted_revision_file"; then
+    accepted_public_verified="$(read_state_value "$accepted_revision_file" publicAcceptanceVerified)" \
+      || fail "the accepted public-verification state could not be read"
+    [[ "$accepted_public_verified" == true || "$accepted_public_verified" == false ]] \
+      || fail "the accepted public-verification state is invalid"
+    if [[ "$accepted_public_verified" == true ]]; then
+      public_acceptance_verified_revision="$accepted_revision"
+    fi
+  fi
 fi
 
+# Keep the original acceptance record: recovery may update it before the
+# same-revision check, but still requires the full public acceptance suite.
+accepted_revision_before_recovery="$accepted_revision"
 if [[ -z "$accepted_revision" ]]; then
   if release_is_accepted "$source_revision"; then
     write_accepted_revision "$source_revision"
@@ -2150,10 +2228,18 @@ if [[ "$source_revision" == "$candidate_revision" ]]; then
   if release_is_accepted "$candidate_revision" private; then
     same_revision_router_requires_commit=false
     same_revision_edge_boundary=normal
+    same_revision_requires_full_acceptance=false
+    if [[ "$accepted_revision_before_recovery" != "$candidate_revision" ]]; then
+      same_revision_requires_full_acceptance=true
+    fi
     require_public_acceptance="$(read_environment_value DEVELOPMENT_REQUIRE_PUBLIC_ACCEPTANCE)" \
       || fail "DEVELOPMENT_REQUIRE_PUBLIC_ACCEPTANCE could not be read"
     [[ "$require_public_acceptance" == true || "$require_public_acceptance" == false ]] \
       || fail "DEVELOPMENT_REQUIRE_PUBLIC_ACCEPTANCE must be true or false"
+    if [[ "$require_public_acceptance" == true \
+      && "$public_acceptance_verified_revision" != "$candidate_revision" ]]; then
+      same_revision_requires_full_acceptance=true
+    fi
     if [[ "$same_revision_topology" == router ]]; then
       same_revision_router="$(running_release_router_container)" \
         || fail "same-revision development release router could not be identified"
@@ -2166,6 +2252,7 @@ if [[ "$source_revision" == "$candidate_revision" ]]; then
         maintenance)
           development_router_live_uncommitted="true"
           same_revision_router_requires_commit=true
+          same_revision_requires_full_acceptance=true
           same_revision_edge_boundary=live-uncommitted
           reload_release_router_live active \
             || fail "same-revision development finalization could not restore active live routing"
@@ -2175,7 +2262,9 @@ if [[ "$source_revision" == "$candidate_revision" ]]; then
       esac
     fi
     if [[ "$require_public_acceptance" == true ]]; then
-      run_public_acceptance || fail "same-revision development public acceptance failed twice"
+      if [[ "$same_revision_requires_full_acceptance" == true ]]; then
+        run_public_acceptance || fail "same-revision development public acceptance failed twice"
+      fi
       verify_external_edge_if_selected "$candidate_revision" "$same_revision_edge_boundary"
     fi
     release_is_accepted "$candidate_revision" \
@@ -2184,8 +2273,14 @@ if [[ "$source_revision" == "$candidate_revision" ]]; then
       commit_release_router_acceptance "$candidate_revision" "$accepted_revision" \
         || fail "same-revision development finalization could not commit active routing"
       development_router_live_uncommitted="false"
-    elif [[ "$same_revision_topology" != router ]]; then
+    elif [[ "$same_revision_topology" != router \
+      || "$same_revision_requires_full_acceptance" == true ]]; then
       write_accepted_revision "$candidate_revision"
+    fi
+    verify_shared_scanner_if_selected "$project" || fail "shared scanner verification failed"
+    if [[ "$same_revision_requires_full_acceptance" == false ]]; then
+      printf 'Unchanged development revision %s passed health checks; full acceptance skipped.\n' \
+        "$candidate_revision"
     fi
     printf 'Development already runs accepted dev revision %s.\n' "$candidate_revision"
     exit 0
@@ -2323,11 +2418,13 @@ else
 fi
 
 deployment_stage=database-mutation-chain
+verify_shared_scanner_if_selected || fail "shared scanner owner is unavailable before migration"
 run_candidate_database_chain "$candidate_revision" \
   || fail "development candidate database migration and grant chain failed"
 
 deployment_stage=live-apply
 compose up --detach --wait --no-deps --no-build evidence_scanner
+verify_shared_scanner_if_selected "$project" || fail "shared scanner and private forwarder verification failed"
 compose up --detach --wait --no-deps --no-build app
 if [[ "$source_topology" == router ]]; then
   [[ "$(running_release_router_container)" == "$persistent_release_router_id" ]] \

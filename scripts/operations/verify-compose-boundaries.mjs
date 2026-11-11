@@ -146,19 +146,39 @@ if ((worker.ports ?? []).length > 0) fail("auth_email_worker publishes a port");
 if ((worker.networks ?? {}).business_finlynq_edge) fail("auth_email_worker is attached to the public edge network");
 
 const scanner = services.evidence_scanner;
-if (!scanner || scanner.image !== "clamav/clamav@sha256:f0954d679017eb6d48221e2b2be3ac5457bf278a844f39b672376f55a085f591"
-  || scanner.user !== "100:101" || scanner.read_only !== true
+const sharedScanner = scanner?.image === "node:24-alpine@sha256:e67514e5d0f6c46656005e1b693b2ec9d52e80b641307de684d4a015ba7a4eaf";
+if (!scanner || (!sharedScanner && scanner.image !== "clamav/clamav@sha256:f0954d679017eb6d48221e2b2be3ac5457bf278a844f39b672376f55a085f591")
+  || scanner.user !== (sharedScanner ? "10001:10001" : "100:101") || scanner.read_only !== true
   || !(scanner.cap_drop ?? []).includes("ALL") || secretSources(scanner).length
   || (scanner.ports ?? []).length || Object.keys(scanner.environment ?? {}).some((key) => /PASSWORD|SECRET|KEY/.test(key))) {
   fail("evidence scanner must be pinned, non-root, read-only, and receive no credentials or published ports");
 }
-if ((scanner.configs ?? []).length
+if (sharedScanner) {
+  const source = readFileSync("deploy/evidence/shared/business-relay.yml", "utf8");
+  const code = source.match(/    command:\n      - \|\n([\s\S]*?)    environment:/)?.[1]
+    .split("\n").map(line => line.replace(/^        /, "")).join("\n").trim();
+  const channel = { "business-finlynq": "business_prod", "business-finlynq-development": "business_stage",
+    "business-finlynq-dev": "business_dev" }[configuration.name]
+    ?? (configuration.name?.startsWith("business-finlynq-rehearsal-") ? "business_stage" : null);
+  const volume = scanner.volumes?.[0];
+  if (!channel || scanner.entrypoint?.join(",") !== "node,--input-type=module,-e"
+    || scanner.command?.length !== 1 || scanner.command[0].trim() !== code
+    || Object.keys(scanner.environment ?? {}).length || (scanner.configs ?? []).length
+    || (scanner.volumes ?? []).length !== 1 || volume.type !== "volume" || !volume.read_only
+    || volume.target !== "/run/finlynq-scanner" || volume.source !== "shared_scanner_channel"
+    || configuration.volumes?.shared_scanner_channel?.external !== true
+    || configuration.volumes?.shared_scanner_channel?.name !== `finlynq_scanner_${channel}_v1`
+    || scanner.mem_limit !== "67108864" && scanner.mem_limit !== 67108864
+    || Number(scanner.cpus) !== 0.25 || scanner.pids_limit !== 32) {
+    fail("shared scanner forwarder must retain its exact protocol, private channel and bounds");
+  }
+} else if ((scanner.configs ?? []).length
   || scanner.environment?.CLAMD_CONFIG?.trim() !== readFileSync("deploy/evidence/clamd.conf", "utf8").trim()
   || !scanner.command?.[0]?.includes('--config-file=/tmp/finlynq-clamd.conf')) {
   fail("scanner configuration must be delivered through bounded tmpfs, independent of checkout file permissions");
 }
 const scannerNetworks = Object.keys(scanner.networks ?? {}).sort().join(",");
-if (scannerNetworks !== "business_finlynq_evidence,business_finlynq_scanner_egress"
+if (scannerNetworks !== (sharedScanner ? "business_finlynq_evidence" : "business_finlynq_evidence,business_finlynq_scanner_egress")
   || configuration.networks?.business_finlynq_evidence?.internal !== true) {
   fail("evidence scanner must be isolated from the database and public edge");
 }
@@ -932,6 +952,7 @@ const releaseRehearsalRendered = execFileSync(
     "--project-name", releaseRehearsalProject,
     "-f", "docker-compose.yml",
     "-f", "deploy/release/docker-compose.rehearsal.yml",
+    ...(sharedScanner ? ["-f", "deploy/evidence/shared/business-relay.yml"] : []),
     "--profile", "operations",
     "--profile", "auth-email",
     "config",
@@ -949,19 +970,16 @@ const releaseRehearsalRendered = execFileSync(
       MONITOR_BACKUP_DIR: "/tmp/business-finlynq-release-evidence/rehearsal-backup",
       MONITOR_REQUIRE_OFFSITE: "false",
       RELEASE_REHEARSAL_PROJECT: releaseRehearsalProject,
+      FINLYNQ_SCANNER_CHANNEL: "business_stage",
       SESSION_COOKIE_NAME: "business_finlynq_rehearsal_session",
     },
   },
 );
 const releaseRehearsal = JSON.parse(releaseRehearsalRendered);
-for (const resource of [
-  ...Object.values(releaseRehearsal.volumes ?? {}),
-  ...Object.values(releaseRehearsal.networks ?? {}),
-]) {
-  if (!resource.name?.startsWith(`${releaseRehearsalProject}-`)) {
-    fail(`release rehearsal resource is not run-isolated: ${resource.name ?? "unnamed"}`);
-  }
-}
+execFileSync("bash", ["-ec",
+  'source deploy/evidence/shared/compose-contract.sh; scanner_rehearsal_resources "$(cat)" "$1"',
+  "rehearsal-resource-check", releaseRehearsalProject,
+], { input: releaseRehearsalRendered, encoding: "utf8" });
 const rehearsalRouterPort = (releaseRehearsal.services?.release_router?.ports ?? [])
   .find((port) => port.target === 3000);
 if (rehearsalRouterPort?.host_ip !== "127.0.0.1" || rehearsalRouterPort?.published !== "3311") {
@@ -1026,6 +1044,7 @@ const developmentRendered = JSON.parse(execFileSync("docker", [
   encoding: "utf8", maxBuffer: 16 * 1024 * 1024,
   env: {
     ...process.env,
+    FINLYNQ_SCANNER_CHANNEL: "business_stage",
     BUSINESS_FINLYNQ_HOSTNAME: "stage.business.finlynq.com",
     BUSINESS_FINLYNQ_APP_ORIGIN: "https://stage.business.finlynq.com",
     BUSINESS_FINLYNQ_APP_PORT: "3200",
@@ -1037,10 +1056,12 @@ const developmentRendered = JSON.parse(execFileSync("docker", [
     BUSINESS_FINLYNQ_RESTORE_DRILL_NETWORK: "business_finlynq_development_restore_drill",
   },
 }));
-for (const resource of [
-  ...Object.values(developmentRendered.volumes ?? {}),
-  ...Object.values(developmentRendered.networks ?? {}),
+for (const [logicalName, resource] of [
+  ...Object.entries(developmentRendered.volumes ?? {}),
+  ...Object.entries(developmentRendered.networks ?? {}),
 ]) {
+  if (sharedScanner && logicalName === "shared_scanner_channel" && resource.external === true
+    && resource.name === "finlynq_scanner_business_stage_v1") continue;
   if (!resource.name?.startsWith("business_finlynq_development_")) {
     fail(`development resource is not deployment-isolated: ${resource.name ?? "unnamed"}`);
   }
