@@ -114,7 +114,7 @@ export async function issueBusinessDocument(
       ledgerId: snapshot.ledgerId,
       partyAccountId: snapshot.partyAccountId,
       sourceDocumentId: postedSource.id,
-      eventType: snapshot.kind === "SALES_INVOICE" ? "SALES_INVOICE_ISSUED" : "SUPPLIER_BILL_ISSUED",
+      eventType: `${snapshot.kind}_ISSUED`,
       eventVersion: String(postedSource.version),
     });
     const openItemId = await insertOpenItem(client, {

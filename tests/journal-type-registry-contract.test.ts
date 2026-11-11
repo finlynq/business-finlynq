@@ -17,6 +17,8 @@ describe("journal-type registry database contract", () => {
       "ledger.reversal@1",
       "payables.bill-void@1",
       "payables.supplier-bill@1",
+      "payables.supplier-credit-application@1",
+      "payables.supplier-credit-note@1",
       "payables.supplier-payment@1",
       "receivables.customer-receipt@1",
       "receivables.invoice-void@1",

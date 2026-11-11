@@ -55,13 +55,13 @@ describe("receivable open-item lookup", () => {
     expect(mocks.assertPermission).toHaveBeenCalledWith(expect.anything(), context, "receivables.read");
     const [sql, params] = mocks.query.mock.calls[0] ?? [];
     expect(sql).toContain("issued_source.owner_module = $11::text");
-    expect(sql).toContain("issued_source.source_type = $12::text");
+    expect(sql).toContain("issued_source.source_type = ANY($12::text[])");
     expect(sql).toContain("party_account.role::text = $13::text");
     expect(sql).toContain("item.organization_id = $1");
     expect(params).toEqual([
       ids.organization, ids.entity, null, null, null,
       "PCGL1466450", null, null, ["OPEN", "PARTIALLY_SETTLED"], 100,
-      "receivables", "receivables.sales-invoice", "CUSTOMER", null, null, null, null,
+      "receivables", ["receivables.sales-invoice"], "CUSTOMER", null, null, null, null,
     ]);
   });
 });
@@ -136,7 +136,7 @@ describe("payable open-item lookup", () => {
       ["PARTIALLY_SETTLED"],
       20,
       "payables",
-      "payables.supplier-bill",
+      ["payables.supplier-bill"],
       "SUPPLIER", null, null, null, null,
     ]);
   });

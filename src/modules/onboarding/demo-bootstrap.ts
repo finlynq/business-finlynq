@@ -304,7 +304,7 @@ type SeededJournalToPost = Readonly<{
   fixtureKey: string;
   journalId: string;
   ownerModule: SubledgerOwnerModule | "ledger";
-  journalTypeKey: "receivables.sales-invoice" | "payables.supplier-bill" | "ledger.manual";
+  journalTypeKey: "receivables.sales-invoice" | "payables.supplier-bill" | "payables.supplier-credit-note" | "ledger.manual";
 }>;
 
 function deterministicUuid(organizationId: string, scope: string): string {

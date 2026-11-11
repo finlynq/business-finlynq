@@ -1,3 +1,4 @@
+import { invoiceNotificationsForSnapshot, invoiceNotificationDelivery } from "./invoice-notifications";
 import "server-only";
 
 import { z } from "zod";
@@ -11,7 +12,7 @@ export const SHARED_MCP_TOOLS: readonly McpToolDefinition[] = [
     title: "Get FinLynQ connection capabilities",
     description: "Call when planning work. Returns this connection's organization label, OAuth scopes, Daily/Setup modes, live permission keys, and settings/approval URLs. It never changes data.",
     inputSchema: z.object({}).strict(),
-    invoke: (_args, runtime) => {
+    invoke: async (_args, runtime) => {
       const origin = oauthPublicOrigin(runtime.requestUrl);
       return {
         organization: runtime.principal.organizationName,
@@ -26,7 +27,9 @@ export const SHARED_MCP_TOOLS: readonly McpToolDefinition[] = [
         documentStorageUrl: new URL("/app/settings/documents", origin).href,
         emailOperationsUrl: new URL("/app/settings/email", origin).href,
         emailCapabilities: emailProviderReadiness(),
+        invoiceNotifications: { ...await invoiceNotificationsForSnapshot(runtime.snapshot), delivery: invoiceNotificationDelivery },
         instructions: [
+          "If invoiceNotifications.shouldNotify is true, tell the user about the pending invoice work and offer to review it. Notify once per revision. For new arrivals during the active session, have the host subscribe to the invoice resource or run the documented 15-second polling fallback. A notification never authorizes accounting writes.",
           "If visible, call finlynq_guidance_get_index once for this organization, then read only relevant platform or client Markdown files. Authorized client guidance can persist across sessions and be updated through its own write tool.",
           "Use finlynq_daily_get_accounting_context before booking journal entries.",
           "Use finlynq_setup_get_configuration before changing master data.",
