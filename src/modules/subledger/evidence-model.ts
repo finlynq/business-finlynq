@@ -21,7 +21,7 @@ export const uploadEvidenceSchema = z.object({
   idempotencyKey: z.string().trim().min(1).max(200),
 }).strict();
 const linkFields = {
-  kind: z.enum(["SALES_INVOICE", "SUPPLIER_BILL"]),
+  kind: z.enum(["SALES_INVOICE", "SUPPLIER_BILL", "SUPPLIER_CREDIT_NOTE"]),
   sourceNumber: z.string().trim().toUpperCase().min(1).max(50).regex(/^[A-Z0-9][A-Z0-9._/-]*$/),
   expectedVersion: z.number().int().positive(),
   assetId: z.uuid(),

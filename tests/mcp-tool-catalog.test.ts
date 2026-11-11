@@ -278,6 +278,7 @@ describe("remote MCP advertised tool catalog", () => {
       "after",
       "asOfDate",
       "currency",
+      "documentKind",
       "ledgerId",
       "legalEntityId",
       "limit",

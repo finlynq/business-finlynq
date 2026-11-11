@@ -321,7 +321,7 @@ export async function editBusinessDocumentDraft(
     void _idempotencyKey;
     void _expectedVersion;
     const prior = recordFromRow(current).snapshot;
-    const priorBusiness = prior.kind === "SALES_INVOICE" || prior.kind === "SUPPLIER_BILL"
+    const priorBusiness = prior.kind === "SALES_INVOICE" || prior.kind === "SUPPLIER_BILL" || prior.kind === "SUPPLIER_CREDIT_NOTE"
       ? prior
       : null;
     const priorSnapshotCompatible = priorBusiness !== null

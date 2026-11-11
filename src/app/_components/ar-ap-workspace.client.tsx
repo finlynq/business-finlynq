@@ -1,5 +1,7 @@
 "use client";
 
+import { SupplierCreditApplicationPanel } from "./supplier-credit-application.client";
+
 import { SourceAttachments } from "./source-attachments";
 import { subledgerPaymentStatus } from "@/modules/subledger/register-filter";
 import { CompactDisclosure } from "./compact-disclosure.client";
@@ -77,6 +79,8 @@ export type DocumentLineDraft = Readonly<{
 }>;
 
 type BusinessDraft = Readonly<{
+  kind: BusinessDocumentSnapshot["kind"];
+  originalInvoiceSourceDocumentId: string;
   editingVersion: number | null;
   sourceNumber: string;
   legalEntityId: string;
@@ -251,10 +255,10 @@ export function businessDraftCanPreserveFx(
   const document = workspace.documents.find((candidate) => (
     candidate.sourceNumber === draft.sourceNumber
     && candidate.version === draft.editingVersion
-    && candidate.snapshot.kind === workspace.businessKind
+    && (candidate.snapshot.kind === workspace.businessKind || candidate.snapshot.kind === "SUPPLIER_CREDIT_NOTE")
   ));
   if (!document || (document.snapshot.kind !== "SALES_INVOICE"
-      && document.snapshot.kind !== "SUPPLIER_BILL")) return false;
+      && document.snapshot.kind !== "SUPPLIER_BILL" && document.snapshot.kind !== "SUPPLIER_CREDIT_NOTE")) return false;
   return document.snapshot.currency === draft.currency
     && document.snapshot.functionalCurrency
       === currentEntity(workspace, draft.legalEntityId)?.functionalCurrency
@@ -268,10 +272,10 @@ export function businessDocumentLineDraftsFromSnapshot(
     key: line.lineNumber.toString(),
     description: line.description,
     accountCombinationId: line.accountCombinationId,
-    netAmount: line.netAmount,
+    netAmount: snapshot.kind === "SUPPLIER_CREDIT_NOTE" ? line.netAmount.replace(/^-/, "") : line.netAmount,
     lineType: line.lineType ?? "STANDARD",
     category: line.tax.category,
-    recoverablePercent: snapshot.kind === "SUPPLIER_BILL"
+    recoverablePercent: snapshot.kind !== "SALES_INVOICE"
       ? line.tax.recoverablePercent ?? "100"
       : "",
     evidenceReference: line.tax.evidenceReference ?? "",
@@ -279,7 +283,9 @@ export function businessDocumentLineDraftsFromSnapshot(
     sourceTaxRoundingEnabled: line.tax.sourceTaxRounding !== undefined,
     sourceTaxRoundingReviewed: line.tax.sourceTaxRounding?.reviewed ?? false,
     sourceTaxRatePercent: line.tax.sourceTaxOverride?.ratePercent ?? "",
-    sourceTaxAmount: line.tax.sourceTaxOverride?.amount ?? line.tax.sourceTaxRounding?.amount ?? "",
+    sourceTaxAmount: snapshot.kind === "SUPPLIER_CREDIT_NOTE"
+      ? (line.tax.sourceTaxOverride?.amount ?? line.tax.sourceTaxRounding?.amount ?? "").replace(/^-/, "")
+      : line.tax.sourceTaxOverride?.amount ?? line.tax.sourceTaxRounding?.amount ?? "",
     sourceTaxJurisdiction: line.tax.sourceTaxOverride?.jurisdiction ?? "",
     sourceTaxComponentKey: line.tax.sourceTaxOverride?.componentKey ?? "HST_SOURCE",
     sourceTaxEffectiveFrom: line.tax.sourceTaxOverride?.effectiveFrom ?? snapshot.documentDate,
@@ -369,9 +375,11 @@ function defaultDocumentDraft(
   workspace: SubledgerWorkspaceDto,
   document?: SubledgerWorkspaceDocumentDto,
 ): BusinessDraft {
-  if (document && (document.snapshot.kind === "SALES_INVOICE" || document.snapshot.kind === "SUPPLIER_BILL")) {
+  if (document && (document.snapshot.kind === "SALES_INVOICE" || document.snapshot.kind === "SUPPLIER_BILL" || document.snapshot.kind === "SUPPLIER_CREDIT_NOTE")) {
     const snapshot = document.snapshot;
     return {
+      kind: snapshot.kind,
+      originalInvoiceSourceDocumentId: snapshot.originalInvoiceSourceDocumentId ?? "",
       editingVersion: document.version,
       sourceNumber: snapshot.sourceNumber,
       legalEntityId: snapshot.legalEntityId,
@@ -414,6 +422,8 @@ function defaultDocumentDraft(
     ? "2200"
     : entity?.countryCode === "CA" ? "1500" : "6100";
   return {
+    kind: workspace.businessKind,
+    originalInvoiceSourceDocumentId: "",
     editingVersion: null,
     sourceNumber: "",
     legalEntityId: entity?.id ?? "",
@@ -460,6 +470,10 @@ function defaultDocumentDraft(
   };
 }
 
+function paymentItems(workspace: SubledgerWorkspaceDto) {
+  return workspace.openItems.filter((item) => item.sourceType !== "payables.supplier-credit-note");
+}
+
 function defaultSettlementDraft(
   workspace: SubledgerWorkspaceDto,
   requestedPartyAccountId?: string,
@@ -471,13 +485,13 @@ function defaultSettlementDraft(
   const entity = requestedEntity
     ?? workspace.entities.find((candidate) => candidate.id === workspace.preferredEntityId)
     ?? workspace.entities.find((candidate) => candidate.partyAccounts.some((party) =>
-      workspace.openItems.some((item) => item.partyAccountId === party.id)))
+      paymentItems(workspace).some((item) => item.partyAccountId === party.id)))
     ?? workspace.entities[0];
   const party = entity?.partyAccounts.find((candidate) => candidate.id === requestedPartyAccountId)
     ?? entity?.partyAccounts.find((candidate) =>
-      workspace.openItems.some((item) => item.partyAccountId === candidate.id))
+      paymentItems(workspace).some((item) => item.partyAccountId === candidate.id))
     ?? entity?.partyAccounts[0];
-  const item = workspace.openItems.find((candidate) => candidate.partyAccountId === party?.id);
+  const item = paymentItems(workspace).find((candidate) => candidate.partyAccountId === party?.id);
   const date = entity?.periods.some((period) =>
     period.startsOn <= workspace.currentDate && period.endsOn >= workspace.currentDate)
     ? workspace.currentDate
@@ -582,14 +596,14 @@ export function DocumentDetails({
 }>) {
   const snapshot = document.snapshot;
   const entity = currentEntity(workspace, snapshot.legalEntityId);
-  const businessSnapshot = snapshot.kind === "SALES_INVOICE" || snapshot.kind === "SUPPLIER_BILL"
+  const businessSnapshot = snapshot.kind === "SALES_INVOICE" || snapshot.kind === "SUPPLIER_BILL" || snapshot.kind === "SUPPLIER_CREDIT_NOTE"
     ? snapshot
     : null;
   const settlementSnapshot: SettlementDocumentSnapshot | null = businessSnapshot
     ? null
     : snapshot as SettlementDocumentSnapshot;
   const documentLabel = businessSnapshot
-    ? workspace.ownerModule === "receivables" ? "Invoice" : "Bill"
+    ? snapshot.kind === "SUPPLIER_CREDIT_NOTE" ? "Credit note" : workspace.ownerModule === "receivables" ? "Invoice" : "Bill"
     : workspace.ownerModule === "receivables" ? "Receipt" : "Settlement";
 
   return (
@@ -689,8 +703,8 @@ export function DocumentDetails({
             <div><span>Settlement date</span><strong>{settlementSnapshot.settlementDate}</strong></div>
             <div><span>Amount</span><strong>{displayExactMoney(settlementSnapshot.currency, settlementSnapshot.amount)}</strong></div>
             <div><span>Functional amount</span><strong>{displayExactMoney(settlementSnapshot.functionalCurrency, settlementSnapshot.settlementFunctionalAmount)}</strong></div>
-            <div><span>Settlement funding account</span><strong>{accountLabel(entity, resolveSettlementFunding(settlementSnapshot).accountCombinationId)}</strong></div>
-            <div><span>Settlement method</span><strong>{SETTLEMENT_METHOD_LABELS[resolveSettlementFunding(settlementSnapshot).method]}</strong></div>
+            <div><span>Settlement funding account</span><strong>{settlementSnapshot.kind === "SUPPLIER_CREDIT_APPLICATION" ? "Supplier credit" : accountLabel(entity, resolveSettlementFunding(settlementSnapshot).accountCombinationId)}</strong></div>
+            <div><span>Settlement method</span><strong>{settlementSnapshot.kind === "SUPPLIER_CREDIT_APPLICATION" ? "Credit applied to bill" : SETTLEMENT_METHOD_LABELS[resolveSettlementFunding(settlementSnapshot).method]}</strong></div>
             <div><span>FX rate</span><strong>{settlementSnapshot.fx.rate} {settlementSnapshot.functionalCurrency}/{settlementSnapshot.currency}</strong></div>
             <div><span>FX source</span><strong>{settlementSnapshot.fx.source}</strong></div>
             <div><span>FX effective time</span><strong>{settlementSnapshot.fx.effectiveAt}</strong></div>
@@ -710,7 +724,7 @@ export function DocumentDetails({
               <caption className="sr-only">Open-item allocations</caption>
               <thead><tr><th scope="col">Allocated source</th><th scope="col">Transaction amount</th><th scope="col">Functional amount</th><th scope="col">Realized FX</th></tr></thead>
               <tbody>{settlementSnapshot.allocations.map((allocation) => {
-                const item = document.allocationSources?.find((candidate) => candidate.openItemId === allocation.openItemId) ?? workspace.openItems.find((candidate) => candidate.id === allocation.openItemId);
+                const item = document.allocationSources?.find((candidate) => candidate.openItemId === allocation.openItemId) ?? paymentItems(workspace).find((candidate) => candidate.id === allocation.openItemId);
                 const sourceDocument = workspace.documents.find((candidate) => candidate.openItemId === allocation.openItemId);
                 return <tr key={allocation.openItemId}><td>{item?.sourceNumber ?? sourceDocument?.sourceNumber ?? allocation.openItemId}</td><td className={styles.amountCell}>{displayExactMoney(settlementSnapshot.currency, allocation.transactionAmount)}</td><td className={styles.amountCell}>{displayExactMoney(settlementSnapshot.functionalCurrency, allocation.settlementFunctionalAmount)}</td><td className={styles.amountCell}>{displayExactMoney(settlementSnapshot.functionalCurrency, allocation.realizedFxFunctional)}</td></tr>;
               })}</tbody>
@@ -841,13 +855,13 @@ export function ArApWorkspace({
   const preserveFxEligible = businessDraftCanPreserveFx(workspace, documentDraft);
   const settlementEntity = currentEntity(workspace, settlementDraft.legalEntityId);
   const settlementParty = currentParty(settlementEntity, settlementDraft.partyAccountId);
-  const settlementItems = workspace.openItems.filter((item) =>
-    item.partyAccountId === settlementDraft.partyAccountId && item.currency === settlementDraft.currency);
+  const settlementItems = paymentItems(workspace).filter((item) =>
+    item.sourceType !== "payables.supplier-credit-note" && item.partyAccountId === settlementDraft.partyAccountId && item.currency === settlementDraft.currency);
   const settlementTotal = useMemo(
     () => exactAllocationTotal(settlementDraft.allocations, settlementDraft.currency),
     [settlementDraft.allocations, settlementDraft.currency],
   );
-  const businessLabel = workspace.ownerModule === "receivables" ? "invoice" : "bill";
+  const businessLabel = documentDraft.kind === "SUPPLIER_CREDIT_NOTE" ? "credit note" : workspace.ownerModule === "receivables" ? "invoice" : "bill";
   const settlementLabel = workspace.ownerModule === "receivables" ? "receipt" : "settlement";
   const counterpartyLabel = workspace.ownerModule === "receivables" ? "customer" : "supplier";
   const hasRegisterCriteria = Boolean(
@@ -908,9 +922,9 @@ export function ArApWorkspace({
     startTransition(() => router.refresh());
   }
 
-  function openDocument(document?: SubledgerWorkspaceDocumentDto): void {
+  function openDocument(document?: SubledgerWorkspaceDocumentDto, credit = false): void {
     rememberOpener();
-    setDocumentDraft(defaultDocumentDraft(workspace, document));
+    setDocumentDraft({ ...defaultDocumentDraft(workspace, document), ...(credit ? { kind: "SUPPLIER_CREDIT_NOTE" as const } : {}) });
     setComposer("DOCUMENT");
     setVoidDraft(null);
     setDetailDocument(null);
@@ -1064,7 +1078,8 @@ export function ArApWorkspace({
     setBusy(true);
     const tax = documentEntity.tax;
     const payload = {
-      kind: workspace.businessKind,
+      kind: documentDraft.kind,
+      ...(documentDraft.originalInvoiceSourceDocumentId ? { originalInvoiceSourceDocumentId: documentDraft.originalInvoiceSourceDocumentId } : {}),
       sourceNumber: documentDraft.sourceNumber,
       ledgerId: documentEntity.ledgerId,
       legalEntityId: documentEntity.id,
@@ -1102,7 +1117,7 @@ export function ArApWorkspace({
       idempotencyKey: globalThis.crypto.randomUUID(),
     };
     try {
-      await mutate(base.business, documentDraft.editingVersion ? "PATCH" : "POST", payload);
+      await mutate(documentDraft.kind === "SUPPLIER_CREDIT_NOTE" ? "/api/payables/credits" : base.business, documentDraft.editingVersion ? "PATCH" : "POST", payload);
       finish(`${businessLabel[0]?.toUpperCase()}${businessLabel.slice(1)} draft ${documentDraft.editingVersion ? "updated" : "created"}.`);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : `Unable to save the ${businessLabel}`);
@@ -1112,13 +1127,13 @@ export function ArApWorkspace({
   }
 
   async function issueDocument(document: SubledgerWorkspaceDocumentDto): Promise<void> {
-    if (document.snapshot.kind !== workspace.businessKind) return;
+    if (!("grossTotal" in document.snapshot)) return;
     setError(null);
     setMessage(null);
     setBusy(true);
     try {
-      await mutate(`${base.business}/issue`, "POST", {
-        kind: workspace.businessKind,
+      await mutate(`${document.snapshot.kind === "SUPPLIER_CREDIT_NOTE" ? "/api/payables/credits" : base.business}/issue`, "POST", {
+        kind: document.snapshot.kind,
         sourceNumber: document.sourceNumber,
         expectedVersion: document.version,
         idempotencyKey: globalThis.crypto.randomUUID(),
@@ -1134,9 +1149,9 @@ export function ArApWorkspace({
   function chooseSettlementEntity(legalEntityId: string): void {
     const entity = currentEntity(workspace, legalEntityId);
     const party = entity?.partyAccounts.find((candidate) =>
-      workspace.openItems.some((item) => item.partyAccountId === candidate.id))
+      paymentItems(workspace).some((item) => item.partyAccountId === candidate.id))
       ?? entity?.partyAccounts[0];
-    const item = workspace.openItems.find((candidate) => candidate.partyAccountId === party?.id);
+    const item = paymentItems(workspace).find((candidate) => candidate.partyAccountId === party?.id);
     const date = entity?.periods.some((period) =>
       period.startsOn <= workspace.currentDate && period.endsOn >= workspace.currentDate)
       ? workspace.currentDate
@@ -1171,7 +1186,7 @@ export function ArApWorkspace({
 
   function chooseSettlementParty(partyAccountId: string): void {
     const party = currentParty(settlementEntity, partyAccountId);
-    const item = workspace.openItems.find((candidate) => candidate.partyAccountId === partyAccountId);
+    const item = paymentItems(workspace).find((candidate) => candidate.partyAccountId === partyAccountId);
     setSettlementDraft((draft) => {
       const currency = party?.transactionCurrency ?? item?.currency ?? settlementEntity?.functionalCurrency ?? "USD";
       if (currency === draft.currency) return { ...draft, partyAccountId, allocations: {} };
@@ -1309,12 +1324,12 @@ export function ArApWorkspace({
     event.preventDefault();
     if (!voidDraft) return;
     const business = voidDraft.document.snapshot.kind === "SALES_INVOICE"
-      || voidDraft.document.snapshot.kind === "SUPPLIER_BILL";
+      || voidDraft.document.snapshot.kind === "SUPPLIER_BILL" || voidDraft.document.snapshot.kind === "SUPPLIER_CREDIT_NOTE";
     setError(null);
     setMessage(null);
     setBusy(true);
     try {
-      await mutate(`${business ? base.business : base.settlement}/void`, "POST", {
+      await mutate(`${voidDraft.document.snapshot.kind === "SUPPLIER_CREDIT_APPLICATION" ? "/api/payables/credit-applications" : voidDraft.document.snapshot.kind === "SUPPLIER_CREDIT_NOTE" ? "/api/payables/credits" : business ? base.business : base.settlement}/void`, "POST", {
         kind: voidDraft.document.snapshot.kind,
         sourceNumber: voidDraft.document.sourceNumber,
         expectedVersion: voidDraft.document.version,
@@ -1334,19 +1349,21 @@ export function ArApWorkspace({
 
   return (
     <>
+      {workspace.ownerModule === "payables" && workspace.canSettle && <SupplierCreditApplicationPanel workspace={workspace} />}
       {(workspace.canManage || workspace.canSettle) && (
         <div className="subledger-toolbar" aria-label={`${businessLabel} actions`}>
+          {workspace.ownerModule === "payables" && workspace.canManage && <button className="secondary-button" type="button" onClick={() => openDocument(undefined, true)} disabled={busy || pending}>＋ New credit note</button>}
           {workspace.canManage && (
             <button className="primary-button" type="button" onClick={() => openDocument()} disabled={busy || pending}>
-              ＋ New {businessLabel}
+              ＋ New {workspace.ownerModule === "receivables" ? "invoice" : "bill"}
             </button>
           )}
           {workspace.canSettle && (
-            <button className="secondary-button" type="button" onClick={() => openSettlement()} disabled={busy || pending || !workspace.openItems.length}>
+            <button className="secondary-button" type="button" onClick={() => openSettlement()} disabled={busy || pending || !paymentItems(workspace).length}>
               Record {settlementLabel}
             </button>
           )}
-          {!workspace.openItems.length && workspace.canSettle && (
+          {!paymentItems(workspace).length && workspace.canSettle && (
             <span className="subtle-label">Issue a {businessLabel} before recording a {settlementLabel}.</span>
           )}
         </div>
@@ -1380,6 +1397,11 @@ export function ArApWorkspace({
           </div>
           <form className="journal-form subledger-form" onSubmit={(event) => { void saveDocument(event); }}>
             <div className="form-grid form-grid-three">
+              {documentDraft.kind === "SUPPLIER_CREDIT_NOTE" && <label className="field"><span>Original bill (optional)</span>
+                <select value={documentDraft.originalInvoiceSourceDocumentId} onChange={(event) => setDocumentDraft((draft) => ({ ...draft, originalInvoiceSourceDocumentId: event.target.value }))}>
+                  <option value="">Standalone supplier credit</option>
+                  {workspace.documents.filter((item) => item.snapshot.kind === "SUPPLIER_BILL" && item.status === "POSTED" && item.snapshot.partyAccountId === documentDraft.partyAccountId && item.snapshot.currency === documentDraft.currency).map((item) => <option key={item.id} value={item.id}>{item.sourceNumber}</option>)}
+                </select><small>Enter positive credit amounts. Posting reverses the purchase and related tax.</small></label>}
               <label className="full-field">
                 <span>{businessLabel[0]?.toUpperCase()}{businessLabel.slice(1)} number</span>
                 <input value={documentDraft.sourceNumber} onChange={(event) => setDocumentDraft((draft) => ({ ...draft, sourceNumber: event.target.value.toUpperCase() }))} pattern="[A-Z0-9](?:[A-Z0-9._]|-|/)*" maxLength={50} disabled={documentDraft.editingVersion !== null} required />
@@ -1948,7 +1970,7 @@ export function ArApWorkspace({
                               {business && document.status === "DRAFT" && workspace.canManage && <button className="secondary-button compact-button" type="button" onClick={() => openDocument(document)} disabled={busy || pending}>Edit draft</button>}
                               {business && document.status === "DRAFT" && workspace.canPost && !taxReviewRequired && <button className="primary-button compact-button" type="button" onClick={() => void issueDocument(document)} disabled={busy || pending}>Issue</button>}
                               {business && document.status === "DRAFT" && taxReviewRequired && <small>Tax review required before issue</small>}
-                              {business && document.status === "POSTED" && workspace.canSettle && document.openAmount && isPositiveExactAmount(document.openAmount) && <button className="secondary-button compact-button" type="button" onClick={() => openSettlement(document.snapshot.partyAccountId, document.snapshot.currency)} disabled={busy || pending}>Record {settlementLabel}</button>}
+                              {business && document.snapshot.kind !== "SUPPLIER_CREDIT_NOTE" && document.status === "POSTED" && workspace.canSettle && document.openAmount && isPositiveExactAmount(document.openAmount) && <button className="secondary-button compact-button" type="button" onClick={() => openSettlement(document.snapshot.partyAccountId, document.snapshot.currency)} disabled={busy || pending}>Record {settlementLabel}</button>}
                               {document.status === "POSTED" && workspace.canVoid && <button className="text-danger-button" type="button" onClick={() => prepareVoid(document)} disabled={busy || pending || (business && partiallySettled)}>{business && partiallySettled ? `Reverse ${settlementLabel} first` : "Void"}</button>}
                             </div>
                           </td>

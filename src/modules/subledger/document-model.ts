@@ -30,18 +30,18 @@ const sourceNumberSchema = z.string().trim().toUpperCase().min(1).max(50)
   .regex(/^[A-Z0-9][A-Z0-9._/-]*$/);
 const idempotencyKeySchema = z.string().trim().min(1).max(200);
 
-export const businessDocumentKindSchema = z.enum(["SALES_INVOICE", "SUPPLIER_BILL"]);
+export const businessDocumentKindSchema = z.enum(["SALES_INVOICE", "SUPPLIER_BILL", "SUPPLIER_CREDIT_NOTE"]);
 export type BusinessDocumentKind = z.infer<typeof businessDocumentKindSchema>;
 
-export const settlementDocumentKindSchema = z.enum(["CUSTOMER_RECEIPT", "SUPPLIER_PAYMENT"]);
+export const settlementDocumentKindSchema = z.enum(["CUSTOMER_RECEIPT", "SUPPLIER_PAYMENT", "SUPPLIER_CREDIT_APPLICATION"]);
 export type SettlementDocumentKind = z.infer<typeof settlementDocumentKindSchema>;
 
 export type SubledgerOwnerModule = "receivables" | "payables";
 
 export const DOCUMENT_KIND_POLICY: Readonly<Record<BusinessDocumentKind, Readonly<{
   ownerModule: SubledgerOwnerModule;
-  sourceType: "receivables.sales-invoice" | "payables.supplier-bill";
-  journalTypeKey: "receivables.sales-invoice" | "payables.supplier-bill";
+  sourceType: "receivables.sales-invoice" | "payables.supplier-bill" | "payables.supplier-credit-note";
+  journalTypeKey: "receivables.sales-invoice" | "payables.supplier-bill" | "payables.supplier-credit-note";
   partyRole: "CUSTOMER" | "SUPPLIER";
   controlKind: "AR" | "AP";
   direction: TaxDirection;
@@ -62,14 +62,22 @@ export const DOCUMENT_KIND_POLICY: Readonly<Record<BusinessDocumentKind, Readonl
     controlKind: "AP",
     direction: "PURCHASE",
   },
+  SUPPLIER_CREDIT_NOTE: {
+    ownerModule: "payables",
+    sourceType: "payables.supplier-credit-note",
+    journalTypeKey: "payables.supplier-credit-note",
+    partyRole: "SUPPLIER",
+    controlKind: "AP",
+    direction: "PURCHASE",
+  },
 };
 
 export const SETTLEMENT_KIND_POLICY: Readonly<Record<SettlementDocumentKind, Readonly<{
   ownerModule: SubledgerOwnerModule;
-  sourceType: "receivables.customer-receipt" | "payables.supplier-payment";
-  journalTypeKey: "receivables.customer-receipt" | "payables.supplier-payment";
+  sourceType: "receivables.customer-receipt" | "payables.supplier-payment" | "payables.supplier-credit-application";
+  journalTypeKey: "receivables.customer-receipt" | "payables.supplier-payment" | "payables.supplier-credit-application";
   partyRole: "CUSTOMER" | "SUPPLIER";
-  invoiceSourceType: "receivables.sales-invoice" | "payables.supplier-bill";
+  invoiceSourceType: "receivables.sales-invoice" | "payables.supplier-bill" | "payables.supplier-credit-note";
   position: "RECEIVABLE" | "PAYABLE";
 }>>> = {
   CUSTOMER_RECEIPT: {
@@ -87,6 +95,11 @@ export const SETTLEMENT_KIND_POLICY: Readonly<Record<SettlementDocumentKind, Rea
     partyRole: "SUPPLIER",
     invoiceSourceType: "payables.supplier-bill",
     position: "PAYABLE",
+  },
+  SUPPLIER_CREDIT_APPLICATION: {
+    ownerModule: "payables", sourceType: "payables.supplier-credit-application",
+    journalTypeKey: "payables.supplier-credit-application", partyRole: "SUPPLIER",
+    invoiceSourceType: "payables.supplier-bill", position: "PAYABLE",
   },
 };
 
@@ -456,6 +469,7 @@ export const businessDocumentLineInputSchema = z.object({
 export const businessDocumentInputSchema = z.object({
   kind: businessDocumentKindSchema,
   sourceNumber: sourceNumberSchema,
+  originalInvoiceSourceDocumentId: z.uuid().optional(),
   ledgerId: z.uuid(),
   legalEntityId: z.uuid(),
   partyAccountId: z.uuid(),
@@ -534,7 +548,7 @@ export const settlementAllocationInputSchema = z.object({
 }).strict();
 
 export const recordSettlementSchema = z.object({
-  kind: settlementDocumentKindSchema,
+  kind: z.enum(["CUSTOMER_RECEIPT", "SUPPLIER_PAYMENT"]),
   sourceNumber: sourceNumberSchema,
   ledgerId: z.uuid(),
   legalEntityId: z.uuid(),
@@ -691,9 +705,10 @@ function validateSnapshotProviderPair(
 
 export const businessDocumentSnapshotSchema = z.object({
   schemaVersion: z.literal(1),
+  originalInvoiceSourceDocumentId: z.uuid().optional(),
   kind: businessDocumentKindSchema,
   ownerModule: z.enum(["receivables", "payables"]),
-  sourceType: z.enum(["receivables.sales-invoice", "payables.supplier-bill"]),
+  sourceType: z.enum(["receivables.sales-invoice", "payables.supplier-bill", "payables.supplier-credit-note"]),
   sourceNumber: sourceNumberSchema,
   ledgerId: z.uuid(),
   legalEntityId: z.uuid(),
@@ -725,7 +740,7 @@ export const businessDocumentSnapshotSchema = z.object({
           path: ["lines", line.lineNumber - 1, "netAmount"],
           message: "Sales-invoice lines must remain positive",
         });
-      } else if (line.lineType !== "ADJUSTMENT") {
+      } else if (value.kind !== "SUPPLIER_CREDIT_NOTE" && line.lineType !== "ADJUSTMENT") {
         context.addIssue({
           code: "custom",
           path: ["lines", line.lineNumber - 1, "lineType"],
@@ -740,7 +755,7 @@ export const businessDocumentSnapshotSchema = z.object({
       path: ["grossTotal"],
       message: "Zero-gross AR/AP documents are not supported",
     });
-  } else if (exact(value.grossTotal).isNegative()) {
+  } else if (value.kind === "SUPPLIER_CREDIT_NOTE" ? !exact(value.grossTotal).isNegative() : exact(value.grossTotal).isNegative()) {
     context.addIssue({
       code: "custom",
       path: ["grossTotal"],
@@ -763,8 +778,9 @@ export const settlementSnapshotAllocationSchema = z.object({
 export const settlementDocumentSnapshotSchema = z.object({
   schemaVersion: z.literal(1),
   kind: settlementDocumentKindSchema,
+  creditOpenItemId: z.uuid().optional(),
   ownerModule: z.enum(["receivables", "payables"]),
-  sourceType: z.enum(["receivables.customer-receipt", "payables.supplier-payment"]),
+  sourceType: z.enum(["receivables.customer-receipt", "payables.supplier-payment", "payables.supplier-credit-application"]),
   sourceNumber: sourceNumberSchema,
   ledgerId: z.uuid(),
   legalEntityId: z.uuid(),
@@ -787,7 +803,13 @@ export const settlementDocumentSnapshotSchema = z.object({
   description: z.string(),
   allocations: z.array(settlementSnapshotAllocationSchema).min(1),
 }).strict()
-  .superRefine(validateSettlementFunding)
+  .superRefine((value, context) => {
+    if (value.kind === "SUPPLIER_CREDIT_APPLICATION") {
+      if (!value.creditOpenItemId || value.allocations.length !== 2 || value.bankAccountCombinationId || value.settlementAccountCombinationId) {
+        context.addIssue({ code: "custom", message: "Credit application requires a credit and bill allocation and no funding account" });
+      }
+    } else validateSettlementFunding(value, context);
+  })
   .superRefine(validateSnapshotProviderPair);
 
 export const subledgerSourceSnapshotSchema = z.discriminatedUnion("kind", [
@@ -1027,7 +1049,24 @@ export function buildBusinessDocumentSnapshot(
   unparsedInput: z.input<typeof businessDocumentInputSchema>,
   unparsedFunctionalCurrency: string,
 ): BusinessDocumentSnapshot {
-  const input = businessDocumentInputSchema.parse(unparsedInput);
+  const parsed = businessDocumentInputSchema.parse(unparsedInput);
+  // Credit entry uses positive magnitudes; immutable accounting/tax facts carry
+  // their reversing sign. Editing clients convert the snapshot back to magnitudes.
+  const input = parsed.kind === "SUPPLIER_CREDIT_NOTE" ? {
+    ...parsed,
+    lines: parsed.lines.map((line) => {
+      if (!exact(line.netAmount).greaterThan(0)) {
+        throw new Error("Supplier credit-note lines require positive credit amounts");
+      }
+      return { ...line, netAmount: exact(line.netAmount).negated().toFixed(), tax: {
+        ...line.tax,
+        ...(line.tax.sourceTaxOverride ? { sourceTaxOverride: { ...line.tax.sourceTaxOverride,
+          amount: exact(line.tax.sourceTaxOverride.amount).negated().toFixed() } } : {}),
+        ...(line.tax.sourceTaxRounding ? { sourceTaxRounding: { ...line.tax.sourceTaxRounding,
+          amount: exact(line.tax.sourceTaxRounding.amount).negated().toFixed() } } : {}),
+      } };
+    }),
+  } : parsed;
   const functionalCurrency = unparsedFunctionalCurrency.trim().toUpperCase();
   if (!/^[A-Z]{3}$/.test(functionalCurrency)) {
     throw new Error("Ledger functional currency must be a canonical three-letter code");
@@ -1056,7 +1095,7 @@ export function buildBusinessDocumentSnapshot(
           lineNumber,
         );
       }
-      if (line.lineType !== "ADJUSTMENT") {
+      if (input.kind !== "SUPPLIER_CREDIT_NOTE" && line.lineType !== "ADJUSTMENT") {
         throw new BusinessDocumentValidationError(
           "SIGNED_LINE_REQUIRES_ADJUSTMENT",
           "Line " + lineNumber + " is negative and must be marked as an ADJUSTMENT.",
@@ -1092,7 +1131,7 @@ export function buildBusinessDocumentSnapshot(
       "The document has a zero gross total; FinLynQ does not create zero-gross AR/AP open items.",
     );
   }
-  if (grossTotal.isNegative()) {
+  if (input.kind === "SUPPLIER_CREDIT_NOTE" ? !grossTotal.isNegative() : grossTotal.isNegative()) {
     throw new BusinessDocumentValidationError(
       "SUPPLIER_CREDIT_NOTE_REQUIRED",
       input.kind === "SUPPLIER_BILL"
@@ -1112,6 +1151,7 @@ export function buildBusinessDocumentSnapshot(
   return businessDocumentSnapshotSchema.parse({
     schemaVersion: 1,
     kind: input.kind,
+    ...(input.originalInvoiceSourceDocumentId ? { originalInvoiceSourceDocumentId: input.originalInvoiceSourceDocumentId } : {}),
     ownerModule: policy.ownerModule,
     sourceType: policy.sourceType,
     sourceNumber: input.sourceNumber,
