@@ -4,6 +4,9 @@ import { z } from "zod";
 import { queryDatabase, withTenantTransaction, type TenantTransactionContext } from "@/db/transaction";
 import { uploadInboxDocument } from "@/modules/document-storage/upload";
 import { assertWritableOrganization } from "@/modules/workspace/write-policy";
+import { documentPage } from "@/modules/document-storage/content";
+import { StorageError } from "@/modules/document-storage/provider";
+import { relayRejectionSchema, type RelayRejection } from "./self-smtp";
 import { attachmentSafety, groupAccountingAttachments } from "./policy";
 import { activeEmailKeyVersion, decryptEmailValue, encryptEmailValue } from "./crypto";
 import { inboundProviderMessageSchema, normalizeEmailAddress, type InboundProviderMessage } from "./model";
@@ -165,7 +168,7 @@ async function stageForAlias(alias: ResolvedAlias, message: InboundProviderMessa
         });
       const contentBytes = attachment.content ?? Buffer.alloc(0);
       const sha256 = createHash("sha256").update(contentBytes).digest("hex");
-      const filename = await encryptEmailValue(client, attachmentScope, "inbound_email_attachments", "filename_ciphertext", attachment.filename);
+      const filename = await encryptEmailValue(client, attachmentScope, "inbound_email_attachments", "filename_ciphertext", attachment.originalFilename ? { filename: attachment.filename, originalFilename: attachment.originalFilename } : attachment.filename);
       const content = attachment.content
         ? await encryptEmailValue(client, attachmentScope, "inbound_email_attachments", "content_ciphertext", attachment.content.toString("base64"))
         : null;
@@ -190,14 +193,17 @@ async function attachmentContent(context: TenantTransactionContext, attachmentId
       [context.organizationId, attachmentId],
     )).rows[0];
     if (!row || !row.content_ciphertext) throw new Error("Staged email attachment content is unavailable");
-    const filename = z.string().parse(await decryptEmailValue(client, row, "inbound_email_attachments", "filename_ciphertext", row.filename_ciphertext));
+    const storedName = z.union([z.string(), z.object({ filename: z.string(), originalFilename: z.string() }).strict()]).parse(
+      await decryptEmailValue(client, row, "inbound_email_attachments", "filename_ciphertext", row.filename_ciphertext));
+    const filename = typeof storedName === "string" ? storedName : storedName.filename;
+    const originalFilename = typeof storedName === "string" ? undefined : storedName.originalFilename;
     const base64 = z.string().parse(await decryptEmailValue(client, row, "inbound_email_attachments", "content_ciphertext", row.content_ciphertext));
     const bytes = Buffer.from(base64, "base64");
     if (bytes.length !== row.byte_size || createHash("sha256").update(bytes).digest("hex") !== row.sha256) {
       bytes.fill(0);
       throw new Error("Staged email attachment integrity check failed");
     }
-    return { row, filename, bytes };
+    return { row, filename, originalFilename, bytes };
   });
 }
 
@@ -275,6 +281,13 @@ async function processStagedInboundAttachment(
       return { status: "RETRY_PENDING" as const };
     }
     staged = await attachmentContent(context, attachmentId);
+    if (staged.originalFilename) {
+      try { await documentPage(staged.bytes, "application/pdf", 1); }
+      catch (error) {
+        if (error instanceof StorageError && error.code === "STORAGE_RENDER_UNAVAILABLE") throw error;
+        throw new StorageError("STORAGE_PDF_CORRUPT", "The extensionless attachment is not a readable PDF.");
+      }
+    }
     const uploaded = await uploadInboxDocument(context, {
       connectionId: claim.alias.connection_id,
       filename: staged.filename,
@@ -429,4 +442,29 @@ export async function retryInboundMessage(
   }
   const status = await finishMessage(context, claim);
   return { messageId: claim.row.id, status, results };
+}
+
+
+/** Persist a signed, content-free receipt before the relay discards unsafe mail. */
+export async function recordRelayRejection(unparsed: RelayRejection) {
+  const receipt = relayRejectionSchema.parse(unparsed);
+  const alias = await resolveAlias(receipt.recipient);
+  if (!alias) return { accepted: true, ignored: true };
+  const context = inboundWorkerContext({ organizationId: alias.organization_id, actorId: alias.actor_id,
+    provider: "SELF_SMTP", requestId: `email-rejection:${receipt.message_id}:${alias.alias_id}`.slice(0,200) });
+  return withTenantTransaction(context, async client => {
+    await assertWritableOrganization(client, context);
+    const active = await client.query(`SELECT 1 FROM email_ingestion_aliases WHERE organization_id=$1 AND id=$2
+      AND status='ACTIVE' AND app.lock_active_email_membership(owner_membership_id) FOR UPDATE`, [alias.organization_id,alias.alias_id]);
+    if (!active.rows[0]) return { accepted: true, ignored: true };
+    const keyVersion = await activeEmailKeyVersion(client, alias.organization_id);
+    const inserted = await client.query<{id:string}>(`INSERT INTO inbound_email_messages
+      (organization_id,alias_id,provider,provider_event_id,provider_message_id,received_at,sender_auth,envelope_ciphertext,key_version,routing_result,status,error_code,transient_expires_at)
+      VALUES($1,$2,'SELF_SMTP',$3,$3,$4,'{}',NULL,$5,'ROUTED','QUARANTINED',$6,now())
+      ON CONFLICT DO NOTHING RETURNING id`, [alias.organization_id,alias.alias_id,receipt.message_id,receipt.received_at,keyVersion,
+      `RELAY_${receipt.reasons[0].toUpperCase()}`]);
+    if (inserted.rows[0]) await client.query(`INSERT INTO email_operation_events(organization_id,category,event_type,aggregate_id,outcome,safe_details)
+      VALUES($1,'INBOUND','RELAY_REJECTION',$2,'REJECTED',$3)`, [alias.organization_id,inserted.rows[0].id,{reasonCodes:[...new Set(receipt.reasons)]}]);
+    return { accepted: true, replay: !inserted.rows[0] };
+  });
 }
