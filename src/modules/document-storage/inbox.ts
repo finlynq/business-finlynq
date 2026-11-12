@@ -1,7 +1,9 @@
+import { getDocumentFilingStatus, retryDocumentFiling } from "./filing";
+export { retryDocumentFiling, getDocumentFilingStatus, scheduleDocumentFiling } from "./filing";
 import { businessDocumentMatchesMetadata } from "./source-metadata";
 import "server-only";
 import { reviewZeroInvoice } from "./reviewed-zero-invoice";
-import { createHash, createHmac } from "node:crypto";
+import { createHmac } from "node:crypto";
 import { z } from "zod";
 import type { PoolClient } from "pg";
 import { withTenantTransaction, type TenantTransactionContext } from "@/db/transaction";
@@ -12,10 +14,10 @@ import { businessDocumentSnapshotSchema, canonicalHash, DOCUMENT_KIND_POLICY } f
 import { createBusinessDocumentDraftInTransaction } from "@/modules/subledger/ar-ap-draft-commands";
 import { changeEvidenceInTransaction } from "@/modules/subledger/evidence-service";
 import { acquireDocumentIdentityLock, currentSourceDocument } from "@/modules/subledger/ar-ap-idempotency";
-import { archiveName, claimInboxSchema, completeInboxSchema, listInboxSchema, readInboxSchema, reviewInboxSchema, retryFilingSchema, syncInboxSchema } from "./model";
+import { archiveName, claimInboxSchema, completeInboxSchema, listInboxSchema, readInboxSchema, reviewInboxSchema, syncInboxSchema } from "./model";
 import { assertStorageWrite, connectedDrive, decryptStorageValue, encryptStorageValue, loadConnection, realStorageContext, type ConnectionRow } from "./store";
 import { StorageError } from "./provider";
-import { assertDirectChild, assertStorageFolder } from "./boundaries";
+import { assertStorageFolder } from "./boundaries";
 import { insertCloudEvidence, validatedCloudBytes } from "./evidence";
 import { documentPage } from "./content";
 import { parseEmlDocument } from "./eml";
@@ -461,7 +463,7 @@ export async function completeInboxDocument(context: TenantTransactionContext, i
         ...(noAccountingReview ? { noAccountingReview } : {}),
       });
       const updated = (await client.query<InboxRow>(`UPDATE document_inbox_items SET status='READY_TO_FILE',sha256=$3,asset_id=$4,source_document_id=$5,
-        completion_hash=$6,processing_ciphertext=$7,business_key=$8,lease_until=NULL WHERE organization_id=$1 AND id=$2 RETURNING *`, [context.organizationId, row.id, verified.sha256, assetId, sourceDocumentId, completionHash, processing, businessKey])).rows[0];
+        completion_hash=$6,processing_ciphertext=$7,business_key=$8,lease_until=NULL,filing_actor_id=$9,filing_queued_at=now(),filing_next_retry_at=now() WHERE organization_id=$1 AND id=$2 RETURNING *`, [context.organizationId, row.id, verified.sha256, assetId, sourceDocumentId, completionHash, processing, businessKey, context.actorId])).rows[0];
       return {
         item: await itemMetadata(client, updated),
         idempotentReplay: false,
@@ -495,7 +497,7 @@ export async function completeInboxDocument(context: TenantTransactionContext, i
       ...result,
       completionHandle: command.itemId,
       filingPending,
-      ...(filingPending ? { instruction: "Accounting and evidence are saved. Call finlynq_daily_retry_document_filing with itemId set to this completionHandle to finish archiving; retry this completion with identical arguments to read its durable outcome." } : {}),
+      ...(filingPending ? { instruction: "Accounting and evidence are saved. Filing is queued automatically. Poll finlynq_daily_get_document_filing_status with this completionHandle; retry filing explicitly if it needs attention." } : {}),
     };
   }
   try {
@@ -508,7 +510,7 @@ export async function completeInboxDocument(context: TenantTransactionContext, i
       assetId: filed.item.assetId,
       action: command.action.type,
       status: filed.item.status,
-      providerMoveOutcome: "FILED",
+      providerMoveOutcome: filed.item.status === "FILED" ? "FILED" : "PENDING",
       idempotentReplay: filed.idempotentReplay,
     }));
     return filed;
@@ -524,113 +526,7 @@ export async function completeInboxDocument(context: TenantTransactionContext, i
       providerMoveOutcome: "RETRY_REQUIRED",
       errorCode: error instanceof StorageError ? error.code : "STORAGE_FILING_RETRY_REQUIRED",
     }));
-    return { ...result, filingPending: true, instruction: "Accounting and evidence were saved. Call retry_document_filing to finish archiving." };
+    const current = await getDocumentFilingStatus(context, { itemId: command.itemId }).catch(() => null);
+    return { ...result, ...(current ?? {}), filingPending: true, instruction: "Accounting and evidence were saved. Poll get_document_filing_status for retry progress; use retry_document_filing if it needs attention." };
   }
 }
-export async function retryDocumentFiling(context: TenantTransactionContext, input: z.input<typeof retryFilingSchema>) {
-  const command = retryFilingSchema.parse(input);
-  try {
-    const filed = await withTenantTransaction(context, async (client) => {
-      await assertStorageWrite(client, context);
-      const { row, connection } = await loadInboxItem(client, context, command.itemId);
-      if (row.status === "FILED") return { item: await itemMetadata(client, row), filingPending: false };
-      if (!row.completion_hash || !["READY_TO_FILE", "FILING_FAILED"].includes(row.status)) throw new StorageError("STORAGE_NOT_COMPLETED", "Save a processing result before filing this document.");
-      const processing = await itemProcessing(client, row);
-      if (!processing.name || !processing.folders) throw new Error("Archive destination is missing");
-      const { drive, location } = await connectedDrive(client, connection);
-      let destination = location.archiveId;
-      await assertStorageFolder(drive, location, destination, "archive");
-      for (const segment of processing.folders) {
-        if (!segment || /[\\/\x00-\x1f]/.test(segment) || segment === "." || segment === "..") throw new StorageError("STORAGE_FOLDER_BOUNDARY", "The saved archive path is invalid.");
-        const child = await drive.folder(destination, segment);
-        const folder = await drive.file(child);
-        assertDirectChild(folder, destination);
-        await assertStorageFolder(drive, location, child, "archive");
-        destination = child;
-      }
-      const file = await drive.file(row.provider_file_id);
-      const source = await itemSourceMetadata(client, row);
-      const alreadyFiled = file.parentId === destination && file.name === processing.name;
-      if (!alreadyFiled) {
-        if (file.parentId !== (source.sourceFolderId ?? location.inboxId)) throw new StorageError("STORAGE_FILE_MOVED", "The document was moved outside its expected inbox/archive location. Review it in the connected drive.");
-        await assertStorageFolder(drive, location, file.parentId, "inbox");
-      }
-      const verified = await validatedCloudBytes(drive, file);
-      try {
-        if (verified.sha256 !== row.sha256) throw new StorageError("STORAGE_CONTENT_CHANGED", "The original document changed after ingestion. Restore it before retrying filing.");
-        let filed = file;
-        await assertStorageFolder(drive, location, file.parentId, alreadyFiled ? "archive" : "inbox");
-        await assertStorageFolder(drive, location, destination, "archive");
-        if (file.parentId !== destination || file.name !== processing.name) filed = await drive.move(verified.file, destination, processing.name);
-        assertDirectChild(filed, destination);
-        if (filed.id !== file.id || filed.name !== processing.name) throw new StorageError("STORAGE_CONTENT_CHANGED", "The provider did not return the expected archived document.");
-        // Detect changes racing the provider move, including providers without conditional rename.
-        const after = await drive.download(filed.id);
-        try { if (canonicalHashBytes(after) !== row.sha256) throw new StorageError("STORAGE_CONTENT_CHANGED", "The archived document changed during filing. Review the source."); }
-        finally { after.fill(0); }
-        assertDirectChild(await drive.file(filed.id), destination);
-        await assertStorageFolder(drive, location, destination, "archive");
-        const stored = await encryptStorageValue(client, row, "document_inbox_items", "processing_ciphertext", { ...processing, destinationId: destination, reason: undefined });
-        const updated = (await client.query<InboxRow>("UPDATE document_inbox_items SET status='FILED',content_version=$3,processing_ciphertext=$4 WHERE organization_id=$1 AND id=$2 RETURNING *", [context.organizationId, row.id, filed.version, stored])).rows[0];
-        return { item: await itemMetadata(client, updated), filingPending: false };
-      } finally { verified.bytes.fill(0); }
-    });
-    console.info(JSON.stringify({ event: "document.inbox.filing.completed", requestId: context.requestId,
-      itemId: command.itemId, assetId: filed.item.assetId, status: filed.item.status }));
-    return filed;
-  } catch (error) {
-    // Persist a safe, actionable failure without undoing the completed draft.
-    await withTenantTransaction(context, async (client) => {
-      await assertStorageWrite(client, context);
-      const { row } = await loadInboxItem(client, context, command.itemId);
-      if (!row.completion_hash || row.status === "FILED") return;
-      const processing = await itemProcessing(client, row);
-      const stored = await encryptStorageValue(client, row, "document_inbox_items", "processing_ciphertext", { ...processing, reason: error instanceof StorageError ? error.message : "Cloud filing failed. Retry after checking the connection." });
-      await client.query("UPDATE document_inbox_items SET status='FILING_FAILED',processing_ciphertext=$3 WHERE organization_id=$1 AND id=$2", [context.organizationId, row.id, stored]);
-    }).catch(() => undefined);
-    console.warn(JSON.stringify({ event: "document.inbox.filing.failed", requestId: context.requestId,
-      itemId: command.itemId, errorCode: error instanceof StorageError ? error.code : "STORAGE_FILING_RETRY_REQUIRED" }));
-    throw error;
-  }
-}
-
-export async function getDocumentFilingStatus(
-  context: TenantTransactionContext,
-  input: z.input<typeof retryFilingSchema>,
-  access: "read" | "manage" = "read",
-) {
-  const command = retryFilingSchema.parse(input);
-  return withTenantTransaction(context, async (client) => {
-    const row = (await client.query<InboxRow>(
-      "SELECT * FROM document_inbox_items WHERE organization_id=$1 AND id=$2",
-      [context.organizationId, command.itemId],
-    )).rows[0];
-    if (!row) throw new StorageError("STORAGE_ITEM_MISSING", "This inbox item is unavailable.");
-    // Filing holds the item and connection locks during provider I/O. A status
-    // read must not wait behind that transaction just to report a durable handle.
-    await loadConnection(client, context, row.connection_id, access, true, "none");
-    if (!row.completion_hash || !["READY_TO_FILE", "FILING_FAILED", "FILED"].includes(row.status)) {
-      throw new StorageError("STORAGE_NOT_COMPLETED", "Save a processing result before checking filing status.");
-    }
-    if (access === "manage" && row.status !== "FILED") await assertStorageWrite(client, context);
-    return { item: await itemMetadata(client, row), filingPending: row.status === "READY_TO_FILE" };
-  });
-}
-
-export async function scheduleDocumentFiling(
-  context: TenantTransactionContext,
-  input: z.input<typeof retryFilingSchema>,
-  schedule: (task: () => Promise<void>) => void,
-) {
-  const command = retryFilingSchema.parse(input);
-  const current = await getDocumentFilingStatus(context, command, "manage");
-  if (current.item.status === "FILED") return current;
-  schedule(async () => { await retryDocumentFiling(context, command).catch(() => undefined); });
-  return {
-    ...current,
-    filingPending: true,
-    instruction: "Filing is running. Poll get_document_filing_status with this itemId. If it remains ready or fails, retry with the same itemId; accounting and evidence will not be repeated.",
-  };
-}
-
-function canonicalHashBytes(bytes: Buffer) { return createHash("sha256").update(bytes).digest("hex"); }

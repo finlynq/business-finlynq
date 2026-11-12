@@ -54,7 +54,8 @@ const nextConfig: NextConfig = {
       { source: "/app/receivables/:path*", destination: "/receivables/:path*" },
       { source: "/app/reports/:path*", destination: "/reports/:path*" },
       { source: "/app/settings", destination: "/settings" },
-      { source: "/app/settings/:path*", destination: "/settings/:path*" },
+      // Keep rewrite parameter names distinct from public query keys such as guidance path.
+      { source: "/app/settings/:settingsPath*", destination: "/settings/:settingsPath*" },
       { source: "/app/tax", destination: "/tax" },
       { source: "/app/tax/:path*", destination: "/tax/:path*" },
     ];

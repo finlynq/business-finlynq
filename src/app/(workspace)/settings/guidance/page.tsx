@@ -26,7 +26,8 @@ export default async function GuidanceSettingsPage({ searchParams }: {
       <div className="panel-heading"><div><p className="eyebrow">File library</p><h2 id="guidance-files-title">Shared and client files</h2></div></div>
       {files.length ? <div className="table-shell"><table><thead><tr><th>File</th><th>Scope</th><th>Summary</th><th>Version</th></tr></thead>
         <tbody>{files.map((entry) => <tr key={`${entry.scope}:${entry.path}`}>
-          <td><Link href={`/app/settings/guidance?scope=${entry.scope}&path=${encodeURIComponent(entry.path)}`}>{entry.path}</Link></td>
+          {/* Document navigation refreshes selected content reliably through the settings rewrite. */}
+          <td><a href={`/app/settings/guidance?scope=${entry.scope}&path=${encodeURIComponent(entry.path)}`}>{entry.path}</a></td>
           <td>{entry.scope === "platform" ? "Finlynq standard" : "Your organization"}</td><td>{entry.summary}</td><td>{entry.version}</td>
         </tr>)}</tbody></table></div>
         : <p className="panel-note">No guidance files are available yet.</p>}

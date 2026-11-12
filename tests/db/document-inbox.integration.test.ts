@@ -1,6 +1,7 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { Pool } from "pg";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { runDocumentFilingBatch } from "@/modules/document-storage/filing-worker";
 import { closeDatabasePool, withTenantTransaction } from "@/db/transaction";
 import { LocalRootKeyProvider, serializeWrappedKey } from "@/security/organization-encryption";
 import { loadOrganizationRootKek } from "@/security/root-secret";
@@ -20,6 +21,7 @@ import { exchangeStorageToken, StorageError, type CloudFile } from "@/modules/do
 const cloud = vi.hoisted(() => ({ files: new Map<string, CloudFile>(), bytes: new Map<string, Buffer>(), moveFailsOnce: false, moves: 0,
   scanFails: false, provisionCalls: 0, uploadFailsOnce: false, uploads: 0, movedDuringDownload: "", injectedChild: "",
   activeDownloads: 0, maximumConcurrentDownloads: 0, downloadDelayMilliseconds: 0,
+  downloadGates: new Map<string, Promise<void>>(),
   exchangeDelayMilliseconds: 0,
   exchangeProbe: undefined as undefined | (() => Promise<void>) }));
 vi.mock("@/security/evidence-scanner", () => ({ scanEvidence: vi.fn(async () => {
@@ -45,6 +47,7 @@ vi.mock("@/modules/document-storage/provider", async (original) => {
           if (cloud.downloadDelayMilliseconds > 0) {
             await new Promise((resolve) => setTimeout(resolve, cloud.downloadDelayMilliseconds));
           }
+          await cloud.downloadGates.get(id);
           if (cloud.movedDuringDownload === id) cloud.files.set(id, { ...cloud.files.get(id)!, parentId: "outside" });
           return Buffer.from(cloud.bytes.get(id)!);
         } finally { cloud.activeDownloads -= 1; }
@@ -259,10 +262,12 @@ run("cloud inbox PostgreSQL lifecycle", () => {
     const stored = (await owner.query("SELECT * FROM document_evidence_assets WHERE organization_id=$1", [ids.org])).rows[0];
     expect(stored.storage_backend).toBe("CLOUD"); expect(stored.content_ciphertext).toBeNull();
     expect((await owner.query("SELECT status FROM source_documents WHERE organization_id=$1", [ids.org])).rows).toEqual([{ status: "DRAFT" }]);
+    expect((await getDocumentFilingStatus(requestContext(), { itemId })).item.filing?.state).toBe("RETRY_WAIT");
+    await withTenantTransaction(requestContext(), (client) => client.query("UPDATE document_inbox_items SET filing_next_retry_at=now()-interval '1 second' WHERE organization_id=$1 AND id=$2", [ids.org, itemId]));
     let scheduled: (() => Promise<void>) | undefined;
     const queued = await scheduleDocumentFiling(requestContext(), { itemId }, (task) => { scheduled = task; });
-    expect(queued).toMatchObject({ filingPending: true, item: { id: itemId, status: "FILING_FAILED", assetId: saved.item.assetId } });
-    expect((await getDocumentFilingStatus(requestContext(), { itemId })).item.status).toBe("FILING_FAILED");
+    expect(queued).toMatchObject({ filingPending: true, item: { id: itemId, status: "READY_TO_FILE", assetId: saved.item.assetId, filing: { state: "QUEUED" } } });
+    expect((await getDocumentFilingStatus(requestContext(), { itemId })).item.filing?.state).toBe("QUEUED");
     expect(scheduled).toBeDefined();
     await scheduled!();
     const recovered = await getDocumentFilingStatus(requestContext(), { itemId }); expect(recovered.item.status).toBe("FILED"); expect(cloud.moves).toBe(1);
@@ -293,6 +298,8 @@ run("cloud inbox PostgreSQL lifecycle", () => {
       const saved = await completeInboxDocument(requestContext(), command);
       expect(saved.item).toMatchObject({ sourceDocumentId: null, filingMetadata: command.metadata,
         noAccountingReview: { treatment, reason: command.reason, sourceSha256: read.sha256, accountingMutation: "NONE", relatedEvidence: command.action.relatedEvidence } });
+      expect((await completeInboxDocument(requestContext(), command)).item.filing?.state).toBe("RETRY_WAIT");
+      await withTenantTransaction(requestContext(), (client) => client.query("UPDATE document_inbox_items SET filing_next_retry_at=now()-interval '1 second' WHERE organization_id=$1 AND id=$2", [ids.org, row.id]));
       const replay = await completeInboxDocument(requestContext(), command);
       expect(replay.idempotentReplay).toBe(true);
       expect(replay.item.status).toBe("FILED");
@@ -977,7 +984,68 @@ run("cloud inbox PostgreSQL lifecycle", () => {
       [journals],
     )).rows).toEqual(Array.from({ length: 3 }, () => ({ status: "POSTED", content_hash: hash })));
     bytes.fill(0);
-  });
+    // Reproduce the eleven-document LINK_POSTED batch without changing accounting.
+    const queued: Awaited<ReturnType<typeof completeInboxDocument>>["item"][] = [];
+    for (let index = 0; index < 11; index += 1) {
+      const row = await discover(`batch-${index}.png`, `filing-batch-${index}`);
+      const claimId = randomUUID();
+      await claimInboxDocument(requestContext(), { itemId: row.id, claimId });
+      const read = await readInboxDocument(requestContext(), { itemId: row.id, claimId });
+      const saved = await completeInboxDocument(requestContext(), {
+        ...command, itemId: row.id, claimId, sha256: read.sha256,
+        metadata: { ...command.metadata, reference: `BATCH-${index}` },
+        action: { type: "LINK_POSTED", confirmed: true,
+          targets: [{ journalId: journals[2], expectedContentHash: hash, expectedEvidenceRevision: index + 1 }] },
+      }, true);
+      queued.push(saved.item);
+    }
+    const accounting = async () => (await owner.query(`SELECT
+      (SELECT count(*) FROM source_documents WHERE organization_id=$1) AS sources,
+      (SELECT count(*) FROM journal_entries WHERE organization_id=$1) AS journals,
+      (SELECT count(*) FROM open_items WHERE organization_id=$1) AS items,
+      (SELECT count(*) FROM document_evidence_assets WHERE organization_id=$1) AS assets`, [ids.org])).rows[0];
+    const before = await accounting();
+    const unrelated = await discover("parallel-inbox-claim.png", "parallel-inbox-claim");
+    const providerId = (await owner.query("SELECT provider_file_id FROM document_inbox_items WHERE id=$1", [queued[0].id])).rows[0].provider_file_id;
+    let releaseDownload!: () => void;
+    cloud.downloadGates.set(providerId, new Promise<void>(resolve => { releaseDownload = resolve; }));
+    const movesBefore = cloud.moves;
+    const firstAttempt = retryDocumentFiling(requestContext(), { itemId: queued[0].id });
+    try {
+      await vi.waitFor(() => expect(cloud.activeDownloads).toBeGreaterThan(0));
+      expect((await getDocumentFilingStatus(requestContext(), { itemId: queued[0].id })).item.filing?.state).toBe("RUNNING");
+      // Same-connection work remains available while provider I/O is paused.
+      expect((await claimInboxDocument(requestContext(), { itemId: unrelated.id, claimId: randomUUID() })).item.status).toBe("CLAIMED");
+      expect((await retryDocumentFiling(requestContext(), { itemId: queued[0].id })).item.filing?.state).toBe("RUNNING");
+    } finally { releaseDownload(); cloud.downloadGates.delete(providerId); }
+    await firstAttempt;
+    expect(cloud.moves - movesBefore).toBe(1);
+    // Simulate a process that died after claiming one of the saved jobs.
+    await withTenantTransaction(requestContext(), client => client.query(`UPDATE document_inbox_items
+      SET filing_token=$3,filing_lease_until=now()-interval '1 second',filing_heartbeat_at=now()-interval '2 minutes',filing_attempt_count=1
+      WHERE organization_id=$1 AND id=$2`, [ids.org,queued[1].id,randomUUID()]));
+    expect((await getDocumentFilingStatus(requestContext(), { itemId: queued[1].id })).item.filing?.state).toBe("STALLED");
+    cloud.maximumConcurrentDownloads = 0;
+    cloud.downloadDelayMilliseconds = 50;
+    const started = Date.now();
+    try {
+      for (let cycle = 0; cycle < 20; cycle += 1) {
+        await runDocumentFilingBatch();
+        const count = (await owner.query("SELECT count(*)::int AS n FROM document_inbox_items WHERE id=ANY($1::uuid[]) AND status='FILED'", [queued.map(row=>row.id)])).rows[0].n;
+        if (count === queued.length) break;
+      }
+    } finally { cloud.downloadDelayMilliseconds = 0; }
+    const statuses = (await owner.query("SELECT id,status,asset_id,sha256,filing_attempt_count FROM document_inbox_items WHERE id=ANY($1::uuid[])", [queued.map(row=>row.id)])).rows;
+    for (const row of queued) expect(statuses.find(value=>value.id===row.id)).toMatchObject({ status: "FILED", asset_id: row.assetId, sha256: row.sha256 });
+    expect(statuses.find(row=>row.id===queued[1].id).filing_attempt_count).toBe(2);
+    expect(cloud.maximumConcurrentDownloads).toBeGreaterThanOrEqual(1);
+    expect(cloud.maximumConcurrentDownloads).toBeLessThanOrEqual(3);
+    expect(cloud.moves - movesBefore).toBe(11);
+    expect(await accounting()).toEqual(before);
+    expect((await owner.query("SELECT status,content_hash FROM journal_entries WHERE id=ANY($1::uuid[])",[journals])).rows).toEqual(Array.from({length:3},()=>({status:"POSTED",content_hash:hash})));
+    console.info(JSON.stringify({ event: "test.document_filing.batch", documents: 11, elapsedMilliseconds: Date.now()-started, maximumConcurrentDownloads: cloud.maximumConcurrentDownloads }));
+
+  }, 60_000);
   it("creates and files a supplier credit from positive credit-note source metadata", async () => {
     const item = await discover("supplier-credit-note.png", "Synthetic unique supplier credit source");
     const claim = randomUUID();
