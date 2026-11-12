@@ -80,7 +80,7 @@ export async function loadEmailOperations(context: TenantTransactionContext) {
     ]);
     const messageDtos = [];
     for (const row of messages.rows) {
-      let sender = "Transient envelope removed";
+      let sender = row.error_code?.startsWith("RELAY_") ? "Rejected by mail relay; content not retained" : "Transient envelope removed";
       let subject = "";
       if (row.envelope_ciphertext) {
         const envelope = z.object({ from: z.string(), subject: z.string() }).passthrough().parse(

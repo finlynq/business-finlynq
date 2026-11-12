@@ -10,6 +10,7 @@ import { PERMISSIONS } from "@/modules/identity/permissions";
 import { assertTenantWritesEnabled, assertWritableOrganization } from "@/modules/workspace/write-policy";
 import { CloudDrive, credentialSchema, exchangeStorageToken, locationSchema, StorageError, type StorageCredentials, type StorageLocation } from "./provider";
 import type { StorageProvider } from "./model";
+import { isDocumentFilingWorkerContext } from "./filing-worker-context";
 import { isInboundWorkerContext } from "@/modules/email/worker-context";
 
 export type ConnectionRow = {
@@ -19,8 +20,8 @@ export type ConnectionRow = {
   oauth_state_hash: string | null;
 };
 export function realStorageContext(context: TenantTransactionContext) {
-  const trustedInboundWorker = isInboundWorkerContext(context);
-  if (context.sessionMode === "demo" || /demo/i.test(context.authMethod) || (!context.sessionId && !trustedInboundWorker)) {
+  const trustedStorageWorker = isInboundWorkerContext(context) || isDocumentFilingWorkerContext(context);
+  if (context.sessionMode === "demo" || /demo/i.test(context.authMethod) || (!context.sessionId && !trustedStorageWorker)) {
     throw new StorageError("STORAGE_REAL_ACCOUNT", "Cloud storage requires a signed-in real account or the verified inbound-email worker.");
   }
 }
@@ -88,7 +89,7 @@ export type PreparedDriveAccess = Readonly<{
   connection: ConnectionRow;
   location: StorageLocation;
   credentials: StoredCredentials;
-  authorizationAccess: "read" | "banking";
+  authorizationAccess: "read" | "banking" | "manage";
 }>;
 
 const CREDENTIAL_REFRESH_THRESHOLD_MILLISECONDS = 60_000;
