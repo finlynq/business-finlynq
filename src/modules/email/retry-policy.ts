@@ -16,6 +16,8 @@ export function inboundFailure(error: unknown): Readonly<{
     return { code: "INBOUND_ACCESS_DENIED", stage: "AUTHORIZATION", quarantine: true };
   }
   if (error instanceof StorageError) {
+    if (error.code === "STORAGE_PDF_CORRUPT") return { code: "ATTACHMENT_CORRUPT", stage: "CONTENT", quarantine: true };
+    if (error.code === "STORAGE_RENDER_UNAVAILABLE") return { code: "PDF_VALIDATOR_UNAVAILABLE", stage: "CONFIGURATION", quarantine: false };
     if (["STORAGE_REAL_ACCOUNT", "STORAGE_SCOPE_MISSING", "STORAGE_SCOPE_EXCESSIVE"].includes(error.code)) {
       return { code: error.code, stage: "AUTHORIZATION", quarantine: true };
     }

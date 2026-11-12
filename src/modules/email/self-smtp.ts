@@ -21,6 +21,7 @@ const relayPayloadSchema = z.object({
   received_at: z.iso.datetime({ offset: true }),
   attachments: z.array(z.object({
     filename: z.string().trim().min(1).max(180),
+    original_filename: z.string().trim().min(1).max(180).regex(/^[^.\\/\x00-\x1f]+$/).optional(),
     content_type: z.string().trim().min(1).max(200),
     size: z.number().int().min(1).max(MAX_MESSAGE_BYTES),
     content_base64: z.string().max(4 * Math.ceil(MAX_MESSAGE_BYTES / 3)),
@@ -69,7 +70,11 @@ export function parseRelayMessage(rawBody: Buffer): InboundProviderMessage {
         content.fill(0);
         throw new RelayPayloadError();
       }
+      if (attachment.original_filename && (attachment.filename !== "attachment.pdf" || attachment.content_type !== "application/pdf")) {
+        content.fill(0); throw new RelayPayloadError();
+      }
       attachments.push({ id: String(index), filename: attachment.filename,
+        ...(attachment.original_filename ? { originalFilename: attachment.original_filename } : {}),
         mimeType: attachment.content_type, declaredSize: attachment.size, content });
     }
     return inboundProviderMessageSchema.parse({
@@ -92,4 +97,21 @@ export function parseRelayMessage(rawBody: Buffer): InboundProviderMessage {
     if (error instanceof RelayPayloadError) throw error;
     throw new RelayPayloadError();
   }
+}
+
+
+export const relayRejectionSchema = z.object({
+  kind: z.literal("relay_rejection"),
+  message_id: z.string().trim().min(1).max(500),
+  recipient: emailAddressSchema,
+  received_at: z.iso.datetime({ offset: true }),
+  reasons: z.array(z.enum(["oversize_total", "too_many_attachments", "oversize_attachment", "blocked_attachment_type", "invalid_pdf_content", "empty_message", "spf_fail"])).min(1).max(7),
+}).strict();
+export type RelayRejection = z.infer<typeof relayRejectionSchema>;
+export function parseRelayRejection(rawBody: Buffer): RelayRejection | null {
+  try {
+    const value: unknown = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(rawBody));
+    if (typeof value !== "object" || value === null || !("kind" in value)) return null;
+    return relayRejectionSchema.parse(value);
+  } catch { throw new RelayPayloadError(); }
 }

@@ -1,8 +1,8 @@
 import { createHmac } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const { ingest, secret } = vi.hoisted(() => ({ ingest: vi.fn(), secret: vi.fn() }));
-vi.mock("@/modules/email/inbound", () => ({ ingestInboundEmail: ingest }));
+const { ingest, reject, secret } = vi.hoisted(() => ({ ingest: vi.fn(), reject: vi.fn(), secret: vi.fn() }));
+vi.mock("@/modules/email/inbound", () => ({ ingestInboundEmail: ingest, recordRelayRejection: reject }));
 vi.mock("@/modules/email/secrets", () => ({ inboundRelaySecret: secret }));
 vi.mock("@/observability/request-observability", () => ({ observeRouteHandler: (_: string, handler: unknown) => handler }));
 import { POST } from "@/app/api/email/inbound/self-smtp/route";
@@ -96,4 +96,20 @@ describe("self-hosted receiving endpoint", () => {
     expect((await POST(request())).status).toBe(503);
     expect(ingest).not.toHaveBeenCalled();
   });
+});
+
+
+it("authenticates a content-free rejection receipt and refuses extra payload fields", async () => {
+  vi.stubEnv("BUSINESS_FINLYNQ_INBOUND_EMAIL_DOMAIN", "mail.finlynq.com");
+  vi.stubEnv("BUSINESS_FINLYNQ_INBOUND_EMAIL_PREFIX", "businessdev-");
+  secret.mockReturnValue(testSecret);
+  reject.mockResolvedValue({accepted:true});
+  const receipt = {kind:"relay_rejection",message_id:"mailpit-rejected",recipient:`businessdev-${"a".repeat(32)}@mail.finlynq.com`,received_at:new Date().toISOString(),reasons:["blocked_attachment_type"]};
+  const body = JSON.stringify(receipt);
+  expect((await POST(request({body,messageId:receipt.message_id}))).status).toBe(200);
+  expect(reject).toHaveBeenCalledWith(receipt);
+  reject.mockClear();
+  expect((await POST(request({body,signature:`sha256=${"0".repeat(64)}`}))).status).toBe(401);
+  expect((await POST(request({body:JSON.stringify({...receipt,text:"must not be accepted"})}))).status).toBe(400);
+  expect(reject).not.toHaveBeenCalled();
 });

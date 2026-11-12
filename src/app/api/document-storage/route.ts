@@ -1,6 +1,6 @@
 import { observeRouteHandler } from "@/observability/request-observability";
 import { requestIdFor } from "@/observability/request-correlation";
-import { NextRequest, NextResponse } from "next/server";
+import { after, NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { requestPrincipal } from "@/modules/identity/session";
 import { validateSameOriginMutation } from "@/modules/identity/request-security";
@@ -8,7 +8,7 @@ import { MutationBodyError, readBoundedJson } from "@/modules/ledger/request-bod
 import { consumeLedgerMutationRateLimit } from "@/modules/ledger/mutation-rate-limit";
 import { mutationContext } from "@/modules/workspace/write-policy";
 import { disconnectStorage, listStorageConnections, startStorageConnection } from "@/modules/document-storage/connections";
-import { claimInboxDocument, listDocumentInbox, retryDocumentFiling, reviewInboxDocument, syncDocumentInbox } from "@/modules/document-storage/inbox";
+import { claimInboxDocument, listDocumentInbox, scheduleDocumentFiling, reviewInboxDocument, syncDocumentInbox } from "@/modules/document-storage/inbox";
 import { uploadInboxDocument } from "@/modules/document-storage/upload";
 import { claimInboxSchema, connectStorageSchema, listInboxSchema, retryFilingSchema, reviewInboxSchema, syncInboxSchema, uploadInboxSchema } from "@/modules/document-storage/model";
 import { StorageError } from "@/modules/document-storage/provider";
@@ -53,7 +53,7 @@ async function mutate(request: NextRequest) {
       case "connect": result = await startStorageConnection(principal, body.input); break;
       case "disconnect": result = await disconnectStorage(context, body.input.connectionId); break;
       case "sync": result = await syncDocumentInbox(context, body.input); break;
-      case "retry": result = await retryDocumentFiling(context, body.input); break;
+      case "retry": result = await scheduleDocumentFiling(context, body.input, (task) => after(task)); break;
       case "claim": result = await claimInboxDocument(context, body.input); break;
       case "review": result = await reviewInboxDocument(context, body.input); break;
       case "upload": result = await uploadInboxDocument(context, body.input); break;

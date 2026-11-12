@@ -1,6 +1,6 @@
 import { createHmac } from "node:crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { MAX_RELAY_BODY_BYTES, parseRelayMessage, readRelayBody, RelayPayloadError } from "@/modules/email/self-smtp";
+import { MAX_RELAY_BODY_BYTES, parseRelayRejection, parseRelayMessage, readRelayBody, RelayPayloadError } from "@/modules/email/self-smtp";
 import { verifyRelayWebhook, WebhookSignatureError } from "@/modules/email/signature";
 import { emailSecretReadiness, inboundRelaySecret } from "@/modules/email/secrets";
 import { emailProviderReadiness } from "@/modules/email/configuration";
@@ -94,4 +94,14 @@ describe("self-hosted Mailpit relay protocol", () => {
     vi.stubEnv("NODE_ENV", "production");
     expect(() => inboundRelaySecret()).toThrow("Production requires");
   });
+});
+
+
+it("preserves extensionless filename provenance only for the normalized PDF path", () => {
+  const attachment = {...payload().attachments[0],filename:"attachment.pdf",original_filename:"attachment"};
+  expect(parseRelayMessage(bytes({...payload(),attachments:[attachment]})).attachments[0]).toMatchObject({filename:"attachment.pdf",originalFilename:"attachment"});
+  for (const bad of [{...attachment,original_filename:"invoice.exe"},{...attachment,filename:"invoice.exe"},{...attachment,content_type:"application/octet-stream"}]) {
+    expect(()=>parseRelayMessage(bytes({...payload(),attachments:[bad]}))).toThrow(RelayPayloadError);
+  }
+  expect(()=>parseRelayRejection(bytes({kind:"relay_rejection",message_id:"x",recipient,received_at:timestamp,reasons:["arbitrary-private-reason"]}))).toThrow(RelayPayloadError);
 });

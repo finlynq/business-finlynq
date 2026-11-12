@@ -1,10 +1,11 @@
 import { readInvoiceNotifications } from "@/modules/email/invoice-notifications";
-import { createHmac, randomBytes, randomUUID } from "node:crypto";
+import { createHash, createHmac, randomBytes, randomUUID } from "node:crypto";
 import { Pool } from "pg";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { closeDatabasePool, withTenantTransaction } from "@/db/transaction";
 import { LocalRootKeyProvider, serializeWrappedKey } from "@/security/organization-encryption";
 import { loadOrganizationRootKek } from "@/security/root-secret";
+import { decryptEmailValue } from "@/modules/email/crypto";
 import { encryptStorageValue, realStorageContext } from "@/modules/document-storage/store";
 import { configurePersonalEmailAlias, provisionPersonalEmailAlias } from "@/modules/email/configuration";
 import { loadInboundMessageForRetry, retryInboundMessage } from "@/modules/email/inbound";
@@ -135,18 +136,22 @@ run("signed inbound email and durable retries with tenant-restricted storage", (
   });
   afterAll(async () => { await closeDatabasePool(); await owner.end(); vi.unstubAllEnvs(); });
 
-  function delivery(messageId = randomUUID(), options: { signature?: string; recipient?: string; attachments?: number } = {}) {
-    const bytes = onePagePdf();
+  function delivery(messageId = randomUUID(), options: { signature?: string; recipient?: string; attachments?: number; extensionless?: boolean; bytes?: Buffer } = {}) {
+    const bytes = options.bytes ?? onePagePdf();
     const body = JSON.stringify({ message_id: messageId, smtp_message_id: null,
       from: { name: null, address: "supplier@example.test" }, to: [], recipient: options.recipient ?? address,
       subject: "Synthetic invoice", text: null, html: null, received_at: new Date().toISOString(),
-      attachments: Array.from({ length: options.attachments ?? 1 }, (_, i) => ({ filename: i ? "receipt.pdf" : "invoice.pdf",
+      attachments: Array.from({ length: options.attachments ?? 1 }, (_, i) => ({ filename: options.extensionless ? "attachment.pdf" : i ? "receipt.pdf" : "invoice.pdf",
+        ...(options.extensionless ? {original_filename:"attachment"} : {}),
         content_type: "application/pdf", size: bytes.length, content_base64: bytes.toString("base64") })),
     });
+    return signedBody(body, options.signature);
+  }
+  function signedBody(body: string, signature?: string) {
     const timestamp = new Date().toISOString();
     return new Request("https://dev.business.finlynq.com/api/email/inbound/self-smtp", {
       method: "POST", body, headers: { "Content-Type": "application/json", "X-Mail-Timestamp": timestamp,
-        "X-Mail-Signature": options.signature ?? `sha256=${createHmac("sha256", secret).update(`${timestamp}.${body}`).digest("hex")}` },
+        "X-Mail-Signature": signature ?? `sha256=${createHmac("sha256", secret).update(`${timestamp}.${body}`).digest("hex")}` },
     });
   }
   async function row(providerId: string) {
@@ -285,4 +290,43 @@ run("signed inbound email and durable retries with tenant-restricted storage", (
       await retryInboundMessage(context(), message.id);
     }
   });
+  it("validates a genuinely readable extensionless PDF and preserves encrypted original provenance with EMAIL lineage", async () => {
+    const providerId=randomUUID(), before=cloud.uploads;
+    expect((await POST(delivery(providerId,{extensionless:true}))).status).toBe(200);
+    const message=await row(providerId);
+    expect(message.status).toBe("READY");
+    const attachment=(await owner.query(`SELECT * FROM inbound_email_attachments WHERE message_id=$1`,[message.id])).rows[0];
+    expect(attachment).toMatchObject({status:"INBOXED",mime_type:"application/pdf"});
+    const storedName=await withTenantTransaction(context(),client=>decryptEmailValue(client,attachment,"inbound_email_attachments","filename_ciphertext",attachment.filename_ciphertext));
+    expect(storedName).toEqual({filename:"attachment.pdf",originalFilename:"attachment"});
+    const inbox=(await owner.query("SELECT status,source_document_id,sha256,provider_file_id FROM document_inbox_items WHERE id=$1",[attachment.inbox_item_id])).rows[0];
+    expect(inbox).toMatchObject({status:"PENDING",source_document_id:null,sha256:null});
+    expect(createHash("sha256").update(cloud.bytes.get(inbox.provider_file_id)!).digest("hex")).toBe(attachment.sha256);
+    expect(cloud.uploads).toBe(before+1);
+    expect((await POST(delivery(providerId,{extensionless:true}))).status).toBe(200);
+    expect(cloud.uploads).toBe(before+1);
+  },30_000);
+  it("quarantines a malformed extensionless PDF even when its header and EOF marker match",async()=>{
+    const providerId=randomUUID(), before=cloud.uploads;
+    expect((await POST(delivery(providerId,{extensionless:true,bytes:Buffer.from("%PDF-1.7\nbroken structure\n%%EOF")}))).status).toBe(200);
+    expect((await row(providerId)).status).toBe("NEEDS_REVIEW");
+    expect((await owner.query("SELECT status,quarantine_code,inbox_item_id FROM inbound_email_attachments WHERE message_id=$1",[(await row(providerId)).id])).rows).toEqual([{status:"QUARANTINED",quarantine_code:"ATTACHMENT_CORRUPT",inbox_item_id:null}]);
+    expect(cloud.uploads).toBe(before);
+  },30_000);
+  it("records a content-free permanent relay rejection once and exposes it only to the authorized tenant",async()=>{
+    const providerId=randomUUID();
+    const receipt={kind:"relay_rejection",message_id:providerId,recipient:address,received_at:new Date().toISOString(),reasons:["blocked_attachment_type"]};
+    const body=JSON.stringify(receipt);
+    expect((await POST(signedBody(body))).status).toBe(200);
+    expect((await POST(signedBody(body))).status).toBe(200);
+    const message=await row(providerId);
+    expect(message).toMatchObject({status:"QUARANTINED",error_code:"RELAY_BLOCKED_ATTACHMENT_TYPE",envelope_ciphertext:null,next_retry_at:null});
+    expect((await owner.query("SELECT count(*)::int AS n FROM inbound_email_attachments WHERE message_id=$1",[message.id])).rows[0].n).toBe(0);
+    expect((await owner.query("SELECT count(*)::int AS n FROM email_operation_events WHERE aggregate_id=$1 AND event_type='RELAY_REJECTION'",[message.id])).rows[0].n).toBe(1);
+    expect((await loadEmailOperations(context())).messages.find(value=>value.id===message.id)).toMatchObject({errorCode:"RELAY_BLOCKED_ATTACHMENT_TYPE",sender:"Rejected by mail relay; content not retained",subject:"",attachments:[]});
+    expect((await retryInboundMessage(context(),message.id)).status).toBe("UNCHANGED");
+    expect((await withTenantTransaction({...context(),organizationId:ids.otherOrg},client=>client.query("SELECT id FROM inbound_email_messages WHERE id=$1",[message.id]))).rows).toEqual([]);
+    expect((await POST(signedBody(JSON.stringify({...receipt,message_id:randomUUID(),recipient:`businessdev-${"f".repeat(32)}@mail.finlynq.com`})))).status).toBe(200);
+  });
+
 });
