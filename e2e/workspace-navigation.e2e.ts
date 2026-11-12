@@ -1,5 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
-import { installReleaseAcceptanceRoute, releaseGet } from "./release-acceptance";
+import { installReleaseAcceptanceRoute } from "./release-acceptance";
 
 test.beforeEach(async ({ context }) => {
   await installReleaseAcceptanceRoute(context);
@@ -75,10 +75,13 @@ test("guidance file links preserve selection, Markdown and browser history", asy
   await expect(page).toHaveURL(/scope=platform&path=accounting%2Fworkflow\.md/i);
   const markdown = panel.getByRole("link", { name: "Open plain Markdown", exact: true });
   await expect(markdown).toHaveAttribute("href", "/api/organization/guidance/file?scope=platform&path=accounting%2Fworkflow.md");
-  const response = await releaseGet(page.request, (await markdown.getAttribute("href"))!);
-  expect(response.status()).toBe(200);
-  expect(response.headers()["content-type"]).toContain("text/markdown");
-  expect(await panel.locator("pre").textContent()).toBe(await response.text());
+  const response = await page.evaluate(async (href) => {
+    const result = await fetch(href, { credentials: "same-origin", cache: "no-store" });
+    return { status: result.status, contentType: result.headers.get("content-type"), content: await result.text() };
+  }, (await markdown.getAttribute("href"))!);
+  expect(response.status).toBe(200);
+  expect(response.contentType).toContain("text/markdown");
+  expect(await panel.locator("pre").textContent()).toBe(response.content);
 
   await page.locator(`a[href="${index}"]`).click();
   await expect(title).toHaveText("index.md");
