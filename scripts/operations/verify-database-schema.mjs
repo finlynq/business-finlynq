@@ -128,6 +128,7 @@ const runtimeExecuteFunctions = [
   "app.current_actor_has_permission(text)",
   "app.resolve_inbound_email_alias(text)",
   "app.due_inbound_email_retries(integer)",
+    "app.due_document_filings(integer)",
   "app.lock_active_email_membership(uuid)",
   "app.resolve_outbound_email_attempt(text)",
   "app.mcp_user_is_active(uuid)",
@@ -1918,6 +1919,13 @@ export function compareSchemaContracts(snapshotContract, databaseContract) {
         expectedPolicies.push({
           name: "email_queue_owner_read", command: "SELECT", permissive: true, roles: ["PUBLIC"],
           usingExpression: `current_user=pg_get_userbyid((SELECT pg_class.relowner FROM pg_class WHERE pg_class.oid='public.${tableName}'::regclass))`,
+          withCheckExpression: null,
+        });
+      }
+      if (tableName === "document_inbox_items") {
+        expectedPolicies.push({
+          name: "filing_queue_owner_read", command: "SELECT", permissive: true, roles: ["PUBLIC"],
+          usingExpression: `current_user=pg_get_userbyid((SELECT pg_class.relowner FROM pg_class WHERE pg_class.oid='public.document_inbox_items'::regclass))`,
           withCheckExpression: null,
         });
       }

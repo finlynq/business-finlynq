@@ -813,7 +813,7 @@ describe("database schema verifier", () => {
       }),
       { checks: 0, foreignKeys: 0, indexes: 0, uniqueConstraints: 0 },
     );
-    expect(counts).toEqual({ checks: 369, foreignKeys: 115, indexes: 312, uniqueConstraints: 57 });
+    expect(counts).toEqual({ checks: 370, foreignKeys: 115, indexes: 313, uniqueConstraints: 57 });
     expect(migrationContract.get("bank_connections")?.checks.get("bank_connections_provider_check"))
       .toMatchObject({ expression: "provider=any(array['SIMPLEFIN','FILE_IMPORT'])" });
     expect(migrationContract.get("bank_match_allocations")?.checks.get("bank_match_allocations_command_hash_sha256"))
@@ -1074,30 +1074,37 @@ describe("database schema verifier", () => {
     ]);
   });
 
-  it("requires the exact SELECT-only owner predicate for inbound retry routing", () => {
+  it.each([
+    ["inbound_email_messages", "email_queue_owner_read"],
+    ["document_inbox_items", "filing_queue_owner_read"],
+  ])("requires the exact SELECT-only owner predicate for %s", (tableName, policyName) => {
     const fixture = snapshot();
     const expected = buildSnapshotSchemaContract({ tables: {
-      "public.inbound_email_messages": { ...fixture.tables["public.journal_lines"], name: "inbound_email_messages" },
+      [`public.${tableName}`]: { ...fixture.tables["public.journal_lines"], name: tableName },
     } });
     const sample = matchingDatabaseContract().tables.get("journal_lines")!;
-    const table = { ...sample, name: "inbound_email_messages", policies: [...sample.policies, {
-      name: "email_queue_owner_read", command: "SELECT", permissive: true, roles: ["PUBLIC"],
-      usingExpression: "current_user=pg_get_userbyid((SELECT pg_class.relowner FROM pg_class WHERE pg_class.oid='public.inbound_email_messages'::regclass))",
+    const table = { ...sample, name: tableName, policies: [...sample.policies, {
+      name: policyName, command: "SELECT", permissive: true, roles: ["PUBLIC"],
+      usingExpression: `current_user=pg_get_userbyid((SELECT pg_class.relowner FROM pg_class WHERE pg_class.oid='public.${tableName}'::regclass))`,
       withCheckExpression: null,
     }] };
-    const actual = { tables: new Map([["inbound_email_messages", table]]) };
+    if (tableName === "document_inbox_items") {
+      table.policies[0].usingExpression = normalizeRlsPolicyExpression("organization_id=app.current_organization_id() AND (app.current_actor_has_permission(owner_module || '.read'::text) OR app.current_actor_has_permission(owner_module || '.manage'::text))");
+      table.policies[0].withCheckExpression = normalizeRlsPolicyExpression("organization_id=app.current_organization_id() AND app.current_actor_has_permission(owner_module || '.manage'::text)");
+    }
+    const actual = { tables: new Map([[tableName, table]]) };
     expect(compareSchemaContracts(expected, actual)).toEqual([]);
     table.policies[1].usingExpression = "true";
     expect(compareSchemaContracts(expected, actual)).toContain(
-      "[RLS_POLICY_USING] public.inbound_email_messages.email_queue_owner_read USING predicate differs from the reviewed contract",
+      `[RLS_POLICY_USING] public.${tableName}.${policyName} USING predicate differs from the reviewed contract`,
     );
     table.policies[1].command = "ALL";
     expect(compareSchemaContracts(expected, actual)).toContain(
-      "[RLS_POLICY_COMMAND] public.inbound_email_messages.email_queue_owner_read must use FOR SELECT; found ALL",
+      `[RLS_POLICY_COMMAND] public.${tableName}.${policyName} must use FOR SELECT; found ALL`,
     );
     table.policies.pop();
     expect(compareSchemaContracts(expected, actual)).toContain(
-      "[RLS_POLICY_EXPECTED_MISSING] public.inbound_email_messages must define reviewed RLS policy email_queue_owner_read",
+      `[RLS_POLICY_EXPECTED_MISSING] public.${tableName} must define reviewed RLS policy ${policyName}`,
     );
   });
 

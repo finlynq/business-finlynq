@@ -61,3 +61,33 @@ test("workspace navigation stays clear, accessible and state-preserving", async 
   await page.keyboard.press("Escape");
   await expect(page.getByRole("button", { name: "Open navigation", exact: true })).toBeFocused();
 });
+
+
+test("guidance file links preserve selection, Markdown and browser history", async ({ page }) => {
+  await openDemo(page, "/app/settings/guidance");
+  const title = page.locator("#guidance-file-title");
+  const panel = page.locator('section[aria-labelledby="guidance-file-title"]');
+  const workflow = "/app/settings/guidance?scope=platform&path=accounting%2Fworkflow.md";
+  const index = "/app/settings/guidance?scope=platform&path=index.md";
+
+  await page.locator(`a[href="${workflow}"]`).click();
+  await expect(title).toHaveText("accounting/workflow.md");
+  await expect(page).toHaveURL(/scope=platform&path=accounting%2Fworkflow\.md/i);
+  const markdown = panel.getByRole("link", { name: "Open plain Markdown", exact: true });
+  await expect(markdown).toHaveAttribute("href", "/api/organization/guidance/file?scope=platform&path=accounting%2Fworkflow.md");
+  const response = await page.evaluate(async (href) => {
+    const result = await fetch(href, { credentials: "same-origin", cache: "no-store" });
+    return { status: result.status, contentType: result.headers.get("content-type"), content: await result.text() };
+  }, (await markdown.getAttribute("href"))!);
+  expect(response.status).toBe(200);
+  expect(response.contentType).toContain("text/markdown");
+  expect(await panel.locator("pre").textContent()).toBe(response.content);
+
+  await page.locator(`a[href="${index}"]`).click();
+  await expect(title).toHaveText("index.md");
+  await expect(markdown).toHaveAttribute("href", "/api/organization/guidance/file?scope=platform&path=index.md");
+  await page.goBack();
+  await expect(title).toHaveText("accounting/workflow.md");
+  await page.goForward();
+  await expect(title).toHaveText("index.md");
+});

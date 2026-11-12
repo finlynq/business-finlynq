@@ -1,4 +1,5 @@
 import "server-only";
+import { filingProgress, type FilingFields } from "./filing-policy";
 import { randomUUID } from "node:crypto";
 import type { PoolClient } from "pg";
 import { z } from "zod";
@@ -9,7 +10,7 @@ import { StorageError, type CloudFile } from "./provider";
 import { classifyInboxFile } from "./file-types";
 import { MAX_CLOUD_DOCUMENT_BYTES } from "./limits";
 
-export type InboxRow = {
+export type InboxRow = FilingFields & {
   id: string; organization_id: string; connection_id: string; owner_module: "payables" | "receivables";
   provider_file_id: string; content_version: string; metadata_ciphertext: string; key_version: number;
   mime_type: string; byte_size: string | number; sha256: string | null; status: z.infer<typeof inboxStatusSchema>;
@@ -49,6 +50,7 @@ export const processingSchema = z.object({
   name: z.string().optional(),
   folders: z.array(z.string()).optional(),
   destinationId: z.string().optional(),
+  filingLastProgressAt: z.iso.datetime().optional(),
   reason: z.string().optional(),
   statementImport: statementCompletionSchema.optional(),
   noAccountingReview: z.object({ treatment: noAccountingTreatmentSchema, reason: z.string(), reviewedBy: z.uuid(),
@@ -115,13 +117,14 @@ export async function itemMetadata(client: PoolClient, row: InboxRow) {
   const metadata = await itemSourceMetadata(client, row);
   const processing = await itemProcessing(client, row);
   const successfulEmailProcessing = isEmlInboxItem(row, metadata) && processing.email !== undefined;
-  return { id: row.id, connectionId: row.connection_id, module: row.owner_module, filename: metadata.name,
+  const filing = filingProgress(row, Date.now(), processing.filingLastProgressAt);
+  return { filing, id: row.id, connectionId: row.connection_id, module: row.owner_module, filename: metadata.name,
     sourcePath: metadata.sourcePath ?? metadata.name, mimeType: row.mime_type, byteSize: Number(row.byte_size), status: row.status, sha256: row.sha256,
     leaseUntil: row.lease_until?.toISOString() ?? null, assetId: row.asset_id, sourceDocumentId: row.source_document_id,
     canonicalName: processing.name ?? null, filingMetadata: processing.metadata ?? null,
     noAccountingReview: processing.noAccountingReview ?? null,
-    reason: processing.reason ?? (successfulEmailProcessing ? null : metadata.reason ?? null),
-    errorCode: successfulEmailProcessing ? null : metadata.errorCode ?? null, routingTarget: metadata.routingTarget ?? null,
+    reason: filing ? filing.reason : processing.reason ?? (successfulEmailProcessing ? null : metadata.reason ?? null),
+    errorCode: filing ? filing.errorCode : successfulEmailProcessing ? null : metadata.errorCode ?? null, routingTarget: metadata.routingTarget ?? null,
     sourceMessages: metadata.sourceMessages ?? [], pdfPreparation: metadata.pdfPreparation ?? null,
     createdAt: row.created_at.toISOString() };
 }
