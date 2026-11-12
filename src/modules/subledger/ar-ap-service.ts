@@ -35,3 +35,5 @@ export type {
   VoidedSettlementResult,
   VoidSettlementCommand,
 } from "./ar-ap-types";
+
+export { applySupplierCredit, applySupplierCreditSchema } from "./supplier-credit-application";

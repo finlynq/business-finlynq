@@ -375,11 +375,20 @@ install -m 0600 -- "$canonical_environment_file" "$environment_snapshot_file"
 environment_file="$environment_snapshot_file"
 
 base_compose() {
-  env -i "PATH=$PATH" docker compose --project-name business-finlynq \
+  local scanner_mode scanner_channel
+  local -a scanner_files scanner_environment_values
+  source "$candidate_source_root/deploy/evidence/shared/compose-contract.sh"
+  scanner_compose_contract "$environment_file" business-finlynq "$candidate_source_root" \
+    || fail "rollback scanner mode is invalid"
+  env -i "PATH=$PATH" "${scanner_environment_values[@]}" docker compose --project-name business-finlynq \
     --project-directory "$candidate_source_root" --env-file "$environment_file" \
-    -f "$candidate_source_root/docker-compose.yml" "$@"
+    -f "$candidate_source_root/docker-compose.yml" "${scanner_files[@]}" "$@"
 }
 rendered_current_compose="$(base_compose config --format json)"
+if [[ "$(jq -r '.services.evidence_scanner.image' <<<"$rendered_current_compose")" == node:* ]]; then
+  python3 "$candidate_source_root/deploy/evidence/shared/attest.py" business-finlynq \
+    || fail "rollback requires a healthy verified shared scanner and private forwarder"
+fi
 deployed_revision="$(jq -r '.services.app.environment.BUSINESS_FINLYNQ_IMAGE_REVISION // empty' <<<"$rendered_current_compose")"
 [[ "$deployed_revision" == "$candidate_revision" ]] \
   || fail "canonical Compose environment does not identify the candidate release"
@@ -751,6 +760,13 @@ rollback_compose() {
   )
   compose_files+=(-f "$candidate_source_root/deploy/release/docker-compose.application-rollback.yml")
   local -a compatibility_environment=()
+  local scanner_mode scanner_channel
+  local -a scanner_files scanner_environment_values
+  source "$candidate_source_root/deploy/evidence/shared/compose-contract.sh"
+  scanner_compose_contract "$environment_file" business-finlynq "$candidate_source_root" \
+    || fail "rollback scanner mode is invalid"
+  compose_files+=("${scanner_files[@]}")
+  compatibility_environment+=("${scanner_environment_values[@]}")
   if [[ "$legacy_rollback_adapter_required" == true ]]; then
     compose_files+=(-f "$candidate_source_root/deploy/rollback/docker-compose.legacy-inline-password.yml")
     [[ -f "$legacy_rollback_compose_override" && ! -L "$legacy_rollback_compose_override" \

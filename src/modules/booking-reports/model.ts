@@ -52,7 +52,7 @@ export function summarizeBookingEntries(entries: readonly BookingEntry[], heldIt
     if (!entryDebit.eq(entryCredit)) exceptions.push(`${entry.sourceNumber}: debit and credit amounts do not balance`);
     debit = debit.plus(entryDebit); credit = credit.plus(entryCredit);
     if (entry.linesArePosted) { postedDebit = postedDebit.plus(entryDebit); postedCredit = postedCredit.plus(entryCredit); }
-    if (entry.kind === "SUPPLIER_BILL" || entry.kind === "SALES_INVOICE") {
+    if (entry.kind === "SUPPLIER_BILL" || entry.kind === "SALES_INVOICE" || entry.kind === "SUPPLIER_CREDIT_NOTE") {
       const total = invoices[entry.currency] ?? { net: "0", tax: "0", gross: "0", outstanding: "0" };
       invoices[entry.currency] = { net: exact(total.net).plus(entry.net ?? "0").toFixed(), tax: exact(total.tax).plus(entry.tax ?? "0").toFixed(),
         gross: exact(total.gross).plus(entry.gross ?? "0").toFixed(), outstanding: exact(total.outstanding).plus(entry.outstanding ?? "0").toFixed() };
@@ -69,8 +69,8 @@ export function summarizeBookingEntries(entries: readonly BookingEntry[], heldIt
   const stale = entries.some((entry) => entry.differences.length > 0);
   const completeness = stale ? "STALE" as const : exceptions.length ? "HELD" as const : "COMPLETE" as const;
   const status = posted === entries.length && completeness === "COMPLETE" ? "POSTED" as const : posted > 0 ? "PARTIALLY_POSTED" as const : "DRAFT" as const;
-  return { status, completeness, counts: { bills: entries.filter((entry) => ["SUPPLIER_BILL","SALES_INVOICE"].includes(entry.kind)).length,
-    settlements: entries.filter((entry) => ["SUPPLIER_PAYMENT","CUSTOMER_RECEIPT"].includes(entry.kind)).length,
+  return { status, completeness, counts: { bills: entries.filter((entry) => ["SUPPLIER_BILL","SALES_INVOICE","SUPPLIER_CREDIT_NOTE"].includes(entry.kind)).length,
+    settlements: entries.filter((entry) => ["SUPPLIER_PAYMENT","CUSTOMER_RECEIPT","SUPPLIER_CREDIT_APPLICATION"].includes(entry.kind)).length,
     manualJournals: entries.filter((entry) => entry.kind === "JOURNAL").length, posted, held: entries.length - posted + heldItems.length },
     invoiceCurrencies: invoices, recognizedFunctional: recognized.toFixed(), debitFunctional: debit.toFixed(), creditFunctional: credit.toFixed(),
     postedDebitFunctional: postedDebit.toFixed(), postedCreditFunctional: postedCredit.toFixed(), clearing, exceptions };

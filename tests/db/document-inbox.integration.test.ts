@@ -978,6 +978,26 @@ run("cloud inbox PostgreSQL lifecycle", () => {
     )).rows).toEqual(Array.from({ length: 3 }, () => ({ status: "POSTED", content_hash: hash })));
     bytes.fill(0);
   });
+  it("creates and files a supplier credit from positive credit-note source metadata", async () => {
+    const item = await discover("supplier-credit-note.png", "Synthetic unique supplier credit source");
+    const claim = randomUUID();
+    await claimInboxDocument(requestContext(), { itemId: item.id, claimId: claim });
+    const read = await readInboxDocument(requestContext(), { itemId: item.id, claimId: claim });
+    const command = { itemId: item.id, claimId: claim, sha256: read.sha256,
+      metadata: { documentType: "CREDIT_NOTE" as const, documentDate: draftInput.documentDate,
+        counterparty: "Synthetic supplier", reference: "CREDIT-INBOX-TEST", currency: "USD", total: "158.20" },
+      action: { type: "CREATE_DRAFT" as const, draft: { ...draftInput, kind: "SUPPLIER_CREDIT_NOTE" as const,
+        sourceNumber: "CREDIT-INBOX-TEST" } }, reason: "Review original supplier credit note" };
+    const saved = await completeInboxDocument(requestContext(), command, true);
+    const stored = (await owner.query("SELECT snapshot FROM source_documents WHERE id=$1", [saved.item.sourceDocumentId])).rows[0];
+    expect(stored.snapshot).toMatchObject({ kind: "SUPPLIER_CREDIT_NOTE", grossTotal: "-158.20" });
+    expect((await completeInboxDocument(requestContext(), command, true)).idempotentReplay).toBe(true);
+    const filed = await retryDocumentFiling(requestContext(), { itemId: item.id });
+    expect(filed.item.status).toBe("FILED");
+    const evidence = await downloadDocumentEvidence({ context: requestContext(), assetId: filed.item.assetId!, sourceDocumentId: filed.item.sourceDocumentId! });
+    expect(createHash("sha256").update(evidence.bytes).digest("hex")).toBe(read.sha256);
+    evidence.bytes.fill(0);
+  });
   it("binds OAuth state to the session and invalidates it on disconnect", async () => {
     const started = await startStorageConnection(principal, { provider: "GOOGLE_DRIVE", legalEntityId: ids.entity, module: "payables", label: "Purchases", connectionId: ids.connection, sharedWithOrganization: true, accessAcknowledged: true });
     const state = new URL(started.authorizationUrl).searchParams.get("state")!;

@@ -1,0 +1,54 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { InvoiceNotificationBus } from "@/modules/mcp/invoice-notifications";
+import { INVOICE_NOTIFICATION_RESOURCE } from "@/modules/email/invoice-notifications";
+import type { InvoiceNotificationSummary } from "@/modules/email/invoice-notifications";
+const summary = (revision: string, shouldNotify = true) => ({ availability: "AVAILABLE", revision, shouldNotify } as InvoiceNotificationSummary);
+beforeEach(() => vi.useFakeTimers());
+afterEach(() => vi.useRealTimers());
+describe("invoice notification subscription lifecycle", () => {
+  it("delivers an arrival during an open session and suppresses unchanged retry/context state", async () => {
+    let current = summary("a", false);
+    const load = vi.fn(async () => current), denied = vi.fn(), listener = vi.fn();
+    const bus = new InvoiceNotificationBus(load, denied);
+    const unsubscribe = bus.subscribe(listener);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(listener).not.toHaveBeenCalled();
+    current = summary("b");
+    await vi.advanceTimersByTimeAsync(15_000);
+    expect(listener).toHaveBeenCalledWith({ kind: "resource_updated", uri: INVOICE_NOTIFICATION_RESOURCE, params: { "finlynq/revision": "b" } });
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(listener).toHaveBeenCalledTimes(1);
+    current = summary("c", false);
+    await vi.advanceTimersByTimeAsync(15_000);
+    expect(listener).toHaveBeenCalledTimes(2);
+    unsubscribe(); const calls=load.mock.calls.length;
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(load).toHaveBeenCalledTimes(calls);
+    expect(denied).not.toHaveBeenCalled();
+  });
+  it("announces existing backlog once on subscription, closes on revocation, and never shares listeners", async () => {
+    const load = vi.fn(async () => summary("backlog")), denied=vi.fn(), first=vi.fn(), other=vi.fn();
+    const bus = new InvoiceNotificationBus(load, denied);
+    const otherBus = new InvoiceNotificationBus(async () => summary("empty",false),vi.fn());
+    bus.subscribe(first); otherBus.subscribe(other);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(first).toHaveBeenCalledTimes(1); expect(other).not.toHaveBeenCalled();
+    load.mockRejectedValueOnce(new Error("Access revoked"));
+    await vi.advanceTimersByTimeAsync(15_000);
+    expect(denied).toHaveBeenCalledTimes(1);
+    const calls=load.mock.calls.length;
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(load).toHaveBeenCalledTimes(calls); expect(first).toHaveBeenCalledTimes(1);
+    otherBus.close();
+  });
+  it("does not emit a late response after disconnect or overlap slow source reads", async () => {
+    let finish!: (value: InvoiceNotificationSummary) => void;
+    const load=vi.fn(()=>new Promise<InvoiceNotificationSummary>(resolve=>{finish=resolve;})),listener=vi.fn();
+    const bus=new InvoiceNotificationBus(load,vi.fn());
+    const unsubscribe=bus.subscribe(listener);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(load).toHaveBeenCalledTimes(1);
+    unsubscribe(); finish(summary("late")); await vi.advanceTimersByTimeAsync(0);
+    expect(listener).not.toHaveBeenCalled();
+  });
+});

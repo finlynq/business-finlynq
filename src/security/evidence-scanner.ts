@@ -29,21 +29,31 @@ async function clamCommand(command: "VERSION" | "INSTREAM", bytes?: Buffer): Pro
       output += chunk.toString("utf8");
       if (output.length > 2048) return finish(new Error("Evidence scanner response was invalid"));
       const terminator = output.indexOf("\0");
-      if (terminator >= 0) finish(undefined, output.slice(0, terminator));
+      if (terminator >= 0) {
+        if (terminator !== output.length - 1 || !/^[\x20-\x7e]+\0$/.test(output)) {
+          return finish(new Error("Evidence scanner response was invalid"));
+        }
+        finish(undefined, output.slice(0, terminator));
+      }
     });
     socket.on("connect", () => {
-      socket.write(`z${command}\0`);
-      if (bytes) {
-        // Bound both the accepted file and each protocol chunk.
-        for (let offset = 0; offset < bytes.length; offset += 64 * 1024) {
-          const chunk = bytes.subarray(offset, offset + 64 * 1024);
-          const size = Buffer.alloc(4);
-          size.writeUInt32BE(chunk.length);
-          socket.write(size);
-          socket.write(chunk);
+      const write = (chunk: Buffer | string) => new Promise<void>((accept, deny) => {
+        socket.write(chunk, error => error ? deny(error) : accept());
+      });
+      void (async () => {
+        await write(`z${command}\0`);
+        if (bytes) {
+          // Preserve bounded chunks and honor backpressure from the shared gateway.
+          for (let offset = 0; offset < bytes.length; offset += 64 * 1024) {
+            const chunk = bytes.subarray(offset, offset + 64 * 1024);
+            const size = Buffer.alloc(4);
+            size.writeUInt32BE(chunk.length);
+            await write(size);
+            await write(chunk);
+          }
+          await write(Buffer.alloc(4));
         }
-        socket.write(Buffer.alloc(4));
-      }
+      })().catch(() => finish(new Error("Evidence scanning is unavailable")));
     });
   });
 }

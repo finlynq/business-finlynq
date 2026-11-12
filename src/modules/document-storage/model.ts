@@ -75,7 +75,7 @@ export const completeInboxSchema = claimInboxSchema.extend({
   sha256: z.string().regex(/^[a-f0-9]{64}$/), metadata: filingMetadataSchema,
   action: z.discriminatedUnion("type", [
     z.object({ type: z.literal("CREATE_DRAFT"), draft: createBusinessDocumentSchema.omit({ idempotencyKey: true }) }).strict(),
-    z.object({ type: z.literal("LINK_DRAFT"), kind: z.enum(["SALES_INVOICE", "SUPPLIER_BILL"]),
+    z.object({ type: z.literal("LINK_DRAFT"), kind: z.enum(["SALES_INVOICE", "SUPPLIER_BILL", "SUPPLIER_CREDIT_NOTE"]),
       sourceNumber: z.string().trim().min(1).max(50), expectedVersion: z.number().int().positive(),
       purpose: z.enum(["INVOICE", "RECEIPT", "SUPPORTING"]) }).strict(),
     z.object({ type: z.literal("LINK_POSTED"), confirmed: z.literal(true),

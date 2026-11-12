@@ -1,10 +1,10 @@
+import { businessDocumentMatchesMetadata } from "./source-metadata";
 import "server-only";
 import { reviewZeroInvoice } from "./reviewed-zero-invoice";
 import { createHash, createHmac } from "node:crypto";
 import { z } from "zod";
 import type { PoolClient } from "pg";
 import { withTenantTransaction, type TenantTransactionContext } from "@/db/transaction";
-import { exact } from "@/kernel/money";
 import { importBankStatementInTransaction, normalizeStatementImportDatabaseError } from "@/modules/banking/statement-import-service";
 import { linkFiledInboxEvidenceInTransaction } from "@/modules/ledger/journal-evidence";
 import { loadActiveOrganizationKey } from "@/security/organization-key-store";
@@ -355,7 +355,7 @@ export async function completeInboxDocument(context: TenantTransactionContext, i
       let businessKey: string | null = null;
       if (command.action.type === "CREATE_DRAFT") {
         const draft = command.action.draft;
-        if (DOCUMENT_KIND_POLICY[draft.kind].ownerModule !== connection.owner_module || draft.legalEntityId !== connection.legal_entity_id || command.metadata.documentType !== invoiceType) throw new StorageError("STORAGE_DRAFT_MISMATCH", "The draft must match the inbox company, module, and invoice type.");
+        if (DOCUMENT_KIND_POLICY[draft.kind].ownerModule !== connection.owner_module || draft.legalEntityId !== connection.legal_entity_id || command.metadata.documentType !== (draft.kind === "SUPPLIER_CREDIT_NOTE" ? "CREDIT_NOTE" : invoiceType)) throw new StorageError("STORAGE_DRAFT_MISMATCH", "The draft must match the inbox company, module, and invoice type.");
         if (!command.metadata.reference || !command.metadata.total || !command.metadata.currency) throw new StorageError("STORAGE_INVOICE_FIELDS", "Invoice reference, currency, and total are required before creating a draft.");
         businessKey = await duplicateBusinessKey(client, context, { entity: draft.legalEntityId, party: draft.partyAccountId, reference: command.metadata.reference.normalize("NFKC").trim().toUpperCase(), currency: command.metadata.currency });
         await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))", [`inbox-checksum:${context.organizationId}:${verified.sha256}`]);
@@ -410,7 +410,7 @@ export async function completeInboxDocument(context: TenantTransactionContext, i
       if (command.action.type === "CREATE_DRAFT") {
         const saved = await createBusinessDocumentDraftInTransaction(client, { ...command.action.draft, context, idempotencyKey: `inbox:${row.id}` }, [{ assetId, purpose: "INVOICE" }]);
         const snapshot = businessDocumentSnapshotSchema.parse(saved.document.snapshot);
-        if (snapshot.documentDate !== command.metadata.documentDate || snapshot.currency !== command.metadata.currency || !exact(snapshot.grossTotal).eq(exact(command.metadata.total!))) throw new StorageError("STORAGE_TOTAL_MISMATCH", "The draft date, currency, and calculated total must match the invoice extraction.");
+        if (!businessDocumentMatchesMetadata(snapshot, command.metadata)) throw new StorageError("STORAGE_TOTAL_MISMATCH", "The draft date, currency, and calculated total must match the invoice extraction.");
         sourceDocumentId = saved.document.id;
       } else if (command.action.type === "LINK_DRAFT") {
         const action = command.action; const policy = DOCUMENT_KIND_POLICY[action.kind];
@@ -418,9 +418,9 @@ export async function completeInboxDocument(context: TenantTransactionContext, i
         await acquireDocumentIdentityLock(client, context.organizationId, policy.sourceType, action.sourceNumber.toUpperCase());
         const current = await currentSourceDocument(client, context.organizationId, policy.sourceType, action.sourceNumber.toUpperCase(), true);
         if (!current || current.legal_entity_id !== connection.legal_entity_id) throw new StorageError("STORAGE_ENTITY_MISMATCH", "The linked draft must belong to the inbox company.");
-        if (["PURCHASE_INVOICE", "SALES_INVOICE"].includes(command.metadata.documentType)) {
+        if (["PURCHASE_INVOICE", "SALES_INVOICE", "CREDIT_NOTE"].includes(command.metadata.documentType)) {
           const snapshot = businessDocumentSnapshotSchema.parse(current.snapshot);
-          if (!command.metadata.reference || !command.metadata.total || !command.metadata.currency || snapshot.documentDate !== command.metadata.documentDate || snapshot.currency !== command.metadata.currency || !exact(snapshot.grossTotal).eq(exact(command.metadata.total))) {
+          if (!command.metadata.reference || !command.metadata.total || !command.metadata.currency || !businessDocumentMatchesMetadata(snapshot, command.metadata)) {
             throw new StorageError("STORAGE_TOTAL_MISMATCH", "The linked draft date, currency, and total must match the invoice extraction.");
           }
         }

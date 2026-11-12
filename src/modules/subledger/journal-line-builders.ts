@@ -147,9 +147,9 @@ export function buildIssueJournalLines(
 ): readonly JournalLineInput[] {
   const policy = DOCUMENT_KIND_POLICY[snapshot.kind];
   const lines: JournalLineInput[] = [transactionLine({
-    side: snapshot.kind === "SALES_INVOICE" ? "DEBIT" : "CREDIT",
+    side: snapshot.kind === "SUPPLIER_BILL" ? "CREDIT" : "DEBIT",
     accountCombinationId: snapshot.controlAccountCombinationId,
-    transactionAmount: snapshot.grossTotal,
+    transactionAmount: exact(snapshot.grossTotal).abs(),
     transactionCurrency: snapshot.currency,
     fxRate: snapshot.fx.rate,
     functionalCurrency: snapshot.functionalCurrency,

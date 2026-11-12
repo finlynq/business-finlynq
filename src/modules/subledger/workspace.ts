@@ -95,6 +95,7 @@ export type SubledgerEntityOptionDto = Readonly<{
 export type SubledgerOpenItemDto = Readonly<{
   id: string;
   sourceNumber: string;
+  sourceType?: string;
   partyAccountId: string;
   partyName: string;
   entityCode: string;
@@ -222,6 +223,7 @@ type DocumentRow = Readonly<{
 }>;
 
 type OpenItemRow = Readonly<{
+  source_type: string;
   id: string;
   source_number: string;
   party_account_id: string;
@@ -636,7 +638,7 @@ export async function loadSubledgerWorkspace(
              OR ($11 = 'DUE_LATER' AND current.snapshot ? 'dueOn' AND balance.open_transaction_amount > 0 AND (current.snapshot ->> 'dueOn') > $12)
            )
            AND ($15 = 'ALL' OR (
-             current.status = 'POSTED' AND current.snapshot ->> 'kind' IN ('SUPPLIER_BILL','SALES_INVOICE')
+             current.status = 'POSTED' AND current.snapshot ->> 'kind' IN ('SUPPLIER_BILL','SALES_INVOICE','SUPPLIER_CREDIT_NOTE')
              AND balance.derived_status <> 'REVERSED'
              AND (($15 = 'OPEN' AND balance.open_transaction_amount > 0)
                OR ($15 = 'PAID' AND balance.open_transaction_amount = 0))
@@ -671,7 +673,7 @@ export async function loadSubledgerWorkspace(
         ],
       );
     const openItemsResult = await client.query<OpenItemRow>(
-        `SELECT balance.id, source.source_number,
+        `SELECT balance.id, source.source_number, source.source_type,
            balance.party_account_id, entity.code AS entity_code,
            balance.ledger_id, balance.transaction_currency,
            balance.original_transaction_amount::text AS original_amount,
@@ -692,11 +694,11 @@ export async function loadSubledgerWorkspace(
            ON entity.organization_id = account.organization_id
           AND entity.id = account.legal_entity_id
          WHERE balance.organization_id = $1
-           AND source.source_type = $2
+           AND source.source_type = ANY($2::text[])
            AND balance.open_transaction_amount > 0
            AND balance.derived_status IN ('OPEN', 'PARTIALLY_SETTLED')
          ORDER BY balance.due_on NULLS LAST, source.source_number`,
-        [principal.organizationId, sourceType],
+        [principal.organizationId, ownerModule === "payables" ? [sourceType, "payables.supplier-credit-note"] : [sourceType]],
       );
 
     const activeKey = partyAccountsResult.rows.length > 0
@@ -818,7 +820,7 @@ export async function loadSubledgerWorkspace(
       const party = partyAccountById.get(snapshot.partyAccountId);
       const entity = entityById.get(snapshot.legalEntityId);
       const allocationSources: NonNullable<SubledgerWorkspaceDocumentDto["allocationSources"]>[number][] = [];
-      if (snapshot.kind === "SUPPLIER_PAYMENT" || snapshot.kind === "CUSTOMER_RECEIPT") {
+      if (snapshot.kind === "SUPPLIER_PAYMENT" || snapshot.kind === "CUSTOMER_RECEIPT" || snapshot.kind === "SUPPLIER_CREDIT_APPLICATION") {
         const related = await client.query<{ open_item_id: string; id: string; source_number: string; version: number; snapshot: unknown }>(
           `SELECT item.id AS open_item_id, source.id, source.source_number, source.version, source.snapshot
            FROM open_items item JOIN subledger_events event
@@ -829,7 +831,7 @@ export async function loadSubledgerWorkspace(
         );
         for (const source of related.rows) {
           const original = subledgerSourceSnapshotSchema.parse(source.snapshot);
-          if (original.kind !== "SUPPLIER_BILL" && original.kind !== "SALES_INVOICE") continue;
+          if (original.kind !== "SUPPLIER_BILL" && original.kind !== "SALES_INVOICE" && original.kind !== "SUPPLIER_CREDIT_NOTE") continue;
           allocationSources.push({ openItemId: source.open_item_id, sourceDocumentId: source.id, sourceNumber: source.source_number,
             sourceVersion: source.version, attachments: await loadDocumentEvidence(client, {
               organizationId: principal.organizationId, ownerModule, id: source.id, sourceNumber: source.source_number,
@@ -864,6 +866,7 @@ export async function loadSubledgerWorkspace(
     const openItems = openItemsResult.rows.map<SubledgerOpenItemDto>((item) => ({
       id: item.id,
       sourceNumber: item.source_number,
+      sourceType: item.source_type,
       partyAccountId: item.party_account_id,
       partyName: partyAccountById.get(item.party_account_id)?.partyName ?? "Party account unavailable",
       entityCode: item.entity_code,

@@ -1,3 +1,4 @@
+import { applySupplierCredit, applySupplierCreditSchema } from "@/modules/subledger/supplier-credit-application";
 import { loadCloseChecklistWorkspace, inspectCloseInstance, saveCloseTemplate, saveCloseTemplateSchema, createCloseInstance, createCloseInstanceSchema, commandCloseTask, commandCloseTaskSchema, carryCloseTask, carryCloseTaskSchema, listCloseNotifications, configureCloseNotifications, closeNotificationSchema, acknowledgeCloseNotice, acknowledgeCloseNoticeSchema, closeInstanceQuerySchema } from "@/modules/close/checklist-service";
 import { commandProvisionAssumptions, provisionAssumptionCommandSchema, saveProvisionCalculation, provisionCalculationSchema, commandProvisionEvent, provisionEventSchema, previewProvision, provisionPreviewSchema, listProvisions } from "@/modules/tax/provision-service";
 import { commandTaxDraft, taxDraftCommandSchema, listTaxDrafts } from "@/modules/tax/draft-service";
@@ -194,7 +195,7 @@ function createDocumentTool(input: Readonly<{
   name: string;
   title: string;
   description: string;
-  kind: "SALES_INVOICE" | "SUPPLIER_BILL";
+  kind: "SALES_INVOICE" | "SUPPLIER_BILL" | "SUPPLIER_CREDIT_NOTE";
   permission: typeof PERMISSIONS.manageReceivables | typeof PERMISSIONS.managePayables;
 }>): McpToolDefinition {
   return defineMcpTool({
@@ -214,7 +215,7 @@ function editDocumentTool(input: Readonly<{
   name: string;
   title: string;
   description: string;
-  kind: "SALES_INVOICE" | "SUPPLIER_BILL";
+  kind: "SALES_INVOICE" | "SUPPLIER_BILL" | "SUPPLIER_CREDIT_NOTE";
   permission: typeof PERMISSIONS.manageReceivables | typeof PERMISSIONS.managePayables;
 }>): McpToolDefinition {
   return defineMcpTool({
@@ -234,7 +235,7 @@ function issueDocumentTool(input: Readonly<{
   name: string;
   title: string;
   description: string;
-  kind: "SALES_INVOICE" | "SUPPLIER_BILL";
+  kind: "SALES_INVOICE" | "SUPPLIER_BILL" | "SUPPLIER_CREDIT_NOTE";
   permission: typeof PERMISSIONS.postReceivables | typeof PERMISSIONS.postPayables;
 }>): McpToolDefinition {
   return defineMcpTool({
@@ -256,7 +257,7 @@ function voidDocumentTool(input: Readonly<{
   name: string;
   title: string;
   description: string;
-  kind: "SALES_INVOICE" | "SUPPLIER_BILL";
+  kind: "SALES_INVOICE" | "SUPPLIER_BILL" | "SUPPLIER_CREDIT_NOTE";
   permission: typeof PERMISSIONS.voidReceivables | typeof PERMISSIONS.voidPayables;
 }>): McpToolDefinition {
   return defineMcpTool({
@@ -529,7 +530,7 @@ export const DAILY_MCP_TOOLS: readonly McpToolDefinition[] = [
     policy: { name: "finlynq_daily_get_document", group: "DAILY", access: "READ", permissionsAny: [PERMISSIONS.readReceivables, PERMISSIONS.readPayables] },
     title: "Get invoice, bill, receipt, or payment",
     description: "Get the current immutable version of one AR or AP source document by document kind and source number.",
-    inputSchema: z.object({ kind: z.enum(["SALES_INVOICE", "SUPPLIER_BILL", "CUSTOMER_RECEIPT", "SUPPLIER_PAYMENT"]), sourceNumber: z.string().trim().min(1).max(80) }).strict(),
+    inputSchema: z.object({ kind: z.enum(["SALES_INVOICE", "SUPPLIER_BILL", "CUSTOMER_RECEIPT", "SUPPLIER_PAYMENT", "SUPPLIER_CREDIT_NOTE", "SUPPLIER_CREDIT_APPLICATION"]), sourceNumber: z.string().trim().min(1).max(80) }).strict(),
     invoke: (args, runtime) => {
       const receivable = args.kind === "SALES_INVOICE" || args.kind === "CUSTOMER_RECEIPT";
       const permission = receivable ? PERMISSIONS.readReceivables : PERMISSIONS.readPayables;
@@ -539,6 +540,8 @@ export const DAILY_MCP_TOOLS: readonly McpToolDefinition[] = [
         ownerModule: receivable ? "receivables" : "payables",
         sourceType: args.kind === "SALES_INVOICE" ? "receivables.sales-invoice"
           : args.kind === "SUPPLIER_BILL" ? "payables.supplier-bill"
+            : args.kind === "SUPPLIER_CREDIT_NOTE" ? "payables.supplier-credit-note"
+            : args.kind === "SUPPLIER_CREDIT_APPLICATION" ? "payables.supplier-credit-application"
             : args.kind === "CUSTOMER_RECEIPT" ? "receivables.customer-receipt" : "payables.supplier-payment",
         sourceNumber: args.sourceNumber,
       });
@@ -568,7 +571,7 @@ export const DAILY_MCP_TOOLS: readonly McpToolDefinition[] = [
   defineMcpTool({
     policy: { name: "finlynq_daily_list_payable_open_items", group: "DAILY", access: "READ", permission: PERMISSIONS.readPayables },
     title: "List payable open items",
-    description: "Find tenant-owned supplier-bill open items and their exact settlement IDs. Results include the current source-document ID/version, supplier party account, control account combination, original, allocated and remaining exact amounts, dates, currency, entity, ledger and settlement status. Open and partially settled items are returned by default; use statuses to request closed history. Page with after={dueDate, sourceNumber, openItemId} from the last returned row, retaining the same filters; an empty page ends the scan. asOfDate reconstructs issue, allocation and reversal balances through that date. Receipt/payment commands revalidate the current balance at commit.",
+    description: "Find tenant-owned supplier bill or credit open items and their exact settlement IDs and credit-application IDs. documentKind defaults to BILL; use CREDIT for unapplied supplier credits or ALL for both. Amounts are positive magnitudes with documentKind identifying the direction. Results include the current source-document ID/version, supplier party account, control account combination, original, allocated and remaining exact amounts, dates, currency, entity, ledger and settlement status. Open and partially settled items are returned by default; use statuses to request closed history. Page with after={dueDate, sourceNumber, openItemId} from the last returned row, retaining the same filters; an empty page ends the scan. asOfDate reconstructs issue, allocation and reversal balances through that date. Receipt/payment commands revalidate the current balance at commit.",
     inputSchema: z.object({
       legalEntityId: z.uuid().optional(),
       ledgerId: z.uuid().optional(),
@@ -577,6 +580,7 @@ export const DAILY_MCP_TOOLS: readonly McpToolDefinition[] = [
       sourceNumber: z.string().trim().min(1).max(80).optional(),
       currency: z.string().trim().toUpperCase().regex(/^[A-Z]{3}$/).optional(),
       statuses: z.array(z.enum(["OPEN", "PARTIALLY_SETTLED", "SETTLED", "REVERSED"])).min(1).optional(),
+      documentKind: z.enum(["BILL", "CREDIT", "ALL"]).optional(),
       asOfDate: z.iso.date().optional(),
       after: openItemCursorSchema.optional(),
       limit: z.number().int().min(1).max(500).default(100),
@@ -590,6 +594,22 @@ export const DAILY_MCP_TOOLS: readonly McpToolDefinition[] = [
   editDocumentTool({ name: "finlynq_daily_edit_sales_invoice", title: "Edit sales invoice draft", description: "Create a new immutable version of an existing sales-invoice draft. The exact current version is required. Set fxResolutionMode to PRESERVE and omit fx to carry the full current provenance when currency and accounting date are unchanged. Set RESOLVE and omit fx to run the organization's stored-first provider policy again. Set EXPLICIT and supply fx rate, source, and effective time for a client override; no permitted automatic observation fails with FX_RATE_UNAVAILABLE before persistence.", kind: "SALES_INVOICE", permission: PERMISSIONS.manageReceivables }),
   issueDocumentTool({ name: "finlynq_daily_issue_sales_invoice", title: "Issue sales invoice", description: "Issue and post the exact current sales-invoice draft, creating its tax evidence, journal, subledger event, and customer open item atomically.", kind: "SALES_INVOICE", permission: PERMISSIONS.postReceivables }),
   voidDocumentTool({ name: "finlynq_daily_void_sales_invoice", title: "Void sales invoice", description: "Void an issued sales invoice by creating immutable document and journal reversals in the selected open period.", kind: "SALES_INVOICE", permission: PERMISSIONS.voidReceivables }),
+  defineMcpTool({
+    policy: { name: "finlynq_daily_apply_supplier_credit", group: "DAILY", access: "WRITE", permission: PERMISSIONS.settlePayables },
+    title: "Apply supplier credit to bill", description: "Apply an exact positive amount from a posted supplier credit open item against a posted bill for the same supplier, ledger, currency and AP control. Both balances reduce atomically without duplicating the credit's AP reduction; differing carrying rates create realized FX. Discover IDs using list_payable_open_items with documentKind ALL or CREDIT.",
+    inputSchema: applySupplierCreditSchema,
+    invoke: (args, runtime) => applySupplierCredit({ context: mcpMutationContext(runtime.principal, runtime.requestId, args.description), ...args }),
+  }),
+  defineMcpTool({
+    policy: { name: "finlynq_daily_void_supplier_credit_application", group: "DAILY", access: "WRITE", permission: PERMISSIONS.voidPayables },
+    title: "Reverse supplier credit application", description: "Reverse both allocations and the exact carrying/FX journal of a posted credit application, restoring the bill and credit balances. Requires its exact current version and an eligible reversal period.",
+    inputSchema: voidSettlementSchema.omit({ kind: true }), destructive: true,
+    invoke: (args, runtime) => voidSettlementAndReverseAllocations({ context: mcpMutationContext(runtime.principal, runtime.requestId, args.reason), ...args, kind: "SUPPLIER_CREDIT_APPLICATION" }),
+  }),
+  createDocumentTool({ name: "finlynq_daily_create_supplier_credit_note", title: "Create supplier credit-note draft", description: "Create a supplier credit note using positive credit line amounts. FinLynQ saves reversing purchase/tax facts and posts a debit to AP. Optionally identify the original posted supplier invoice. Omit fx for normal server resolution. Attach supporting evidence before issue; unapplied credit remains visible until applied to a bill.", kind: "SUPPLIER_CREDIT_NOTE", permission: PERMISSIONS.managePayables }),
+  editDocumentTool({ name: "finlynq_daily_edit_supplier_credit_note", title: "Edit supplier credit-note draft", description: "Edit the exact current credit-note draft using positive credit amounts; snapshots return signed reversing amounts. Preserve or resolve FX as for supplier bills.", kind: "SUPPLIER_CREDIT_NOTE", permission: PERMISSIONS.managePayables }),
+  issueDocumentTool({ name: "finlynq_daily_issue_supplier_credit_note", title: "Post supplier credit note", description: "Post the exact current credit-note draft with reversing tax evidence, balanced journal and an unapplied supplier credit atomically.", kind: "SUPPLIER_CREDIT_NOTE", permission: PERMISSIONS.postPayables }),
+  voidDocumentTool({ name: "finlynq_daily_void_supplier_credit_note", title: "Void supplier credit note", description: "Reverse an unapplied supplier credit note in an eligible period; reverse existing applications first.", kind: "SUPPLIER_CREDIT_NOTE", permission: PERMISSIONS.voidPayables }),
   createDocumentTool({ name: "finlynq_daily_create_supplier_bill", title: "Create supplier bill draft", description: "Create an idempotent supplier-bill draft with exact invoice facts. Positive bills may include negative lines only when lineType is ADJUSTMENT; tax is reversed line by line. Net credits and zero-gross bills are rejected with an explicit remediation. For a verified per-line rounding difference, provide tax.sourceTaxRounding {amount, reason, evidenceReference, reviewed}; the limit is one currency minor unit and tax.determinations.override is required. Negative adjustment taxes retain their sign, original net and engine evidence. Larger source-tax differences require sourceTaxOverride evidence. An unreviewed sourceTaxOverride may be saved as an exact review-required draft; use get_source_tax_review_access and get_document for reviewer handoff, then edit the current version with reviewedTreatment. For Ontario insurance RST, use ca.on.hst category EXEMPT, 0 recoverablePercent, and sourceTaxOverride with jurisdiction CA-ON, componentKey ON_INSURANCE_RST, exact 8% amount and source evidence. Omit fx to resolve automatically: FinLynQ uses an eligible tenant-owned stored direct rate first, then the organization's selected provider source. Bank of Canada and ECB use official reference rates; Yahoo also requires its operator gate. If no permitted observation exists, the tool fails with FX_RATE_UNAVAILABLE before persistence. Supply explicit fx rate, source, and effective time to override automatic resolution for this bill.", kind: "SUPPLIER_BILL", permission: PERMISSIONS.managePayables }),
   editDocumentTool({ name: "finlynq_daily_edit_supplier_bill", title: "Edit supplier bill draft", description: "Create a new immutable version of an existing supplier-bill draft. Positive bills may include negative lines only when lineType is ADJUSTMENT; tax is reversed line by line. Net credits and zero-gross bills are rejected with an explicit remediation. For a verified per-line rounding difference, provide tax.sourceTaxRounding {amount, reason, evidenceReference, reviewed}; the limit is one currency minor unit and tax.determinations.override is required. Negative adjustment taxes retain their sign, original net and engine evidence. An exact pending sourceTaxOverride may be preserved by a payables manager. To approve, a reviewer with tax.determinations.override must inspect evidence and edit the exact current DRAFT version with sourceTaxOverride.reviewedTreatment; issuing rechecks permission and review state. The exact current version is required. Set fxResolutionMode to PRESERVE and omit fx to carry the full current provenance when currency and accounting date are unchanged. Set RESOLVE and omit fx to run the organization's stored-first provider policy again. Set EXPLICIT and supply fx rate, source, and effective time for a client override; no permitted automatic observation fails with FX_RATE_UNAVAILABLE before persistence.", kind: "SUPPLIER_BILL", permission: PERMISSIONS.managePayables }),
   issueDocumentTool({ name: "finlynq_daily_issue_supplier_bill", title: "Issue supplier bill", description: "Issue and post the exact current supplier-bill draft, creating its tax evidence, journal, subledger event, and supplier open item atomically.", kind: "SUPPLIER_BILL", permission: PERMISSIONS.postPayables }),
