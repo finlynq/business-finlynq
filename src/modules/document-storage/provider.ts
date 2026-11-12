@@ -51,11 +51,17 @@ export async function boundedResponse(response: Response, maximum: number): Prom
     return Buffer.concat(chunks);
   } finally { await reader.cancel().catch(() => undefined); for (const chunk of chunks) chunk.fill(0); }
 }
+function providerRetryAfter(response: Response): number | undefined {
+  const raw = response.headers.get("retry-after");
+  if (!raw) return undefined;
+  const seconds = /^\d+$/.test(raw) ? Number(raw) : Math.ceil((Date.parse(raw) - Date.now()) / 1000);
+  return Number.isFinite(seconds) && seconds >= 0 ? Math.min(3600, Math.max(1, seconds)) : undefined;
+}
 async function jsonResponse(response: Response): Promise<unknown> {
   if (!response.ok) {
     await response.body?.cancel();
     const code = response.status === 401 || response.status === 403 ? "STORAGE_RECONNECT" : response.status === 404 ? "STORAGE_MISSING" : response.status === 429 ? "STORAGE_THROTTLED" : "STORAGE_PROVIDER_FAILED";
-    throw new StorageError(code, code === "STORAGE_RECONNECT" ? "Reconnect storage or check the account's folder permissions." : code === "STORAGE_MISSING" ? "The cloud file or folder is unavailable." : code === "STORAGE_THROTTLED" ? "The storage provider is throttling requests. Retry this sync later." : "The storage provider could not complete this request. Retry later.");
+    throw new StorageError(code, code === "STORAGE_RECONNECT" ? "Reconnect storage or check the account's folder permissions." : code === "STORAGE_MISSING" ? "The cloud file or folder is unavailable." : code === "STORAGE_THROTTLED" ? "The storage provider is throttling requests. Retry this sync later." : "The storage provider could not complete this request. Retry later.", providerRetryAfter(response));
   }
   const bytes = await boundedResponse(response, 1024 * 1024);
   try { return JSON.parse(bytes.toString("utf8")); } finally { bytes.fill(0); }
@@ -155,12 +161,24 @@ function graphFile(raw: unknown, allowShortcut = false): CloudFile {
 }
 function escapedQuery(value: string) { return value.replace(/\\/g, "\\\\").replace(/'/g, "\\'"); }
 export class CloudDrive {
-  constructor(readonly provider: StorageProvider, private readonly token: string, readonly driveId = "") {}
+  constructor(readonly provider: StorageProvider, private readonly token: string, readonly driveId = "",
+    private readonly operationSignal?: AbortSignal, private readonly onResponse?: (status: number, requestId: string | null) => void) {}
+  withSignal(signal: AbortSignal, onResponse?: (status: number, requestId: string | null) => void) {
+    return new CloudDrive(this.provider, this.token, this.driveId, signal, onResponse);
+  }
+  private signal() {
+    return this.operationSignal ? AbortSignal.any([this.operationSignal, AbortSignal.timeout(60000)]) : AbortSignal.timeout(60000);
+  }
+  private observed(response: Response) {
+    const id = response.headers.get("request-id") ?? response.headers.get("x-ms-request-id");
+    this.onResponse?.(response.status, id && /^[a-zA-Z0-9_-]{1,200}$/.test(id) ? id : null);
+    return response;
+  }
   private async request(path: string, init: RequestInit = {}) {
     const base = this.provider === "GOOGLE_DRIVE" ? GOOGLE : GRAPH;
     if (!path.startsWith("/") || path.startsWith("//")) throw new Error("Invalid storage path");
-    return fetch(base + path, { ...init, headers: { Authorization: `Bearer ${this.token}`, ...init.headers },
-      redirect: "error", cache: "no-store", signal: AbortSignal.timeout(60000) });
+    return this.observed(await fetch(base + path, { ...init, headers: { Authorization: `Bearer ${this.token}`, ...init.headers },
+      redirect: "error", cache: "no-store", signal: this.signal() }));
   }
   private graphPath() { return this.driveId ? `/drives/${encodeURIComponent(this.driveId)}` : "/me/drive"; }
   private parseFile(raw: unknown): CloudFile {
@@ -263,7 +281,7 @@ export class CloudDrive {
       return boundedResponse(response, maximumBytes);
     }
     // Do not forward the Graph bearer token to the preauthenticated download host.
-    const response = await fetch(`${GRAPH}${this.graphPath()}/items/${encodeURIComponent(fileId)}/content`, { headers: { Authorization: `Bearer ${this.token}` }, redirect: "manual", cache: "no-store", signal: AbortSignal.timeout(60000) });
+    const response = this.observed(await fetch(`${GRAPH}${this.graphPath()}/items/${encodeURIComponent(fileId)}/content`, { headers: { Authorization: `Bearer ${this.token}` }, redirect: "manual", cache: "no-store", signal: this.signal() }));
     if (response.status !== 302) {
       if (!response.ok) await jsonResponse(response);
       return boundedResponse(response, maximumBytes);
@@ -272,7 +290,7 @@ export class CloudDrive {
     await response.body?.cancel();
     if (!url) throw new StorageError("STORAGE_DOWNLOAD_HOST", "The provider returned an unsupported download location.");
     try {
-      const download = await fetch(url, { redirect: "error", cache: "no-store", signal: AbortSignal.timeout(60000) });
+      const download = this.observed(await fetch(url, { redirect: "error", cache: "no-store", signal: this.signal() }));
       if (!download.ok) await jsonResponse(download);
       return await boundedResponse(download, maximumBytes);
     } catch (error) {
