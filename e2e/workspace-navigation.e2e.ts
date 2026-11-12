@@ -1,5 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
-import { installReleaseAcceptanceRoute } from "./release-acceptance";
+import { installReleaseAcceptanceRoute, releaseGet } from "./release-acceptance";
 
 test.beforeEach(async ({ context }) => {
   await installReleaseAcceptanceRoute(context);
@@ -60,4 +60,31 @@ test("workspace navigation stays clear, accessible and state-preserving", async 
   await expect(page.getByRole("dialog", { name: "Navigation", exact: true }).getByRole("link", { name: "Reports", exact: true })).toBeVisible();
   await page.keyboard.press("Escape");
   await expect(page.getByRole("button", { name: "Open navigation", exact: true })).toBeFocused();
+});
+
+
+test("guidance file links preserve selection, Markdown and browser history", async ({ page }) => {
+  await openDemo(page, "/app/settings/guidance");
+  const title = page.locator("#guidance-file-title");
+  const panel = page.locator('section[aria-labelledby="guidance-file-title"]');
+  const workflow = "/app/settings/guidance?scope=platform&path=accounting%2Fworkflow.md";
+  const index = "/app/settings/guidance?scope=platform&path=index.md";
+
+  await page.locator(`a[href="${workflow}"]`).click();
+  await expect(title).toHaveText("accounting/workflow.md");
+  await expect(page).toHaveURL(/scope=platform&path=accounting%2Fworkflow\.md/i);
+  const markdown = panel.getByRole("link", { name: "Open plain Markdown", exact: true });
+  await expect(markdown).toHaveAttribute("href", "/api/organization/guidance/file?scope=platform&path=accounting%2Fworkflow.md");
+  const response = await releaseGet(page.request, (await markdown.getAttribute("href"))!);
+  expect(response.status()).toBe(200);
+  expect(response.headers()["content-type"]).toContain("text/markdown");
+  expect(await panel.locator("pre").textContent()).toBe(await response.text());
+
+  await page.locator(`a[href="${index}"]`).click();
+  await expect(title).toHaveText("index.md");
+  await expect(markdown).toHaveAttribute("href", "/api/organization/guidance/file?scope=platform&path=index.md");
+  await page.goBack();
+  await expect(title).toHaveText("accounting/workflow.md");
+  await page.goForward();
+  await expect(title).toHaveText("index.md");
 });
