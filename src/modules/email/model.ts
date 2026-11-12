@@ -174,6 +174,7 @@ export const emailDeliverySettingsSchema = z.object({
 });
 
 export const inboundAttachmentSchema = z.object({
+  originalFilename: z.string().trim().min(1).max(180).optional(),
   id: z.string().trim().min(1).max(500),
   filename: z.string().trim().min(1).max(180),
   mimeType: z.string().trim().min(1).max(200),

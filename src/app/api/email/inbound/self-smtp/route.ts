@@ -1,9 +1,9 @@
 import { NextResponse } from "next/server";
-import { ingestInboundEmail } from "@/modules/email/inbound";
+import { ingestInboundEmail, recordRelayRejection } from "@/modules/email/inbound";
 import type { InboundProviderMessage } from "@/modules/email/model";
 import { inboundRelaySecret } from "@/modules/email/secrets";
 import { inboundEmailRouting, matchesInboundEmailRouting } from "@/modules/email/routing";
-import { parseRelayMessage, readRelayBody, RelayPayloadError } from "@/modules/email/self-smtp";
+import { parseRelayRejection, parseRelayMessage, readRelayBody, RelayPayloadError } from "@/modules/email/self-smtp";
 import { verifyRelayWebhook, WebhookSignatureError } from "@/modules/email/signature";
 import { observeRouteHandler } from "@/observability/request-observability";
 
@@ -25,6 +25,13 @@ async function receiveInboundEmail(request: Request) {
     bytes = await readRelayBody(request);
     verifyRelayWebhook({ rawBody: bytes, secret,
       timestamp: request.headers.get("x-mail-timestamp"), signature: request.headers.get("x-mail-signature") });
+    const rejection = parseRelayRejection(bytes);
+    if (rejection) {
+      const headerId = request.headers.get("x-mail-message-id");
+      if ((headerId !== null && headerId !== rejection.message_id) || !matchesInboundEmailRouting(rejection.recipient, routing)) throw new RelayPayloadError();
+      await recordRelayRejection(rejection);
+      return NextResponse.json({ received: true, retryPending: false }, { headers });
+    }
     message = parseRelayMessage(bytes);
     const messageId = request.headers.get("x-mail-message-id");
     if (messageId !== null && messageId !== message.messageId) throw new RelayPayloadError();
